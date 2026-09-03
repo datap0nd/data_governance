@@ -341,43 +341,61 @@ _SELECT_BOOKMARK_ROW_JS = r"""(request) => {
     if (!wantedId) return {selected: false, reason: 'empty-bookmark-id'};
     if (!wantedName) return {selected: false, reason: 'empty-bookmark-name'};
     const app = nexacro.getApplication();
-    const seen = new Set();
-    const grids = [];
-    const localName = component => {
+    const fromCollection = (collection, key) => {
+        if (!collection) return null;
+        try { if (collection[key] != null) return collection[key]; } catch (error) {}
         try {
-            const value = String(component.name || component.id || '');
-            return value.split('.').pop();
-        } catch (error) { return ''; }
-    };
-    const diagnosticId = (component, trail) => {
-        try {
-            const handle = component._control_element && component._control_element.handle;
-            if (handle && handle.id) return String(handle.id);
-        } catch (error) {}
-        try { if (component._unique_id) return String(component._unique_id); } catch (error) {}
-        return trail.filter(Boolean).join('.');
-    };
-    const visit = (component, depth, trail) => {
-        if (!component || typeof component !== 'object' || depth > 18 || seen.has(component)) return;
-        seen.add(component);
-        const local = localName(component);
-        const nextTrail = local ? [...trail, local] : trail;
-        const context = nextTrail.join('.').toLowerCase();
-        if (local.toLowerCase() === 'grd_bookmark' && context.includes('div_favorite')) {
-            grids.push({component, trail: nextTrail, id: diagnosticId(component, nextTrail)});
-        }
-        for (const key of ['components', 'frames']) {
-            let children = null;
-            try { children = component[key]; } catch (error) { continue; }
-            if (!children || typeof children.length !== 'number') continue;
-            for (let index = 0; index < children.length && index < 400; index++) {
-                try { visit(children[index], depth + 1, nextTrail); } catch (error) {}
+            if (typeof collection.get_item === 'function') {
+                const item = collection.get_item(key);
+                if (item != null) return item;
             }
-        }
-        try { if (component.form) visit(component.form, depth + 1, nextTrail); } catch (error) {}
+        } catch (error) {}
+        return null;
     };
-    try { visit(app.mainframe || app, 0, []); } catch (error) {}
-    if (!grids.length) return {selected: false, reason: 'favorite-grid-component-missing'};
+    const resolveComponent = componentId => {
+        let component = app;
+        for (const part of String(componentId || '').split(':', 1)[0].split('.')) {
+            if (!part) continue;
+            let next = null;
+            try { if (component && component[part] != null) next = component[part]; }
+            catch (error) {}
+            if (!next && component) {
+                for (const collectionName of ['components', 'frames', 'all']) {
+                    try { next = fromCollection(component[collectionName], part); }
+                    catch (error) { next = null; }
+                    if (next) break;
+                }
+            }
+            if (!next) return null;
+            component = next;
+        }
+        return component;
+    };
+    const visibleElement = element => {
+        try {
+            const rect = element.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) return false;
+            const style = window.getComputedStyle(element);
+            return style.visibility !== 'hidden' && style.display !== 'none';
+        } catch (error) { return false; }
+    };
+    const visibleGridIds = Array.from(document.querySelectorAll('[id]'))
+        .filter(element => String(element.id || '').endsWith(request.grid_suffix)
+            && visibleElement(element))
+        .map(element => String(element.id));
+    if (!visibleGridIds.length) {
+        return {selected: false, reason: 'favorite-grid-not-visible'};
+    }
+    if (visibleGridIds.length !== 1) {
+        return {selected: false, reason: 'ambiguous-favorite-grid',
+                grid_id: visibleGridIds.slice(0, 4).join(' | ')};
+    }
+    const gridId = visibleGridIds[0];
+    const grid = resolveComponent(gridId);
+    if (!grid) {
+        return {selected: false, reason: 'favorite-grid-component-unresolved',
+                grid_id: gridId};
+    }
 
     const resolveDataset = grid => {
         let dataset = null;
@@ -409,48 +427,6 @@ _SELECT_BOOKMARK_ROW_JS = r"""(request) => {
         }
         return dataset;
     };
-    const isVisible = candidate => {
-        let componentVisible = true;
-        try {
-            if (typeof candidate.component.get_visible === 'function'
-                    && !candidate.component.get_visible()) componentVisible = false;
-            else if (candidate.component.visible === false) componentVisible = false;
-        } catch (error) {}
-        if (!componentVisible) return false;
-        try {
-            const handle = candidate.component._control_element
-                && candidate.component._control_element.handle;
-            if (handle) {
-                const rect = handle.getBoundingClientRect();
-                const style = window.getComputedStyle(handle);
-                return rect.width > 0 && rect.height > 0
-                    && style.visibility !== 'hidden' && style.display !== 'none';
-            }
-        } catch (error) {}
-        try {
-            const element = document.getElementById(candidate.id);
-            if (!element) return false;
-            const rect = element.getBoundingClientRect();
-            const style = window.getComputedStyle(element);
-            return rect.width > 0 && rect.height > 0
-                && style.visibility !== 'hidden' && style.display !== 'none';
-        } catch (error) { return false; }
-    };
-    const visible = grids.filter(isVisible);
-    if (!visible.length) {
-        return {selected: false, reason: 'favorite-grid-not-visible',
-                grid_id: grids.slice(0, 4).map(item => item.id).join(' | ')};
-    }
-    if (visible.length !== 1) {
-        return {
-            selected: false,
-            reason: 'ambiguous-favorite-grid',
-            grid_id: visible.slice(0, 4).map(item => item.id).join(' | '),
-        };
-    }
-    const chosen = visible[0];
-    const grid = chosen.component;
-    const gridId = chosen.id;
     const dataset = resolveDataset(grid);
     if (!dataset || typeof dataset.getRowCount !== 'function'
             || typeof dataset.getColumn !== 'function'
@@ -638,60 +614,59 @@ _GUARDED_GO_CLICK_JS = r"""(request) => {
         return {fired: false, reason: 'unsafe-go-component', component_id: componentId};
     }
     const app = nexacro.getApplication();
-    const seen = new Set();
-    const grids = [];
-    const localName = component => {
-        try { return String(component.name || component.id || '').split('.').pop(); }
-        catch (error) { return ''; }
-    };
-    const diagnosticId = (component, trail) => {
+    const fromCollection = (collection, key) => {
+        if (!collection) return null;
+        try { if (collection[key] != null) return collection[key]; } catch (error) {}
         try {
-            const handle = component._control_element && component._control_element.handle;
-            if (handle && handle.id) return String(handle.id);
-        } catch (error) {}
-        try { if (component._unique_id) return String(component._unique_id); } catch (error) {}
-        return trail.filter(Boolean).join('.');
-    };
-    const visit = (component, depth, trail) => {
-        if (!component || typeof component !== 'object' || depth > 18 || seen.has(component)) return;
-        seen.add(component);
-        const local = localName(component);
-        const nextTrail = local ? [...trail, local] : trail;
-        const context = nextTrail.join('.').toLowerCase();
-        if (local.toLowerCase() === 'grd_bookmark' && context.includes('div_favorite')) {
-            grids.push({component, id: diagnosticId(component, nextTrail)});
-        }
-        for (const key of ['components', 'frames']) {
-            let children = null;
-            try { children = component[key]; } catch (error) { continue; }
-            if (!children || typeof children.length !== 'number') continue;
-            for (let index = 0; index < children.length && index < 400; index++) {
-                try { visit(children[index], depth + 1, nextTrail); } catch (error) {}
+            if (typeof collection.get_item === 'function') {
+                const item = collection.get_item(key);
+                if (item != null) return item;
             }
-        }
-        try { if (component.form) visit(component.form, depth + 1, nextTrail); } catch (error) {}
+        } catch (error) {}
+        return null;
     };
-    try { visit(app.mainframe || app, 0, []); } catch (error) {}
-    const visible = grids.filter(candidate => {
+    const resolveComponent = componentId => {
+        let component = app;
+        for (const part of String(componentId || '').split(':', 1)[0].split('.')) {
+            if (!part) continue;
+            let next = null;
+            try { if (component && component[part] != null) next = component[part]; }
+            catch (error) {}
+            if (!next && component) {
+                for (const collectionName of ['components', 'frames', 'all']) {
+                    try { next = fromCollection(component[collectionName], part); }
+                    catch (error) { next = null; }
+                    if (next) break;
+                }
+            }
+            if (!next) return null;
+            component = next;
+        }
+        return component;
+    };
+    const visibleElement = element => {
         try {
-            if (typeof candidate.component.get_visible === 'function'
-                    && !candidate.component.get_visible()) return false;
-            if (candidate.component.visible === false) return false;
-            const handle = candidate.component._control_element
-                && candidate.component._control_element.handle;
-            const element = handle || document.getElementById(candidate.id);
-            if (!element) return false;
             const rect = element.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) return false;
             const style = window.getComputedStyle(element);
-            return rect.width > 0 && rect.height > 0
-                && style.visibility !== 'hidden' && style.display !== 'none';
+            return style.visibility !== 'hidden' && style.display !== 'none';
         } catch (error) { return false; }
-    });
-    if (visible.length !== 1) {
-        return {fired: false, reason: visible.length ? 'ambiguous-favorite-grid'
-            : 'favorite-grid-not-visible', grid_count: visible.length};
+    };
+    const gridIds = Array.from(document.querySelectorAll('[id]'))
+        .filter(element => String(element.id || '').endsWith(request.grid_suffix)
+            && visibleElement(element))
+        .map(element => String(element.id));
+    if (gridIds.length !== 1) {
+        return {fired: false, reason: gridIds.length ? 'ambiguous-favorite-grid'
+            : 'favorite-grid-not-visible', grid_count: gridIds.length,
+            grid_id: gridIds.slice(0, 4).join(' | ')};
     }
-    const grid = visible[0].component;
+    const gridId = gridIds[0];
+    const grid = resolveComponent(gridId);
+    if (!grid) {
+        return {fired: false, reason: 'favorite-grid-component-unresolved',
+                grid_id: gridId};
+    }
     let dataset = null;
     let binding = null;
     try { if (typeof grid.getBindDataset === 'function') dataset = grid.getBindDataset(); }
@@ -719,7 +694,7 @@ _GUARDED_GO_CLICK_JS = r"""(request) => {
     }
     if (!dataset || typeof dataset.getColumn !== 'function'
             || typeof dataset.getRowCount !== 'function') {
-        return {fired: false, reason: 'bound-dataset-unavailable', grid_id: visible[0].id};
+        return {fired: false, reason: 'bound-dataset-unavailable', grid_id: gridId};
     }
     const idRows = [];
     for (let index = 0; index < dataset.getRowCount(); index++) {
@@ -727,7 +702,7 @@ _GUARDED_GO_CLICK_JS = r"""(request) => {
     }
     if (idRows.length !== 1) {
         return {fired: false, reason: idRows.length ? 'duplicate-bookmark-id'
-            : 'bookmark-id-not-in-bound-dataset', grid_id: visible[0].id,
+            : 'bookmark-id-not-in-bound-dataset', grid_id: gridId,
             matching_rows: idRows.slice(0, 20)};
     }
     let rowPosition = NaN;
@@ -772,20 +747,14 @@ _GUARDED_GO_CLICK_JS = r"""(request) => {
             || rowPosition !== idRows[0] || observedId !== wantedId
             || observedName !== wantedName || !selectionValid) {
         return {fired: false, reason: 'bookmark-selection-drift',
-                grid_id: visible[0].id, row_position: rowPosition,
+                grid_id: gridId, row_position: rowPosition,
                 current_row: currentRow, observed_id: observedId,
                 observed_name: observedName, select_type: selectType,
                 current_cell: currentCell, selected_rows: selected};
     }
-    let component = app;
-    for (const part of componentId.split('.')) {
-        if (!part) continue;
-        if (component && component[part] != null) component = component[part];
-        else if (component && component.components && component.components[part] != null) {
-            component = component.components[part];
-        } else return {fired: false, reason: `missing-go-component:${part}`,
-                       component_id: componentId};
-    }
+    const component = resolveComponent(componentId);
+    if (!component) return {fired: false, reason: 'missing-go-component',
+                            component_id: componentId};
     if (!component || typeof component.on_fire_onclick !== 'function') {
         return {fired: false, reason: 'go-onclick-unavailable', component_id: componentId};
     }
@@ -886,97 +855,81 @@ _GUARDED_EXCEL_EXPORT_JS = r"""(request) => {
     }
 
     const app = nexacro.getApplication();
-    const seen = new Set();
-    const candidates = [];
-    const localName = component => {
-        try { return String(component.name || component.id || '').split('.').pop(); }
-        catch (error) { return ''; }
-    };
-    const diagnosticId = (component, trail) => {
+    const fromCollection = (collection, key) => {
+        if (!collection) return null;
+        try { if (collection[key] != null) return collection[key]; } catch (error) {}
         try {
-            const handle = component._control_element && component._control_element.handle;
-            if (handle && handle.id) return String(handle.id).split(':', 1)[0];
-        } catch (error) {}
-        try {
-            if (component._unique_id) return String(component._unique_id).split(':', 1)[0];
-        } catch (error) {}
-        return trail.filter(Boolean).join('.');
-    };
-    const componentVisible = (component, id) => {
-        try {
-            if (typeof component.get_visible === 'function' && !component.get_visible()) return false;
-            if (component.visible === false) return false;
-            const handle = component._control_element && component._control_element.handle;
-            const element = handle || document.getElementById(id);
-            return Boolean(element && visibleElement(element));
-        } catch (error) { return false; }
-    };
-    const visit = (component, depth, trail) => {
-        if (!component || typeof component !== 'object' || depth > 18 || seen.has(component)) return;
-        seen.add(component);
-        const local = localName(component);
-        const nextTrail = local ? [...trail, local] : trail;
-        if (local.toLowerCase() === 'btn_exceldown') {
-            const id = diagnosticId(component, nextTrail);
-            if (/(?:^|\.)mdiframe(?:\.|$)/i.test(id) && componentVisible(component, id)) {
-                candidates.push({component, id});
+            if (typeof collection.get_item === 'function') {
+                const item = collection.get_item(key);
+                if (item != null) return item;
             }
-        }
-        for (const key of ['components', 'frames']) {
-            let children = null;
-            try { children = component[key]; } catch (error) { continue; }
-            if (!children || typeof children.length !== 'number') continue;
-            for (let index = 0; index < children.length && index < 400; index++) {
-                try { visit(children[index], depth + 1, nextTrail); } catch (error) {}
-            }
-        }
-        try { if (component.form) visit(component.form, depth + 1, nextTrail); } catch (error) {}
+        } catch (error) {}
+        return null;
     };
-    try { visit(app.mainframe || app, 0, []); } catch (error) {}
-    const unique = [];
-    const candidateIds = new Set();
-    for (const candidate of candidates) {
-        if (candidateIds.has(candidate.id)) continue;
-        candidateIds.add(candidate.id);
-        unique.push(candidate);
-    }
-    let chosen = configuredId
-        ? unique.filter(candidate => candidate.id === configuredId)
-        : [];
-    if (!chosen.length) chosen = unique;
-    if (!chosen.length) {
+    const resolveComponent = componentId => {
+        let component = app;
+        for (const part of String(componentId || '').split(':', 1)[0].split('.')) {
+            if (!part) continue;
+            let next = null;
+            try { if (component && component[part] != null) next = component[part]; }
+            catch (error) {}
+            if (!next && component) {
+                for (const collectionName of ['components', 'frames', 'all']) {
+                    try { next = fromCollection(component[collectionName], part); }
+                    catch (error) { next = null; }
+                    if (next) break;
+                }
+            }
+            if (!next) return null;
+            component = next;
+        }
+        return component;
+    };
+    const candidateIds = Array.from(document.querySelectorAll('[id]'))
+        .filter(element => {
+            const id = String(element.id || '').split(':', 1)[0];
+            return /(?:^|\.)mdiframe(?:\.|$)/i.test(id)
+                && /(?:^|\.)btn_exceldown$/i.test(id)
+                && Boolean(visibleElement(element));
+        })
+        .map(element => String(element.id || '').split(':', 1)[0]);
+    const uniqueIds = Array.from(new Set(candidateIds));
+    let chosenIds = configuredId && uniqueIds.includes(configuredId)
+        ? [configuredId] : uniqueIds;
+    if (!chosenIds.length) {
         return {fired: false, reason: 'missing-excel-component',
                 expected_id: wantedId, expected_name: wantedName,
                 observed_name: observedName};
     }
-    if (chosen.length !== 1) {
+    if (chosenIds.length !== 1) {
         return {fired: false, reason: 'ambiguous-excel-component',
                 expected_id: wantedId, expected_name: wantedName,
                 observed_name: observedName,
-                component_ids: chosen.slice(0, 10).map(item => item.id)};
+                component_ids: chosenIds.slice(0, 10)};
     }
-    const target = chosen[0];
-    if (!target.component || typeof target.component.on_fire_onclick !== 'function') {
+    const targetId = chosenIds[0];
+    const target = resolveComponent(targetId);
+    if (!target || typeof target.on_fire_onclick !== 'function') {
         return {fired: false, reason: 'excel-onclick-unavailable',
                 expected_id: wantedId, expected_name: wantedName,
-                observed_name: observedName, component_id: target.id};
+                observed_name: observedName, component_id: targetId};
     }
     try {
-        target.component.on_fire_onclick(
+        target.on_fire_onclick(
             'lbutton', false, false, false,
             0, 0, 0, 0, 0, 0,
-            target.component, target.component,
+            target, target,
         );
         return {fired: true,
                 strategy: 'rendered-title-exact-guarded-native-export',
                 expected_id: wantedId, expected_name: wantedName,
                 observed_name: observedName, title_id: best[0].id,
-                component_id: target.id};
+                component_id: targetId};
     } catch (error) {
         return {fired: false, reason: 'excel-onclick-error',
                 error: String(error && error.message ? error.message : error),
                 expected_id: wantedId, expected_name: wantedName,
-                observed_name: observedName, component_id: target.id};
+                observed_name: observedName, component_id: targetId};
     }
 }"""
 
@@ -1578,13 +1531,20 @@ def _select_bookmark_dataset_row(page, bookmark_id: str, bookmark_name: str) -> 
             # Once a root found the relevant grid, let ``open_bookmark`` own
             # the retry. Never multiply its two-attempt mutation budget by
             # selecting again in another frame during this same attempt.
-            if result.get("attempted") is True or result.get("reason") in {
+            if result.get("attempted") is True or result.get("grid_id") or result.get("reason") in {
                 "ambiguous-favorite-grid", "duplicate-bookmark-id",
                 "bookmark-name-mismatch", "unsupported-grid-selecttype",
                 "grid-clear-selection-unavailable", "grid-clear-selection-error",
             }:
                 return result
-    return failures[-1] if failures else {
+    # Unsupported iframe roots are common around a top-level Nexacro app. Do
+    # not let their generic ``nexacro-unavailable`` result overwrite the
+    # actionable failure reported by the root that actually saw the portal.
+    informative = [
+        result for result in failures
+        if result.get("reason") != "nexacro-unavailable"
+    ]
+    return (informative or failures)[-1] if failures else {
         "selected": False,
         "reason": "selection-script-returned-no-result",
     }
@@ -3615,6 +3575,7 @@ def _click_go_button(page, bookmark_id: str, bookmark_name: str) -> dict:
                     "bookmark_id": bookmark_id,
                     "bookmark_name": _exact_bookmark_name(bookmark_name),
                     "go_id": component_id,
+                    "grid_suffix": FAVORITE_GRID_ID_SUFFIX,
                 })
             except Exception as exc:
                 failures.append({
