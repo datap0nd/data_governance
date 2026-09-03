@@ -50,8 +50,28 @@ walk is what once reported a user's Public bookmarks missing. Once a tab is
 active, the dataset is authoritative for tab, folder path, bookmark id, menu
 id, scope, and owner metadata when the runtime exposes it. The rendered
 Favorite grid is also inventoried whenever it binds, then explicitly
-reconciled with those dataset records; it remains the identity fallback when
-the dataset is unavailable.
+reconciled with those dataset records for discovery. It is never an execution
+identity fallback when the dataset is unavailable.
+
+## Release note: deterministic bookmark activation
+
+GSCM flow runs now fail closed around the exact Favorite identity. A runnable
+catalog entry must contain both the stable `userreportid` and the raw
+`userreportname`. The raw name is stored separately from the normalized catalog
+label: only outer whitespace is ignored, while case, repeated internal spaces,
+and every other character remain identity-significant.
+
+At run time Metronome resolves exactly one ID/name row in `gds_bookmark`,
+selects it through the bound visible Nexacro Grid, and proves that the dataset
+row position, Grid current row, and Grid selection all identify that same row.
+The Go handler is invoked only by one browser-side guard that repeats the full
+identity and selection check in the same JavaScript operation. There is no
+bookmark-label DOM click and no tree name/path fallback. Duplicate IDs,
+renames, ambiguous grids, scope drift, inaccessible dataset state, and stale
+selection all leave the Favorite dialog open and block export.
+
+Existing ID-less flows, or flows whose saved `favorite_name` was normalized
+instead of preserving the portal's raw name, must be rescanned and repointed.
 
 The home screen has its own "Favorite" widget, but it lists only the entries a
 user has *pinned* (the pin icon on each row, then Save). It is empty for most
@@ -135,25 +155,21 @@ scope matters because reading the global TopFrame container's `textContent`
 concatenates labels such as `Biz Info`, `AX`, `SCM`, and `Channel` into one
 false bookmark.
 
-Controls are located by visible label when opening a bookmark, but Nexacro's
+Navigation controls such as scope tabs may be located by visible label; their
 rendered `:text` / `:icontext` child is promoted to its owning component before
-the click. If the DOM click does not fire the component handler, Metronome uses
-Nexacro's native `on_fire_onclick` entry point for that exact observed control.
+a click. The bookmark itself is never located or clicked by rendered label.
 The Setting gear has no text and is found by id shape (`btn_setting`,
-`btn_config`, ...). A failed export retry reloads the portal shell so an empty
-or stale Favorite grid cannot leak into the next attempt. Every failure includes
-a compact screen inventory so a changed control can be diagnosed from evidence.
+`btn_config`, ...). Every failure includes a compact screen inventory so a
+changed control can be diagnosed from evidence.
 
 ## Deterministic control resolution
 
-GSCM control lookup is deterministic and effect-verified. The current adapter
-tries known component paths, frame-number-agnostic DOM shapes, scoped labels,
-and guarded positional fallbacks; the Go control also uses the live Nexacro
-component tree. A candidate is accepted only when the expected state change
-occurs, such as the Setting shell mounting or the Favorite panel becoming
-visible. Bookmark identity and selection prefer `userreportid` in the
-application or grid-bound dataset, with rendered tree navigation kept as the
-fallback.
+GSCM control lookup is deterministic and effect-verified. Navigation tries
+known component paths, frame-number-agnostic DOM shapes, scoped labels, and
+guarded positional fallbacks. Execution is stricter: bookmark identity requires
+an exact stable ID/raw-name tuple from the application dataset, and Go uses the
+live Nexacro component tree only after the atomic selected-grid guard passes.
+Rendered tree navigation remains discovery-only.
 
 After the deterministic repair passes a headed live run, the planned
 per-profile recipe layer can generalize component-tree lookup and preserve the
@@ -179,8 +195,8 @@ POST /api/flows/sites/{id}/scan         POST /api/flows/{id}/run
   ↓ flow_catalog_scans row                ↓ flow_runs row
 worker claims the scan                  worker claims the run
   ↓ flow_gscm.discover_catalog            ↓ flow_gscm.open_bookmark
-  open Setting > Favorite, activate       open Setting > Favorite, pick the tab
-  each tab like a run, read its rows      select the row, press Go >>
+  open Setting > Favorite, activate       open Setting > Favorite, resolve the
+  each tab like a run, read its rows      exact ID/raw-name scope and select it
   (dataset ids/scopes authoritative;
   rendered grid inventoried/reconciled)
   ↓ POST .../scans/{id}/progress          wait for the overlay to settle
@@ -203,11 +219,12 @@ Export Report Title, and Export filter details fields; the API clears those
 fields if an older or copied client submits them. GSCM remains forced to its
 single native Excel export.
 
-## Scoped rendered-grid inventory and fallback
+## Scoped rendered-grid discovery inventory
 
-The per-tab dataset read supplies authoritative identity while the grid sweep
-supplies rendered-state telemetry and the fallback identity source. The sweep
-handles the two ways the rendered grid hides bookmarks:
+During discovery, the per-tab dataset read supplies authoritative identity
+while the grid sweep supplies rendered-state telemetry and can recover an
+id-less catalog observation. This discovery-only sweep handles the two ways the
+rendered grid hides bookmarks:
 
 * **The grid virtualizes.** Only rows in view exist in the DOM, so the sweep
   pages the tree down and re-reads until nothing new appears. Because a row's
@@ -222,7 +239,7 @@ handles the two ways the rendered grid hides bookmarks:
 
 ## Bookmark identity
 
-A bookmark is stored with the tab, folder path, and name that locate it again:
+A bookmark is stored with display metadata plus the exact execution identity:
 
 ```json
 {
@@ -238,15 +255,11 @@ A bookmark is stored with the tab, folder path, and name that locate it again:
 }
 ```
 
-The **folder path is what disambiguates** a repeated name - the same report is
-often filed under several folders, and matching on the name alone would
-download a different report than the flow was built for. Two rows sharing a
-name still get two catalog entries (`Weekly PSI`, `Weekly PSI (2)`), because
-`flow_reports` is keyed by (site, name) and would otherwise collapse them.
-
-`favorite_bookmark_id` is stable dataset identity. DOM element ids are recorded
-only by the fallback and are never trusted across runs because Nexacro recycles
-them as the tree scrolls and re-renders.
+`favorite_bookmark_id` plus the raw, outer-trimmed `favorite_name` is the runtime
+identity. The folder path and synthetic catalog labels such as `Weekly PSI (2)`
+are display/discovery metadata only and never authorize a run. DOM row ids are
+never trusted across runs because Nexacro recycles them as the tree scrolls and
+re-renders.
 
 ## Scan replacement behavior
 
@@ -351,7 +364,10 @@ instead of the API.
 | Scan fails: "Setting > Favorite dialog did not open" | Neither the id hints nor the top-bar position found the gear | The `ICON CONTROLS:` section of the `On screen:` inventory lists every text-less control with its id; add the right one to `SETTING_BUTTON_HINTS` |
 | Scan fails: "none of its tabs listed a bookmark" | The tree did not render, or the scope dropdown points at an empty business | Read the `On screen:` inventory; check the `MX` dropdown |
 | Scan fails: "GSCM did not render its Nexacro client" | The profile has no GSCM session | Re-run the auth bootstrap; try headed mode |
-| Run fails naming the available bookmarks | The bookmark was renamed or deleted in GSCM | Rescan the GSCM catalog, then repoint the flow |
+| Run fails with no stable bookmark ID/name | The flow predates exact GSCM execution identity | Rescan the GSCM catalog, then repoint the flow |
+| Run fails with exact-name mismatch | The bookmark was renamed, its case/internal whitespace changed, or the catalog association is stale | Rescan the GSCM catalog, then repoint the flow; matching is intentionally case-sensitive |
+| Run fails with bound dataset/Grid state unavailable or ambiguous | This Nexacro build does not expose one scriptable visible Favorite Grid, or selection could not be proven | Use the failure state report to verify the Grid binding; this build remains non-runnable until support is reviewed—there is no DOM fallback |
+| Run fails with duplicate stable ID or scope drift | Live portal state is internally ambiguous | Leave the dialog open, rescan, and investigate the reported ID/name/scope rows before retrying |
 | Run fails: "GSCM popup blocked control" | A visible portal popup survived its Close/X action and overlaps the next bookmark control | Use the reported container and close-control ids plus `On screen` inventory to update the observed id vocabulary; protected Save/Delete-style controls are never clicked |
 | Run fails: "Excel export button was not found" | The bookmark opened a screen with no grid export | Open the bookmark by hand and confirm the toolbar offers Excel |
 | Run hangs then exports anyway | The wait overlay outlived its query | Expected; the adapter forces the overlay down after its budget |

@@ -188,6 +188,13 @@ class FakeGscmPage:
         self.grid_bound = grid_bound
         self.dataset_selection_mode = dataset_selection_mode
         self.selected_bookmark_id = None
+        self.selected_bookmark_name = None
+        self.selected_row_index = None
+        self.grid_current_row = None
+        self.selected_rows = []
+        self.selection_attempts = 0
+        self.guarded_go_attempts = 0
+        self.guarded_go_fires = 0
         self.tab = "Public"
         self.clicks = []
         self.navigations = []
@@ -384,40 +391,137 @@ class FakeGscmPage:
                 for identifier in visible_components
             )
         if script == getattr(flow_gscm, "_SELECT_BOOKMARK_ROW_JS", None):
-            wanted = str((argument or {}).get("bookmark_id") or "")
+            self.selection_attempts += 1
+            wanted = str((argument or {}).get("bookmark_id") or "").strip()
+            wanted_name = str((argument or {}).get("bookmark_name") or "").strip()
+            mode = self.dataset_selection_mode
+            if mode == "first_rejected_then_success" and self.selection_attempts > 1:
+                mode = "success"
             reasons = {
                 "missing_bind": "bound-dataset-unavailable",
                 "rejected_rowposition": "rowposition-rejected",
                 "id_mismatch": "post-selection-id-mismatch",
+                "current_row_mismatch": "post-selection-id-mismatch",
+                "ambiguous_grid": "ambiguous-favorite-grid",
+                "ambiguous_selection": "post-selection-id-mismatch",
+                "unsupported_selecttype": "unsupported-grid-selecttype",
+                "first_rejected_then_success": "rowposition-rejected",
             }
-            if self.dataset_selection_mode in reasons or not self.grid_bound:
+            if mode in reasons or not self.grid_bound:
                 return {
                     "selected": False,
                     "reason": reasons.get(
-                        self.dataset_selection_mode, "bound-dataset-unavailable",
+                        mode, "bound-dataset-unavailable",
                     ),
                     "grid_id": FAVORITE_GRID_ID,
                 }
-            matching = next(
-                (
-                    (index, row) for index, row in enumerate(self.dataset_rows or [])
-                    if str(row.get("userreportid") or "").strip() == wanted
-                ),
-                None,
-            )
-            if matching is None:
+            matches = [
+                (index, row) for index, row in enumerate(self.dataset_rows or [])
+                if str(row.get("userreportid") or "").strip() == wanted
+            ]
+            if not matches:
                 return {
                     "selected": False,
                     "reason": "bookmark-id-not-in-bound-dataset",
                     "grid_id": FAVORITE_GRID_ID,
                 }
+            if len(matches) != 1:
+                return {
+                    "selected": False,
+                    "reason": "duplicate-bookmark-id",
+                    "grid_id": FAVORITE_GRID_ID,
+                    "matching_rows": [index for index, _row in matches],
+                }
+            matching = matches[0]
+            observed_name = str(matching[1].get("userreportname") or "").strip()
+            if observed_name != wanted_name:
+                return {
+                    "selected": False,
+                    "reason": "bookmark-name-mismatch",
+                    "grid_id": FAVORITE_GRID_ID,
+                    "row_index": matching[0],
+                    "observed_name": observed_name,
+                }
             self.selected_bookmark_id = wanted
+            self.selected_bookmark_name = observed_name
+            self.selected_row_index = matching[0]
+            self.grid_current_row = matching[0]
+            self.selected_rows = [matching[0]]
             return {
                 "selected": True,
-                "strategy": "bound-dataset-rowposition",
+                "strategy": "bound-dataset-exact-identity",
                 "grid_id": FAVORITE_GRID_ID,
                 "row_index": matching[0],
+                "current_row": matching[0],
+                "selected_rows": [matching[0]],
+                "select_type": "row",
                 "bookmark_id": wanted,
+                "bookmark_name": wanted_name,
+            }
+        if script == getattr(flow_gscm, "_GUARDED_GO_CLICK_JS", None):
+            self.guarded_go_attempts += 1
+            request = argument or {}
+            wanted = str(request.get("bookmark_id") or "").strip()
+            wanted_name = str(request.get("bookmark_name") or "").strip()
+            component_id = str(request.get("go_id") or "").split(":", 1)[0]
+            matches = [
+                (index, row) for index, row in enumerate(self.dataset_rows or [])
+                if str(row.get("userreportid") or "").strip() == wanted
+            ]
+            if len(matches) != 1:
+                return {
+                    "fired": False,
+                    "reason": "duplicate-bookmark-id" if matches
+                    else "bookmark-id-not-in-bound-dataset",
+                    "matching_rows": [index for index, _row in matches],
+                }
+            row_index, row = matches[0]
+            observed_name = str(row.get("userreportname") or "").strip()
+            if self.dataset_selection_mode == "guard_drift":
+                self.grid_current_row = max(0, row_index - 1)
+            selection_valid = (
+                self.selected_row_index == row_index
+                and self.grid_current_row == row_index
+                and self.selected_rows == [row_index]
+                and self.selected_bookmark_id == wanted
+                and observed_name == wanted_name
+            )
+            if not selection_valid:
+                return {
+                    "fired": False,
+                    "reason": "bookmark-selection-drift",
+                    "row_position": self.selected_row_index,
+                    "current_row": self.grid_current_row,
+                    "selected_rows": list(self.selected_rows),
+                    "observed_id": self.selected_bookmark_id or "",
+                    "observed_name": observed_name,
+                }
+            if self.dataset_selection_mode == "guard_unavailable":
+                return {
+                    "fired": False,
+                    "reason": "go-onclick-unavailable",
+                    "component_id": component_id,
+                }
+            if component_id not in visible_components:
+                return {
+                    "fired": False,
+                    "reason": "missing-go-component",
+                    "component_id": component_id,
+                }
+            self.guarded_go_fires += 1
+            if self.dataset_selection_mode != "guard_no_close":
+                self.dialog_open = False
+                self.setting_open = False
+            return {
+                "fired": True,
+                "strategy": "guarded-native-go",
+                "component_id": component_id,
+                "bookmark_id": wanted,
+                "bookmark_name": wanted_name,
+                "row_position": row_index,
+                "current_row": row_index,
+                "select_type": "row",
+                "selected_rows": [row_index],
             }
         if "app.gds_bookmark" in script:
             if self.dataset_rows is None:
@@ -1145,7 +1249,7 @@ def test_runner_refuses_an_authoritative_dataset_row_with_unknown_scope():
 def test_runner_refuses_a_stored_unknown_scope_without_dataset_identity():
     page = FakeGscmPage(dataset_rows=None)
 
-    with pytest.raises(RuntimeError, match=r"unmapped stored publicscope.*PARTNER"):
+    with pytest.raises(RuntimeError, match=r"no stable favorite_bookmark_id"):
         flow_gscm.open_bookmark(
             page,
             _run_job(
@@ -1297,9 +1401,20 @@ def test_a_stray_public_label_does_not_reject_a_successful_go_click():
                 ]
             return rows
 
-    page = StrayPublicAfterGoPage(dialog_open=True)
+    page = StrayPublicAfterGoPage(
+        dialog_open=True,
+        dataset_rows=[_dataset_bookmark(
+            "MENA_Actual_sales", "RC_MENA", "PUBLIC",
+        )],
+    )
+    selected = flow_gscm._select_bookmark_dataset_row(
+        page, "RC_MENA", "MENA_Actual_sales",
+    )
 
-    assert flow_gscm._click_go_button(page) is True
+    assert selected["selected"] is True
+    assert flow_gscm._click_go_button(
+        page, "RC_MENA", "MENA_Actual_sales",
+    )["activated"] is True
     assert page.dialog_open is False
 
 
@@ -1595,7 +1710,12 @@ def test_dataset_scan_and_saved_flow_inherit_the_existing_popup_cleanup_path():
     }
     assert dataset_page.popups == []
 
-    flow_page = FakeGscmPage(popup_records=[_popup()])
+    flow_page = FakeGscmPage(
+        popup_records=[_popup()],
+        dataset_rows=[_dataset_bookmark(
+            "MENA_Actual_sales", "RC_MENA", "PUBLIC",
+        )],
+    )
     flow_gscm.open_bookmark(flow_page, _run_job())
     assert flow_page.popups == []
     close_component = flow_gscm._component_element_ids(
@@ -1609,7 +1729,7 @@ def test_dataset_scan_and_saved_flow_inherit_the_existing_popup_cleanup_path():
 
 def _run_job(
     name="MENA_Actual_sales", folder=("SCM", "Actual Sales"), tab="Public",
-    bookmark_id=None, scope_raw=None,
+    bookmark_id="RC_MENA", scope_raw=None,
 ):
     return {
         "site": _scan_job()["site"],
@@ -1640,12 +1760,204 @@ def _clicked_texts(page):
     return [lookup.get(item, item) for item in page.clicks]
 
 
-def test_opening_a_bookmark_selects_its_row_then_presses_go():
+@pytest.mark.parametrize(
+    ("automation_name", "dataset_name"),
+    [
+        ("Exact name", "exact name"),
+        ("Exact  name", "Exact name"),
+    ],
+)
+def test_exact_bookmark_name_rejects_case_or_internal_whitespace_changes(
+    automation_name, dataset_name,
+):
+    page = FakeGscmPage(dataset_rows=[
+        _dataset_bookmark(dataset_name, "RC_EXACT", "PUBLIC"),
+    ])
+
+    with pytest.raises(RuntimeError, match=r"not the exact saved bookmark name"):
+        flow_gscm.open_bookmark(
+            page,
+            _run_job(name=automation_name, bookmark_id="RC_EXACT"),
+        )
+
+    assert page.selection_attempts == 0
+    assert page.guarded_go_fires == 0
+    assert page.dialog_open is True
+
+
+def test_exact_bookmark_name_ignores_outer_whitespace_only():
+    page = FakeGscmPage(dataset_rows=[
+        _dataset_bookmark("  Exact  name  ", "RC_EXACT", "PUBLIC"),
+    ])
+
+    flow_gscm.open_bookmark(
+        page,
+        _run_job(name="\tExact  name\n", bookmark_id="RC_EXACT"),
+    )
+
+    assert page.selected_bookmark_name == "Exact  name"
+    assert page.guarded_go_fires == 1
+
+
+def test_stable_bookmark_id_is_case_sensitive():
+    page = FakeGscmPage(dataset_rows=[
+        _dataset_bookmark("MENA_Actual_sales", "RC_MENA", "PUBLIC"),
+    ])
+
+    with pytest.raises(RuntimeError, match=r"stable id 'rc_mena'.*was not present"):
+        flow_gscm.open_bookmark(
+            page, _run_job(bookmark_id="rc_mena"),
+        )
+
+    assert page.selection_attempts == 0
+    assert page.guarded_go_fires == 0
+
+
+@pytest.mark.parametrize(
+    ("name", "bookmark_id", "message"),
+    [
+        ("", "RC_MENA", "no bookmark reference"),
+        ("MENA_Actual_sales", None, "no stable favorite_bookmark_id"),
+    ],
+)
+def test_missing_execution_identity_fails_before_opening_the_portal(
+    name, bookmark_id, message,
+):
     page = FakeGscmPage()
+
+    with pytest.raises(RuntimeError, match=message):
+        flow_gscm.open_bookmark(
+            page, _run_job(name=name, bookmark_id=bookmark_id),
+        )
+
+    assert page.navigations == []
+    assert page.clicks == []
+
+
+def test_duplicate_stable_id_fails_before_selection_or_go():
+    page = FakeGscmPage(dataset_rows=[
+        _dataset_bookmark("MENA_Actual_sales", "RC_DUP", "PUBLIC"),
+        _dataset_bookmark("MENA_Actual_sales", "RC_DUP", "PUBLIC"),
+    ])
+
+    with pytest.raises(RuntimeError, match=r"listed stable id 'RC_DUP' 2 times"):
+        flow_gscm.open_bookmark(
+            page, _run_job(bookmark_id="RC_DUP"),
+        )
+
+    assert page.selection_attempts == 0
+    assert page.guarded_go_fires == 0
+    assert page.dialog_open is True
+
+
+@pytest.mark.parametrize(
+    "selection_mode",
+    [
+        "ambiguous_grid", "current_row_mismatch", "ambiguous_selection",
+        "unsupported_selecttype",
+    ],
+)
+def test_unverifiable_grid_state_blocks_go(selection_mode):
+    page = FakeGscmPage(
+        dataset_rows=[_dataset_bookmark(
+            "MENA_Actual_sales", "RC_MENA", "PUBLIC",
+        )],
+        dataset_selection_mode=selection_mode,
+    )
+
+    with pytest.raises(RuntimeError, match=r"refusing to press Go"):
+        flow_gscm.open_bookmark(page, _run_job())
+
+    assert page.selection_attempts == (1 if selection_mode == "ambiguous_grid" else 2)
+    assert page.guarded_go_fires == 0
+    assert page.dialog_open is True
+
+
+def test_hundreds_of_rows_select_the_second_to_last_by_exact_identity():
+    rows = [
+        _dataset_bookmark(f"Bookmark {index}", f"RC_{index}", "PUBLIC")
+        for index in range(300)
+    ]
+    rows[-2] = _dataset_bookmark(
+        "Second to last exact target", "RC_TARGET", "PUBLIC",
+    )
+    page = FakeGscmPage(
+        trees={"Private": [], "Public": [], "Custom": []},
+        dataset_rows=rows,
+    )
+
+    result = flow_gscm.open_bookmark(
+        page,
+        _run_job(
+            name="Second to last exact target", folder=(),
+            bookmark_id="RC_TARGET",
+        ),
+    )
+
+    assert result == FAVORITE_GRID_ID
+    assert page.selected_row_index == 298
+    assert page.selected_bookmark_id == "RC_TARGET"
+    assert page.scrolled == set()
+    assert page.guarded_go_fires == 1
+
+
+def test_recycled_dom_row_id_cannot_authorize_a_different_bookmark():
+    recycled_id = f"{FAVORITE_GRID_ID}.body.gridrow_0"
+    page = FakeGscmPage(
+        trees={
+            "Private": [],
+            "Public": [_label(
+                "Wrong rendered bookmark", LEAF_X, 608, recycled_id,
+            )],
+            "Custom": [],
+        },
+        dataset_rows=[_dataset_bookmark(
+            "Exact dataset bookmark", "RC_EXACT", "PUBLIC",
+        )],
+    )
+
+    flow_gscm.open_bookmark(
+        page,
+        _run_job(
+            name="Exact dataset bookmark", folder=(), bookmark_id="RC_EXACT",
+        ),
+    )
+
+    assert recycled_id not in page.clicks
+    assert page.selected_bookmark_name == "Exact dataset bookmark"
+    assert page.guarded_go_fires == 1
+
+
+def test_selection_drift_at_guard_leaves_dialog_open_and_never_fires_go():
+    page = FakeGscmPage(
+        dataset_rows=[
+            _dataset_bookmark("Other", "RC_OTHER", "PUBLIC"),
+            _dataset_bookmark("MENA_Actual_sales", "RC_MENA", "PUBLIC"),
+        ],
+        dataset_selection_mode="guard_drift",
+    )
+
+    with pytest.raises(RuntimeError, match=r"bookmark-selection-drift") as excinfo:
+        flow_gscm.open_bookmark(page, _run_job())
+
+    assert "current_row=0" in str(excinfo.value)
+    assert "observed_name='MENA_Actual_sales'" in str(excinfo.value)
+    assert page.guarded_go_fires == 0
+    assert page.dialog_open is True
+
+
+def test_opening_a_bookmark_selects_its_row_then_presses_go():
+    page = FakeGscmPage(dataset_rows=[
+        _dataset_bookmark("MENA_Actual_sales", "RC_MENA", "PUBLIC"),
+    ])
     flow_gscm.open_bookmark(page, _run_job())
-    texts = _clicked_texts(page)
-    assert "MENA_Actual_sales" in texts
-    assert texts.index("MENA_Actual_sales") < texts.index("Go >>")
+    target_id = next(
+        row["id"] for row in PUBLIC_TREE if row["text"] == "MENA_Actual_sales"
+    )
+    assert target_id not in page.clicks
+    assert page.selected_bookmark_id == "RC_MENA"
+    assert page.selected_bookmark_name == "MENA_Actual_sales"
+    assert page.guarded_go_fires == 1
 
 
 def test_dataset_first_run_succeeds_without_rendered_grid_rows():
@@ -1697,13 +2009,6 @@ def test_runner_waits_for_the_requested_id_then_corrects_scope_before_selection(
 
     page = DelayedTargetPage()
     progress = []
-    monkeypatch.setattr(
-        flow_gscm,
-        "_require_rendered_scope_rows",
-        lambda *_args, **_kwargs: pytest.fail(
-            "rendered-row readiness ran before native stable-id selection"
-        ),
-    )
 
     result = flow_gscm.open_bookmark(
         page,
@@ -1721,58 +2026,40 @@ def test_runner_waits_for_the_requested_id_then_corrects_scope_before_selection(
     assert any("moved from Private to Public" in message for message in progress)
 
 
-def test_runner_retries_the_exact_id_after_activation_and_corrects_late_scope(
-    monkeypatch,
-):
-    unrelated = _dataset_bookmark("Another report", "RC_OTHER", "PUBLIC")
-    target = _dataset_bookmark("MENA_Actual_sales", "RC_MENA", "CUSTOM")
+def test_authoritative_scope_instability_fails_immediately_before_selection():
+    public = _dataset_bookmark("MENA_Actual_sales", "RC_MENA", "PUBLIC")
+    custom = _dataset_bookmark("MENA_Actual_sales", "RC_MENA", "CUSTOM")
 
-    class TargetAppearsAfterActivationPage(FakeGscmPage):
+    class ScopeDriftPage(FakeGscmPage):
         def __init__(self):
-            super().__init__(
-                trees={"Private": [], "Public": [], "Custom": []},
-                dataset_rows=[unrelated],
-            )
-            self.public_activated = False
-            self.target_materialized = False
-            self.native_selection_attempts = 0
-
-        def on_click(self, element_id):
-            clicked_component = flow_gscm._component_element_ids(element_id)[0]
-            record = next((
-                item for item in self._screen()
-                if flow_gscm._component_element_ids(item["id"])[0]
-                == clicked_component
-            ), None)
-            super().on_click(element_id)
-            if (record or {}).get("text") == "Public":
-                self.public_activated = True
+            super().__init__(dataset_rows=[public])
+            self.dataset_reads = 0
 
         def _evaluate(self, script, argument=None, components=None):
-            if script == flow_gscm._SELECT_BOOKMARK_ROW_JS:
-                self.native_selection_attempts += 1
-            if (
-                script == flow_gscm._BOOKMARK_DATASET_JS
-                and self.public_activated
-                and self.native_selection_attempts >= 1
-                and not self.target_materialized
-            ):
-                # The target scope arrives only during the exact-id retry,
-                # after the first guarded native selection has proved it is
-                # absent from the currently bound dataset.
-                self.dataset_rows = [unrelated, target]
-                self.target_materialized = True
+            if script == flow_gscm._BOOKMARK_DATASET_JS:
+                self.dataset_reads += 1
+                self.dataset_rows = [public] if self.dataset_reads == 1 else [custom]
             return super()._evaluate(script, argument, components)
 
-    page = TargetAppearsAfterActivationPage()
-    progress = []
-    monkeypatch.setattr(
-        flow_gscm,
-        "_require_rendered_scope_rows",
-        lambda *_args, **_kwargs: pytest.fail(
-            "late stable-id selection fell through to rendered grid readiness"
-        ),
+    page = ScopeDriftPage()
+
+    with pytest.raises(RuntimeError, match=r"changed scope from 'Public' to 'Custom'"):
+        flow_gscm.open_bookmark(page, _run_job())
+
+    assert page.selection_attempts == 0
+    assert page.guarded_go_fires == 0
+    assert page.dialog_open is True
+
+
+def test_open_bookmark_owns_one_retry_and_reselects_the_authoritative_scope(monkeypatch):
+    page = FakeGscmPage(
+        trees={"Private": [], "Public": [], "Custom": []},
+        dataset_rows=[
+            _dataset_bookmark("MENA_Actual_sales", "RC_MENA", "CUSTOM"),
+        ],
+        dataset_selection_mode="first_rejected_then_success",
     )
+    progress = []
 
     result = flow_gscm.open_bookmark(
         page,
@@ -1784,16 +2071,12 @@ def test_runner_retries_the_exact_id_after_activation_and_corrects_late_scope(
     )
 
     assert result == FAVORITE_GRID_ID
-    assert page.target_materialized is True
-    assert page.native_selection_attempts == 2
+    assert page.selection_attempts == 2
     assert page.selected_bookmark_id == "RC_MENA"
     assert page.tab == "Custom"
     assert page.dialog_open is False
-    assert flow_gscm.GO_BUTTON_ID in page.clicks
-    assert any(
-        "loaded under Custom after activating Public" in message
-        for message in progress
-    )
+    assert page.guarded_go_fires == 1
+    assert any("moved from Public to Custom" in message for message in progress)
 
 
 def test_runner_validates_a_late_native_selection_and_rejects_unknown_scope(
@@ -1834,20 +2117,6 @@ def test_runner_validates_a_late_native_selection_and_rejects_unknown_scope(
             return super()._evaluate(script, argument, components)
 
     page = UnknownTargetAfterActivationPage()
-    monkeypatch.setattr(
-        flow_gscm,
-        "_require_rendered_scope_rows",
-        lambda *_args, **_kwargs: pytest.fail(
-            "unknown late scope entered rendered grid recovery"
-        ),
-    )
-    monkeypatch.setattr(
-        flow_gscm,
-        "_resolve_entry",
-        lambda *_args, **_kwargs: pytest.fail(
-            "unknown late scope entered tree resolution"
-        ),
-    )
 
     with pytest.raises(RuntimeError, match=r"unknown publicscope.*PARTNER"):
         flow_gscm.open_bookmark(
@@ -1859,8 +2128,8 @@ def test_runner_validates_a_late_native_selection_and_rejects_unknown_scope(
         )
 
     assert page.dataset_reads_before_activation > 0
-    assert page.native_selection_attempts == 1
-    assert page.selected_bookmark_id == "RC_MENA"
+    assert page.native_selection_attempts == 0
+    assert page.selected_bookmark_id is None
     assert page.dialog_open is True
     go_component = flow_gscm._component_element_ids(flow_gscm.GO_BUTTON_ID)[0]
     assert not any(
@@ -1873,7 +2142,7 @@ def test_runner_validates_a_late_native_selection_and_rejects_unknown_scope(
     "selection_mode",
     ["missing_bind", "rejected_rowposition", "id_mismatch"],
 )
-def test_unverified_native_dataset_selection_falls_back_to_the_tree(selection_mode):
+def test_unverified_native_dataset_selection_fails_without_tree_fallback(selection_mode):
     page = FakeGscmPage(
         dataset_rows=[
             _dataset_bookmark("MENA_Actual_sales", "RC_MENA", "PUBLIC"),
@@ -1881,16 +2150,17 @@ def test_unverified_native_dataset_selection_falls_back_to_the_tree(selection_mo
         dataset_selection_mode=selection_mode,
     )
 
-    flow_gscm.open_bookmark(
-        page,
-        _run_job(bookmark_id="RC_MENA"),
-    )
+    with pytest.raises(RuntimeError, match=r"refusing to press Go"):
+        flow_gscm.open_bookmark(page, _run_job(bookmark_id="RC_MENA"))
 
     target_id = next(
         row["id"] for row in PUBLIC_TREE if row["text"] == "MENA_Actual_sales"
     )
     assert page.selected_bookmark_id is None
-    assert target_id in page.clicks
+    assert target_id not in page.clicks
+    assert page.selection_attempts == 2
+    assert page.guarded_go_fires == 0
+    assert page.dialog_open is True
 
 
 def test_native_dataset_selection_stops_after_the_first_verified_root():
@@ -1913,8 +2183,9 @@ def test_native_dataset_selection_stops_after_the_first_verified_root():
     page = SelectionRoot({"selected": False, "reason": "not-in-page-root"})
     first_frame = SelectionRoot({
         "selected": True,
-        "strategy": "bound-dataset-rowposition",
+        "strategy": "bound-dataset-exact-identity",
         "bookmark_id": "RC_MENA",
+        "bookmark_name": "MENA_Actual_sales",
     })
     later_frame = SelectionRoot(
         {"selected": True, "strategy": "should-never-run"},
@@ -1922,13 +2193,48 @@ def test_native_dataset_selection_stops_after_the_first_verified_root():
     )
     page.frames = [first_frame, later_frame]
 
-    result = flow_gscm._select_bookmark_dataset_row(page, "RC_MENA")
+    result = flow_gscm._select_bookmark_dataset_row(
+        page, "RC_MENA", "MENA_Actual_sales",
+    )
 
-    assert result["strategy"] == "bound-dataset-rowposition"
+    assert result["strategy"] == "bound-dataset-exact-identity"
     assert page.calls == 1
     assert first_frame.calls == 1
     assert later_frame.calls == 0
     assert later_frame.mutations == 0
+
+
+def test_one_selection_attempt_cannot_mutate_again_in_a_later_root():
+    class SelectionRoot:
+        def __init__(self, result):
+            self.frames = []
+            self.result = result
+            self.calls = 0
+
+        def evaluate(self, script, argument=None):
+            assert script == flow_gscm._SELECT_BOOKMARK_ROW_JS
+            self.calls += 1
+            return dict(self.result)
+
+    page = SelectionRoot({
+        "selected": False,
+        "attempted": True,
+        "reason": "rowposition-rejected",
+    })
+    later_frame = SelectionRoot({
+        "selected": True,
+        "attempted": True,
+        "strategy": "should-never-run",
+    })
+    page.frames = [later_frame]
+
+    result = flow_gscm._select_bookmark_dataset_row(
+        page, "RC_MENA", "MENA_Actual_sales",
+    )
+
+    assert result["reason"] == "rowposition-rejected"
+    assert page.calls == 1
+    assert later_frame.calls == 0
 
 
 def test_native_selection_script_uses_local_component_trails_and_fails_ambiguity():
@@ -1942,33 +2248,42 @@ def test_native_selection_script_uses_local_component_trails_and_fails_ambiguity
         "&& context.includes('div_favorite')"
     ) in script
     assert "local.toLowerCase().includes('div_favorite')" not in script
-    assert (
-        "selectable[0].score === selectable[1].score"
-    ) in script
+    assert "if (visible.length !== 1)" in script
+    assert "verifiedCurrentRow !== rowIndex" in script
+    assert "verifiedSelectedRows.length === 1" in script
     assert "reason: 'ambiguous-favorite-grid'" in script
 
 
 def test_opening_a_bookmark_prefers_the_native_nexacro_go_button():
-    page = FakeGscmPage()
+    page = FakeGscmPage(dataset_rows=[
+        _dataset_bookmark("MENA_Actual_sales", "RC_MENA", "PUBLIC"),
+    ])
     page.components.add(flow_gscm.GO_BUTTON_ID)
 
     flow_gscm.open_bookmark(page, _run_job())
 
-    assert flow_gscm.GO_BUTTON_ID in page.clicks
+    assert page.guarded_go_fires == 1
     target_id = next(row["id"] for row in PUBLIC_TREE if row["text"] == "MENA_Actual_sales")
-    assert page.clicks.index(target_id) < page.clicks.index(flow_gscm.GO_BUTTON_ID)
+    assert target_id not in page.clicks
+    assert flow_gscm.GO_BUTTON_ID not in page.clicks
     assert flow_gscm.GO_BUTTON_ID + ":text" not in page.clicks
 
 
 def test_opening_a_bookmark_selects_the_tab_it_was_catalogued_under():
-    page = FakeGscmPage()
-    flow_gscm.open_bookmark(page, _run_job(name="Biz_trip_GSCM", folder=(), tab="Private"))
+    page = FakeGscmPage(dataset_rows=[
+        _dataset_bookmark("Biz_trip_GSCM", "RC_PRIVATE", "PRIVATE"),
+    ])
+    flow_gscm.open_bookmark(
+        page,
+        _run_job(
+            name="Biz_trip_GSCM", folder=(), tab="Private",
+            bookmark_id="RC_PRIVATE",
+        ),
+    )
     assert page.tab == "Private"
 
 
-def test_the_folder_path_disambiguates_a_repeated_report_name():
-    # The same report name is filed under several folders. Matching on the name
-    # alone would download a different report than the flow was built for.
+def test_repeated_rendered_names_cannot_override_the_exact_dataset_identity():
     tree = [
         _label("SCM", ROOT_X, 560),
         _label("Asia", FOLDER_X, 584),
@@ -1976,10 +2291,21 @@ def test_the_folder_path_disambiguates_a_repeated_report_name():
         _label("MENA", FOLDER_X, 632),
         _label("Weekly PSI", LEAF_X, 656, element_id="row.mena.weekly"),
     ]
-    page = FakeGscmPage(trees={"Private": [], "Public": tree, "Custom": []})
-    flow_gscm.open_bookmark(page, _run_job(name="Weekly PSI", folder=("SCM", "MENA")))
-    assert "row.mena.weekly" in page.clicks
+    page = FakeGscmPage(
+        trees={"Private": [], "Public": tree, "Custom": []},
+        dataset_rows=[_dataset_bookmark("Weekly PSI", "RC_WEEKLY", "PUBLIC")],
+    )
+    flow_gscm.open_bookmark(
+        page,
+        _run_job(
+            name="Weekly PSI", folder=("SCM", "MENA"),
+            bookmark_id="RC_WEEKLY",
+        ),
+    )
+    assert "row.mena.weekly" not in page.clicks
     assert "row.asia.weekly" not in page.clicks
+    assert page.selected_bookmark_id == "RC_WEEKLY"
+    assert page.guarded_go_fires == 1
 
 
 @pytest.mark.parametrize(
@@ -2002,225 +2328,30 @@ def test_bookmark_paths_do_not_cross_unrelated_branches():
     ) is False
 
 
-def test_find_tree_entry_collects_all_compatible_rows_before_choosing():
-    tree = [
-        _label("SCM", ROOT_X, 560),
-        _label("Asia", FOLDER_X, 584),
-        _label("Actual Sales", LEAF_X, 608),
-        _label("Weekly PSI", LEAF_X + 20, 632, "row.asia.weekly"),
-        _label("MENA", FOLDER_X, 656),
-        _label("Actual Sales", LEAF_X, 680),
-        _label("Weekly PSI", LEAF_X + 20, 704, "row.mena.weekly"),
-    ]
-    page = FakeGscmPage(
-        dialog_open=True,
-        trees={"Private": [], "Public": tree, "Custom": []},
-    )
-
-    with pytest.raises(RuntimeError, match=r"compatible rows.*refusing to choose"):
-        flow_gscm._find_tree_entry(
-            page, "Weekly PSI", ["SCM", "Actual Sales"],
-        )
-
-
-def test_find_tree_entry_rejects_the_same_path_reappearing_after_a_virtual_page(
-    monkeypatch,
-):
-    page = FakeGscmPage(dialog_open=True)
-    target = {
-        "name": "Weekly PSI",
-        "folder_path": ["SCM", "Actual Sales"],
-        "is_folder": False,
-        "stack": [],
-    }
-    pages = [
-        [{**target, "element_id": "gridrow_0.first"}],
-        [{
-            "name": "Other report",
-            "folder_path": ["SCM", "Actual Sales"],
-            "is_folder": False,
-            "stack": [],
-            "element_id": "gridrow_0.recycled",
-        }],
-        [{**target, "element_id": "gridrow_0.second"}],
-    ]
-    state = {"page": 0}
-
-    def reset(_page):
-        state["page"] = 0
-
-    def read(_page, _seed=None):
-        return pages[state["page"]]
-
-    def scroll(_page):
-        if state["page"] >= len(pages) - 1:
-            return False
-        state["page"] += 1
-        return True
-
-    monkeypatch.setattr(flow_gscm, "reset_tree", reset)
-    monkeypatch.setattr(flow_gscm, "read_favorite_tree", read)
-    monkeypatch.setattr(flow_gscm, "scroll_tree", scroll)
-
-    with pytest.raises(RuntimeError, match=r"more than one separate row.*refusing"):
-        flow_gscm._find_tree_entry(
-            page, "Weekly PSI", ["SCM", "Actual Sales"],
-        )
-
-
-def test_duplicate_compatible_tree_fallback_fails_instead_of_guessing(monkeypatch):
-    page = FakeGscmPage(dialog_open=True)
-    duplicates = [
-        {
-            "name": "Weekly PSI",
-            "folder_path": ["SCM", "Asia", "Actual Sales"],
-            "is_folder": False,
-        },
-        {
-            "name": "Weekly PSI",
-            "folder_path": ["SCM", "MENA", "Actual Sales"],
-            "is_folder": False,
-        },
-    ]
-    monkeypatch.setattr(flow_gscm, "_find_tree_entry", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(flow_gscm, "collect_favorite_tree", lambda _page: duplicates)
-
-    with pytest.raises(RuntimeError, match=r"compatible bookmarks.*unsafe"):
-        flow_gscm._resolve_entry(
-            page, "Weekly PSI", ["SCM", "Actual Sales"], "Public",
-        )
-
-
-def test_resolve_entry_uses_one_compatible_rendered_path_without_expansion(monkeypatch):
+def test_dataset_inaccessible_session_fails_without_reloading_or_tree_fallback():
     page = FakeGscmPage()
-    stored_path = ["AS", "Sell-in Biz Plan"]
-    rendered_path = ["SCM", "Mobile", "Sell-in Biz Plan"]
-    target = {
-        "name": "SIBP_CI_Series_ASP_Global",
-        "folder_path": rendered_path,
-        "is_folder": False,
-    }
-    lookups = []
 
-    def find(_page, name, parents, **_kwargs):
-        lookups.append((name, list(parents)))
-        return target if list(parents) == rendered_path else None
-
-    monkeypatch.setattr(flow_gscm, "_find_tree_entry", find)
-    monkeypatch.setattr(flow_gscm, "collect_favorite_tree", lambda _page: [target])
-    monkeypatch.setattr(
-        flow_gscm, "_reveal_tree_path",
-        lambda *_args, **_kwargs: pytest.fail("tree-path expansion storm returned"),
-    )
-
-    assert flow_gscm._resolve_entry(
-        page, target["name"], stored_path, "Public",
-    ) == target
-    assert lookups == [
-        (target["name"], stored_path),
-        (target["name"], rendered_path),
-    ]
-
-
-def test_resolve_entry_stops_after_two_missed_compatible_path_lookups(monkeypatch):
-    page = FakeGscmPage(dialog_open=True)
-    stored_path = ["AS", "Sell-in Biz Plan"]
-    rendered_path = ["SCM", "Mobile", "Sell-in Biz Plan"]
-    target = {
-        "name": "SIBP_CI_Series_ASP_Global",
-        "folder_path": rendered_path,
-        "is_folder": False,
-    }
-    lookups = []
-
-    def miss(_page, name, parents, **_kwargs):
-        lookups.append((name, list(parents)))
-        assert len(lookups) <= 2, "_resolve_entry performed a post-loop third refind"
-        return None
-
-    monkeypatch.setattr(flow_gscm, "_find_tree_entry", miss)
-    monkeypatch.setattr(flow_gscm, "collect_favorite_tree", lambda _page: [target])
-    monkeypatch.setattr(flow_gscm, "select_scope_tab", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(flow_gscm, "wait_for_favorite_rows", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(
-        flow_gscm, "_reveal_tree_path",
-        lambda *_args, **_kwargs: pytest.fail("tree-path expansion storm returned"),
-    )
-
-    with pytest.raises(RuntimeError, match=r"could not safely distinguish"):
-        flow_gscm._resolve_entry(
-            page, target["name"], stored_path, "Public",
-        )
-
-    assert lookups == [
-        (target["name"], stored_path),
-        (target["name"], rendered_path),
-    ]
-
-
-def test_resolve_entry_retries_the_exact_path_after_virtual_grid_misses(monkeypatch):
-    page = FakeGscmPage(dialog_open=True)
-    target = {
-        "name": "SIBP_CI_Series_ASP_Global",
-        "folder_path": ["SCM", "Sell-in Biz Plan"],
-        "is_folder": False,
-    }
-    attempts = 0
-    reselections = []
-
-    def find(_page, name, parents, **_kwargs):
-        nonlocal attempts
-        if name == target["name"] and parents == target["folder_path"]:
-            attempts += 1
-            return target if attempts == 2 else None
-        return None
-
-    monkeypatch.setattr(flow_gscm, "_find_tree_entry", find)
-    monkeypatch.setattr(
-        flow_gscm, "_reveal_tree_path",
-        lambda *_args, **_kwargs: pytest.fail("tree-path expansion storm returned"),
-    )
-    monkeypatch.setattr(
-        flow_gscm, "select_scope_tab",
-        lambda _page, tab: reselections.append(tab) or True,
-    )
-
-    assert flow_gscm._resolve_entry(
-        page, target["name"], target["folder_path"], "Public",
-    ) == target
-    assert reselections == ["Public"]
-
-
-def test_a_stalled_bookmark_grid_reloads_the_portal_before_the_final_attempt(monkeypatch):
-    # Flipping scope tabs cannot unstick a bookmark request that died in this
-    # client, so the last retry rebuilds the whole Nexacro component tree.
-    page = FakeGscmPage()
-    navigations_seen = []
-
-    def stalled_select(page_, tab, *, require_rows=False):
-        if require_rows:
-            navigations_seen.append(len(page_.navigations))
-            return False
-        return True
-
-    monkeypatch.setattr(flow_gscm, "select_scope_tab", stalled_select)
-
-    with pytest.raises(RuntimeError, match="stayed empty") as excinfo:
+    with pytest.raises(RuntimeError, match="was not present") as excinfo:
         flow_gscm.open_bookmark(page, _run_job())
 
-    assert len(navigations_seen) == 3
-    assert navigations_seen[0] == navigations_seen[1]
-    assert navigations_seen[2] == navigations_seen[1] + 1
+    assert len(page.navigations) <= 1
+    assert page.guarded_go_fires == 0
+    assert page.dialog_open is True
     assert "Favorite state:" in str(excinfo.value)
 
 
 def test_a_deleted_bookmark_names_what_is_still_listed():
-    page = FakeGscmPage()
+    page = FakeGscmPage(dataset_rows=[
+        _dataset_bookmark("MENA_Actual_sales", "RC_MENA", "PUBLIC"),
+    ])
     with pytest.raises(RuntimeError) as excinfo:
-        flow_gscm.open_bookmark(page, _run_job(name="Gone report", folder=()))
+        flow_gscm.open_bookmark(
+            page,
+            _run_job(name="Gone report", folder=(), bookmark_id="RC_GONE"),
+        )
     message = str(excinfo.value)
     assert "Gone report" in message
-    assert "MENA_Actual_sales" in message
+    assert "RC_GONE" in message
 
 
 def test_excel_export_clicks_the_mdi_toolbar_button():
@@ -2359,6 +2490,54 @@ def _gscm_discovered(name, bookmark_id):
         },
         filters=[],
     )
+
+
+def test_raw_bookmark_identity_round_trips_unchanged_into_a_run_job(flow_db):
+    raw_name = "  Weekly  PSI\x01Unsafe  "
+    page = FakeGscmPage(dataset_rows=[
+        _dataset_bookmark(raw_name, "RC_RAW", "PUBLIC"),
+    ])
+    entry = flow_gscm.bookmark_dataset_entries(page)[0]
+    discovered = flow_gscm.discovered_report(
+        entry, "https://mdscm.sec.samsung.net/nexa/index.html",
+    )
+
+    assert discovered["name"] == "Weekly PSI Unsafe"
+    assert discovered["automation"]["favorite_name"] == "Weekly  PSI\x01Unsafe"
+
+    validated = flows.DiscoveredReport.model_validate_json(
+        flows.DiscoveredReport(**discovered).model_dump_json(),
+    )
+    assert validated.automation["favorite_name"] == "Weekly  PSI\x01Unsafe"
+
+    site = flows.create_site(_gscm_site(), _request())
+    with database.get_db() as db:
+        flows._apply_discovery(
+            db, site["id"], [validated], "2026-09-03T10:00:00",
+        )
+        report = db.execute(
+            "SELECT id, automation_json FROM flow_reports WHERE site_id=?",
+            (site["id"],),
+        ).fetchone()
+        stored = json.loads(report["automation_json"])
+    assert stored["favorite_name"] == "Weekly  PSI\x01Unsafe"
+
+    saved = flows.create_flow(flows.FlowWrite(
+        name="Raw identity flow",
+        site_id=site["id"],
+        report_id=report["id"],
+        period_strategy="none",
+        file_format="xlsx",
+        target_folder="C:\\Reports",
+        filename_template="{flow}.xlsx",
+    ), _request())
+    job = flows.queue_run(saved["id"], _request())["job"]
+
+    assert job["report"]["name"].endswith("Weekly PSI Unsafe")
+    assert job["report"]["automation"]["favorite_name"] == (
+        "Weekly  PSI\x01Unsafe"
+    )
+    assert job["report"]["automation"]["favorite_bookmark_id"] == "RC_RAW"
 
 
 def _catalogued(site_id, suffix):
@@ -2741,33 +2920,51 @@ class NativeOnlyGoButtonPage(FakeGscmPage):
         return super().evaluate(script, argument)
 
 
-def test_go_button_falls_back_to_native_click_when_dom_click_is_a_noop():
-    # The live failure: the row selects, Go's DOM click lands but Nexacro
-    # swallows it, and the report never opens. The gear and scope tabs already
-    # re-fire the component natively; Go must too.
-    page = NativeOnlyGoButtonPage()
+def test_go_button_uses_only_the_atomic_guarded_native_dispatch():
+    page = NativeOnlyGoButtonPage(dataset_rows=[
+        _dataset_bookmark("MENA_Actual_sales", "RC_MENA", "PUBLIC"),
+    ])
+    assert flow_gscm._select_bookmark_dataset_row(
+        page, "RC_MENA", "MENA_Actual_sales",
+    )["selected"] is True
 
-    assert flow_gscm._click_go_button(page) is True
+    result = flow_gscm._click_go_button(
+        page, "RC_MENA", "MENA_Actual_sales",
+    )
 
+    assert result["activated"] is True
     assert page.dialog_open is False
-    assert page.clicks  # the inert DOM click was attempted first
-    assert page.native_clicks  # then the component was fired through Nexacro
+    assert page.clicks == []
+    assert page.native_clicks == []
+    assert page.guarded_go_fires == 1
 
 
 def test_go_button_failure_is_reported_as_activation_not_visibility():
-    page = NativeOnlyGoButtonPage(native_works=False)
+    page = FakeGscmPage(
+        dialog_open=True,
+        dataset_rows=[_dataset_bookmark(
+            "MENA_Actual_sales", "RC_MENA", "PUBLIC",
+        )],
+        dataset_selection_mode="guard_unavailable",
+    )
+    assert flow_gscm._select_bookmark_dataset_row(
+        page, "RC_MENA", "MENA_Actual_sales",
+    )["selected"] is True
 
-    assert flow_gscm._click_go_button(page) is False
+    assert flow_gscm._click_go_button(
+        page, "RC_MENA", "MENA_Actual_sales",
+    )["activated"] is False
 
     job = {
         "site": {"auth_url": "https://mdscm.sec.samsung.net/nexa/index.html"},
         "report": {"automation": {"favorite_name": "MENA_Actual_sales",
                                   "favorite_tab": "Public",
+                                  "favorite_bookmark_id": "RC_MENA",
                                   "favorite_folder_path": ["SCM", "Actual Sales"]}},
     }
     with pytest.raises(RuntimeError) as excinfo:
         flow_gscm.open_bookmark(page, job)
-    assert "could not be activated" in str(excinfo.value)
+    assert "guarded Go action did not open" in str(excinfo.value)
     assert "Go-shaped candidates" in str(excinfo.value)
 
 
@@ -2808,12 +3005,51 @@ def test_go_button_is_rediscovered_when_the_hardcoded_id_is_stale():
     # The live failure: the Go button is plainly on screen, but this build
     # does not carry the component path the adapter guessed, and the icon
     # button renders no caption for the label fallback to find.
-    page = RelocatedGoButtonPage()
+    page = RelocatedGoButtonPage(dataset_rows=[
+        _dataset_bookmark("MENA_Actual_sales", "RC_MENA", "PUBLIC"),
+    ])
+    assert flow_gscm._select_bookmark_dataset_row(
+        page, "RC_MENA", "MENA_Actual_sales",
+    )["selected"] is True
 
-    assert flow_gscm._click_go_button(page) is True
+    assert flow_gscm._click_go_button(
+        page, "RC_MENA", "MENA_Actual_sales",
+    )["activated"] is True
 
-    assert page.RELOCATED_GO_ID in page.clicks
+    assert page.RELOCATED_GO_ID not in page.clicks
+    assert page.guarded_go_fires == 1
     assert page.dialog_open is False
+
+
+def test_selection_drift_between_go_candidates_blocks_the_next_candidate():
+    class DriftAfterMissingCandidatePage(RelocatedGoButtonPage):
+        def evaluate(self, script, argument=None):
+            if (
+                script == flow_gscm._GUARDED_GO_CLICK_JS
+                and str((argument or {}).get("go_id") or "").split(":", 1)[0]
+                != self.RELOCATED_GO_ID
+            ):
+                result = super().evaluate(script, argument)
+                self.grid_current_row = 0
+                return result
+            return super().evaluate(script, argument)
+
+    page = DriftAfterMissingCandidatePage(dataset_rows=[
+        _dataset_bookmark("Other", "RC_OTHER", "PUBLIC"),
+        _dataset_bookmark("MENA_Actual_sales", "RC_MENA", "PUBLIC"),
+    ])
+    assert flow_gscm._select_bookmark_dataset_row(
+        page, "RC_MENA", "MENA_Actual_sales",
+    )["selected"] is True
+
+    result = flow_gscm._click_go_button(
+        page, "RC_MENA", "MENA_Actual_sales",
+    )
+
+    assert result["activated"] is False
+    assert result["reason"] == "bookmark-selection-drift"
+    assert page.guarded_go_fires == 0
+    assert page.dialog_open is True
 
 
 def test_go_candidates_prefer_the_favorite_dialog_and_drop_forbidden_controls():
@@ -3035,7 +3271,9 @@ def test_a_full_scan_never_touches_save_unselect_or_a_pin():
 
 
 def test_a_run_never_touches_save_unselect_or_a_pin():
-    page = FakeGscmPage()
+    page = FakeGscmPage(dataset_rows=[
+        _dataset_bookmark("MENA_Actual_sales", "RC_MENA", "PUBLIC"),
+    ])
     flow_gscm.open_bookmark(page, _run_job())
     forbidden = {row["id"] for row in DIALOG_CHROME if row["text"] in {"Save", "Unselect"}}
     assert not (set(page.clicks) & forbidden)
@@ -3179,7 +3417,8 @@ def test_a_session_that_expires_mid_flow_reports_sign_in_not_a_screen_dump():
     job = {
         "site": {"auth_url": "https://mdscm.sec.samsung.net/nexa/index.html"},
         "report": {"automation": {"favorite_name": "MENA_Actual_sales",
-                                  "favorite_tab": "Public"}},
+                                  "favorite_tab": "Public",
+                                  "favorite_bookmark_id": "RC_MENA"}},
     }
     with pytest.raises(flow_gscm.NotSignedInError) as excinfo:
         flow_gscm.open_bookmark(page, job)
@@ -3392,11 +3631,22 @@ def test_go_button_still_works_on_the_previous_builds_id():
                 return
             super().on_click(element_id)
 
-    page = OldBuildPage(dialog_open=True)
+    page = OldBuildPage(
+        dialog_open=True,
+        dataset_rows=[_dataset_bookmark(
+            "MENA_Actual_sales", "RC_MENA", "PUBLIC",
+        )],
+    )
     page.components.add(old_id)
+    assert flow_gscm._select_bookmark_dataset_row(
+        page, "RC_MENA", "MENA_Actual_sales",
+    )["selected"] is True
 
-    assert flow_gscm._click_go_button(page) is True
-    assert old_id in page.clicks
+    assert flow_gscm._click_go_button(
+        page, "RC_MENA", "MENA_Actual_sales",
+    )["activated"] is True
+    assert old_id not in page.clicks
+    assert page.guarded_go_fires == 1
 
 
 def test_favorite_grid_matching_never_depends_on_the_setting_frame_index():
