@@ -3502,11 +3502,11 @@ _GSCM_CATALOG_SUFFIX_RE = re.compile(r"^(.*?)(?: \((\d+)\))?$")
 
 
 def _gscm_bookmark_id(automation: dict[str, Any]) -> str:
-    """Comparable form of GSCM's stable ``userreportid`` value."""
+    """Exact outer-trimmed GSCM ``userreportid`` execution identity."""
     value = automation.get("favorite_bookmark_id")
     if value is None or isinstance(value, bool):
         return ""
-    return str(value).strip().casefold()
+    return str(value).strip()
 
 
 def _gscm_catalog_identity(
