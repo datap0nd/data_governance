@@ -188,7 +188,9 @@ def installation_id() -> str:
 
 
 def is_enabled() -> bool:
-    return get_setting(ENABLED_SETTING, "0") == "1"
+    # Signed Flow control is available immediately after deployment.  An
+    # explicit local emergency-off remains authoritative and persists as "0".
+    return get_setting(ENABLED_SETTING, "1") == "1"
 
 
 def _safe_state(status: str, reason_code: str | None = None) -> dict:
