@@ -43,6 +43,9 @@ SETTING_FORM_ID = f"{SETTING_SHELL_ID}.form"
 FAVORITE_PANEL_ID = f"{SETTING_SHELL_ID}.form.div_favorite"
 FAVORITE_FORM_ID = f"{FAVORITE_PANEL_ID}.form"
 FAVORITE_GRID_ID = f"{FAVORITE_FORM_ID}.grd_bookmark"
+LOADED_TITLE_ID = (
+    "mainframe.VFrameSet.WorkFrame0.form.div_report.form.sta_bookmarkTitle:text"
+)
 
 #: Indentation levels the real tree uses, in pixels.
 ROOT_X, FOLDER_X, LEAF_X = 780, 800, 820
@@ -149,7 +152,7 @@ class FakeGscmPage:
                  popup_dom_noop_ids=(), popup_persistent_ids=(),
                  popup_cascades=None, setting_open=None,
                  frame_components=(), grid_bound=True,
-                 dataset_selection_mode="success"):
+                 dataset_selection_mode="success", loaded_report_titles=None):
         # hidden_rows: {folder name: [rows revealed when that folder is clicked]}
         self.hidden_rows = dict(hidden_rows or {})
         # scroll_rows: rows that only exist once the tree has been paged down.
@@ -195,6 +198,12 @@ class FakeGscmPage:
         self.selection_attempts = 0
         self.guarded_go_attempts = 0
         self.guarded_go_fires = 0
+        self.guarded_export_attempts = 0
+        self.guarded_export_fires = 0
+        self.loaded_report_titles = (
+            None if loaded_report_titles is None
+            else [str(value) for value in loaded_report_titles]
+        )
         self.tab = "Public"
         self.clicks = []
         self.navigations = []
@@ -257,7 +266,13 @@ class FakeGscmPage:
         if self.setting_open:
             return list(DIALOG_CHROME[:4])
         if not self.dialog_open:
-            return [_label("Favorite", 1480, 447)]  # the empty home widget
+            screen = [_label("Favorite", 1480, 447)]  # the empty home widget
+            for index, title in enumerate(self.loaded_report_titles or []):
+                screen.append(_label(
+                    title, 260, 110 + index * 22,
+                    LOADED_TITLE_ID.replace(":text", f"_{index}:text"),
+                ))
+            return screen
         return []
 
     def _visible_components(self, components=None):
@@ -512,6 +527,8 @@ class FakeGscmPage:
             if self.dataset_selection_mode != "guard_no_close":
                 self.dialog_open = False
                 self.setting_open = False
+                if self.loaded_report_titles is None:
+                    self.loaded_report_titles = [wanted_name]
             return {
                 "fired": True,
                 "strategy": "guarded-native-go",
@@ -522,6 +539,75 @@ class FakeGscmPage:
                 "current_row": row_index,
                 "select_type": "row",
                 "selected_rows": [row_index],
+            }
+        if script == getattr(flow_gscm, "_GUARDED_EXCEL_EXPORT_JS", None):
+            self.guarded_export_attempts += 1
+            request = argument or {}
+            wanted_id = str(request.get("bookmark_id") or "").strip()
+            wanted_name = str(request.get("bookmark_name") or "").strip()
+            titles = [str(value).strip() for value in self.loaded_report_titles or []]
+            if not titles:
+                return {
+                    "fired": False,
+                    "reason": "loaded-report-title-unavailable",
+                    "expected_id": wanted_id,
+                    "expected_name": wanted_name,
+                    "titles": [],
+                }
+            observed = list(dict.fromkeys(titles))
+            if len(observed) != 1:
+                return {
+                    "fired": False,
+                    "reason": "ambiguous-loaded-report-title",
+                    "expected_id": wanted_id,
+                    "expected_name": wanted_name,
+                    "observed_names": observed,
+                }
+            if observed[0] != wanted_name:
+                return {
+                    "fired": False,
+                    "reason": "loaded-report-title-mismatch",
+                    "expected_id": wanted_id,
+                    "expected_name": wanted_name,
+                    "observed_name": observed[0],
+                    "title_id": LOADED_TITLE_ID,
+                }
+            configured = str(request.get("excel_id") or "").split(":", 1)[0]
+            candidates = sorted(
+                component for component in visible_components
+                if component.lower().endswith(".btn_exceldown")
+                and ".mdiframe." in component.lower()
+            )
+            chosen = [component for component in candidates if component == configured]
+            if not chosen:
+                chosen = candidates
+            if not chosen:
+                return {
+                    "fired": False,
+                    "reason": "missing-excel-component",
+                    "expected_id": wanted_id,
+                    "expected_name": wanted_name,
+                    "observed_name": observed[0],
+                }
+            if len(chosen) != 1:
+                return {
+                    "fired": False,
+                    "reason": "ambiguous-excel-component",
+                    "expected_id": wanted_id,
+                    "expected_name": wanted_name,
+                    "observed_name": observed[0],
+                    "component_ids": chosen,
+                }
+            self.guarded_export_fires += 1
+            self.clicks.append(chosen[0])
+            return {
+                "fired": True,
+                "strategy": "rendered-title-exact-guarded-native-export",
+                "expected_id": wanted_id,
+                "expected_name": wanted_name,
+                "observed_name": observed[0],
+                "title_id": LOADED_TITLE_ID,
+                "component_id": chosen[0],
             }
         if "app.gds_bookmark" in script:
             if self.dataset_rows is None:
@@ -2355,26 +2441,104 @@ def test_a_deleted_bookmark_names_what_is_still_listed():
 
 
 def test_excel_export_clicks_the_mdi_toolbar_button():
-    page = FakeGscmPage()
+    page = FakeGscmPage(loaded_report_titles=["MENA_Actual_sales"])
     flow_gscm.trigger_excel_export(page, _run_job())
     assert page.clicks[-1] == EXCEL_BUTTON
+    assert page.guarded_export_fires == 1
 
 
 def test_excel_export_falls_back_to_the_component_name_when_the_path_changed():
-    page = FakeGscmPage()
+    page = FakeGscmPage(loaded_report_titles=["MENA_Actual_sales"])
     moved = "mainframe.VFrameSet.MdiFrame.form.div_toolbar.form.btn_exceldown"
     page.components.discard(EXCEL_BUTTON)
     page.components.add(moved)
     flow_gscm.trigger_excel_export(page, _run_job())
     assert page.clicks[-1] == moved
+    assert page.guarded_export_fires == 1
+
+
+@pytest.mark.parametrize(
+    "rendered",
+    ["mena_actual_sales", "MENA_Actual_ sales", "MENA_Actual_sales 2"],
+)
+def test_excel_export_blocks_a_non_exact_rendered_bookmark_title(rendered):
+    page = FakeGscmPage(loaded_report_titles=[rendered])
+
+    with pytest.raises(RuntimeError) as excinfo:
+        flow_gscm.trigger_excel_export(page, _run_job())
+
+    message = str(excinfo.value)
+    assert "loaded-report-title-mismatch" in message
+    assert "expected_name='MENA_Actual_sales'" in message
+    assert f"observed_name={rendered!r}" in message
+    assert page.guarded_export_fires == 0
+    assert EXCEL_BUTTON not in page.clicks
+
+
+def test_excel_export_ignores_outer_whitespace_in_the_rendered_title():
+    page = FakeGscmPage(loaded_report_titles=["  MENA_Actual_sales\r\n"])
+
+    flow_gscm.trigger_excel_export(page, _run_job())
+
+    assert page.guarded_export_fires == 1
+    assert page.clicks[-1] == EXCEL_BUTTON
+
+
+def test_excel_export_blocks_ambiguous_loaded_report_titles():
+    page = FakeGscmPage(loaded_report_titles=[
+        "MENA_Actual_sales", "MX B2B Actual Sales",
+    ])
+
+    with pytest.raises(RuntimeError, match="ambiguous-loaded-report-title"):
+        flow_gscm.trigger_excel_export(page, _run_job())
+
+    assert page.guarded_export_fires == 0
+    assert EXCEL_BUTTON not in page.clicks
+
+
+def test_excel_export_blocks_when_active_workframe_title_is_unavailable():
+    page = FakeGscmPage(loaded_report_titles=[])
+
+    with pytest.raises(RuntimeError) as excinfo:
+        flow_gscm.trigger_excel_export(page, _run_job(), timeout_ms=1)
+
+    assert "loaded-report-title-unavailable" in str(excinfo.value)
+    assert page.guarded_export_fires == 0
+    assert EXCEL_BUTTON not in page.clicks
+
+
+def test_excel_title_guard_requires_the_stable_bookmark_identity():
+    page = FakeGscmPage(loaded_report_titles=["MENA_Actual_sales"])
+    job = _run_job(bookmark_id=None)
+
+    with pytest.raises(RuntimeError, match="no exact bookmark ID/name identity"):
+        flow_gscm.trigger_excel_export(page, job)
+
+    assert page.guarded_export_attempts == 0
+    assert page.guarded_export_fires == 0
+
+
+def test_excel_title_proof_excludes_inactive_mdi_and_favorite_surfaces():
+    source = flow_gscm._GUARDED_EXCEL_EXPORT_JS
+
+    assert "workFramePattern" in source
+    assert "mdiframe" in source
+    assert "favorite" in source
+    assert "rankTitleId" in source
+    assert "observedName !== wantedName" in source
+    assert source.index("observedName !== wantedName") < source.index(
+        "target.component.on_fire_onclick",
+    )
 
 
 def test_missing_excel_button_reports_the_screen():
-    page = FakeGscmPage()
+    page = FakeGscmPage(loaded_report_titles=["MENA_Actual_sales"])
     page.components.discard(EXCEL_BUTTON)
     with pytest.raises(RuntimeError) as excinfo:
         flow_gscm.trigger_excel_export(page, _run_job(), timeout_ms=1)
     assert "On screen:" in str(excinfo.value)
+    assert "missing-excel-component" in str(excinfo.value)
+    assert page.guarded_export_fires == 0
 
 
 # ── Server wiring ──
