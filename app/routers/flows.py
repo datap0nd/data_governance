@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 from app.config import DB_PATH, UPLOAD_PGHOST, UPLOAD_PGPORT
 from app.database import get_db
 from app.flow_credentials import asap_credential_status, save_asap_credentials
+from app.flow_github_issue import schedule_failure_issue
 from app.flow_asap_exports import (
     public_asap_download_types,
     resolve_asap_download_type,
@@ -181,6 +182,40 @@ def _flow_failure_context(db, run_id: int) -> dict | None:
     ).fetchone()
     context["files_saved"] = files["saved"] if files else 0
     return context
+
+
+def _schedule_flow_failure_issue(db, run_id: int) -> dict:
+    """Queue one sanitized GitHub report from already-recorded failure data."""
+    context = _flow_failure_context(db, run_id)
+    if not context:
+        return {"status": "not_queued", "reason": "Run not found."}
+    run = db.execute(
+        "SELECT status FROM flow_runs WHERE id=?",
+        (run_id,),
+    ).fetchone()
+    if not run or run["status"] != "failed":
+        return {"status": "not_queued", "reason": "Run is not failed."}
+    events = db.execute(
+        """SELECT status, stage, message, error, traceback, created_at
+             FROM flow_run_events WHERE run_id=?
+            ORDER BY id DESC LIMIT 20""",
+        (run_id,),
+    ).fetchall()
+    snapshot = {
+        "run_id": run_id,
+        "status": "failed",
+        "flow_name": context.get("flow_name"),
+        "site_name": context.get("site_name"),
+        "report_name": context.get("report_name"),
+        "trigger_type": context.get("trigger_type"),
+        "started_at": context.get("started_at"),
+        "finished_at": context.get("finished_at"),
+        "failure_stage": context.get("failure_stage"),
+        "files_saved": context.get("files_saved"),
+        "error": context.get("error"),
+        "events": [dict(event) for event in reversed(events)],
+    }
+    return schedule_failure_issue(snapshot)
 
 
 def _flow_failure_message(context: dict) -> dict:
@@ -406,6 +441,7 @@ def fail_stale_runs(
                     (message, now_text, row["worker_id"]),
                 )
             failed.append(row["id"])
+            _schedule_flow_failure_issue(db, row["id"])
         _sync_flow_failure_actions(db, now_text)
     for run_id in failed:
         notify_flow_owner_of_failure(run_id)
@@ -4368,6 +4404,7 @@ def register_worker(body: WorkerRegister):
                     (now, message, now, run["flow_id"]),
                 )
                 _sync_flow_failure_actions(db, now)
+                _schedule_flow_failure_issue(db, run["id"])
             db.execute(
                 """UPDATE flow_workers SET status='offline', current_run_id=NULL,
                    current_scan_id=NULL, updated_at=? WHERE worker_id=?""",
@@ -4451,6 +4488,7 @@ def claim_run(worker_id: str):
                        WHERE id=?""",
                     (now, message, now, candidate["flow_id"]),
                 )
+                _schedule_flow_failure_issue(db, candidate["id"])
                 store_failure = True
         if store_failure:
             _sync_flow_failure_actions(db, now)
@@ -4915,6 +4953,7 @@ def update_run(worker_id: str, run_id: int, body: WorkerProgress):
     if body.status not in RUN_STATUSES:
         raise HTTPException(400, "Unsupported run status.")
     now = _iso(_now())
+    github_issue = None
     with get_db() as db:
         row = db.execute("SELECT * FROM flow_runs WHERE id=? AND worker_id=?", (run_id, worker_id)).fetchone()
         if not row:
@@ -5061,13 +5100,20 @@ def update_run(worker_id: str, run_id: int, body: WorkerProgress):
                         db, int(row["flow_id"]), published_path=published_paths[0],
                     )
             _sync_flow_failure_actions(db, now)
+            if body.status == "failed":
+                github_issue = _schedule_flow_failure_issue(db, run_id)
         else:
             db.execute(
                 "UPDATE flow_workers SET status='busy', last_seen_at=?, updated_at=? WHERE worker_id=?",
                 (now, now, worker_id),
             )
     owner_alert = notify_flow_owner_of_failure(run_id) if body.status == "failed" else None
-    return {"run_id": run_id, "status": body.status, "owner_alert": owner_alert}
+    return {
+        "run_id": run_id,
+        "status": body.status,
+        "owner_alert": owner_alert,
+        "github_issue": github_issue,
+    }
 
 
 @router.post("/worker/{worker_id}/runs/{run_id}/heartbeat")
