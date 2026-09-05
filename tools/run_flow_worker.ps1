@@ -4,7 +4,7 @@ param(
     [string]$WorkerName = "BI desktop - headless",
     [string]$ProfileDir = "",
     [int]$IdleExitSeconds = 0,
-    [ValidateRange(1,5)][int]$Slot = 1
+    [ValidateRange(1,32)][int]$Slot = 1
 )
 
 $ErrorActionPreference = "Stop"

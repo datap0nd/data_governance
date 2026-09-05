@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from app.flow_limits import MAX_SLOTS
 
 CAPABILITY = 'flow_download_tasks_v1'
 HEADED_CAPABILITY = 'flow_headed_download_tasks_v1'
@@ -42,7 +43,7 @@ def parallelism(job: dict) -> int:
     if (job.get('job_type') == 'sql_retry' or job.get('flow', {}).get('source_type', 'portal') != 'portal'
             or job.get('flow', {}).get('execution_method') == 'recorded'):
         return 1
-    return max(1, min(5, int(execution.get('download_parallelism') or 1)))
+    return max(1, min(MAX_SLOTS, int(execution.get('download_parallelism') or 1)))
 
 
 def enabled(job: dict) -> bool:

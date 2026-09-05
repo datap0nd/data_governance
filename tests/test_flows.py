@@ -3568,7 +3568,7 @@ def test_setup_registers_on_demand_interactive_headed_worker():
     assert "-LogonType Interactive" in source
     assert 'New-ScheduledTaskAction -Execute $PyExe' in source
     assert "--worker-id $($VisibleSlot.WorkerId)" in source
-    assert "foreach ($VisibleSlot in 1..5" in source
+    assert "foreach ($VisibleSlot in 1..$FlowMaxSlots" in source
     assert "-TaskName $VisibleSlot.TaskName" in source
     assert "--headed --idle-exit-seconds 60" in source
     assert ".metronome-flow-browser-headed" in source

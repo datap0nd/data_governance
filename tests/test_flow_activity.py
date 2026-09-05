@@ -232,6 +232,9 @@ def test_parallel_row_counts_real_workers_and_heartbeats_preserve_actions(bundle
     "start_week": "2026-W01", "end_week": "2026-W15", "window_weeks": 3}}], indirect=True)
 def test_five_parallel_exports_have_independent_worker_progress(bundle):
     from app.routers import flow_tasks as routes
+    from app import flow_paths
+    with database.get_db() as db:
+        flow_paths.save_setting(db, f"flows_portal_capacity:{bundle['site']['id']}", 5)
     tasks = [claim('worker-1', bundle['run']['id'])] + [claim(f'worker-{i}') for i in range(2, 6)]
     assert all(tasks)
     for task, stage in zip(tasks, ['authentication', 'file_export', 'file_normalization', 'file_transfer', 'configuring']):

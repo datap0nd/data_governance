@@ -11,9 +11,12 @@
 
 param(
     [switch]$Unattended,
-    [ValidateRange(0,5)][int]$FlowHeadlessSlots = 0, # 0 reads the saved setting
-    [ValidateRange(0,5)][int]$FlowHeadedSlots = 0
+    [ValidateRange(0,32)][int]$FlowHeadlessSlots = 0, # 0 reads the saved setting
+    [ValidateRange(0,32)][int]$FlowHeadedSlots = 0,
+    [ValidateRange(0,32)][int]$FlowTotalWorkers = 0
 )
+
+$FlowMaxSlots = 32
 
 # --- Self-elevate to Admin if needed ---
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -22,6 +25,7 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
     if ($Unattended) { $ElevationArguments += " -Unattended" }
     if ($FlowHeadlessSlots) { $ElevationArguments += " -FlowHeadlessSlots $FlowHeadlessSlots" }
     if ($FlowHeadedSlots) { $ElevationArguments += " -FlowHeadedSlots $FlowHeadedSlots" }
+    if ($FlowTotalWorkers) { $ElevationArguments += " -FlowTotalWorkers $FlowTotalWorkers" }
     Start-Process powershell.exe $ElevationArguments -Verb RunAs -WindowStyle Hidden
     exit
 }
@@ -276,7 +280,7 @@ try {
 # authentication, or download failure must leave the currently installed app
 # and workers running.
 Stop-ScheduledTask -TaskName $HeadedFlowTaskName -ErrorAction SilentlyContinue
-foreach ($HeadedSlot in 2..5) {
+foreach ($HeadedSlot in 2..$FlowMaxSlots) {
     Stop-ScheduledTask -TaskName "$HeadedFlowTaskName$HeadedSlot" -ErrorAction SilentlyContinue
 }
 $NssmExe = "$CodeDir\tools\nssm.exe"
@@ -313,7 +317,7 @@ if ($existingFlowService) {
 
 # Quiesce every installed extra slot, including slots above today's capacity.
 # This runs before replacing code, for manual and unattended updates alike.
-foreach ($PoolSlot in 2..5) {
+foreach ($PoolSlot in 2..$FlowMaxSlots) {
     $PoolServiceName = "MXFlowsWorker$PoolSlot"
     $PoolService = Get-Service -Name $PoolServiceName -ErrorAction SilentlyContinue
     if ($PoolService) {
@@ -391,6 +395,7 @@ if (-not $env:DG_SETUP_RELAUNCHED) {
         if ($Unattended) { $RelaunchArguments += "-Unattended" }
         if ($FlowHeadlessSlots) { $RelaunchArguments += @('-FlowHeadlessSlots', "$FlowHeadlessSlots") }
         if ($FlowHeadedSlots) { $RelaunchArguments += @('-FlowHeadedSlots', "$FlowHeadedSlots") }
+        if ($FlowTotalWorkers) { $RelaunchArguments += @('-FlowTotalWorkers', "$FlowTotalWorkers") }
         & powershell.exe @RelaunchArguments
         exit $LASTEXITCODE
     }
@@ -454,14 +459,19 @@ if ($LASTEXITCODE -ne 0) {
 $PoolConfigArguments = @((Join-Path $CodeDir 'tools\flow_pool_config.py'), $DbPath)
 if ($FlowHeadlessSlots) { $PoolConfigArguments += @('--capacity', "$FlowHeadlessSlots") }
 $ConfiguredFlowSlots = [int](& $PyExe @PoolConfigArguments)
-if ($LASTEXITCODE -ne 0 -or $ConfiguredFlowSlots -lt 1 -or $ConfiguredFlowSlots -gt 5) { throw 'Could not read Flow worker capacity.' }
+if ($LASTEXITCODE -ne 0 -or $ConfiguredFlowSlots -lt 1 -or $ConfiguredFlowSlots -gt $FlowMaxSlots) { throw 'Could not read Flow worker capacity.' }
 $FlowSlots = @(1..$ConfiguredFlowSlots | ForEach-Object { Get-MetronomeFlowSlot -Slot $_ -BaseProfile $FlowProfile })
 $MissingExtraSlots = @($FlowSlots | Where-Object { $_.Slot -gt 1 -and -not (Get-Service -Name $_.ServiceName -ErrorAction SilentlyContinue) })
 $HeadedPoolArguments = @((Join-Path $CodeDir 'tools\flow_pool_config.py'), $DbPath, '--mode', 'headed')
 if ($FlowHeadedSlots) { $HeadedPoolArguments += @('--capacity', "$FlowHeadedSlots") }
 $ConfiguredHeadedSlots = [int](& $PyExe @HeadedPoolArguments)
-if ($LASTEXITCODE -ne 0 -or $ConfiguredHeadedSlots -lt 1 -or $ConfiguredHeadedSlots -gt 5) { throw 'Could not read headed Flow worker capacity.' }
+if ($LASTEXITCODE -ne 0 -or $ConfiguredHeadedSlots -lt 1 -or $ConfiguredHeadedSlots -gt $FlowMaxSlots) { throw 'Could not read headed Flow worker capacity.' }
 $HeadedSlots = @(1..$ConfiguredHeadedSlots | ForEach-Object { Get-MetronomeFlowSlot -Slot $_ -BaseProfile $HeadedFlowProfile -Headed })
+$TotalPoolArguments = @((Join-Path $CodeDir 'tools\flow_pool_config.py'), $DbPath, '--mode', 'total')
+if ($FlowTotalWorkers) { $TotalPoolArguments += @('--capacity', "$FlowTotalWorkers") }
+$ConfiguredTotalWorkers = [int](& $PyExe @TotalPoolArguments)
+if ($LASTEXITCODE -ne 0 -or $ConfiguredTotalWorkers -lt 1 -or $ConfiguredTotalWorkers -gt $FlowMaxSlots) { throw 'Could not read shared Flow worker capacity.' }
+Write-Host "  Shared Flows limit: $ConfiguredTotalWorkers active workers across background and visible slots." -ForegroundColor Green
 
 # --- Create and start service ---
 Write-Host "Starting service..." -ForegroundColor Yellow
@@ -579,12 +589,12 @@ foreach ($FlowSlot in $FlowSlots | Where-Object { $_.Slot -gt 1 }) {
     & $NssmExe set $SlotService AppRotateBytes 10485760
 }
 # Preserve unused services and profiles; don't auto-start them after an update.
-foreach ($DisabledSlot in 1..5 | Where-Object { $_ -gt $ConfiguredFlowSlots }) {
+foreach ($DisabledSlot in 1..$FlowMaxSlots | Where-Object { $_ -gt $ConfiguredFlowSlots }) {
     $DisabledService = (Get-MetronomeFlowSlot -Slot $DisabledSlot -BaseProfile $FlowProfile).ServiceName
     if (Get-Service -Name $DisabledService -ErrorAction SilentlyContinue) { & $NssmExe set $DisabledService Start SERVICE_DEMAND_START }
 }
 
-# Interactive tasks do not need a stored password. Enroll all five so changing
+# Interactive tasks do not need a stored password. Enroll all supported slots so changing
 # visible capacity later takes effect immediately, without another setup run.
 $ExistingHeadedTask = Get-ScheduledTask -TaskName $HeadedFlowTaskName -ErrorAction SilentlyContinue
 $HeadedTaskPrincipal = if ($ExistingHeadedTask) { $ExistingHeadedTask.Principal } else {
@@ -593,13 +603,13 @@ $HeadedTaskPrincipal = if ($ExistingHeadedTask) { $ExistingHeadedTask.Principal 
 $HeadedTaskSettings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -ExecutionTimeLimit (New-TimeSpan -Days 3) -MultipleInstances IgnoreNew
-foreach ($VisibleSlot in 1..5 | ForEach-Object { Get-MetronomeFlowSlot -Slot $_ -BaseProfile $HeadedFlowProfile -Headed }) {
+foreach ($VisibleSlot in 1..$FlowMaxSlots | ForEach-Object { Get-MetronomeFlowSlot -Slot $_ -BaseProfile $HeadedFlowProfile -Headed }) {
     $HeadedTaskArguments = "`"$CodeDir\app\flow_worker.py`" --server http://127.0.0.1:$Port --worker-id $($VisibleSlot.WorkerId) --name $($VisibleSlot.WorkerId) --profile-dir `"$($VisibleSlot.Profile)`" --headed --idle-exit-seconds 60"
     $HeadedTaskAction = New-ScheduledTaskAction -Execute $PyExe -Argument $HeadedTaskArguments -WorkingDirectory $CodeDir
     Register-ScheduledTask -TaskName $VisibleSlot.TaskName -Action $HeadedTaskAction `
         -Principal $HeadedTaskPrincipal -Settings $HeadedTaskSettings -Force | Out-Null
 }
-Write-Host "  Five headed Flows tasks registered; $ConfiguredHeadedSlots visible slots enabled on demand." -ForegroundColor Green
+Write-Host "  $FlowMaxSlots headed Flows tasks registered; $ConfiguredHeadedSlots visible slots enabled on demand." -ForegroundColor Green
 
 # Register one fixed, non-interactive bridge while setup already has the
 # service account credential. The web app writes an exact-SHA request and
@@ -761,7 +771,7 @@ function Describe-WorkerRegistrationFailure {
         -not @($Workers | Where-Object { $_.worker_id -eq $ExpectedId -and $_.status -ne 'offline' -and $_.last_seen_at -and ([datetime]$_.last_seen_at) -ge $WorkerStartedAt.AddSeconds(-5) }).Count
     })
     if ($MissingWorkers.Count -and $MissingWorkers -notcontains 'bi-desktop-headless') {
-        return "Background slots not registered after update: $($MissingWorkers -join ', '). Check their flow_worker2..5_error.log files and System > Flow workers."
+        return "Background slots not registered after update: $($MissingWorkers -join ', '). Check their flow_worker<N>_error.log files and Flows > Settings."
     }
     $Row = $Workers | Where-Object { $_.worker_id -eq "bi-desktop-headless" } | Select-Object -First 1
     $LiveWorkers = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {

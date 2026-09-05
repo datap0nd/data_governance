@@ -164,6 +164,41 @@ def test_portal_and_flow_limits_hold_even_with_free_global_slots(bundle):
     assert claim('worker-4') is None
 
 
+def test_shared_limit_counts_other_mode_and_counts_coordinator_only_once(bundle):
+    with database.get_db() as db:
+        flow_paths.save_setting(db, flow_capacity.TOTAL_CAPACITY_KEY, 2)
+        flow_paths.save_setting(db, flow_capacity.HEADED_CAPACITY_KEY, 32)
+        scan_id, _ = flows._queue_scan(db, bundle['site'], 'manual', 'Analyst')
+        job = json.loads(db.execute('SELECT job_json FROM flow_catalog_scans WHERE id=?', (scan_id,)).fetchone()[0])
+        job['execution']['browser_mode'] = 'headed'
+        db.execute('UPDATE flow_catalog_scans SET job_json=? WHERE id=?', (json.dumps(job), scan_id))
+    register('visible-scanner', bundle['store'], headed=True)
+    assert flows.claim_run('visible-scanner')['scan']['id'] == scan_id
+    assert claim('worker-2') is None
+    own = claim('worker-1', bundle['run']['id'])
+    assert own
+    with database.get_db() as db:
+        assert len(flow_capacity.assignments(db)) == 2
+        db.execute("UPDATE flow_catalog_scans SET status='cancelled' WHERE id=?", (scan_id,))
+    helper = claim('worker-2')
+    assert helper
+    with database.get_db() as db:
+        assert len(flow_capacity.assignments(db)) == 2
+        db.execute("UPDATE flow_download_tasks SET state='cancelling' WHERE id=?", (helper['id'],))
+    assert claim('worker-3') is None  # a cancelling helper retains its reservation
+
+
+def test_catalog_download_parallelism_accepts_32_but_recordings_remain_sequential():
+    body = _flow(1, 1, name='Wide bundle', download_parallelism=32)
+    assert body.download_parallelism == 32
+    job = {'execution':{'download_parallelism':32}, 'flow':{'source_type':'portal'}}
+    assert flow_tasks.parallelism(job) == 32
+    job['flow']['execution_method'] = 'recorded'
+    assert flow_tasks.parallelism(job) == 1
+    with pytest.raises(ValueError):
+        _flow(1, 1, name='Too many', download_parallelism=33)
+
+
 def test_duplicate_and_stale_reports_cannot_change_committed_artifact(bundle):
     task=claim('worker-2'); artifact=complete(task)
     duplicate=routes.task_progress('worker-2',task['id'],routes.TaskReport(lease_token=task['lease_token'],status='failed',progress={'message':'late failure'}))
@@ -474,7 +509,7 @@ def test_parallel_settings_validate_persist_and_headed_is_parallel(bundle,monkey
     app=FastAPI(); app.include_router(system_flows.router)
     url=f"/api/system/flows/portals/{bundle['site']['id']}"
     with TestClient(app) as client:
-        for value in [0,6,True,2.5,'3']:
+        for value in [0,33,True,2.5,'3']:
             assert client.put(url,json={'capacity':value}).status_code==422
         assert client.put(url,json={'capacity':2}).status_code==200
         state=client.get('/api/system/flows').json()

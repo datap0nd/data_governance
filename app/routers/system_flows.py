@@ -13,9 +13,10 @@ router = APIRouter(prefix='/api/system/flows', tags=['flows'])
 
 
 class CapacityWrite(BaseModel):
-    headless_capacity: int = Field(ge=1, le=5, strict=True)
+    headless_capacity: int = Field(ge=1, le=flow_capacity.MAX_SLOTS, strict=True)
+    total_capacity: int | None = Field(default=None, ge=1, le=flow_capacity.MAX_SLOTS, strict=True)
     browser_channel: Literal['chrome', 'msedge'] | None = None
-    headed_capacity: int | None = Field(default=None, ge=1, le=5, strict=True)
+    headed_capacity: int | None = Field(default=None, ge=1, le=flow_capacity.MAX_SLOTS, strict=True)
 
 
 class GscmDiscovery(BaseModel):
@@ -26,7 +27,7 @@ class GscmDiscovery(BaseModel):
 
 
 class PortalCapacityWrite(BaseModel):
-    capacity: int = Field(ge=1, le=5, strict=True)
+    capacity: int = Field(ge=1, le=flow_capacity.MAX_SLOTS, strict=True)
     gscm_discovery: GscmDiscovery | None = None
 
 
@@ -49,12 +50,14 @@ def save_capacity(body: CapacityWrite, request: Request):
     with get_db() as db:
         db.execute('BEGIN IMMEDIATE')
         flow_paths.save_setting(db, flow_capacity.CAPACITY_KEY, body.headless_capacity)
+        if body.total_capacity is not None:
+            flow_paths.save_setting(db, flow_capacity.TOTAL_CAPACITY_KEY, body.total_capacity)
         if body.browser_channel is not None:
             flow_paths.save_setting(db, flow_browser.SETTING, body.browser_channel)
         if body.headed_capacity is not None:
             flow_paths.save_setting(db, flow_capacity.HEADED_CAPACITY_KEY, body.headed_capacity)
         log_event(db, 'system', None, 'Flows', 'settings_changed',
-                  f'headless_capacity={body.headless_capacity}, headed_capacity={flow_capacity.capacity(db, "headed")}, browser={flow_browser.configured(db)}', get_actor(request))
+                  f'total_capacity={flow_capacity.total_capacity(db)}, headless_capacity={body.headless_capacity}, headed_capacity={flow_capacity.capacity(db, "headed")}, browser={flow_browser.configured(db)}', get_actor(request))
         return _state(db)
 
 
