@@ -84,6 +84,8 @@
   the full suite without weakening their assertions.
 
 ## Plan 4 — Standalone and shared execution
+- PR #59: https://github.com/datap0nd/data_governance/pull/59
+- Merged as acfb4260; Ubuntu CI passed.
 - Workers and generated launchers call the same execute_flow function for
   acquisition, publication, transformation, SQL and no-op handling.
 - User clarification applied: all saved stages run by default, including SQL;
@@ -99,8 +101,27 @@
 - All 18 frontend suites and syntax pass. Browser generated a launcher for the
   paused verification flow and confirmed current status and saved-stage defaults.
 
+## Plan 8A — Worker capacity
+- Atomic claims count runs, scans and final processing; default one background
+  slot, configurable 1–5, with one separate headed slot. Assigned work can
+  reconnect and finish after a reduction. Legacy store diagnostics still run
+  while capacity is full.
+- System > Flow workers separates configured and online slots. The watchdog,
+  pipeline readiness and exact stop/start support all fixed slots.
+- Setup preserves slot 1 and adds separate services/profiles/staging/logs for
+  slots 2–5. It reads saved capacity or an explicit argument, stops all installed
+  slots before replacement and checks all restarted slots. Unattended updates
+  preserve credentials; missing services require interactive setup.
+- Full regression: 1,365 passed. Independent-connection races cover limits 1,
+  3 and 5; scans/finalization, headed limit, reduction, recovery, exact stops,
+  API validation and installer identities are tested. Nine final lifecycle and
+  updater tests pass after the last offline-watchdog correction.
+- All 19 frontend suites and JavaScript syntax pass; PowerShell scripts parse.
+- Browser saved/reloaded capacity 3 in the isolated test database and showed
+  configured/offline status accurately. No services or real flows were started.
+
 ## Remaining sequence
-8A Capacity → 8B Fan-out. Each has its own tested PR and merge boundary.
+8B Fan-out, with its own tested PR and merge boundary.
 
 ## Operational verification
 Actual appliance SSO, service installation, visible Explorer and real SQL are

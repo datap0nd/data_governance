@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+const source = fs.readFileSync(new URL('../app/static/app.js', import.meta.url), 'utf8');
+const context = {esc: s => String(s ?? '').replaceAll('<', '&lt;')};
+vm.createContext(context);
+vm.runInContext(source.slice(source.indexOf('function _flowCapacityHtml('), source.indexOf('// ── Router ──')), context);
+const html = context._flowCapacityHtml({headless_capacity:3, online_capacity:1, active_headless:2, slots:[{slot:1, configured:true, status:'<offline>', current_run_id:42}]});
+assert.match(html, /1 of 3 configured/);
+assert.match(html, /value="3" selected/);
+assert.match(html, /value="5"/);
+assert.match(html, /Run 42/);
+assert.match(html, /&lt;offline>/);
+assert.match(html, /Lowering capacity lets active work finish/);
+console.log('Flow capacity display tests passed');

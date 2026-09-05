@@ -12548,6 +12548,37 @@ function bindPathsPage() {
     };
 }
 
+function _flowCapacityHtml(state) {
+    return `<div class="page-header"><div><h1>Flow workers</h1><p>Capacity for background Flows and catalog scans.</p></div></div>
+        <section class="settings-panel paths-panel"><form id="flow-capacity-form">
+        <h2>Concurrent workers</h2><label>Headless capacity <select id="flow-headless-capacity">${[1,2,3,4,5].map(n => `<option value="${n}" ${n === state.headless_capacity ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+        <p>${state.online_capacity} of ${state.headless_capacity} configured background slots are online. ${state.active_headless} background operations are active.</p>
+        <p>Visible debugging uses one separate headed slot. Downloads, scans and final processing all count toward capacity. Lowering capacity lets active work finish.</p>
+        <button class="btn-primary" type="submit">Save capacity</button> <button class="btn-secondary" type="button" id="flow-capacity-start">Start configured workers</button>
+        <p id="flow-capacity-result" role="status"></p></form></section>
+        <section class="settings-panel paths-panel"><h2>Background slots</h2><p>After adding capacity, run setup.ps1 on the BI desktop to install missing slots and sign in to each browser profile. Existing sessions stay separate.</p>
+        <table><thead><tr><th>Slot</th><th>Configured</th><th>Worker status</th><th>Current work</th></tr></thead><tbody>${state.slots.map(slot => `<tr><td>${slot.slot}</td><td>${slot.configured ? 'Yes' : 'No'}</td><td>${esc(slot.status)}</td><td>${slot.current_run_id ? 'Run ' + slot.current_run_id : slot.current_scan_id ? 'Scan ' + slot.current_scan_id : '—'}</td></tr>`).join('')}</tbody></table></section>`;
+}
+
+async function renderFlowSettings() {
+    return _flowCapacityHtml(await api('/api/system/flows'));
+}
+
+function bindFlowSettingsPage() {
+    $('#flow-capacity-form').onsubmit = async event => {
+        event.preventDefault();
+        const button = event.currentTarget.querySelector('[type="submit"]'); button.disabled = true;
+        try { await apiPut('/api/system/flows', {headless_capacity: Number($('#flow-headless-capacity').value)}); toast('Flow capacity saved'); await navigate('flow-settings'); }
+        catch (error) { $('#flow-capacity-result').textContent = error.message; button.disabled = false; }
+    };
+    $('#flow-capacity-start').onclick = async event => {
+        const button = event.currentTarget; button.disabled = true;
+        try { const result = await apiPost('/api/system/flows/start'); $('#flow-capacity-result').textContent = (result.slots || [result]).map(slot => `${slot.worker_id || 'Worker'}: ${slot.message || slot.status}`).join(' · '); }
+        catch (error) { $('#flow-capacity-result').textContent = error.message; }
+        finally { button.disabled = false; }
+    };
+}
+
 // ── Router ──
 
 const pages = {
@@ -12569,6 +12600,7 @@ const pages = {
     ai: renderAISettings,
     updates: renderUpdates,
     paths: renderPaths,
+    'flow-settings': renderFlowSettings,
     refreshschedule: renderScannerAdmin,
     premiumviewers: renderPremiumViewers,
 };
@@ -12708,6 +12740,7 @@ async function navigate(page) {
         if (page === "ai") bindAISettingsPage();
         if (page === "updates") bindUpdatesPage();
         if (page === "paths") bindPathsPage();
+        if (page === "flow-settings") bindFlowSettingsPage();
         if (page === "premiumviewers") bindPremiumViewersPage();
         if (page === "lineage") bindLineageDiagramPage();
     } catch (err) {

@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 from app.config import PBI_WORKSPACE, UPLOAD_PGHOST, UPLOAD_PGPORT
 from app.database import get_db
+from app import flow_capacity
 from app.flow_diagnostics import (
     build_flow_diagnostics,
     diagnostic_blocker_messages,
@@ -253,14 +254,15 @@ def _worker_readiness(db, modes: set[str]) -> list[dict]:
     cutoff = _iso(_now() - WORKER_READY_AGE)
     result = []
     for mode in sorted(modes):
-        worker_id = HEADED_WORKER_ID if mode == "headed" else WORKER_ID
-        row = db.execute(
-            "SELECT worker_id, display_name, status, last_seen_at FROM flow_workers WHERE worker_id=?",
-            (worker_id,),
-        ).fetchone()
-        ready = bool(row and row["last_seen_at"] and row["last_seen_at"] >= cutoff)
+        identities = [HEADED_WORKER_ID] if mode == "headed" else [flow_capacity.worker_id(slot) for slot in range(1, flow_capacity.headless_capacity(db) + 1)]
+        rows = [db.execute("SELECT worker_id, display_name, status, last_seen_at FROM flow_workers WHERE worker_id=?", (identity,)).fetchone() for identity in identities]
+        online = [row for row in rows if row and row["last_seen_at"] and row["last_seen_at"] >= cutoff and row["status"] != 'offline']
+        row = online[0] if online else next((row for row in rows if row), None)
+        worker_id = row['worker_id'] if row else identities[0]
+        ready = bool(online)
         result.append({
             "mode": mode, "worker_id": worker_id, "ready": ready,
+            "configured_capacity": len(identities), "online_capacity": len(online),
             "status": row["status"] if row else "not_registered",
             "last_seen_at": row["last_seen_at"] if row else None,
             "action": None if ready else "will_start_before_queueing",

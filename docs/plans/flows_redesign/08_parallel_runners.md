@@ -7,7 +7,7 @@ Deliver phases A and B as separate merges.
 ## Current state
 claim_run checks mode/adapter/store, not ordinary worker_id pinning. Scans consume
 browsers. execute_job owns the ordered task matrix and whole-run ordinals.
-Publication/SQL happen later in run_worker; queued runs hold resource reservations.
+Publication/SQL happen later in shared execute_flow; queued runs hold resource reservations.
 
 ## Phase A
 - Capacity 1..5, default 1; headed always 1. Count claimed/running runs AND scans
@@ -17,6 +17,9 @@ Publication/SQL happen later in run_worker; queued runs hold resource reservatio
   live credentials automatically.
 - Pool/slot metadata, exact stop/start, readiness and settings show configured
   versus online capacity. setup reads persisted setting or explicit argument.
+- System > Flow workers saves the claim limit. Interactive setup installs new
+  services with the account credential; unattended updates preserve existing
+  credentials and report configured-but-uninstalled slots as offline.
 - New managed shared store; old recovery remains producer-store checked.
 - Keep replay caches per profile. Sharing mutable JSON is not needed for correctness.
 - Update installer, unattended-update quiescing and all slot lifecycle checks.
@@ -58,4 +61,3 @@ Independent connections test claim races, scans versus runs, headed limit,
 throttling, old recovery and exact slot stops. B tests stale/duplicate reports,
 finalizer races/crash, filename/role integrity, cancellation, resume pins and
 full-bundle SQL gating. Service/SSO/live portal checks are operational verification.
-
