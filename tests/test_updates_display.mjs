@@ -112,6 +112,7 @@ vm.runInContext(`
     this.renderUpdatesPage = renderUpdates;
     this.readBlockers = _updatesBlockers;
     this.normalizeStatus = _normalizeUpdateStatus;
+    this.startReconnect = _startUpdateReconnect;
 `, context);
 
 const payload = context.readPayload();
@@ -126,14 +127,12 @@ assert.match(html, /20260828-120000-abc123def/);
 assert.match(html, /abc123def/);
 assert.match(html, /fed987654/);
 assert.match(html, /Metronome Automatic Update/);
-assert.match(html, /Main tests/);
-assert.match(html, /Passed/);
-assert.match(html, /Scanner Jobs: 1/);
-assert.match(html, /Flow Runs: 2/);
+assert.match(html, /<details[^>]*updates-details/);
+assert.match(html, />Run update<\/button>/);
 assert.match(html, /Prior update failed cleanly\./);
 assert.match(html, /id="btn-check-updates"/);
-assert.match(html, /id="btn-install-update"[^>]*disabled/,
-    "active production work must visibly block manual installation");
+assert.doesNotMatch(html, /id="btn-install-update"[^>]*disabled/,
+    "the manual setup action must follow the server behavior");
 
 const notReady = context.normalizeStatus({
     auto_update: {},
@@ -172,9 +171,58 @@ context.api = async () => ({
     },
 });
 const pendingHtml = await context.renderUpdatesPage();
-assert.match(pendingHtml, /Waiting For Tests/);
-assert.match(pendingHtml, /Tests workflow is still running/);
-assert.match(pendingHtml, /id="btn-install-update"[^>]*disabled/,
-    "manual installation must remain disabled until exact-SHA Tests pass");
+assert.doesNotMatch(pendingHtml, /id="btn-install-update"[^>]*disabled/,
+    "informational CI must not block manual setup");
 
+for (const extra of [
+    { up_to_date: true, auto_update: { enabled: true, update_available: false } },
+    { update_check_error: "Network unavailable", auto_update: { check_error: "Network unavailable" } },
+]) {
+    context.api = async () => ({ ...status, active_work: {}, ...extra });
+    const retryHtml = await context.renderUpdatesPage();
+    assert.doesNotMatch(retryHtml, /id="btn-install-update"[^>]*disabled/,
+        "cached matches and failed checks must leave Run update available");
+}
+context.api = async () => ({ ...status, active_attempt: { status: "launched", active: true } });
+assert.match(await context.renderUpdatesPage(), /id="btn-install-update"[^>]*disabled/,
+    "a real active installation must prevent a duplicate click");
+context.api = async () => ({ ...status, updater_ready: false });
+assert.match(await context.renderUpdatesPage(), /id="btn-install-update"[^>]*disabled/);
+
+
+context.api = async () => ({ ...status, active_attempt: null, auto_update: { ...status.auto_update, status: "update_launched" } });
+assert.doesNotMatch(await context.renderUpdatesPage(), /id="btn-install-update"[^>]*disabled/,
+    "stale watcher state must not lock manual updates after the attempt ends");
+
+// A same-version repair must wait for its own success receipt, not an old
+// successful attempt or a matching version that was already running.
+const timers = [];
+context.setTimeout = fn => { timers.push(fn); return timers.length; };
+context.clearTimeout = () => {};
+context.toast = () => {};
+let reloads = 0;
+context.window.location = { reload: () => { reloads++; } };
+context.startReconnect({ status: "launched", latest_commit: "abc123def", attempt: {
+    attempt_id: "repair", target_commit: "abc123def", status: "launched",
+} });
+context.api = async () => ({ ...status, current_commit: "abc123def", active_attempt: null,
+    latest_attempt: { attempt_id: "old", status: "succeeded" } });
+await timers.shift()();
+assert.equal(reloads, 0);
+assert.ok(context.window._updateReconnect);
+context.api = async () => ({ ...status, current_commit: "abc123def", active_attempt: null,
+    latest_attempt: { attempt_id: "repair", status: "succeeded" } });
+await timers.shift()();
+assert.equal(context.window._updateReconnect, null);
+timers.shift()();
+assert.equal(reloads, 1);
+elements["btn-install-update"] = { disabled: true, textContent: "Launching..." };
+context.startReconnect({ status: "launched", latest_commit: "abc123def", attempt: {
+    attempt_id: "retry", target_commit: "abc123def", status: "launched",
+} });
+context.api = async () => ({ ...status, active_attempt: null,
+    latest_attempt: { attempt_id: "retry", status: "failed", error: "Setup failed" } });
+await timers.shift()();
+assert.equal(context.window._updateReconnect, null);
+assert.equal(elements["btn-install-update"].disabled, false, "a failed attempt must allow retry");
 console.log("Updates display tests passed");

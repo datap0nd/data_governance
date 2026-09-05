@@ -847,7 +847,8 @@ def test_github_lookup_uses_windows_network_fallback(monkeypatch):
     )
 
     assert main._fetch_latest_commit() == TARGET
-    assert observed == [main._LATEST_COMMIT_URL]
+    assert len(observed) == 1
+    assert observed[0].startswith(main._LATEST_COMMIT_URL + "?_metronome_check=")
 
 
 def test_github_lookup_passes_resolved_office_proxy(monkeypatch):
@@ -1103,7 +1104,7 @@ def test_system_updates_get_exposes_readiness_and_apply_gate(
     assert payload["latest_commit"] == TARGET
     assert payload["updater_ready"] is True
     assert payload["active_work"] == {}
-    assert payload["tests_gate"]["state"] == "passed"
+    assert payload["tests_gate"]["state"] == "not_checked"
     assert payload["tests_gate"]["target_commit"] == TARGET
     assert payload["can_apply"] is True
     assert payload["auto_update"]["enabled"] is True
@@ -1123,7 +1124,7 @@ def test_system_updates_tests_are_informational_for_the_latest_sha(
         conclusion=None,
         message="Tests are queued.",
     )
-    monkeypatch.setattr(main, "_tests_gate", lambda *_args, **_kwargs: pending)
+    main._TESTS_GATE_CACHE[TARGET] = (main.time.monotonic(), pending)
     client = TestClient(main.app)
 
     response = client.get("/api/system/updates")
@@ -1133,7 +1134,7 @@ def test_system_updates_tests_are_informational_for_the_latest_sha(
     assert response.json()["can_apply"] is True
 
 
-def test_system_updates_cannot_apply_a_cached_sha_when_main_check_failed(
+def test_system_updates_allows_retry_but_never_installs_a_failed_lookup(
     update_env, monkeypatch
 ):
     monkeypatch.setattr(
@@ -1157,7 +1158,10 @@ def test_system_updates_cannot_apply_a_cached_sha_when_main_check_failed(
 
     assert response.status_code == 200
     assert response.json()["tests_gate"]["state"] == "not_checked"
-    assert response.json()["can_apply"] is False
+    assert response.json()["can_apply"] is True
+    assert response.json()["up_to_date"] is None
+    monkeypatch.setattr(main, "_reserve_and_launch_update", lambda *_args: pytest.fail("installed stale SHA"))
+    assert client.post("/api/system/updates/apply").status_code == 502
 
 
 def test_system_updates_put_persists_enabled_setting(update_env, monkeypatch):
@@ -1208,7 +1212,7 @@ def test_check_api_forces_refresh_without_applying(update_env, monkeypatch):
     assert force_values[0] is True
     # The response still reports CI as informational status, but the update
     # check itself no longer waits on or force-refreshes that gate.
-    assert gate_force_values[0] == (TARGET, False)
+    assert gate_force_values == []
     assert response.json()["auto_update"]["status"] == "update_available"
     assert response.json()["can_apply"] is True
 
@@ -1423,3 +1427,46 @@ def test_auto_update_launches_setup_while_a_production_request_is_running(
         assert launches == [(TARGET, "automatic")]
         release.set()
         assert request_future.result(timeout=10).status_code == 200
+
+
+@pytest.mark.parametrize("latest", [DEPLOYED, TARGET])
+def test_manual_update_refreshes_cached_match_and_can_reinstall(update_env, monkeypatch, latest):
+    main._UPDATE_CHECK.update(checked_at=main.time.time(), latest_commit=DEPLOYED, error=None)
+    fetched = []
+    monkeypatch.setattr(main, "_fetch_latest_commit", lambda: fetched.append(True) or latest)
+    monkeypatch.setattr(main, "_registered_auto_update_task_ready", lambda: (True, None))
+    launches = []
+    monkeypatch.setattr(main, "_launch_registered_auto_update_task", lambda: launches.append(True))
+    response = TestClient(main.app).post("/api/system/updates/apply")
+    assert response.status_code == 202
+    assert response.json()["status"] == "launched"
+    assert response.json()["attempt"]["target_commit"] == latest
+    assert fetched == [True]
+    assert launches == [True]
+    # A second click must not launch setup again, including same-version repair.
+    assert TestClient(main.app).post("/api/system/updates/apply").status_code == 409
+    assert launches == [True]
+
+
+def test_watcher_refreshes_even_if_badge_just_cached_old_main(update_env, monkeypatch):
+    main._UPDATE_CHECK.update(checked_at=main.time.time(), latest_commit=DEPLOYED, error=None)
+    monkeypatch.setattr(main, "_fetch_latest_commit", lambda: TARGET)
+    launches = []
+    monkeypatch.setattr(main, "_launch_registered_auto_update_task", lambda: launches.append(True))
+    assert main._scheduled_auto_update()["status"] == "update_launched"
+    assert launches == [True]
+    assert main._AUTO_UPDATE_INTERVAL_SECONDS == 90
+
+
+def test_each_network_commit_lookup_has_a_unique_cache_key(monkeypatch):
+    calls = []
+    monkeypatch.setattr(main, "_github_api_json", lambda url, **kwargs: calls.append((url, kwargs)) or {"sha": TARGET})
+    main._fetch_latest_commit()
+    main._fetch_latest_commit()
+    assert calls[0][0] == calls[1][0] == main._LATEST_COMMIT_URL
+    assert calls[0][1]["params"]["_metronome_check"] != calls[1][1]["params"]["_metronome_check"]
+
+
+def test_failed_version_refresh_does_not_claim_cached_match(update_env, monkeypatch):
+    monkeypatch.setattr(main, "_latest_commit", lambda **kwargs: (DEPLOYED, "offline"))
+    assert main.get_version()["up_to_date"] is None

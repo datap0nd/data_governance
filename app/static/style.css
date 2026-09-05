@@ -6644,6 +6644,25 @@ tr.row-archived td:last-child {
     background: linear-gradient(135deg, var(--surface), var(--surface-2));
 }
 
+.updates-version-summary {
+    display: grid;
+    gap: 0.35rem;
+    flex: 1;
+}
+
+.updates-version-summary small {
+    color: var(--text-muted);
+}
+
+.updates-details > summary {
+    cursor: pointer;
+    font-weight: 600;
+}
+
+.updates-details[open] > summary {
+    margin-bottom: 1rem;
+}
+
 .updates-status-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));

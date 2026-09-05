@@ -10217,14 +10217,14 @@ function _normalizeUpdateStatus(rawValue) {
         auto,
         enabled: Boolean(auto.enabled),
         branch: auto.branch || "main",
-        intervalMinutes: Number(auto.interval_minutes || 5),
+        intervalSeconds: Number(auto.interval_seconds || Number(auto.interval_minutes || 1.5) * 60),
         taskName: auto.task_name || "Metronome update task",
         version: raw.version || "Unknown",
         currentCommit,
         latestCommit,
         upToDate,
         updateAvailable,
-        checkError: auto.check_error || null,
+        checkError: raw.update_check_error || auto.check_error || null,
         status,
         lastCheckedAt: auto.last_checked_at || null,
         lastAttemptAt: auto.last_attempt_at || null,
@@ -10297,34 +10297,16 @@ async function renderUpdates() {
     const status = _normalizeUpdateStatus(raw);
     window._updatesStatus = status;
     window._remoteFlowControlStatus = remoteControl;
-    const active = _updatesAttemptActive(status.activeAttempt) || _UPDATE_ACTIVE_STATES.has(status.status);
-    const hasWorkBlockers = status.blockers.length > 0;
-    const waitingForTests = ["pending", "queued", "in_progress", "waiting"].includes(status.testsGate.state);
-    const testsFailed = ["failed", "error", "cancelled", "timed_out"].includes(status.testsGate.state);
-    const testsBlocked = waitingForTests || testsFailed;
-    const installDisabled = Boolean(status.checkError) || !status.updateAvailable || !status.readiness.ready || active || hasWorkBlockers || testsBlocked;
-    const installReason = active
-        ? "An update attempt is already active."
-        : hasWorkBlockers
-            ? "Wait for current production work to finish before installing."
-        : waitingForTests
-            ? status.testsGate.message
-        : testsFailed
-            ? status.testsGate.message || "The exact-commit Tests workflow did not pass."
-        : status.upToDate === true
-            ? "This installation already matches GitHub main."
-            : status.checkError
-                ? "Resolve the latest GitHub check failure before installing."
-            : !status.updateAvailable
-                ? "Check GitHub main before installing."
-            : !status.readiness.ready
-                ? status.readiness.reason
-                : "Run setup.ps1 for the latest exact main-branch commit.";
+    const active = _updatesAttemptActive(status.activeAttempt);
+    const installDisabled = !status.readiness.ready || !status.currentCommit || active;
+    const installReason = active ? "An update is in progress. Reconnecting after restart."
+        : !status.readiness.ready ? status.readiness.reason
+        : !status.currentCommit ? "Run setup.ps1 once to prepare this installation."
+        : "Fetches the latest version and runs setup. Metronome will restart, interrupting active work.";
     const lastAttempt = status.activeAttempt || status.latestAttempt;
-    const latestLabel = status.latestCommit ? _updatesShortCommit(status.latestCommit) : "Check required";
-    const releaseStatus = waitingForTests ? "waiting_for_tests" : status.updateAvailable
-        ? status.status === "up_to_date" ? "update_available" : status.status
-        : status.upToDate === true ? "up_to_date" : status.status;
+    const latestLabel = status.latestCommit ? _updatesShortCommit(status.latestCommit) : "Unknown";
+    const releaseStatus = active ? "updating" : status.checkError ? "check_failed"
+        : status.upToDate === true ? "up_to_date" : status.updateAvailable ? "update_available" : status.status;
     const overallLabel = _updatesHumanize(releaseStatus);
     const fallbackAttempt = status.lastAttemptAt || status.lastAttemptCommit
         ? {
@@ -10337,66 +10319,36 @@ async function renderUpdates() {
 
     return `
         <div class="page-header updates-header">
-            <div>
-                <h1>Updates</h1>
-                <span class="subtitle">Watch GitHub main and run the existing setup.ps1 when it changes</span>
-            </div>
+            <h1>Updates</h1>
             <span class="badge ${_updatesStatusBadge(releaseStatus)}">${esc(overallLabel)}</span>
         </div>
-
         <div class="updates-shell">
-            <section class="settings-panel updates-overview" aria-labelledby="updates-overview-heading">
-                <div class="section-header">
-                    <div><h2 id="updates-overview-heading">Release status</h2><p>The watcher checks the fixed <strong>${esc(status.branch)}</strong> branch every ${esc(status.intervalMinutes)} minutes.</p></div>
+            <section class="settings-panel updates-overview">
+                <div class="updates-action-row">
+                    <div class="updates-version-summary">
+                        <strong>Installed ${esc(_updatesShortCommit(status.currentCommit))}</strong>
+                        <small>Latest ${esc(latestLabel)} · Checked ${_updatesWhen(status.lastCheckedAt)}</small>
+                    </div>
+                    <button type="button" id="btn-install-update" ${installDisabled ? "disabled" : ""}>Run update</button>
                 </div>
-                <div class="updates-status-grid">
-                    <article>
-                        <span>Current install</span>
-                        <strong>${esc(status.version)}</strong>
-                        <code title="${esc(status.currentCommit)}">${esc(_updatesShortCommit(status.currentCommit))}</code>
-                    </article>
-                    <article>
-                        <span>Latest on ${esc(status.branch)}</span>
-                        <strong>${esc(latestLabel)}</strong>
-                        <small>${status.updateAvailable ? "Newer than this install" : status.upToDate === true ? "Matches this install" : "Waiting for an authoritative check"}</small>
-                    </article>
-                    <article>
-                        <span>Watcher</span>
-                        <strong>${status.enabled ? "Automatic updates on" : "Automatic updates off"}</strong>
-                        <small>Last checked: ${_updatesWhen(status.lastCheckedAt)}</small>
-                    </article>
-                    <article>
-                        <span>Updater task</span>
-                        <strong>${status.readiness.ready ? "Ready" : "Not ready"}</strong>
-                        <small>${esc(status.taskName)}</small>
-                    </article>
-                    <article>
-                        <span>Main tests (information)</span>
-                        <strong>${esc(_updatesHumanize(status.testsGate.state))}</strong>
-                        <small>${esc(status.testsGate.workflow)}${status.testsGate.checkedAt ? ` · ${_updatesWhen(status.testsGate.checkedAt)}` : ""}</small>
-                    </article>
-                </div>
-                ${status.checkError ? `<div class="updates-warning"><strong>Latest check failed:</strong> ${esc(status.checkError)}</div>` : ""}
-                ${testsBlocked ? `<div class="updates-warning"><strong>${waitingForTests ? "Waiting for Tests" : "Tests did not pass"}:</strong> ${esc(status.testsGate.message)}</div>` : ""}
-                ${!status.readiness.ready ? `<div class="updates-warning"><strong>Automatic install unavailable:</strong> ${esc(status.readiness.reason)}</div>` : ""}
-            </section>
-
-            <section class="settings-panel updates-control" aria-labelledby="updates-control-heading">
-                <div class="section-header">
-                    <div><h2 id="updates-control-heading">Automatic main updates</h2><p>When enabled, finding a newer GitHub main commit immediately launches setup.ps1 for that exact commit.</p></div>
-                </div>
+                <p id="updates-live-status" class="updates-live-status" role="status" aria-live="polite">${esc(installReason)}</p>
+                ${status.checkError ? `<div class="updates-warning">${esc(status.checkError)} You can retry with Run update.</div>` : ""}
+                ${!active && status.lastError ? `<div class="updates-warning">${esc(status.lastError)}</div>` : ""}
                 <form id="updates-settings-form">
                     <label class="updates-toggle">
                         <input id="updates-auto-enabled" type="checkbox" ${status.enabled ? "checked" : ""}>
-                        <span><strong>Automatically watch and install GitHub main</strong><small>Checks every ${esc(status.intervalMinutes)} minutes. The branch and interval are fixed by the server.</small></span>
+                        <span><strong>Automatic updates</strong><small>Checks main every ${esc(status.intervalSeconds)} seconds.</small></span>
                     </label>
-                    <div class="updates-save-row">
-                        <span>Disabling this does not remove manual Check now or Install now.</span>
-                        <button type="submit" id="btn-save-update-settings">Save update setting</button>
-                    </div>
                 </form>
             </section>
-
+            <details class="settings-panel updates-details">
+                <summary>Update details</summary>
+                <p>Version: ${esc(status.version)} · ${esc(status.taskName)}</p>
+                <p>Run update also reinstalls the current version if needed. You can also run <code>update_app.ps1</code> from the installed app folder.</p>
+                <button type="button" class="btn-outline" id="btn-check-updates" ${active ? "disabled" : ""}>Check now</button>
+                ${_updatesAttemptHtml(lastAttempt, fallbackAttempt)}
+            </details>
+            ${remoteControl ? `<details class="settings-panel updates-details"><summary>Remote Flow testing · ${remoteControl.enabled ? "Enabled" : "Disabled"}</summary>` : ""}
             ${remoteControl ? `<section class="settings-panel remote-control-panel" aria-labelledby="remote-control-heading">
                 <div class="section-header">
                     <div><h2 id="remote-control-heading">Signed remote Flow testing</h2><p>Accept only short-lived, signed requests to run one exact active Flow and show its local Expanded logs.</p></div>
@@ -10420,33 +10372,7 @@ async function renderUpdates() {
                     </div>
                 </form>
             </section>` : ""}
-
-            <section class="settings-panel updates-blockers" aria-labelledby="updates-blockers-heading">
-                <div class="section-header">
-                    <div><h2 id="updates-blockers-heading">Current work</h2><p>Finish active production work before installing so scanner and pipeline writes are not interrupted.</p></div>
-                </div>
-                ${status.blockers.length
-                    ? `<ul>${status.blockers.map(item => `<li>${esc(item)}</li>`).join("")}</ul>`
-                    : '<div class="updates-ready"><span class="status-dot"></span><strong>No active-work blockers reported.</strong></div>'}
-            </section>
-
-            <section class="settings-panel updates-history" aria-labelledby="updates-history-heading">
-                <div class="section-header">
-                    <div><h2 id="updates-history-heading">Latest attempt</h2><p>Install progress survives the service restart and is reconciled when Metronome returns.</p></div>
-                </div>
-                ${_updatesAttemptHtml(lastAttempt, fallbackAttempt)}
-            </section>
-
-            <section class="settings-panel updates-actions" aria-labelledby="updates-actions-heading">
-                <div class="section-header">
-                    <div><h2 id="updates-actions-heading">Manual actions</h2><p>Check now refreshes GitHub state. Install now launches setup.ps1 for the latest exact commit.</p></div>
-                </div>
-                <div class="updates-action-row">
-                    <button type="button" class="btn-outline" id="btn-check-updates" ${active ? "disabled" : ""}>Check now</button>
-                    <button type="button" id="btn-install-update" ${installDisabled ? "disabled" : ""} title="${esc(installReason)}">Install now</button>
-                    <span id="updates-live-status" class="updates-live-status" role="status" aria-live="polite">${active ? "An update is in progress. This page will reconnect after the restart." : esc(installReason)}</span>
-                </div>
-            </section>
+            ${remoteControl ? "</details>" : ""}
         </div>
     `;
 }
@@ -10500,15 +10426,21 @@ function _startUpdateReconnect(initialValue) {
             const targetMatches = reconnect.targetCommit
                 ? _updatesCommitMatches(status.currentCommit, reconnect.targetCommit)
                 : status.upToDate === true;
-            const attemptMatches = !reconnect.attemptId || !latestId || String(latestId) === String(reconnect.attemptId);
+            const attemptMatches = !reconnect.attemptId || String(latestId) === String(reconnect.attemptId);
             if (attemptMatches && ["failed", "error", "stopped", "cancelled"].includes(latestState)) {
                 const error = latestAttempt.error_message || latestAttempt.error || status.lastError || "The updater reported a failed attempt.";
                 updateMessage(`Update failed: ${error}`);
                 toast("Update failed: " + error);
                 _stopUpdateReconnect();
+                const button = document.getElementById("btn-install-update");
+                if (button) {
+                    button.disabled = !status.readiness.ready;
+                    button.textContent = "Run update";
+                }
                 return;
             }
-            if (targetMatches && attemptMatches && !_updatesAttemptActive(status.activeAttempt)) {
+            const receiptComplete = !reconnect.attemptId || ["succeeded", "completed"].includes(latestState);
+            if (targetMatches && attemptMatches && receiptComplete && !_updatesAttemptActive(status.activeAttempt)) {
                 updateMessage("Update completed. Reloading Metronome...");
                 toast(`Metronome updated to ${_updatesShortCommit(status.currentCommit)}`);
                 _stopUpdateReconnect();
@@ -10542,15 +10474,15 @@ async function _runUpdateAction(kind) {
         const result = await apiPost(endpoint);
         const status = _normalizeUpdateStatus(result);
         const launched = _updatesAttemptActive(status.activeAttempt)
-            || _UPDATE_ACTIVE_STATES.has(status.status)
             || ["launched", "launching", "updating"].includes(String(result.status || "").toLowerCase());
         if (launched) {
             toast("Update launched; Metronome will reconnect after the restart");
             _startUpdateReconnect(result);
             return;
         }
+        if (status.checkError) throw new Error(status.checkError);
         toast(kind === "check"
-            ? status.updateAvailable ? "Update available on GitHub main" : "Metronome is up to date"
+            ? status.updateAvailable ? "Update available on GitHub main" : status.upToDate === true ? "Metronome is up to date" : "Version could not be confirmed"
             : "Update request completed");
         await navigate("updates");
     } catch (error) {
@@ -10563,19 +10495,18 @@ async function _runUpdateAction(kind) {
         toast(`${kind === "check" ? "Update check" : "Update install"} failed: ${error.message}`);
         if (button) {
             button.disabled = false;
-            button.textContent = kind === "check" ? "Check now" : "Install now";
+            button.textContent = kind === "check" ? "Check now" : "Run update";
         }
     }
 }
 
 function bindUpdatesPage() {
     const form = document.getElementById("updates-settings-form");
-    form?.addEventListener("submit", async event => {
+    form?.addEventListener("change", async event => {
         event.preventDefault();
-        const button = document.getElementById("btn-save-update-settings");
+        const button = document.getElementById("updates-auto-enabled");
         if (button) {
             button.disabled = true;
-            button.textContent = "Saving...";
         }
         try {
             await apiPut("/api/system/updates", _updatesSettingsPayload());
@@ -10585,15 +10516,12 @@ function bindUpdatesPage() {
             toast("Update setting was not saved: " + error.message);
             if (button) {
                 button.disabled = false;
-                button.textContent = "Save update setting";
+                button.checked = Boolean(window._updatesStatus?.enabled);
             }
         }
     });
     document.getElementById("btn-check-updates")?.addEventListener("click", () => _runUpdateAction("check"));
     document.getElementById("btn-install-update")?.addEventListener("click", () => {
-        const status = window._updatesStatus || {};
-        const target = _updatesShortCommit(status.latestCommit);
-        if (!confirm(`Install GitHub main commit ${target} now? Metronome will restart after confirming production work is idle.`)) return;
         _runUpdateAction("apply");
     });
     if (_updatesAttemptActive(window._updatesStatus?.activeAttempt) && !window._updateReconnectTimer) {
