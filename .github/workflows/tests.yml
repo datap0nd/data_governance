@@ -54,5 +54,7 @@ jobs:
         run: node tests/test_flows_display.mjs
       - name: Run Flow sorting tests
         run: node tests/test_flow_sorting.mjs
+      - name: Run Flow builder contract tests
+        run: node tests/test_flow_builder_contract.mjs
       - name: Check frontend JavaScript syntax
         run: node --check app/static/app.js

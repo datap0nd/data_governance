@@ -58,6 +58,8 @@
   Local private output and exact SQL identifier case have regression coverage.
 
 ## Plan 6 — Sorting
+- PR #57: https://github.com/datap0nd/data_governance/pull/57
+- Merged as e55d72e8.
 - Per-group stable sorting, native buttons with accurate aria-sort, session
   persistence and third-click reset. Null/invalid values stay last both ways.
 - All eight keys are tested in both directions, including ties, invalid dates,
@@ -65,8 +67,22 @@
 - All 17 frontend suites and syntax pass. Browser verified newest-first,
   three-click cycle, retained expansion/focus and wrapped paths/actions.
 
+## Plan 7 — Stepped builder
+- Numbered Source, What to download (portal), Where it goes, After download,
+  Schedule/owner steps; native controls move existing DOM, preserving payloads.
+- Create opens Source; edit collapses steps. Required-field errors reveal/focus
+  the first invalid field; structured server errors map to their field.
+- Local/Outlook get a summary rail. Managed replication clears folder identity;
+  SQL refresh preserves the draft; filename examples are explicitly illustrative.
+- Full Python suite: 1,346 passed. All 18 frontend suites and syntax pass.
+- Browser verified Local hidden-field validation, Next/value retention, portal
+  source switching, retained filters after server validation and summary layout.
+- Broader CI for the list/sorting merges found old Stop/Delete markup contracts;
+  this merge restores their original classes/markup. Those tests now pass in
+  the full suite without weakening their assertions.
+
 ## Remaining sequence
-7 Builder → 4 Standalone →
+4 Standalone →
 8A Capacity → 8B Fan-out. Each has its own tested PR and merge boundary.
 
 ## Operational verification

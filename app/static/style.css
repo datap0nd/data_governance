@@ -7741,3 +7741,17 @@ body.remote-flow-control-enabled { padding-top: 32px; }
 .flow-sort { border: 0; background: transparent; color: inherit; font: inherit; text-transform: inherit; padding: 0; cursor: pointer; text-align: left; white-space: nowrap; }
 .flow-sort span { opacity: .65; }
 .flow-sort:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+.flow-step { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 12px; background: var(--surface); overflow: hidden; }
+.flow-step > h2 { margin: 0; }
+.flow-step-toggle { display: flex; align-items: center; gap: 12px; width: 100%; padding: 16px; border: 0; background: transparent; color: var(--text); text-align: left; font: inherit; cursor: pointer; }
+.flow-step-toggle > span:nth-child(2) { flex: 1; min-width: 0; }
+.flow-step-number { display: grid; place-items: center; width: 28px; height: 28px; flex-shrink: 0; border-radius: 50%; background: var(--surface-2); color: var(--accent); font-size: 13px; }
+.flow-step-status { display: block; font-size: 12px; font-weight: 400; color: var(--text-muted); margin-top: 4px; overflow-wrap: anywhere; }
+.flow-step-body { padding: 4px 20px 20px; }
+.flow-step-body[hidden] { display: none; }
+.flow-step-body .flow-form-section { padding: 14px 0; }
+.flow-step-body .flow-section-head { display: block; }
+.flow-step-body .flow-section-head h2 { font-size: 14px; margin-bottom: 5px; }
+.flow-step-next { margin-top: 16px; }
+.flow-step-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -4px; }
+.flow-step-body #flow-destination, .flow-summary dd { overflow-wrap: anywhere; }
