@@ -997,9 +997,8 @@ def _get_version() -> str:
 _APP_VERSION = _get_version()
 
 #: Latest-commit lookup shared by the version badge and automatic updater.
-#: Five-minute checks stay comfortably below GitHub's unauthenticated limit
-#: while keeping office installs close to main.
-_UPDATE_CHECK_TTL_SECONDS = 5 * 60
+#: Share lookups across the UI and watcher to avoid redundant GitHub requests.
+_UPDATE_CHECK_TTL_SECONDS = 90
 _UPDATE_CHECK_LOCK = threading.Lock()
 _UPDATE_CHECK: dict = {"checked_at": 0.0, "latest_commit": None, "error": None}
 _LATEST_COMMIT_URL = (
@@ -1014,7 +1013,7 @@ _TESTS_GATE_TTL_SECONDS = 60
 _TESTS_GATE_LOCK = threading.Lock()
 _TESTS_GATE_CACHE: dict[str, tuple[float, dict]] = {}
 _AUTO_UPDATE_SETTING_KEY = "automatic_main_updates_enabled"
-_AUTO_UPDATE_INTERVAL_SECONDS = 5 * 60
+_AUTO_UPDATE_INTERVAL_SECONDS = 90
 _AUTO_UPDATE_RETRY_SECONDS = 30 * 60
 _AUTO_UPDATE_RESERVATION_STALE_SECONDS = 10 * 60
 _AUTO_UPDATE_ATTEMPT_STALE_SECONDS = 2 * 60 * 60
@@ -1039,6 +1038,7 @@ def _github_api_headers() -> dict[str, str]:
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "Metronome",
+        "Cache-Control": "no-cache",
     }
     token = os.environ.get("DG_GITHUB_TOKEN")
     if token:
@@ -1056,6 +1056,7 @@ $headers = @{
     'Accept' = 'application/vnd.github+json'
     'X-GitHub-Api-Version' = '2022-11-28'
     'User-Agent' = 'Metronome'
+    'Cache-Control' = 'no-cache'
 }
 if ($env:DG_GITHUB_TOKEN) {
     $headers['Authorization'] = 'Bearer ' + $env:DG_GITHUB_TOKEN
@@ -1139,7 +1140,11 @@ def _deployed_commit() -> str | None:
 
 
 def _fetch_latest_commit() -> str:
-    payload = _github_api_json(_LATEST_COMMIT_URL)
+    # A forced local refresh alone does not defeat a stale office-proxy cache.
+    # Preserve the same unique request URL through the Windows fallback.
+    payload = _github_api_json(
+        _LATEST_COMMIT_URL, params={"_metronome_check": uuid.uuid4().hex}
+    )
     if not isinstance(payload, dict):
         raise RuntimeError("GitHub returned an invalid main commit response")
     commit = str(payload.get("sha") or "").strip().lower()
@@ -1412,6 +1417,10 @@ def _auto_update_payload(
     with _AUTO_UPDATE_STATE_LOCK:
         state = dict(_AUTO_UPDATE_STATE)
     state.pop("last_attempt_monotonic", None)
+    if _UPDATE_CHECK.get("checked_at"):
+        state["last_checked_at"] = datetime.fromtimestamp(
+            _UPDATE_CHECK["checked_at"], timezone.utc
+        ).isoformat(timespec="seconds")
     deployed = _deployed_commit()
     latest = latest_commit or _UPDATE_CHECK.get("latest_commit")
     error = check_error if check_error is not None else _UPDATE_CHECK.get("error")
@@ -1419,13 +1428,14 @@ def _auto_update_payload(
     return {
         "enabled": enabled,
         "branch": "main",
-        "interval_minutes": _AUTO_UPDATE_INTERVAL_SECONDS // 60,
+        "interval_minutes": _AUTO_UPDATE_INTERVAL_SECONDS / 60,
+        "interval_seconds": _AUTO_UPDATE_INTERVAL_SECONDS,
         "task_name": _AUTO_UPDATE_TASK_NAME,
         "draining": _AUTO_UPDATE_DRAIN_EVENT.is_set(),
         "deployed_commit": deployed,
         "latest_commit": latest,
         "update_available": (
-            bool(deployed and latest) and not _commits_match(deployed, latest)
+            bool(deployed and latest and not error) and not _commits_match(deployed, latest)
         ),
         "check_error": _safe_update_error(error) if error else None,
         **state,
@@ -1867,7 +1877,7 @@ def _scheduled_auto_update(*, force: bool = False) -> dict:
             )
             return _auto_update_payload()
 
-        latest, error = _latest_commit(force=force)
+        latest, error = _latest_commit(force=True)
         if error or not latest:
             _release_update_drain()
             _set_auto_update_state(
@@ -1935,7 +1945,7 @@ def get_version():
     else:
         error = "VERSION carries no commit stamp; re-run setup.ps1 to enable the check"
     up_to_date = None
-    if deployed and latest:
+    if deployed and latest and not error:
         up_to_date = _commits_match(deployed, latest)
     return {
         "version": _APP_VERSION,
@@ -1958,21 +1968,14 @@ def _system_update_status(*, force_check: bool = False) -> dict:
         active_work = _active_update_work(db)
     updater_ready, updater_error = _registered_auto_update_task_ready()
     deployed = _deployed_commit()
-    up_to_date = _commits_match(deployed, latest) if deployed and latest else None
-    tests_gate = (
-        _tests_gate_record(
-            latest,
-            "not_checked",
-            "The latest main commit could not be confirmed, so Tests were not checked.",
-            error=error,
+    up_to_date = _commits_match(deployed, latest) if deployed and latest and not error else None
+    # CI is informational here. Rendering update controls must not wait for a
+    # second network request (or its office-network fallback).
+    with _TESTS_GATE_LOCK:
+        cached_gate = _TESTS_GATE_CACHE.get(latest)
+        tests_gate = dict(cached_gate[1]) if cached_gate and not error else _tests_gate_record(
+            latest, "not_checked", "CI status is available on GitHub.", error=error
         )
-        if error
-        else _tests_gate_for_status(
-            deployed,
-            latest,
-            force=force_check,
-        )
-    )
     auto_update = _auto_update_payload(
         latest_commit=latest,
         check_error=error,
@@ -1993,9 +1996,6 @@ def _system_update_status(*, force_check: bool = False) -> dict:
         "can_apply": bool(
             updater_ready
             and deployed
-            and latest
-            and not error
-            and not up_to_date
             and not active_attempt
         ),
     }
@@ -2342,13 +2342,8 @@ def _apply_latest_update() -> dict:
             status_code=409,
             detail="Run setup.ps1 once before using unattended updates.",
         )
-    if _commits_match(deployed, latest):
-        _release_update_drain()
-        return {
-            "status": "up_to_date",
-            "current_commit": deployed,
-            "latest_commit": latest,
-        }
+    # Manual update is also the repair path: run setup even for the same SHA.
+    # The automatic watcher still skips an already-installed commit.
 
     active_attempt, _ = _latest_update_attempts()
     if active_attempt:

@@ -203,3 +203,13 @@ def test_manual_update_uses_only_the_authoritative_setup_script():
     assert "DG_UPDATE_COMMIT_SHA" in source
     assert "setup_ps1_clean.txt" not in source
     assert "Copy-Item $Template" not in source
+
+
+def test_manual_update_requires_a_fresh_sha_and_propagates_setup_failure():
+    source = UPDATE_APP.read_text(encoding="utf-8")
+    assert "_metronome_check=" in source
+    assert '"Cache-Control" = "no-cache"' in source
+    assert "^[0-9a-fA-F]{40}$" in source
+    assert "Continuing with a normal update" not in source
+    assert 'throw "Could not confirm the newest version.' in source
+    assert "exit $LASTEXITCODE" in source

@@ -48,15 +48,17 @@ Write-Host "App folder: $CodeDir" -ForegroundColor DarkGray
 
 # --- Ask GitHub for the newest version ---
 $GitHubToken = $env:DG_GITHUB_TOKEN
-$Headers = @{ "User-Agent" = "Metronome-Update"; "Accept" = "application/vnd.github+json" }
+$Headers = @{ "User-Agent" = "Metronome-Update"; "Accept" = "application/vnd.github+json"; "Cache-Control" = "no-cache" }
 if ($GitHubToken) { $Headers["Authorization"] = "Bearer $GitHubToken" }
 $LatestSha = $null
 try {
-    $LatestSha = (Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/commits/main" -Headers $Headers -TimeoutSec 20).sha
+    $LatestSha = (Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/commits/main?_metronome_check=$([Guid]::NewGuid().ToString('N'))" -Headers $Headers -TimeoutSec 20).sha
+    if ($LatestSha -notmatch '^[0-9a-fA-F]{40}$') {
+        throw "GitHub did not return a valid main commit."
+    }
     Write-Host "Newest version on GitHub: $LatestSha" -ForegroundColor Green
 } catch {
-    Write-Host "Could not ask GitHub for the newest version: $($_.Exception.Message)" -ForegroundColor Yellow
-    Write-Host "Continuing with a normal update; a proxy may serve it from cache." -ForegroundColor Yellow
+    throw "Could not confirm the newest version. Retry the update: $($_.Exception.Message)"
 }
 
 # --- Point the update at exactly that version (uncacheable address) ---
@@ -81,3 +83,4 @@ if (-not (Test-Path $UpdateScript -PathType Leaf)) {
 Write-Host "Running the update: $UpdateScript" -ForegroundColor Yellow
 Write-Host ""
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $UpdateScript
+exit $LASTEXITCODE
