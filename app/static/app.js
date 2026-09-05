@@ -10869,7 +10869,7 @@ function _flowRowHtml(row) {
         <td>${esc(row.schedule)}${flow.next_run_at ? `<small>Next ${esc(formatDate(flow.next_run_at))}</small>` : ""}</td>
         <td>${_flowStatusBadge(flow.last_status)}${flow.last_run_at ? `<small>${esc(timeAgo(flow.last_run_at))}</small>` : '<small>Not run yet</small>'}</td>
         <td><label class="flow-switch"><input class="flow-enabled-switch" type="checkbox" data-id="${flow.id}" data-flow-focus="active-${flow.id}" aria-label="Active: ${esc(flow.name)}" ${flow.enabled ? "checked" : ""} ${flow.schedule_type === "manual" ? "disabled" : ""}><span aria-hidden="true"></span><strong>${flow.enabled ? "Active" : "Inactive"}</strong></label>${flow.schedule_type === "manual" ? '<small>Manual only</small>' : ""}</td>
-        <td class="flow-row-actions">${button("flow-run", activeRun?.status === "queued" ? "Start now" : activeRun ? "Running" : "Run", activeRun && activeRun.status !== "queued" ? "disabled" : "")}${activeRun ? `<button class="btn-sm btn-outline btn-danger-outline flow-stop" type="button" data-id="${flow.id}" data-flow-focus="flow-stop-${flow.id}">Stop</button>` : ""}${button("flow-edit", "Edit")}<details class="flow-row-menu"><summary aria-label="More actions: ${esc(flow.name)}" data-flow-focus="more-${flow.id}">More</summary><div>${button("flow-open-folder", "Open folder")}<button class="btn-sm btn-outline btn-danger-outline flow-delete" type="button" data-id="${flow.id}" data-flow-focus="flow-delete-${flow.id}">Delete</button></div></details></td>
+        <td class="flow-row-actions">${button("flow-run", activeRun?.status === "queued" ? "Start now" : activeRun ? "Running" : "Run", activeRun && activeRun.status !== "queued" ? "disabled" : "")}${activeRun ? `<button class="btn-sm btn-outline btn-danger-outline flow-stop" type="button" data-id="${flow.id}" data-flow-focus="flow-stop-${flow.id}">Stop</button>` : ""}${button("flow-edit", "Edit")}<details class="flow-row-menu"><summary aria-label="More actions: ${esc(flow.name)}" data-flow-focus="more-${flow.id}">More</summary><div>${button("flow-open-folder", "Open folder")}${flow.flow_folder ? button("flow-standalone-status", "Check standalone") + button("flow-standalone", "Generate standalone") : ""}<button class="btn-sm btn-outline btn-danger-outline flow-delete" type="button" data-id="${flow.id}" data-flow-focus="flow-delete-${flow.id}">Delete</button></div></details></td>
     </tr>`;
 }
 
@@ -12024,6 +12024,14 @@ function _bindFlowWorkspace() {
         try { sessionStorage.setItem("metronome.flowGroups", JSON.stringify([...opened])); } catch (_) {}
         _flowShowView("list");
     }));
+    document.querySelectorAll(".flow-standalone").forEach(button => button.addEventListener("click", async () => {
+        try { const result = await apiPost(`/api/flows/${button.dataset.id}/standalone`); toast(`Standalone launcher ready: ${result.launcher}`); }
+        catch (err) { toast(err.message); }
+    }));
+    document.querySelectorAll(".flow-standalone-status").forEach(button => button.addEventListener("click", async () => {
+        try { const result = await api(`/api/flows/${button.dataset.id}/standalone`); toast(`Standalone: ${result.state.replaceAll("_", " ")}. Run Scripts/run_flow.py with installed Python; Saved SQL and transformation settings are used by default.`); }
+        catch (err) { toast(err.message); }
+    }));
     document.querySelectorAll(".flow-open-folder").forEach(button => button.addEventListener("click", async () => {
         try {
             const result = await apiPost(`/api/flows/${button.dataset.id}/open-folder`);
@@ -12494,7 +12502,7 @@ function _bindFlowWorkspace() {
     });
     $("#flow-schedule-type")?.dispatchEvent(new Event("change"));
     _flowBuildSteps($("#flow-builder-form"));
-    $("#flow-builder-form")?.addEventListener("submit", async event => { event.preventDefault(); const form = event.currentTarget; const button = form.querySelector('button[type="submit"]'); const error = form.querySelector(".flow-form-error"); button.disabled = true; error.textContent = ""; try { const body = _flowCollectBuilder(); await (form.dataset.id ? apiPut(`/api/flows/${form.dataset.id}`, body) : apiPostJson("/api/flows", body)); toast("Flow saved"); await navigate("flows"); } catch (err) { error.textContent = "Flow not saved: " + err.message; _flowRevealServerError(form, err); error.scrollIntoView({ behavior: "smooth", block: "nearest" }); button.disabled = false; } });
+    $("#flow-builder-form")?.addEventListener("submit", async event => { event.preventDefault(); const form = event.currentTarget; const button = form.querySelector('button[type="submit"]'); const error = form.querySelector(".flow-form-error"); button.disabled = true; error.textContent = ""; try { const body = _flowCollectBuilder(); const saved = await (form.dataset.id ? apiPut(`/api/flows/${form.dataset.id}`, body) : apiPostJson("/api/flows", body)); toast(saved.standalone?.state === "error" ? `Flow saved; standalone generation needs attention: ${saved.standalone.message}` : "Flow saved"); await navigate("flows"); } catch (err) { error.textContent = "Flow not saved: " + err.message; _flowRevealServerError(form, err); error.scrollIntoView({ behavior: "smooth", block: "nearest" }); button.disabled = false; } });
 }
 
 function bindFlowsPage() {

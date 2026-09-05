@@ -2667,7 +2667,8 @@ def create_flow(body: FlowWrite, request: Request):
             if sql_target_source_id is not None:
                 reconcile_source(db, int(sql_target_source_id))
             log_event(db, "flow", flow_id, body.name, "created", f"sql_handoff={body.sql_handoff_enabled}", get_actor(request))
-            return _flow_out(db, flow_id)
+            saved = _flow_out(db, flow_id)
+        return _generate_saved_standalone(saved)
     except sqlite3.IntegrityError as exc:
         if allocated:
             flow_layout.cleanup_empty_creation(allocated, flow_id)
@@ -2711,7 +2712,8 @@ def adopt_flow_folder(flow_id: int, request: Request):
             from app.freshness_inheritance import reconcile_file_binding
             reconcile_file_binding(db, flow_id)
             log_event(db, "flow", flow_id, flow["name"], "folder_adopted", "Historical files preserved", get_actor(request))
-            return {**_flow_out(db, flow_id), "previous_target_folder": previous}
+            saved = {**_flow_out(db, flow_id), "previous_target_folder": previous}
+        return _generate_saved_standalone(saved)
     except Exception as exc:
         if allocated:
             flow_layout.cleanup_empty_creation(allocated, flow_id)
@@ -2730,6 +2732,39 @@ def open_flow_folder(flow_id: int, request: Request):
         return open_folder(flow, rules, request)
     except (OSError, ValueError) as exc:
         raise HTTPException(409, str(exc)) from exc
+
+
+def _generate_saved_standalone(saved: dict) -> dict:
+    if not saved.get("flow_folder"):
+        return saved
+    from app import flow_standalone
+    try:
+        with get_db() as db:
+            job = _build_job(db, saved["id"], force_reprocess=True)
+        result = flow_standalone.generate(job)
+    except (OSError, ValueError, RuntimeError, HTTPException) as exc:
+        result = {"state": "error", "message": str(exc)}
+    return {**saved, "standalone": result}
+
+
+@router.post("/{flow_id}/standalone")
+def regenerate_standalone(flow_id: int):
+    with get_db() as db:
+        saved = _flow_out(db, flow_id)
+    if not saved.get("flow_folder"):
+        raise HTTPException(409, "Adopt a managed folder first.")
+    result = _generate_saved_standalone(saved)["standalone"]
+    if result["state"] == "error":
+        raise HTTPException(409, result["message"])
+    return result
+
+
+@router.get("/{flow_id}/standalone")
+def standalone_status(flow_id: int):
+    from app import flow_standalone
+    with get_db() as db:
+        job = _build_job(db, flow_id, force_reprocess=True)
+    return flow_standalone.status(job)
 
 
 @router.post("/{flow_id}/repair-layout")
@@ -2762,9 +2797,10 @@ def repair_flow_layout(flow_id: int, request: Request):
                 script = flow_layout.import_script(str(folder), flow_id, flow["transform_script_path"])
                 db.execute("UPDATE flows SET transform_script_path=? WHERE id=?", (script, flow_id))
             log_event(db, "flow", flow_id, flow["name"], "layout_repaired", actor=get_actor(request))
-            return {**_flow_out(db, flow_id), "layout": result}
+            saved = {**_flow_out(db, flow_id), "layout": result}
         except (OSError, ValueError) as exc:
             raise HTTPException(409, f"Layout could not be repaired: {exc}") from exc
+    return _generate_saved_standalone(saved)
 
 
 @router.post("/transform-script")
@@ -2928,7 +2964,8 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
                 flow_layout.update_manifest(existing["flow_folder"], flow_id, flow_name=body.name)
             except (OSError, ValueError) as exc:
                 log_event(db, "flow", flow_id, body.name, "folder_manifest_warning", str(exc), get_actor(request))
-        return _flow_out(db, flow_id)
+        saved = _flow_out(db, flow_id)
+    return _generate_saved_standalone(saved)
 
 
 @router.patch("/{flow_id}/enabled")

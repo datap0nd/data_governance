@@ -12,9 +12,15 @@ def test_repair_only_owned_missing_children_and_explicit_missing_folder(flow_db)
     site, report = _seed_catalog()
     saved = flows.create_flow(_flow(site['id'], report['id'], target_folder=None), _request())
     folder = Path(saved['flow_folder'])
+    for generated in (folder / 'Scripts').iterdir():
+        assert generated.name == 'run_flow.py' or generated.name.startswith('flow-config-')
+        generated.unlink()
     (folder / 'Scripts').rmdir()
     assert flows.get_flow(saved['id'])['layout']['missing'] == ['Scripts']
     assert flows.repair_flow_layout(saved['id'], _request())['layout']['created'] == ['Scripts']
+    for generated in (folder / 'Scripts').iterdir():
+        assert generated.name == 'run_flow.py' or generated.name.startswith('flow-config-')
+        generated.unlink()
     flow_layout.cleanup_empty_creation(folder, saved['id'])
     assert not folder.exists()
     flows.repair_flow_layout(saved['id'], _request())

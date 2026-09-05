@@ -6891,6 +6891,225 @@ def _code_version() -> str:
         return "unknown"
 
 
+def execute_flow(page, job: dict, progress, profile_dir: Path, download_staging_dir=None,
+                 *, run_id: int, register_folder, headed: bool = False,
+                 artifacts=None, state=None, run_started=None) -> dict:
+    """One acquisition/publication/transform/SQL path for every launch surface.
+
+    Callers own process locks, browser lifetime, progress transport and retention
+    registration. Failure state retains partial artifacts and phase timings.
+    """
+    state = state if state is not None else {}
+    artifacts = artifacts if artifacts is not None else []
+    timings = []
+    transformation_started = sql_started = sql_result = source_receipt = None
+    no_op = False
+    source_outcome = {}
+    run_started = run_started if run_started is not None else time.perf_counter()
+    try:
+        sql_only = job.get("job_type") == "sql_retry"
+        assert_job_paths(job)
+        if sql_only:
+            if not job.get("sql_handoff", {}).get("enabled"):
+                raise RuntimeError("SQL-only retry has no enabled SQL target.")
+            sql_artifacts = job.get("sql_retry", {}).get("artifacts") or []
+            if not sql_artifacts:
+                raise RuntimeError("SQL-only retry has no saved CSV artifacts.")
+            required_store = job.get("sql_retry", {}).get(
+                "required_artifact_store_id"
+            )
+            if required_store and required_store not in _runtime_store_ids(job, profile_dir):
+                raise RuntimeError(
+                    "SQL Retry was claimed by a worker that cannot access its private artifact store."
+                )
+            invalid = [
+                item.get("filename") or str(item.get("file_path") or "artifact")
+                for item in sql_artifacts
+                if not flow_publish.artifact_file_valid(item)
+            ]
+            if invalid:
+                raise RuntimeError(
+                    "Saved SQL artifact is missing or changed in the private worker store: "
+                    + ", ".join(invalid[:10])
+                )
+            artifacts = sql_artifacts
+            source_receipt = (
+                job.get("source_receipt")
+                or job.get("outlook_source_receipt")
+            )
+            timings = [{"phase": "total", "duration_ms": 0, "status": "running"}]
+            progress(
+                "running",
+                {
+                    "stage": "sql_retry",
+                    "message": (
+                        f"Reusing {len(sql_artifacts)} saved CSV file(s) from run "
+                        f"#{job.get('sql_retry', {}).get('source_run_id')}. "
+                        "The source will not be opened or downloaded again."
+                    ),
+                },
+                artifacts, timings,
+            )
+        elif (
+            (job.get("flow", {}).get("source_type") or "portal") == "file"
+            or bool((job.get("local_file") or {}).get("enabled"))
+        ):
+            if (
+                (job.get("flow", {}).get("source_type") or "portal") != "file"
+                or job.get("schema_version") != 3
+                or not (job.get("local_file") or {}).get("enabled")
+            ):
+                raise RuntimeError("Local-file job payload is malformed or uses an unsupported schema version.")
+            artifacts, timings, source_outcome = execute_local_file_job(
+                job, progress, profile_dir,
+                run_id=run_id, register_folder=register_folder,
+            )
+            no_op = bool(source_outcome.get("no_op"))
+            source_receipt = source_outcome.get("source_receipt")
+            sql_artifacts = source_outcome.get("sql_artifacts") or []
+        elif (job.get("outlook_source") or {}).get("enabled"):
+            artifacts, timings, outlook_outcome = execute_outlook_job(
+                job, progress, profile_dir,
+                run_id=run_id, register_folder=register_folder,
+            )
+            no_op = bool(outlook_outcome.get("no_op"))
+            source_receipt = outlook_outcome.get("source_receipt")
+            source_outcome = outlook_outcome
+            sql_artifacts = artifacts
+        else:
+            if (job.get("flow", {}).get("source_type") or "portal") != "portal":
+                raise RuntimeError("Flow job names an unsupported source type.")
+            # Share the artifact list so a mid-bundle failure still
+            # reports every file saved before the error - the final
+            # failed progress post below sends this same list.
+            artifacts, timings = execute_job(
+                page, job, progress, profile_dir, download_staging_dir,
+                artifacts=artifacts,
+                run_id=run_id, register_folder=register_folder,
+                headed=headed,
+            )
+            sql_artifacts = artifacts
+        if not sql_only and not no_op:
+            artifacts = _publish_direct_artifacts(
+                job, artifacts, run_id=run_id,
+                report_progress=progress,
+            )
+            if (job.get("flow", {}).get("source_type") or "portal") != "file":
+                sql_artifacts = artifacts
+        if (
+            not sql_only and not no_op
+            and job.get("transformation", {}).get("enabled")
+        ):
+            progress(
+                "running",
+                {"stage": "transformation", "message": f"Transforming {len(sql_artifacts)} normalized file(s)."},
+                artifacts, timings,
+            )
+            transformation_started = time.perf_counter()
+            sql_artifacts = _run_transformations(sql_artifacts, job["transformation"])
+            timings.insert(max(0, len(timings) - 1), {
+                "phase": "transformation",
+                "duration_ms": round((time.perf_counter() - transformation_started) * 1000),
+                "status": "succeeded", "item_count": len(sql_artifacts),
+            })
+            timings[-1]["duration_ms"] = round((time.perf_counter() - run_started) * 1000)
+            artifacts = [*artifacts, *sql_artifacts]
+            progress(
+                "running",
+                {
+                    "stage": "transformation_complete",
+                    "message": f"Created {len(sql_artifacts)} transformed file(s) in script_results.",
+                    "results": [
+                        {
+                            "source": item.get("source_file_path"),
+                            "output": item.get("file_path"),
+                            "rows": item.get("row_count"),
+                            "stdout": item.get("script_stdout"),
+                            "stderr": item.get("script_stderr"),
+                        }
+                        for item in sql_artifacts
+                    ],
+                },
+                artifacts, timings,
+            )
+        if not no_op and job.get("sql_handoff", {}).get("enabled"):
+            from app.flow_sql import load_artifacts
+            source_label = "transformed" if job.get("transformation", {}).get("enabled") else "downloaded"
+            if sql_only:
+                source_label = "saved"
+            progress("running", {"stage": "sql_insertion", "message": f"Loading {source_label} files into SQL."}, artifacts, timings)
+            sql_started = time.perf_counter()
+
+            def sql_progress(detail: dict):
+                progress("running", detail, artifacts, timings)
+
+            sql_result = load_artifacts(
+                sql_artifacts, job["sql_handoff"], progress=sql_progress,
+            )
+            timings.insert(max(0, len(timings) - 1), {
+                "phase": "sql_insertion",
+                "duration_ms": round((time.perf_counter() - sql_started) * 1000),
+                "status": "succeeded",
+            })
+            timings[-1]["duration_ms"] = round((time.perf_counter() - run_started) * 1000)
+            progress(
+                "running",
+                {
+                    "stage": "sql_insertion_complete",
+                    "message": f"Inserted {sql_result['rows_written']} row(s) from {sql_result['files_loaded']} file(s).",
+                    **sql_result,
+                },
+                artifacts, timings,
+            )
+        progress(
+            "succeeded", {
+                "stage": "complete",
+                "no_op": no_op,
+                "message": (
+                    source_outcome.get("message", "The configured source is unchanged.")
+                    if no_op
+                    else f"SQL-only retry committed {sql_result['rows_written']} row(s) from {sql_result['files_loaded']} saved file(s)."
+                    if sql_only
+                    else f"Saved the full {len(sql_artifacts)}-export bundle and committed {sql_result['rows_written']} row(s) to {sql_result['target']}."
+                    if sql_result is not None
+                    else f"Saved {len(sql_artifacts)} transformed CSV file(s) after {len(artifacts) - len(sql_artifacts)} download(s)."
+                    if job.get("transformation", {}).get("enabled")
+                    else f"Saved {len(artifacts)} {_completed_export_format_label(artifacts, job.get('downloads', {}).get('file_format') or 'csv')} export(s)."
+                ),
+            },
+            artifacts, timings, source_receipt=source_receipt,
+        )
+    except Exception:
+        if timings:
+            if transformation_started is not None and not any(
+                item.get("phase") == "transformation" for item in timings
+            ):
+                timings.insert(-1, {
+                    "phase": "transformation",
+                    "duration_ms": round((time.perf_counter() - transformation_started) * 1000),
+                    "status": "failed",
+                })
+            if sql_started is not None and not any(
+                item.get("phase") == "sql_insertion" for item in timings
+            ):
+                timings.insert(-1, {
+                    "phase": "sql_insertion",
+                    "duration_ms": round((time.perf_counter() - sql_started) * 1000),
+                    "status": "failed",
+                })
+            timings[-1].update({
+                "duration_ms": round((time.perf_counter() - run_started) * 1000),
+                "status": "failed",
+            })
+        else:
+            timings = [{"phase": "total", "duration_ms": round((time.perf_counter() - run_started) * 1000), "status": "failed"}]
+        raise
+    finally:
+        state.update(artifacts=artifacts, timings=timings, transformation_started=transformation_started,
+                     sql_started=sql_started, sql_result=sql_result, source_receipt=source_receipt, no_op=no_op)
+    return state
+
+
 def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path, headed: bool,
                once: bool, idle_exit_seconds: int = 0):
     code_version = _code_version()
@@ -7064,203 +7283,19 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                 heartbeat_thread = threading.Thread(target=heartbeat_loop, daemon=True)
                 heartbeat_thread.start()
 
+                from app.flow_execution_lock import job_lock
+                execution_locks = job_lock(run["job"])
+                execution_state = {}
                 try:
-                    sql_only = run["job"].get("job_type") == "sql_retry"
-                    assert_job_paths(run["job"])
-                    if sql_only:
-                        if not run["job"].get("sql_handoff", {}).get("enabled"):
-                            raise RuntimeError("SQL-only retry has no enabled SQL target.")
-                        sql_artifacts = run["job"].get("sql_retry", {}).get("artifacts") or []
-                        if not sql_artifacts:
-                            raise RuntimeError("SQL-only retry has no saved CSV artifacts.")
-                        required_store = run["job"].get("sql_retry", {}).get(
-                            "required_artifact_store_id"
-                        )
-                        if required_store and required_store not in _runtime_store_ids(run["job"], profile_dir):
-                            raise RuntimeError(
-                                "SQL Retry was claimed by a worker that cannot access its private artifact store."
-                            )
-                        invalid = [
-                            item.get("filename") or str(item.get("file_path") or "artifact")
-                            for item in sql_artifacts
-                            if not flow_publish.artifact_file_valid(item)
-                        ]
-                        if invalid:
-                            raise RuntimeError(
-                                "Saved SQL artifact is missing or changed in the private worker store: "
-                                + ", ".join(invalid[:10])
-                            )
-                        artifacts = sql_artifacts
-                        source_receipt = (
-                            run["job"].get("source_receipt")
-                            or run["job"].get("outlook_source_receipt")
-                        )
-                        timings = [{"phase": "total", "duration_ms": 0, "status": "running"}]
-                        progress(
-                            "running",
-                            {
-                                "stage": "sql_retry",
-                                "message": (
-                                    f"Reusing {len(sql_artifacts)} saved CSV file(s) from run "
-                                    f"#{run['job'].get('sql_retry', {}).get('source_run_id')}. "
-                                    "The source will not be opened or downloaded again."
-                                ),
-                            },
-                            artifacts, timings,
-                        )
-                    elif (
-                        (run["job"].get("flow", {}).get("source_type") or "portal") == "file"
-                        or bool((run["job"].get("local_file") or {}).get("enabled"))
-                    ):
-                        if (
-                            (run["job"].get("flow", {}).get("source_type") or "portal") != "file"
-                            or run["job"].get("schema_version") != 3
-                            or not (run["job"].get("local_file") or {}).get("enabled")
-                        ):
-                            raise RuntimeError("Local-file job payload is malformed or uses an unsupported schema version.")
-                        artifacts, timings, source_outcome = execute_local_file_job(
-                            run["job"], progress, profile_dir,
-                            run_id=run_id, register_folder=register_folder,
-                        )
-                        no_op = bool(source_outcome.get("no_op"))
-                        source_receipt = source_outcome.get("source_receipt")
-                        sql_artifacts = source_outcome.get("sql_artifacts") or []
-                    elif (run["job"].get("outlook_source") or {}).get("enabled"):
-                        artifacts, timings, outlook_outcome = execute_outlook_job(
-                            run["job"], progress, profile_dir,
-                            run_id=run_id, register_folder=register_folder,
-                        )
-                        no_op = bool(outlook_outcome.get("no_op"))
-                        source_receipt = outlook_outcome.get("source_receipt")
-                        source_outcome = outlook_outcome
-                        sql_artifacts = artifacts
-                    else:
-                        if (run["job"].get("flow", {}).get("source_type") or "portal") != "portal":
-                            raise RuntimeError("Flow job names an unsupported source type.")
-                        # Share the artifact list so a mid-bundle failure still
-                        # reports every file saved before the error - the final
-                        # failed progress post below sends this same list.
-                        artifacts, timings = execute_job(
-                            page, run["job"], progress, profile_dir, download_staging_dir,
-                            artifacts=artifacts,
-                            run_id=run_id, register_folder=register_folder,
-                            headed=headed,
-                        )
-                        sql_artifacts = artifacts
-                    if not sql_only and not no_op:
-                        artifacts = _publish_direct_artifacts(
-                            run["job"], artifacts, run_id=run_id,
-                            report_progress=progress,
-                        )
-                        if (run["job"].get("flow", {}).get("source_type") or "portal") != "file":
-                            sql_artifacts = artifacts
-                    if (
-                        not sql_only and not no_op
-                        and run["job"].get("transformation", {}).get("enabled")
-                    ):
-                        progress(
-                            "running",
-                            {"stage": "transformation", "message": f"Transforming {len(sql_artifacts)} normalized file(s)."},
-                            artifacts, timings,
-                        )
-                        transformation_started = time.perf_counter()
-                        sql_artifacts = _run_transformations(sql_artifacts, run["job"]["transformation"])
-                        timings.insert(max(0, len(timings) - 1), {
-                            "phase": "transformation",
-                            "duration_ms": round((time.perf_counter() - transformation_started) * 1000),
-                            "status": "succeeded", "item_count": len(sql_artifacts),
-                        })
-                        timings[-1]["duration_ms"] = round((time.perf_counter() - run_started) * 1000)
-                        artifacts = [*artifacts, *sql_artifacts]
-                        progress(
-                            "running",
-                            {
-                                "stage": "transformation_complete",
-                                "message": f"Created {len(sql_artifacts)} transformed file(s) in script_results.",
-                                "results": [
-                                    {
-                                        "source": item.get("source_file_path"),
-                                        "output": item.get("file_path"),
-                                        "rows": item.get("row_count"),
-                                        "stdout": item.get("script_stdout"),
-                                        "stderr": item.get("script_stderr"),
-                                    }
-                                    for item in sql_artifacts
-                                ],
-                            },
-                            artifacts, timings,
-                        )
-                    if not no_op and run["job"].get("sql_handoff", {}).get("enabled"):
-                        from app.flow_sql import load_artifacts
-                        source_label = "transformed" if run["job"].get("transformation", {}).get("enabled") else "downloaded"
-                        if sql_only:
-                            source_label = "saved"
-                        progress("running", {"stage": "sql_insertion", "message": f"Loading {source_label} files into SQL."}, artifacts, timings)
-                        sql_started = time.perf_counter()
-
-                        def sql_progress(detail: dict):
-                            progress("running", detail, artifacts, timings)
-
-                        sql_result = load_artifacts(
-                            sql_artifacts, run["job"]["sql_handoff"], progress=sql_progress,
-                        )
-                        timings.insert(max(0, len(timings) - 1), {
-                            "phase": "sql_insertion",
-                            "duration_ms": round((time.perf_counter() - sql_started) * 1000),
-                            "status": "succeeded",
-                        })
-                        timings[-1]["duration_ms"] = round((time.perf_counter() - run_started) * 1000)
-                        progress(
-                            "running",
-                            {
-                                "stage": "sql_insertion_complete",
-                                "message": f"Inserted {sql_result['rows_written']} row(s) from {sql_result['files_loaded']} file(s).",
-                                **sql_result,
-                            },
-                            artifacts, timings,
-                        )
-                    progress(
-                        "succeeded", {
-                            "stage": "complete",
-                            "no_op": no_op,
-                            "message": (
-                                source_outcome.get("message", "The configured source is unchanged.")
-                                if no_op
-                                else f"SQL-only retry committed {sql_result['rows_written']} row(s) from {sql_result['files_loaded']} saved file(s)."
-                                if sql_only
-                                else f"Saved the full {len(sql_artifacts)}-export bundle and committed {sql_result['rows_written']} row(s) to {sql_result['target']}."
-                                if sql_result is not None
-                                else f"Saved {len(sql_artifacts)} transformed CSV file(s) after {len(artifacts) - len(sql_artifacts)} download(s)."
-                                if run["job"].get("transformation", {}).get("enabled")
-                                else f"Saved {len(artifacts)} {_completed_export_format_label(artifacts, run['job'].get('downloads', {}).get('file_format') or 'csv')} export(s)."
-                            ),
-                        },
-                        artifacts, timings, source_receipt=source_receipt,
-                    )
+                    execution_locks.acquire()
+                    execute_flow(page, run["job"], progress, profile_dir, download_staging_dir,
+                                 run_id=run_id, register_folder=register_folder, headed=headed,
+                                 artifacts=artifacts, state=execution_state, run_started=run_started)
                 except Exception as exc:
-                    if timings:
-                        if transformation_started is not None and not any(
-                            item.get("phase") == "transformation" for item in timings
-                        ):
-                            timings.insert(-1, {
-                                "phase": "transformation",
-                                "duration_ms": round((time.perf_counter() - transformation_started) * 1000),
-                                "status": "failed",
-                            })
-                        if sql_started is not None and not any(
-                            item.get("phase") == "sql_insertion" for item in timings
-                        ):
-                            timings.insert(-1, {
-                                "phase": "sql_insertion",
-                                "duration_ms": round((time.perf_counter() - sql_started) * 1000),
-                                "status": "failed",
-                            })
-                        timings[-1].update({
-                            "duration_ms": round((time.perf_counter() - run_started) * 1000),
-                            "status": "failed",
-                        })
-                    else:
-                        timings = [{"phase": "total", "duration_ms": round((time.perf_counter() - run_started) * 1000), "status": "failed"}]
+                    artifacts = execution_state.get("artifacts", artifacts)
+                    timings = execution_state.get("timings", timings)
+                    transformation_started = execution_state.get("transformation_started")
+                    sql_started = execution_state.get("sql_started")
                     failure_message = str(exc)
                     failure_traceback = traceback.format_exc()
                     screenshot_path = _failure_screenshot(
@@ -7304,6 +7339,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                             },
                         )
                 finally:
+                    execution_locks.release()
                     heartbeat_stop.set()
                     heartbeat_thread.join(timeout=2)
                 if once:
