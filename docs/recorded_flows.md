@@ -1,5 +1,8 @@
 # Portal recordings and global browser settings
 
+For step-by-step work-PC verification, use the [Flows test plan](testing/releases/2026-09-05-flows/test-plan.md)
+and [test report](testing/releases/2026-09-05-flows/test-report.md).
+
 Flows → **Settings**, immediately after Run history, selects Google Chrome or
 Microsoft Edge for every newly queued portal run, scan and recording. Chrome
 is the default. Both use the same Playwright implementation and saved Flow

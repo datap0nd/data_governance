@@ -23,3 +23,14 @@ For any request that changes code:
 
 Pure questions, analysis, or advice requests do not trigger this workflow —
 only actual code changes do.
+
+## Testing documentation on every main merge (standing owner instruction)
+
+Every PR merged to `main`, including documentation and maintenance, must include
+or update a release-specific test plan and test report, and link both in its PR
+and delivery reply. Follow [AGENTS.md](AGENTS.md) and the
+[testing workflow](docs/testing/README.md). Include concrete testing instructions,
+actual automated results with revision/environment/evidence, and explicit
+NOT RUN or BLOCKED entries for outstanding live checks. Wait for the final PR
+checks before merging; record that CI run and tested SHA in the PR. Do not
+claim live portal verification from synthetic tests or publish private data.

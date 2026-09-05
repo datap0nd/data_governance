@@ -1,5 +1,9 @@
 # Flow worker capacity
 
+The [Flows test plan](testing/releases/2026-09-05-flows/test-plan.md) includes
+capacity, recording reservations and work-PC benchmarking checks. See the
+[test report](testing/releases/2026-09-05-flows/test-report.md) for current evidence.
+
 For global Chrome/Edge selection and the new ASAP/GSCM recorded method, see [recorded Flows](recorded_flows.md). The existing behavior below applies to catalog/bookmark Flows.
 
 Flows > Settings configures 1–32 background slots and 1–32 visible (headed)

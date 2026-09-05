@@ -4,6 +4,9 @@ Configure Flow folders in **System > Paths**. See
 [Flow paths](docs/flow_paths.md) for staged enforcement and migration behavior.
 New builder flows receive stable folders with Downloads and Scripts automatically.
 
+For release verification, start with [testing instructions and reports](docs/testing/README.md).
+Every main merge includes a test plan, recorded results and outstanding live checks.
+
 A web-based panel that monitors your Power BI reports, tracks data sources, and validates data quality.
 
 ## Quick Start (Windows)
