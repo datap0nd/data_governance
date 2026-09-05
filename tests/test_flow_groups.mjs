@@ -14,7 +14,7 @@ assert.match(html, /aria-expanded="false"/);
 assert.match(html, /1 active runs/); assert.match(html, /1 failed/);
 assert.match(html, /&lt;Local>/); assert.match(html, /Db.CaseSensitive.MyTable/);
 assert.match(html, /Private snapshots/); assert(!html.includes('Freshness'));
-for (const label of ['Flow','Source','Owner','Type','To','Schedule','Last run','Active','Actions']) assert(html.includes(`>${label}<`));
+for (const label of ['Flow','Active','Owner','Source','Download','Browser','Schedule','Last run','Actions']) assert(html.includes(`>${label}<`));
 for (const cls of ['flow-run', 'flow-stop', 'flow-edit', 'flow-delete', 'flow-open-folder', 'flow-enabled-switch']) assert(html.includes(cls));
 context.window._flowOpenGroupMemory = undefined;
 context.sessionStorage = {getItem: () => '["Local","<script>"]'};

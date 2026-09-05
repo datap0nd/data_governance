@@ -21,6 +21,15 @@ const reports = [
 const rowFor2 = r => `<row2>${r.name}</row2>`;
 const rowFor = r => `<row>${r.automation.category_path.at(-1)}</row>`;
 const html = context.tree(reports, rowFor, new Set(), "");
+assert.doesNotMatch(html, /<details[^>]* open>/, "Catalog starts collapsed");
+assert.match(source, /openCatalogTopics: new Set\(\), view: "list"/, "Every Flows entry resets expansion");
+assert.match(source, /if \(!state_ \|\| state_\.catalogFilter \|\| !group\.isConnected\) return;/, "Search expansion is temporary");
+const topic = html.match(/data-topic="([^"]+)"/)[1];
+const opened = new Set([topic]);
+assert.match(context.tree(reports, rowFor, opened, ""), /<details[^>]* open>/);
+context.tree(reports, rowFor, opened, "iran");
+assert.deepEqual([...opened], [topic], "Filtering never mutates visit expansion");
+assert.equal(context.tree(reports, rowFor, opened, ""), context.tree(reports, rowFor, opened, ""), "Polling preserves opened branches");
 
 // Every folder level becomes its own group, not one flat "Public" pile.
 for (const folder of ["Public", "Private", "MDM", "SCM", "Channel Site", "Exchange Rate", "Actual Sales"]) {

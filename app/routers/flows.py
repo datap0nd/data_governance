@@ -1963,6 +1963,59 @@ def list_flows():
         return [_flow_out(db, flow_id) for flow_id in ids]
 
 
+@router.get("/activity")
+def flow_activity():
+    """A read-only display snapshot, independent of the run-history limit."""
+    columns = """r.id, r.flow_id, f.name AS flow_name, r.status,
+                 r.created_at, r.claimed_at, r.started_at, r.finished_at"""
+    cutoff = _iso(_now() - timedelta(seconds=90))
+    with get_db() as db:
+        db.execute("BEGIN")
+        latest = db.execute(
+            """SELECT f.id AS flow_id, r.id, f.name AS flow_name, r.status,
+                       r.created_at, r.claimed_at, r.started_at, r.finished_at
+                FROM flows f LEFT JOIN flow_runs r ON r.id=(
+                    SELECT id FROM flow_runs WHERE flow_id=f.id ORDER BY id DESC LIMIT 1)
+                ORDER BY f.id"""
+        ).fetchall()
+        active = db.execute(
+            f"""SELECT {columns} FROM flow_runs r JOIN flows f ON f.id=r.flow_id
+                WHERE r.status IN ('queued','claimed','running') ORDER BY r.id DESC"""
+        ).fetchall()
+        # Queue/claim/stop can change state without posting worker progress.
+        # Synthesize only the current state when no event records that state.
+        events = db.execute(
+            """SELECT * FROM (
+                SELECT 'event:' || e.id AS key, e.id AS event_id, r.id AS run_id,
+                       r.flow_id, f.name AS flow_name, e.status, e.stage,
+                       substr(e.message, 1, 1000) AS message, e.created_at
+                FROM flow_run_events e JOIN flow_runs r ON r.id=e.run_id
+                JOIN flows f ON f.id=r.flow_id
+                UNION ALL
+                SELECT 'state:' || r.id || ':' || r.status, 0, r.id,
+                       r.flow_id, f.name, r.status, r.status,
+                       CASE r.status WHEN 'queued' THEN 'Waiting for a worker'
+                           WHEN 'claimed' THEN 'Claimed by a worker'
+                           WHEN 'running' THEN 'Run in progress'
+                           WHEN 'cancelled' THEN 'Run cancelled'
+                           WHEN 'succeeded' THEN 'Run succeeded' ELSE 'Run failed' END,
+                       coalesce(r.finished_at, r.started_at, r.claimed_at, r.created_at)
+                FROM flow_runs r JOIN flows f ON f.id=r.flow_id
+                WHERE NOT EXISTS (SELECT 1 FROM flow_run_events e
+                                  WHERE e.run_id=r.id AND e.status=r.status)
+            ) ORDER BY datetime(created_at) DESC, run_id DESC, event_id DESC LIMIT 50"""
+        ).fetchall()
+        workers = db.execute(
+            """SELECT count(*) AS total,
+                      coalesce(sum(CASE WHEN last_seen_at>=? AND status!='offline'
+                                        THEN 1 ELSE 0 END), 0) AS online
+               FROM flow_workers""", (cutoff,),
+        ).fetchone()
+    return {"latest_runs": [dict(row) for row in latest],
+            "active_runs": [dict(row) for row in active],
+            "events": [dict(row) for row in events], "workers": dict(workers)}
+
+
 @router.get("/runs")
 def list_runs(flow_id: int | None = None, limit: int = Query(default=100, ge=1, le=500)):
     with get_db() as db:
@@ -3025,6 +3078,46 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
                 log_event(db, "flow", flow_id, body.name, "folder_manifest_warning", str(exc), get_actor(request))
         saved = _flow_out(db, flow_id)
     return _generate_saved_standalone(saved)
+
+
+class FlowInlineWrite(BaseModel):
+    model_config = {"extra": "forbid"}
+    owner_person_id: int | None = Field(default=None, ge=1, strict=True)
+    browser_mode: Literal["headless", "headed"] | None = None
+
+    @model_validator(mode="after")
+    def validate_changes(self):
+        if not self.model_fields_set:
+            raise ValueError("Provide owner_person_id or browser_mode.")
+        if "browser_mode" in self.model_fields_set and self.browser_mode is None:
+            raise ValueError("browser_mode must be headless or headed.")
+        return self
+
+
+@router.patch("/{flow_id}")
+def patch_flow(flow_id: int, body: FlowInlineWrite, request: Request):
+    changes = body.model_dump(exclude_unset=True)
+    with get_db() as db:
+        db.execute("BEGIN IMMEDIATE")
+        flow = db.execute("SELECT * FROM flows WHERE id=?", (flow_id,)).fetchone()
+        if not flow:
+            raise HTTPException(404, "Flow not found.")
+        from app.routers.pipelines import assert_resource_unlocked
+        assert_resource_unlocked(db, "flow", str(flow_id))
+        if body.owner_person_id is not None and not db.execute(
+            "SELECT id FROM people WHERE id=?", (body.owner_person_id,),
+        ).fetchone():
+            raise HTTPException(400, "Choose an existing People record.")
+        if "browser_mode" in changes and (flow["source_type"] or "portal") != "portal":
+            raise HTTPException(400, "Browser mode is supported only for website flows.")
+        db.execute(
+            f"UPDATE flows SET {', '.join(key + '=?' for key in changes)}, updated_at=? WHERE id=?",
+            (*changes.values(), _iso(_now()), flow_id),
+        )
+        log_event(db, "flow", flow_id, flow["name"], "updated",
+                  detail=json.dumps({key: {"before": flow[key], "after": value}
+                                     for key, value in changes.items()}), actor=get_actor(request))
+        return {"id": flow_id, **changes}
 
 
 @router.patch("/{flow_id}/enabled")

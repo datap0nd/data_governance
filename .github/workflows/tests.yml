@@ -26,6 +26,10 @@ jobs:
         run: python -m pytest tests -q
       - name: Run catalog tree tests
         run: node tests/test_flow_catalog_tree.mjs
+      - name: Run Flow list display tests
+        run: node tests/test_flows_display.mjs
+      - name: Run Flow activity polling tests
+        run: node tests/test_flow_activity_polling.mjs
       - name: Run lineage display tests
         run: node tests/test_lineage_display.mjs
       - name: Run lineage edge tests

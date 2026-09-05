@@ -10776,7 +10776,8 @@ function _flowStatusBadge(status) {
         : ["failed"].includes(key) ? "badge-red"
         : ["queued", "claimed", "running"].includes(key) ? "badge-yellow"
         : "badge-muted";
-    return `<span class="badge ${cls}">${esc(key.replaceAll("_", " "))}</span>`;
+    const label = key[0].toUpperCase() + key.slice(1).replaceAll("_", " ");
+    return `<span class="badge ${cls}">${esc(label)}</span>`;
 }
 
 function _flowEmptyState(catalog) {
@@ -10820,19 +10821,19 @@ function _flowSourcePickerHtml(catalog) {
 }
 
 function _flowListHtml(flows, workers, catalog, runs = []) {
-    if (!flows.length) return _flowEmptyState(catalog);
+    if (!flows.length) return _flowActivityPanelHtml() + _flowEmptyState(catalog);
     const opened = _flowOpenGroups();
     const rows = flows.map(flow => _flowRowModel(flow, runs, catalog));
     const online = workers.filter(worker => worker.status !== "offline").length;
-    return `<div class="flow-status-strip"><span><strong>${flows.length}</strong> configured flows</span><span><strong>${online}</strong> online workers</span><span>Newest 3 producing runs retained; active recovery files stay protected.</span></div>
-        <div class="flow-table-wrap"><table class="flow-table flow-grouped-table">
+    return `<div class="flow-status-strip"><span><strong>${flows.length}</strong> configured flows</span><span id="flow-worker-count"><strong>${online}</strong> online workers</span><span>Newest 3 producing runs retained; active recovery files stay protected.</span></div>
+        ${_flowActivityPanelHtml()}<div class="flow-table-wrap"><table class="flow-table flow-grouped-table">
         <thead><tr>${_flowSortHeaders()}</tr></thead>
         ${_flowGroups().map(group => {
             const items = _flowSortRows(rows.filter(row => row.group === group), _flowSortState());
             if (!items.length) return "";
             const active = items.filter(row => row.activeRun).length;
             const failed = items.filter(row => row.flow.last_status === "failed").length;
-            return `<tbody class="flow-group-heading"><tr><th colspan="9" scope="rowgroup"><button type="button" class="flow-group-toggle" id="flow-group-${group}" data-group="${group}" aria-expanded="${opened.has(group)}" aria-controls="flow-group-rows-${group}"><span aria-hidden="true">${opened.has(group) ? "▾" : "▸"}</span> ${group} <span class="flow-group-count">${items.length}</span>${active ? `<small>${active} active runs</small>` : ""}${failed ? `<small class="flow-group-failed">${failed} failed</small>` : ""}</button></th></tr></tbody>
+            return `<tbody class="flow-group-heading"><tr><th colspan="9" scope="rowgroup"><button type="button" class="flow-group-toggle" id="flow-group-${group}" data-group="${group}" aria-expanded="${opened.has(group)}" aria-controls="flow-group-rows-${group}"><span aria-hidden="true">${opened.has(group) ? "▾" : "▸"}</span> ${group} <span class="flow-group-count">${items.length}</span><small class="flow-group-active" ${active ? "" : "hidden"}>${active} active runs</small><small class="flow-group-failed" ${failed ? "" : "hidden"}>${failed} failed</small></button></th></tr></tbody>
             <tbody id="flow-group-rows-${group}" ${opened.has(group) ? "" : "hidden"}>${items.map(_flowRowHtml).join("")}</tbody>`;
         }).join("")}</table></div>`;
 }
@@ -10852,29 +10853,29 @@ function _flowRowModel(flow, runs = [], catalog = {}) {
     const type = ["Local", "Outlook"].includes(group) ? "CSV / Excel" : ((catalog.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase());
     const destination = group === "Local" ? "Private snapshots" : flow.folder_relative ? `${flow.folder_relative} / Downloads` : flow.target_folder;
     const to = flow.sql_handoff_enabled ? [flow.sql_database, flow.sql_schema, flow.sql_table].filter(Boolean).join(".") : destination;
-    const schedule = `${flow.schedule_type || "manual"}${flow.schedule_type !== "manual" && flow.schedule_time ? ` ${flow.schedule_time}` : ""}`;
+    const schedule = _flowScheduleLabel(flow);
     const activeRun = runs.find(run => run.flow_id === flow.id && ["queued", "claimed", "running"].includes(run.status));
-    return {flow, group, name: flow.name, source, owner: flow.owner_name, type, to, destination, schedule, lastRun: flow.last_run_at, active: !!flow.enabled, activeRun};
+    return {flow, group, name: flow.name, source, owner: flow.owner_name, type, to, destination, browser: ["Local", "Outlook"].includes(group) ? null : flow.browser_mode, schedule, lastRun: flow.last_run_at, active: !!flow.enabled, activeRun};
 }
 
 function _flowRowHtml(row) {
     const {flow, activeRun} = row;
     const button = (cls, label, extra = "") => `<button type="button" class="btn-sm ${cls}" data-id="${flow.id}" data-flow-focus="${cls}-${flow.id}" ${extra}>${label}</button>`;
-    return `<tr>
+    return `<tr data-flow-id="${flow.id}">
         <td><strong>${esc(flow.name)}</strong>${window._remoteFlowControlStatus?.enabled && flow.enabled ? `<small class="remote-control-code">Remote target: ${esc(window._remoteFlowControlStatus.installation_id)}:${esc(flow.id)}</small>` : ""}</td>
+        <td><label class="flow-switch" title="${flow.schedule_type === "manual" ? "Choose a schedule to activate this flow" : "Activate or pause this flow"}"><input class="flow-enabled-switch" data-flow-focus="active-${flow.id}" type="checkbox" aria-label="Active: ${esc(flow.name)}" data-id="${flow.id}" ${flow.enabled ? "checked" : ""} ${flow.schedule_type === "manual" ? "disabled" : ""}><span aria-hidden="true"></span></label></td>
+        <td><select class="flow-inline-edit" data-id="${flow.id}" data-field="owner_person_id" data-flow-focus="owner-${flow.id}" aria-label="Owner: ${esc(flow.name)}"><option value="">Unassigned</option>${(window._flowsState?.people || []).map(person => `<option value="${person.id}" ${person.id === flow.owner_person_id ? "selected" : ""}>${esc(person.name)}</option>`).join("")}</select></td>
         <td class="flow-path-cell">${esc(row.source || "—")}</td>
-        <td>${esc(row.owner || "No owner")}${!row.owner ? '<small>Failure alerts disabled</small>' : !flow.owner_email ? '<small>No email mapped</small>' : ""}</td>
-        <td>${esc(row.type)}${flow.local_file_worksheet ? `<small>Worksheet: ${esc(flow.local_file_worksheet)}</small>` : ""}<small>${row.group === "Local" ? "Private snapshots · latest 3" : flow.output_mode === "direct_replace" ? "Exact-name replacement" : "Run folders"}</small></td>
-        <td class="flow-path-cell">${esc(row.to || "—")}${flow.sql_handoff_enabled ? `<small>SQL ${esc(flow.sql_mode)} · ${esc(row.destination || "")}</small>` : ""}</td>
-        <td>${esc(row.schedule)}${flow.next_run_at ? `<small>Next ${esc(formatDate(flow.next_run_at))}</small>` : ""}</td>
-        <td>${_flowStatusBadge(flow.last_status)}${flow.last_run_at ? `<small>${esc(timeAgo(flow.last_run_at))}</small>` : '<small>Not run yet</small>'}${flow.sql_reconciliation_required ? '<small class="flow-error">SQL reconciliation required</small>' : ''}${Number(flow.download_parallelism) > 1 ? `<small>Up to ${Number(flow.download_parallelism)} download slots</small>` : ''}</td>
-        <td><label class="flow-switch"><input class="flow-enabled-switch" type="checkbox" data-id="${flow.id}" data-flow-focus="active-${flow.id}" aria-label="Active: ${esc(flow.name)}" ${flow.enabled ? "checked" : ""} ${flow.schedule_type === "manual" ? "disabled" : ""}><span aria-hidden="true"></span><strong>${flow.enabled ? "Active" : "Inactive"}</strong></label>${flow.schedule_type === "manual" ? '<small>Manual only</small>' : ""}</td>
-        <td class="flow-row-actions">${button("flow-run", activeRun?.status === "queued" ? "Start now" : activeRun ? "Running" : "Run", activeRun && activeRun.status !== "queued" ? "disabled" : "")}${activeRun ? `<button class="btn-sm btn-outline btn-danger-outline flow-stop" type="button" data-id="${flow.id}" data-flow-focus="flow-stop-${flow.id}">Stop</button>` : ""}${button("flow-edit", "Edit")}<details class="flow-row-menu"><summary aria-label="More actions: ${esc(flow.name)}" data-flow-focus="more-${flow.id}">More</summary><div>${button("flow-open-folder", "Open folder")}${flow.flow_folder ? button("flow-standalone-status", "Check standalone") + button("flow-standalone", "Generate standalone") : ""}${flow.sql_reconciliation_required ? button('flow-sql-reconciled', 'Acknowledge SQL reconciliation') : ''}<button class="btn-sm btn-outline btn-danger-outline flow-delete" type="button" data-id="${flow.id}" data-flow-focus="flow-delete-${flow.id}">Delete</button></div></details></td>
+        <td>${flow.source_type === "outlook" ? `CSV or Excel attachment<small>Original filename · default Inbox</small>` : flow.source_type === "file" ? `CSV or Excel file<small>${flow.local_file_worksheet ? `Worksheet: ${esc(flow.local_file_worksheet)} · ` : ""}Private snapshots · latest 3</small>` : `${esc(flow.download_mode === "one_per_period" || flow.download_mode === "one_per_week" ? `One ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} every ${flow.window_weeks || 1} week(s)` : `${flow.export_views?.length || 1} ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} export(s)`)}<small>${flow.period_strategy === "none" ? "No period prompt" : flow.period_strategy === "latest" ? "Start to latest available" : flow.period_strategy === "rolling" ? "Rolling window" : "Fixed start + end"}</small>`}<small>${flow.output_mode === "direct_replace" ? "Direct files · exact-name replacement" : "Run folders · newest 3"}</small><small>${esc(row.to || "")}${flow.sql_handoff_enabled ? ` · SQL ${esc(flow.sql_mode)}` : ""}</small></td>
+        <td>${["outlook", "file"].includes(flow.source_type) ? "—" : `<select class="flow-inline-edit" data-id="${flow.id}" data-field="browser_mode" data-flow-focus="browser-${flow.id}" aria-label="Browser: ${esc(flow.name)}"><option value="headless" ${flow.browser_mode !== "headed" ? "selected" : ""}>Headless</option><option value="headed" ${flow.browser_mode === "headed" ? "selected" : ""}>Headed</option></select>`}</td>
+        <td>${esc(_flowScheduleLabel(flow))}</td>
+        <td><div class="flow-last-run">${_flowLastRunHtml(activeRun || { status: flow.last_status, created_at: flow.last_run_at })}</div>${flow.sql_reconciliation_required ? '<small class="flow-error">SQL reconciliation required</small>' : ""}${Number(flow.download_parallelism) > 1 ? `<small>Up to ${Number(flow.download_parallelism)} download slots</small>` : ""}</td>
+        <td class="flow-row-actions">${button("flow-run", activeRun?.status === "queued" ? "Start now" : activeRun ? "Running" : "Run", activeRun && activeRun.status !== "queued" ? "disabled" : "")}<button class="btn-sm btn-outline btn-danger-outline flow-stop" type="button" data-id="${flow.id}" data-flow-focus="flow-stop-${flow.id}" ${activeRun ? "" : "hidden"}>Stop</button>${button("flow-edit", "Edit")}<details class="flow-row-menu"><summary aria-label="More actions: ${esc(flow.name)}" data-flow-focus="more-${flow.id}">More</summary><div>${button("flow-open-folder", "Open folder")}${flow.flow_folder ? button("flow-standalone-status", "Check standalone") + button("flow-standalone", "Generate standalone") : ""}${flow.sql_reconciliation_required ? button('flow-sql-reconciled', 'Acknowledge SQL reconciliation') : ''}<button class="btn-sm btn-outline btn-danger-outline flow-delete" type="button" data-id="${flow.id}" data-flow-focus="flow-delete-${flow.id}">Delete</button></div></details></td>
     </tr>`;
 }
 
 function _flowSortColumns() {
-    return [["name", "Flow"], ["source", "Source"], ["owner", "Owner"], ["type", "Type"], ["to", "To"], ["schedule", "Schedule"], ["lastRun", "Last run"], ["active", "Active"]];
+    return [["name", "Flow"], ["active", "Active"], ["owner", "Owner"], ["source", "Source"], ["type", "Download"], ["browser", "Browser"], ["schedule", "Schedule"], ["lastRun", "Last run"]];
 }
 
 function _flowValidSort(value) {
@@ -10920,6 +10921,25 @@ function _flowSortHeaders() {
         const hint = next ? `Sort ${label} ${next.direction === "asc" ? "ascending" : "descending"}` : "Restore original order";
         return `<th scope="col"${active ? ` aria-sort="${state.direction === "asc" ? "ascending" : "descending"}"` : ""}><button type="button" class="flow-sort" id="flow-sort-${key}" data-key="${key}" title="${hint}">${label}<span aria-hidden="true">${active ? state.direction === "asc" ? " ↑" : " ↓" : " ↕"}</span></button></th>`;
     }).join("") + '<th scope="col">Actions</th>';
+}
+
+function _flowScheduleLabel(flow) {
+    if (flow.schedule_type === "monthly") return `Monthly · day ${flow.schedule_day}`;
+    if (flow.schedule_type === "weekly") {
+        const names = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+            .filter(day => (flow.schedule_days || []).includes(day)).map(day => day[0].toUpperCase() + day.slice(1) + "s");
+        return names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names[0] || "Weekly";
+    }
+    return flow.schedule_type === "daily" ? "Daily" : "Manual";
+}
+
+function _flowLastRunHtml(run) {
+    const working = ["claimed", "running"].includes(run?.status);
+    return `<span class="flow-run-status">${working ? '<span aria-label="In progress">🔧</span> ' : ""}${_flowStatusBadge(run?.status)}${run?.status === "queued" ? " · Waiting" : ""}</span><small>${run?.created_at ? esc(timeAgo(run.created_at)) : "Not run yet"}</small>`;
+}
+
+function _flowActivityPanelHtml() {
+    return `<section class="flow-activity" aria-label="Live flow activity"><div class="flow-panel-head"><h2>Live activity</h2><span id="flow-activity-connection" role="status">Connecting…</span></div><div class="flow-activity-scroll" tabindex="0" aria-label="Active runs and recent events"><div id="flow-active-runs"></div><div id="flow-recent-events"></div></div></section>`;
 }
 
 /** The folder a report sits in, and its own name, from the discovery path.
@@ -11559,6 +11579,7 @@ function _flowRunsHtml(runs) {
 }
 
 async function renderFlows() {
+    const requestId = navigationRequestId;
     const [catalog, flows, runs, workers, scans, estimates, sqlCatalog, people, remoteControl] = await Promise.all([
         api("/api/flows/catalog"), api("/api/flows"), api("/api/flows/runs"), api("/api/flows/workers"),
         api("/api/flows/scans"), api("/api/flows/estimates"), api("/api/flows/sql/catalog"), api("/api/people"),
@@ -11569,9 +11590,10 @@ async function renderFlows() {
     if (scans[0]) {
         try { scanEvents = (await api(`/api/flows/scans/${scans[0].id}/events`)).events || []; } catch (_) {}
     }
+    if (requestId !== navigationRequestId || currentPage !== "flows") return "";
     window._flowsState = {
         catalog, flows, runs, workers, scans, estimates, sqlCatalog, people, scanEvents,
-        openCatalogTopics: window._flowsState?.openCatalogTopics || new Set(), view: "list",
+        openCatalogTopics: new Set(), view: "list",
     };
     return `
         <div class="page-header flow-page-header"><div><h1>Flows</h1><p class="subtitle">Acquire data from files, Outlook, or website reports on the authenticated BI desktop.</p></div><button class="btn-primary" id="flow-create">Create flow</button></div>
@@ -11580,6 +11602,7 @@ async function renderFlows() {
 }
 
 function _flowShowView(view, payload = null) {
+    _flowStopActivityMonitor();
     const state = window._flowsState;
     state.view = view;
     const workspace = document.getElementById("flow-workspace");
@@ -11597,13 +11620,139 @@ function _flowShowView(view, payload = null) {
     else if (view === "runs") workspace.innerHTML = _flowRunsHtml(state.runs);
     else if (view === "source-picker") workspace.innerHTML = _flowSourcePickerHtml(state.catalog);
     else if (view === "builder") workspace.innerHTML = _flowBuilderHtml(state.catalog, payload);
-    else workspace.innerHTML = _flowListHtml(state.flows, state.workers, state.catalog, state.runs);
+    else workspace.innerHTML = _flowListHtml(state.flows, state.workers, state.catalog, state.activity?.active_runs || state.runs);
     _bindFlowWorkspace();
     if (view === "list") {
         const next = focusId ? document.getElementById(focusId) : focusKey ? [...workspace.querySelectorAll("[data-flow-focus]")].find(item => item.dataset.flowFocus === focusKey) : null;
         if (next) { const menu = next.closest("details"); if (menu) menu.open = true; next.focus(); }
     }
     _flowScheduleCatalogMonitor();
+    if (view === "list") {
+        if (state.activity) _flowPatchActivity(state.activity);
+        _flowRefreshActivity();
+    }
+}
+
+// One request across visits; an invalidated response can never patch a new view.
+const _flowActivityPoll = { generation: 0, timer: null, inFlight: null, pending: false };
+
+function _flowActivityVisible() {
+    return currentPage === "flows" && window._flowsState?.view === "list"
+        && !document.hidden && !!document.getElementById("flow-activity-connection");
+}
+
+function _flowStopActivityMonitor() {
+    _flowActivityPoll.generation++;
+    clearTimeout(_flowActivityPoll.timer);
+    _flowActivityPoll.pending = false;
+}
+
+function _flowRefreshActivity() {
+    const poll = _flowActivityPoll;
+    clearTimeout(poll.timer);
+    if (!_flowActivityVisible()) return Promise.resolve();
+    if (poll.inFlight) {
+        // Run/Stop or returning to the view needs a snapshot newer than the request.
+        poll.pending = true;
+        poll.generation++;
+        return poll.inFlight;
+    }
+    const generation = poll.generation;
+    const state = window._flowsState;
+    poll.inFlight = (async () => {
+        try {
+            const activity = await api("/api/flows/activity");
+            if (generation !== poll.generation || state !== window._flowsState || !_flowActivityVisible()) return;
+            state.activity = activity;
+            _flowPatchActivity(activity);
+            document.getElementById("flow-activity-connection").textContent = "Live · every 5s";
+        } catch (_) {
+            if (generation === poll.generation && state === window._flowsState && _flowActivityVisible()) {
+                document.getElementById("flow-activity-connection").textContent = "Reconnecting…";
+            }
+        } finally {
+            poll.inFlight = null;
+            if (_flowActivityVisible()) {
+                if (poll.pending) {
+                    poll.pending = false;
+                    _flowRefreshActivity();
+                } else {
+                    poll.timer = setTimeout(_flowRefreshActivity, 5000);
+                }
+            }
+        }
+    })();
+    return poll.inFlight;
+}
+
+document.addEventListener("visibilitychange", () => {
+    _flowStopActivityMonitor();
+    if (!document.hidden) _flowRefreshActivity();
+});
+
+function _flowPatchActivity(activity) {
+    const latest = new Map(activity.latest_runs.map(run => [Number(run.flow_id), run]));
+    const active = new Map(activity.active_runs.map(run => [Number(run.flow_id), run]));
+    for (const flow of window._flowsState?.flows || []) {
+        const run = active.get(flow.id) || latest.get(flow.id);
+        flow.last_status = run?.status || null;
+        flow.last_run_at = run?.created_at || null;
+    }
+    document.querySelectorAll(".flow-group-toggle").forEach(button => {
+        const items = (window._flowsState?.flows || []).filter(flow => _flowRowModel(flow).group === button.dataset.group);
+        const counts = [[".flow-group-active", items.filter(flow => active.has(flow.id)).length, "active runs"],
+            [".flow-group-failed", items.filter(flow => flow.last_status === "failed").length, "failed"]];
+        for (const [selector, count, label] of counts) {
+            const node = button.querySelector(selector);
+            if (node) { node.textContent = `${count} ${label}`; node.hidden = !count; }
+        }
+    });
+    document.querySelectorAll("tr[data-flow-id]").forEach(row => {
+        const flowId = Number(row.dataset.flowId);
+        const run = active.get(flowId);
+        const last = row.querySelector(".flow-last-run");
+        const html = _flowLastRunHtml(run || latest.get(flowId));
+        if (last.innerHTML !== html) last.innerHTML = html;
+        const start = row.querySelector(".flow-run");
+        const stop = row.querySelector(".flow-stop");
+        start.textContent = run?.status === "queued" ? "Start now" : run ? "Running" : "Run";
+        if (!start.dataset.busy) start.disabled = !!run && run.status !== "queued";
+        stop.hidden = !run;
+        if (!stop.dataset.busy) stop.disabled = false;
+    });
+    const workers = document.getElementById("flow-worker-count");
+    if (workers) workers.textContent = `${activity.workers.online} online worker${activity.workers.online === 1 ? "" : "s"}`;
+    _flowPatchActivityEntries("flow-active-runs", activity.active_runs.map(run => ({
+        ...run, key: `active:${run.id}`, run_id: run.id, stage: run.status,
+        message: run.status === "queued" ? "Waiting for a worker" : run.status === "claimed" ? "Claimed by a worker" : "Run in progress",
+        created_at: run.started_at || run.claimed_at || run.created_at,
+    })));
+    _flowPatchActivityEntries("flow-recent-events", activity.events);
+}
+
+function _flowPatchActivityEntries(id, entries) {
+    const container = document.getElementById(id);
+    const scroller = container.parentElement;
+    const scrollTop = scroller.scrollTop;
+    const existing = new Map(Array.from(container.children, node => [node.dataset.key, node]));
+    entries.forEach((entry, index) => {
+        let node = existing.get(entry.key);
+        if (!node) {
+            node = document.createElement("div");
+            node.className = "flow-activity-entry";
+            node.dataset.key = entry.key;
+            node.innerHTML = '<time></time><span></span><a target="_blank" rel="noopener">Full run log</a>';
+            node.querySelector("a").href = `/flow-runs/${entry.run_id}`;
+        }
+        existing.delete(entry.key);
+        const time = node.querySelector("time");
+        time.dateTime = entry.created_at || "";
+        time.textContent = entry.created_at ? formatDate(entry.created_at) : "";
+        node.querySelector("span").textContent = `${["claimed", "running"].includes(entry.status) ? "🔧 " : ""}${entry.flow_name} · Run #${entry.run_id} · ${entry.stage || entry.status} · ${entry.message || ""}`;
+        if (container.children[index] !== node) container.insertBefore(node, container.children[index] || null);
+    });
+    existing.forEach(node => node.remove());
+    scroller.scrollTop = scrollTop;
 }
 
 function _flowScheduleCatalogMonitor() {
@@ -11653,7 +11802,7 @@ function _flowBindDialog(overlay, restoreFocus) {
 
 function _flowDeleteDialog(flow) {
     const restoreFocus = document.activeElement;
-    const runs = (window._flowsState?.runs || []).filter(run => Number(run.flow_id) === Number(flow.id));
+    const runs = (window._flowsState?.activity?.active_runs || window._flowsState?.runs || []).filter(run => Number(run.flow_id) === Number(flow.id));
     const activeRun = runs.find(run => ["queued", "claimed", "running"].includes(run.status));
     const blockedReason = activeRun
         ? `Stop active run #${activeRun.id} before this flow can be deleted.`
@@ -12058,6 +12207,27 @@ function _flowBuildSteps(form) {
 
 function _bindFlowWorkspace() {
     const state = window._flowsState;
+    document.querySelectorAll(".flow-inline-edit").forEach(select => select.onchange = async () => {
+        const flow = state.flows.find(item => item.id === Number(select.dataset.id));
+        const field = select.dataset.field;
+        const previous = flow[field] ?? "";
+        const value = field === "owner_person_id" ? (select.value ? Number(select.value) : null) : select.value;
+        select.disabled = true;
+        try {
+            const updated = await apiPatch(`/api/flows/${flow.id}`, { [field]: value });
+            Object.assign(flow, updated);
+            if (field === "owner_person_id") {
+                const person = (state.people || []).find(item => item.id === value);
+                flow.owner_name = person?.name || null;
+                flow.owner_email = person?.email || null;
+            }
+        } catch (err) {
+            select.value = String(previous);
+            toast("Flow not saved: " + err.message);
+        } finally {
+            select.disabled = false;
+        }
+    });
     document.querySelectorAll(".flow-sort").forEach(button => button.addEventListener("click", () => {
         window._flowSortMemory = _flowNextSort(_flowSortState(), button.dataset.key);
         try { sessionStorage.setItem("metronome.flowSort", JSON.stringify(window._flowSortMemory)); } catch (_) {}
@@ -12103,7 +12273,7 @@ function _bindFlowWorkspace() {
     // 5-second scan monitor re-render does not collapse them again.
     document.querySelectorAll(".flow-catalog-group").forEach(group => group.addEventListener("toggle", () => {
         const state_ = window._flowsState;
-        if (!state_) return;
+        if (!state_ || state_.catalogFilter || !group.isConnected) return;
         state_.openCatalogTopics = state_.openCatalogTopics || new Set();
         if (group.open) state_.openCatalogTopics.add(group.dataset.topic);
         else state_.openCatalogTopics.delete(group.dataset.topic);
@@ -12159,9 +12329,9 @@ function _bindFlowWorkspace() {
         const flow = state.flows.find(item => item.id === Number(button.dataset.id));
         if (flow) _flowDeleteDialog(flow);
     });
-    document.querySelectorAll(".flow-enabled-switch").forEach(input => input.onchange = async () => { const enabled = input.checked; input.disabled = true; try { const updated = await apiPatch(`/api/flows/${input.dataset.id}/enabled`, { enabled }); const flow = state.flows.find(item => item.id === updated.id); Object.assign(flow, updated); _flowShowView("list"); toast(enabled ? "Flow activated" : "Flow paused"); } catch (err) { input.checked = !enabled; input.disabled = false; toast("Flow status not changed: " + err.message); } });
-    document.querySelectorAll(".flow-run").forEach(button => button.onclick = async () => { button.disabled = true; const flow = state.flows.find(item => item.id === Number(button.dataset.id)); try { await apiPost(`/api/flows/${button.dataset.id}/run`); toast(flow?.source_type === "file" ? "Run queued. The worker will read the configured file and force a new snapshot." : flow?.source_type === "outlook" ? "Run queued. The worker will check the signed-in user's Outlook Inbox." : flow?.browser_mode === "headed" ? "Run queued. Edge is opening in the BI desktop." : "Run queued for the background worker"); await navigate("flows"); } catch (err) { toast("Run not queued: " + err.message); button.disabled = false; } });
-    document.querySelectorAll(".flow-stop").forEach(button => button.onclick = async () => { button.disabled = true; try { const result = await apiPost(`/api/flows/${button.dataset.id}/stop`); toast(result.message || "Run stopped"); await navigate("flows"); } catch (err) { toast("Run not stopped: " + err.message); button.disabled = false; } });
+    document.querySelectorAll(".flow-enabled-switch").forEach(input => input.onchange = async () => { const enabled = input.checked; input.disabled = true; try { const updated = await apiPatch(`/api/flows/${input.dataset.id}/enabled`, { enabled }); const flow = state.flows.find(item => item.id === updated.id); Object.assign(flow, updated); input.disabled = false; toast(enabled ? "Flow activated" : "Flow paused"); } catch (err) { input.checked = !enabled; input.disabled = false; toast("Flow status not changed: " + err.message); } });
+    document.querySelectorAll(".flow-run").forEach(button => button.onclick = async () => { button.disabled = true; button.dataset.busy = "true"; const flow = state.flows.find(item => item.id === Number(button.dataset.id)); try { await apiPost(`/api/flows/${button.dataset.id}/run`); toast(flow?.source_type === "file" ? "Run queued. The worker will read the configured file and force a new snapshot." : flow?.source_type === "outlook" ? "Run queued. The worker will check the signed-in user's Outlook Inbox." : flow?.browser_mode === "headed" ? "Run queued. Edge is opening in the BI desktop." : "Run queued for the background worker"); } catch (err) { toast("Run not queued: " + err.message); button.disabled = false; } finally { delete button.dataset.busy; button.disabled = false; _flowRefreshActivity(); } });
+    document.querySelectorAll(".flow-stop").forEach(button => button.onclick = async () => { button.disabled = true; button.dataset.busy = "true"; try { const result = await apiPost(`/api/flows/${button.dataset.id}/stop`); toast(result.message || "Run stopped"); } catch (err) { toast("Run not stopped: " + err.message); button.disabled = false; } finally { delete button.dataset.busy; button.disabled = false; _flowRefreshActivity(); } });
     document.querySelectorAll(".flow-resume").forEach(button => button.onclick = async () => { button.disabled = true; try { const result = await apiPost(`/api/flows/runs/${button.dataset.id}/resume`); toast(`Resume queued - skipping ${result.skipped_files} saved file(s)`); await navigate("flows"); } catch (err) { toast("Resume not queued: " + err.message); button.disabled = false; } });
     document.querySelectorAll('.flow-row-actions a[href^="/flow-runs/"]').forEach(link => {
         if (link.parentElement.querySelector(".ai-investigate-run")) return;
@@ -12539,6 +12709,7 @@ function _bindFlowWorkspace() {
 }
 
 function bindFlowsPage() {
+    _flowRefreshActivity();
     document.querySelectorAll(".flow-tabs button").forEach(button => button.onclick = () => _flowShowView(button.dataset.flowView));
     $("#flow-create")?.addEventListener("click", () => _flowShowView("source-picker"));
     _bindFlowWorkspace();
@@ -12656,6 +12827,8 @@ let currentPage = "dashboard";
 let navigationRequestId = 0;
 
 async function navigate(page) {
+    _flowStopActivityMonitor();
+    clearTimeout(window._flowCatalogMonitorTimer);
     const requestId = ++navigationRequestId;
     // Resolve aliases for old routes
     if (pageAliases[page]) page = pageAliases[page];

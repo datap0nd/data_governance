@@ -4228,7 +4228,7 @@ def test_asap_scraper_never_uses_control_modified_clicks():
 
 def test_every_active_flow_renders_a_stop_button():
     source = Path(__file__).parents[1].joinpath("app", "static", "app.js").read_text()
-    assert '${activeRun ? `<button class="btn-sm btn-outline btn-danger-outline flow-stop"' in source
+    assert 'data-flow-focus="flow-stop-${flow.id}" ${activeRun ? "" : "hidden"}>Stop</button>' in source
     assert 'activeRun.job?.execution?.browser_mode === "headed"' not in source
     index = Path(__file__).parents[1].joinpath("app", "static", "index.html").read_text()
     # The exact number is irrelevant; the ?v=<digits> shape is what the
