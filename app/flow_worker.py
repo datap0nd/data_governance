@@ -291,7 +291,7 @@ def _render_filename(
         "year": year,
         "week_number": week_number,
         "index": str(index),
-        "date": date.today().isoformat(),
+        "date": job.get('_runtime_task_date') or date.today().isoformat(),
     }
     name = template
     for key, value in values.items():
@@ -5698,7 +5698,8 @@ def _has_named_control(page: Page | Frame, text: str) -> bool:
 
 def _export_task_key(export_view, period) -> str:
     """Stable identity of one export file within a bundle."""
-    return json.dumps({"export_view": export_view, "period_key": period}, sort_keys=True)
+    from app.flow_tasks import task_key
+    return task_key(export_view, period)
 
 
 def _job_store_root(job: dict) -> Path | None:
@@ -6200,7 +6201,7 @@ def execute_job(
     page: Page, job: dict, report_progress, profile_dir: Path,
     download_staging_dir: Path | None = None,
     artifacts: list[dict] | None = None,
-    *, run_id: int, register_folder, headed: bool = False,
+    *, run_id: int, register_folder, headed: bool = False, task_assignment: dict | None = None,
 ) -> tuple[list[dict], list[dict]]:
     # The caller may own the artifact list. Files are appended in place, so
     # everything saved before a mid-bundle failure stays visible to the
@@ -6215,10 +6216,14 @@ def execute_job(
     ready_text = job["report"].get("ready_text")
     open_export = job["report"].get("open_export_text")
 
-    target = _prepare_run_folder(
-        job, profile_dir, run_id=run_id, register_folder=register_folder,
-        report_progress=report_progress,
-    )
+    if task_assignment is not None:
+        from app.flow_parallel_worker import task_output_folder
+        target = task_output_folder(job, task_assignment, run_id)
+    else:
+        target = _prepare_run_folder(
+            job, profile_dir, run_id=run_id, register_folder=register_folder,
+            report_progress=report_progress,
+        )
 
     periods = job["downloads"].get("periods") or [None]
     # An HTML dashboard has no Export Wizard: its data leaves through the
@@ -6249,17 +6254,10 @@ def execute_job(
     require_normalized_csv = not (
         is_html_dashboard and not downstream_requires_csv
     )
-    if is_dashboard:
-        tasks = [
-            {"period": period, "export_view": link, "download_link": link}
-            for link in dashboard_links for period in periods
-        ]
-    else:
-        export_views = job.get("report", {}).get("export_views") or [None]
-        tasks = [
-            {"period": period, "export_view": export_view, "download_link": None}
-            for export_view in export_views for period in periods
-        ]
+    from app.flow_tasks import task_matrix
+    tasks = task_matrix(job)
+    if task_assignment is not None and not any(task['ordinal'] == task_assignment['ordinal'] and task['key'] == task_assignment['task_key'] for task in tasks):
+        raise RuntimeError('Download task does not belong to the frozen export matrix.')
     job["_runtime_bundle_count"] = len(tasks)
     if artifacts is None:
         artifacts = []
@@ -6677,6 +6675,8 @@ def execute_job(
     completed_keys = _resume_completed_keys(job)
     resumed_run_id = (job.get("resume") or {}).get("from_run_id")
     for index, task in enumerate(tasks, start=1):
+        if task_assignment is not None and index != task_assignment['ordinal']:
+            continue
         if _export_task_key(task["export_view"], task["period"]) in completed_keys:
             report_progress(
                 "running",
@@ -6893,7 +6893,7 @@ def _code_version() -> str:
 
 def execute_flow(page, job: dict, progress, profile_dir: Path, download_staging_dir=None,
                  *, run_id: int, register_folder, headed: bool = False,
-                 artifacts=None, state=None, run_started=None) -> dict:
+                 artifacts=None, state=None, run_started=None, acquire_bundle=None) -> dict:
     """One acquisition/publication/transform/SQL path for every launch surface.
 
     Callers own process locks, browser lifetime, progress transport and retention
@@ -6982,7 +6982,7 @@ def execute_flow(page, job: dict, progress, profile_dir: Path, download_staging_
             # Share the artifact list so a mid-bundle failure still
             # reports every file saved before the error - the final
             # failed progress post below sends this same list.
-            artifacts, timings = execute_job(
+            artifacts, timings = (acquire_bundle or execute_job)(
                 page, job, progress, profile_dir, download_staging_dir,
                 artifacts=artifacts,
                 run_id=run_id, register_folder=register_folder,
@@ -7121,7 +7121,9 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
             "capabilities": {"adapters": ["web_export", ASAP_PORTAL_ADAPTER, GSCM_PORTAL_ADAPTER, OUTLOOK_ATTACHMENT_ADAPTER, LOCAL_FILE_ADAPTER], "headed": headed, "process_id": os.getpid(), "delete_existing": False, "overwrite_existing": True, "artifact_store_id": flow_publish.artifact_store_id(profile_dir), "code_version": code_version},
         }
         from app.flow_capacity import slot_number
+        from app import flow_tasks
         registration['capabilities'].update(pool='headed' if headed else 'headless', slot=1 if headed else slot_number(worker_id))
+        registration['capabilities'][flow_tasks.CAPABILITY] = True
         # Metronome can take several minutes to boot after an update (service
         # reinstall, migrations, first-request warmup), and this worker now
         # starts first. Outlasting that boot beats dying at two minutes and
@@ -7170,6 +7172,13 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                 claimed = _api(client, "POST", f"/api/flows/worker/{worker_id}/claim")
                 run = claimed.get("run")
                 scan = claimed.get("scan")
+                if claimed.get('task'):
+                    from app.flow_parallel_worker import execute_task
+                    idle_since = time.monotonic()
+                    execute_task(client, worker_id, claimed['task'], page, profile_dir, download_staging_dir)
+                    if once:
+                        break
+                    continue
                 if not run and not scan:
                     if once:
                         break
@@ -7236,6 +7245,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                         break
                     continue
                 run_id = run["id"]
+                transport_state = {}
                 run_started = time.perf_counter()
                 artifacts = []
                 timings = []
@@ -7257,6 +7267,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                         "error": error[:ASAP_MAX_ERROR_CHARS] if error else error,
                         "traceback": traceback_text[:100_000] if traceback_text else traceback_text,
                         "source_receipt": source_receipt,
+                        "finalizer_token": transport_state.get('finalizer_token'),
                     })
 
                 def register_folder(folder: str) -> dict:
@@ -7290,9 +7301,15 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                 execution_state = {}
                 try:
                     execution_locks.acquire()
+                    acquire_bundle = None
+                    if flow_tasks.enabled(run['job']):
+                        from functools import partial
+                        from app.flow_parallel_worker import acquire_bundle as parallel_bundle
+                        acquire_bundle = partial(parallel_bundle, client, worker_id, transport_state)
                     execute_flow(page, run["job"], progress, profile_dir, download_staging_dir,
                                  run_id=run_id, register_folder=register_folder, headed=headed,
-                                 artifacts=artifacts, state=execution_state, run_started=run_started)
+                                 artifacts=artifacts, state=execution_state, run_started=run_started,
+                                 acquire_bundle=acquire_bundle)
                 except Exception as exc:
                     artifacts = execution_state.get("artifacts", artifacts)
                     timings = execution_state.get("timings", timings)
@@ -7329,6 +7346,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                             f"/api/flows/worker/{worker_id}/runs/{run_id}/progress",
                             {
                                 "status": "failed",
+                                "finalizer_token": transport_state.get('finalizer_token'),
                                 "progress": {
                                     "stage": "failed",
                                     "message": fallback_message,

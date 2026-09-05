@@ -102,6 +102,8 @@
   paused verification flow and confirmed current status and saved-stage defaults.
 
 ## Plan 8A — Worker capacity
+- PR #60: https://github.com/datap0nd/data_governance/pull/60
+- Merged as d9f9f2b0; Ubuntu and Windows CI passed.
 - Atomic claims count runs, scans and final processing; default one background
   slot, configurable 1–5, with one separate headed slot. Assigned work can
   reconnect and finish after a reduction. Legacy store diagnostics still run
@@ -120,8 +122,31 @@
 - Browser saved/reloaded capacity 3 in the isolated test database and showed
   configured/offline status accurately. No services or real flows were started.
 
-## Remaining sequence
-8B Fan-out, with its own tested PR and merge boundary.
+## Plan 8B — Parallel downloads and finalization
+- Final checkpoint branch: codex/flows-redesign-fanout. This entry is delivered
+  by its own PR; the preceding rollback checkpoint is d9f9f2b0 (PR #60).
+- Durable download tasks preserve export/link/period order, full-bundle indices
+  and immutable output paths. The coordinator downloads in its own slot and
+  helpers use available global, per-flow and per-portal capacity.
+- Complete-bundle validation precedes publication, transformations and SQL.
+  Capability negotiation excludes old workers. Task leases fence late results;
+  exact process stops, cancellation acknowledgements and expiry drain the parent.
+- Resume retains successful files and source retention pins, and revalidates
+  checksums. SQL Retry rejects incomplete bundles. Uncertain SQL requires an
+  explicit reconciliation acknowledgement before any subsequent run/retry.
+- A coordinator's older progress cannot erase a helper's successful artifact.
+  Stop is atomic against task initialization. Delete clears the task ledger and
+  keeps artifacts. Worker restart never automatically replays finalization.
+- Browser saved/reloaded a portal limit of 2 in the isolated database; checked
+  background values 1–5 and the headed-mode reset/disable to 1.
+- Full regression: 1,392 passed. After preserving deferred owner notifications
+  on recovered failures, all 58 affected lifecycle/parallel tests passed,
+  including the 28 parallel tests. Three actual task executors download
+  concurrently in the API integration test with fake portal files.
+- All 20 frontend suites and both JavaScript syntax checks pass. PowerShell
+  setup/worker scripts parse. Windows/Ubuntu CI includes every frontend suite.
+- All planned stages are implemented. Separate merge boundaries preserve the
+  reviewed sequence; operator setup and live data validation remain distinct.
 
 ## Operational verification
 Actual appliance SSO, service installation, visible Explorer and real SQL are

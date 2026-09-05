@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 
 from app.config import DB_PATH, UPLOAD_PGHOST, UPLOAD_PGPORT
 from app.database import get_db
-from app import flow_paths, flow_layout, flow_capacity
+from app import flow_paths, flow_layout, flow_capacity, flow_tasks, flow_parallel
 from app.flow_credentials import asap_credential_status, save_asap_credentials
 from app.flow_asap_exports import (
     public_asap_download_types,
@@ -371,6 +371,8 @@ def fail_stale_runs(
     cutoff = _iso(now - timedelta(seconds=timeout_seconds))
     failed = []
     with get_db() as db:
+        db.execute('BEGIN IMMEDIATE')
+        flow_parallel.reap(db)
         rows = db.execute(
             """SELECT r.id, r.flow_id, r.worker_id
                FROM flow_runs r
@@ -381,6 +383,10 @@ def fail_stale_runs(
         ).fetchall()
         for row in rows:
             message = "The assigned browser worker stopped responding before the run finished."
+            if flow_parallel._fanout(db, row['id']):
+                flow_parallel.abort(db, row['id'], message + ' Finalization was not replayed; reconcile any uncertain SQL commit.', coordinator_stopped=True)
+                flow_parallel.finish_aborted(db, row['id'])
+                continue
             db.execute(
                 """UPDATE flow_runs SET status='failed', error=?, finished_at=?, heartbeat_at=?
                    WHERE id=? AND status IN ('claimed','running')""",
@@ -407,6 +413,13 @@ def fail_stale_runs(
                     (message, now_text, row["worker_id"]),
                 )
             failed.append(row["id"])
+        pending = db.execute("""SELECT e.id,e.run_id FROM flow_run_events e
+            JOIN flow_runs r ON r.id=e.run_id
+            WHERE e.stage='owner_alert_pending' AND r.status='failed'""").fetchall()
+        for event in pending:
+            db.execute("UPDATE flow_run_events SET stage='owner_alert_dispatch',message='Owner notification dispatched after parallel-run recovery.' WHERE id=?", (event['id'],))
+            if event['run_id'] not in failed:
+                failed.append(event['run_id'])
         _sync_flow_failure_actions(db, now_text)
     for run_id in failed:
         notify_flow_owner_of_failure(run_id)
@@ -659,6 +672,7 @@ class FlowWrite(BaseModel):
     export_filter_details: bool | None = None
     excel_trim: str = "none"
     browser_mode: str = "headless"
+    download_parallelism: int | None = Field(default=None, ge=1, le=5, strict=True)
     start_week: str | None = None
     end_week: str | None = None
     target_folder: str | None = Field(default=None, max_length=2000)
@@ -795,6 +809,8 @@ class FlowWrite(BaseModel):
                 raise ValueError("Unsupported period strategy.")
             if self.browser_mode not in BROWSER_MODES:
                 raise ValueError("Browser mode must be headed or headless.")
+        if self.source_type != "portal" or self.browser_mode == "headed":
+            self.download_parallelism = 1
         if self.source_type != "file":
             if self.target_folder and not _is_absolute_worker_path(self.target_folder):
                 raise ValueError("Target folder must be an absolute path visible to the worker.")
@@ -931,6 +947,7 @@ class WorkerProgress(BaseModel):
     error: str | None = Field(default=None, max_length=10000)
     traceback: str | None = Field(default=None, max_length=100000)
     source_receipt: LocalFileReceipt | OutlookSourceReceipt | None = None
+    finalizer_token: str | None = Field(default=None, max_length=64)
 
     @field_validator("progress")
     @classmethod
@@ -1478,6 +1495,8 @@ def _validate_flow_selections(db, body: FlowWrite, *, new_flow: bool = False):
 
 def _build_job(db, flow_id: int, *, force_reprocess: bool = False) -> dict:
     flow = _flow_out(db, flow_id, include_private_storage=True)
+    if flow.get('sql_reconciliation_required'):
+        raise HTTPException(409, 'A prior SQL commit may have completed. Reconcile the target and acknowledge it before another run.')
     paths = flow_paths.policy(db, flow)
     try:
         flow_paths.validate_flow(flow, paths)
@@ -1505,6 +1524,7 @@ def _build_job(db, flow_id: int, *, force_reprocess: bool = False) -> dict:
     execution = {
         "mode": "local", "host": "bi_desktop", "browser_mode": flow["browser_mode"],
         "worker_id": HEADED_WORKER_ID if flow["browser_mode"] == "headed" else LOCAL_WORKER_ID,
+        "download_parallelism": int(flow.get("download_parallelism") or 1),
     }
     if source_type == "file":
         execution["required_adapter"] = LOCAL_FILE_ADAPTER
@@ -1975,7 +1995,7 @@ def list_runs(flow_id: int | None = None, limit: int = Query(default=100, ge=1, 
 def get_run(run_id: int):
     with get_db() as db:
         row = db.execute(
-            """SELECT r.*, f.name AS flow_name FROM flow_runs r
+            """SELECT r.*, f.name AS flow_name, f.sql_reconciliation_required FROM flow_runs r
                JOIN flows f ON f.id=r.flow_id WHERE r.id=?""",
             (run_id,),
         ).fetchone()
@@ -2014,6 +2034,7 @@ def get_run(run_id: int):
                 for item in events
             ],
             "files": [dict(item) for item in files],
+            "downloads": flow_parallel.snapshot(db, run_id),
         }
 
 
@@ -2043,7 +2064,7 @@ def inspect_sql_retry_eligibility(
 ) -> dict:
     """Pure preflight shared by the SQL-retry endpoint and AI read tools."""
     source = db.execute(
-        """SELECT r.*, f.name AS flow_name FROM flow_runs r
+        """SELECT r.*, f.name AS flow_name, f.sql_reconciliation_required FROM flow_runs r
            JOIN flows f ON f.id=r.flow_id WHERE r.id=?""",
         (run_id,),
     ).fetchone()
@@ -2068,6 +2089,13 @@ def inspect_sql_retry_eligibility(
             "blocked", "run_active", "Wait for the source run to finish before retrying SQL.",
             _source=source,
         )
+    if source['sql_reconciliation_required']:
+        return _recovery_result('blocked', 'sql_reconciliation_required',
+            'Reconcile the uncertain SQL commit and acknowledge it before retrying.', _source=source)
+    downloads = flow_parallel.snapshot(db, run_id)
+    if downloads and downloads['completed'] != downloads['total']:
+        return _recovery_result('blocked', 'download_bundle_incomplete',
+            'Resume the missing exports before retrying SQL; the complete bundle is required.', _source=source)
     source_job = _loads(source["job_json"], {})
     sql_target = source_job.get("sql_handoff", {})
     if not sql_target.get("enabled"):
@@ -2230,7 +2258,7 @@ def inspect_sql_retry_eligibility(
 def inspect_resume_eligibility(db, run_id: int) -> dict:
     """Pure preflight shared by the Resume endpoint and AI read tools."""
     source = db.execute(
-        """SELECT r.*, f.name AS flow_name, f.source_type FROM flow_runs r
+        """SELECT r.*, f.name AS flow_name, f.source_type, f.sql_reconciliation_required FROM flow_runs r
            JOIN flows f ON f.id=r.flow_id WHERE r.id=?""",
         (run_id,),
     ).fetchone()
@@ -2256,6 +2284,9 @@ def inspect_resume_eligibility(db, run_id: int) -> dict:
             "not_applicable", "status_not_resumable", "Only a failed or cancelled run can be resumed.",
             _source=source,
         )
+    if source['sql_reconciliation_required']:
+        return _recovery_result('blocked', 'sql_reconciliation_required',
+            'Reconcile the uncertain SQL commit and acknowledge it before resuming.', _source=source)
     if (source["source_type"] or "portal") in {"outlook", "file"}:
         return _recovery_result(
             "not_applicable", "source_no_resume",
@@ -2306,7 +2337,7 @@ def inspect_resume_eligibility(db, run_id: int) -> dict:
         had_saved = True
         entry = (
             {**item, **identity}
-            if current_output_mode == "direct_replace"
+            if current_output_mode == "direct_replace" or int(job.get('execution', {}).get('download_parallelism') or 1) > 1
             else {
                 **identity,
                 **({"file_path": item.get("file_path")} if item.get("file_path") else {}),
@@ -2610,6 +2641,8 @@ def refresh_sql_catalog_now(request: Request):
 @router.post("")
 def create_flow(body: FlowWrite, request: Request):
     managed = not body.target_folder
+    if (body.download_parallelism or 1) > 1 and not managed:
+        raise HTTPException(422, "Parallel downloads require a managed shared folder. Create the flow with its automatic folder.")
     allocated = None
     flow_id = None
     now = _iso(_now())
@@ -2655,6 +2688,7 @@ def create_flow(body: FlowWrite, request: Request):
                  iso_utc(utc_now()) if body.enabled and body.schedule_type != "manual" else None),
             )
             flow_id = cursor.lastrowid
+            db.execute("UPDATE flows SET download_parallelism=? WHERE id=?", (body.download_parallelism or 1, flow_id))
             if managed:
                 adapter = db.execute("SELECT adapter FROM flow_sites WHERE id=?", (body.site_id,)).fetchone()[0]
                 allocated = flow_layout.create_flow_folder(flow_paths.get_flows_root(db), adapter, body.name, flow_id)
@@ -2722,6 +2756,24 @@ def adopt_flow_folder(flow_id: int, request: Request):
         if isinstance(exc, (OSError, ValueError)):
             raise HTTPException(409, f"Flow folder could not be adopted: {exc}") from exc
         raise
+
+
+class SQLReconciled(BaseModel):
+    acknowledged: Literal[True]
+
+
+@router.post('/{flow_id}/sql-reconciled')
+def acknowledge_sql_reconciliation(flow_id: int, body: SQLReconciled, request: Request):
+    with get_db() as db:
+        db.execute('BEGIN IMMEDIATE')
+        flow = db.execute('SELECT name FROM flows WHERE id=?', (flow_id,)).fetchone()
+        if not flow:
+            raise HTTPException(404, 'Flow not found.')
+        if db.execute("SELECT 1 FROM flow_runs WHERE flow_id=? AND status IN ('queued','claimed','running')", (flow_id,)).fetchone():
+            raise HTTPException(409, 'Wait for the active run and its downloads to stop first.')
+        db.execute('UPDATE flows SET sql_reconciliation_required=0 WHERE id=?', (flow_id,))
+        log_event(db, 'flow', flow_id, flow['name'], 'sql_reconciled', 'Operator acknowledged target reconciliation; future runs unblocked.', get_actor(request))
+    return {'flow_id': flow_id, 'sql_reconciliation_required': False}
 
 
 @router.post("/{flow_id}/open-folder")
@@ -2857,12 +2909,16 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
                       schedule_day, freshness_effective_from_at,
                       sql_database, sql_schema, sql_table, sql_target_source_id,
                       target_folder, local_file_path, local_file_worksheet, flow_folder,
-                      local_file_last_identity, local_file_config_revision
+                      local_file_last_identity, local_file_config_revision, download_parallelism
                FROM flows WHERE id=?""",
             (flow_id,),
         ).fetchone()
         if not existing:
             raise HTTPException(404, "Flow not found.")
+        if body.download_parallelism is None:
+            body.download_parallelism = existing['download_parallelism']
+        if body.download_parallelism > 1 and not existing['flow_folder']:
+            raise HTTPException(422, "Adopt a managed shared folder before enabling parallel downloads.")
         from app.routers.pipelines import assert_resource_unlocked
         assert_resource_unlocked(db, "flow", str(flow_id))
         if (existing["source_type"] or "portal") != body.source_type:
@@ -2956,6 +3012,7 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
         )
         if not cursor.rowcount:
             raise HTTPException(404, "Flow not found.")
+        db.execute("UPDATE flows SET download_parallelism=? WHERE id=?", (body.download_parallelism, flow_id))
         from app.freshness_inheritance import reconcile_file_binding, reconcile_source
         reconcile_file_binding(db, flow_id)
         for source_id in {existing["sql_target_source_id"], sql_target_source_id} - {None}:
@@ -3109,6 +3166,10 @@ def delete_flow(flow_id: int, body: FlowDeleteWrite, request: Request):
                    WHERE run_id IN (SELECT id FROM flow_runs WHERE flow_id=?)""",
                 (flow_id,),
             )
+            db.execute("""UPDATE flow_workers SET current_task_id=NULL WHERE current_task_id IN
+                (SELECT id FROM flow_download_tasks WHERE run_id IN (SELECT id FROM flow_runs WHERE flow_id=?))""", (flow_id,))
+            db.execute('DELETE FROM flow_download_tasks WHERE run_id IN (SELECT id FROM flow_runs WHERE flow_id=?)', (flow_id,))
+            db.execute('DELETE FROM flow_run_fanout WHERE run_id IN (SELECT id FROM flow_runs WHERE flow_id=?)', (flow_id,))
             db.execute("DELETE FROM flow_runs WHERE flow_id=?", (flow_id,))
 
         # Keep closed incident records as audit evidence without a dangling FK.
@@ -3272,6 +3333,7 @@ def stop_run(flow_id: int, request: Request):
     stop_assigned_worker = False
     message = ""
     with get_db() as db:
+        db.execute('BEGIN IMMEDIATE')
         flow = db.execute("SELECT id, name FROM flows WHERE id=?", (flow_id,)).fetchone()
         if not flow:
             raise HTTPException(404, "Flow not found.")
@@ -3284,6 +3346,11 @@ def stop_run(flow_id: int, request: Request):
         ).fetchone()
         if not row:
             raise HTTPException(409, "This flow has no active run to stop.")
+        if flow_parallel._fanout(db, row['id']):
+            # Classify Stop atomically against task initialization. Release the
+            # write transaction before the parallel path stops OS processes.
+            db.commit()
+            return flow_parallel.request_stop(row['id'])
         job = _loads(row["job_json"], {})
         browser_mode = job.get("execution", {}).get("browser_mode", "headless")
         run_id = row["id"]
@@ -3337,12 +3404,12 @@ def ensure_local_worker() -> dict:
     with get_db() as db:
         capacity = flow_capacity.headless_capacity(db)
         rows = {row["worker_id"]: row for row in db.execute(
-            "SELECT worker_id, status, current_run_id, current_scan_id, last_seen_at FROM flow_workers")}
+            "SELECT worker_id, status, current_run_id, current_scan_id, current_task_id, last_seen_at FROM flow_workers")}
     results = []
     for slot in range(1, capacity + 1):
         identity = flow_capacity.worker_id(slot)
         row = rows.get(identity)
-        if row and (row["current_run_id"] or row["current_scan_id"]):
+        if row and (row["current_run_id"] or row["current_scan_id"] or row['current_task_id']):
             results.append({"status": "busy", "mode": "local", "worker_id": identity})
         elif row and row["status"] != "offline" and row["last_seen_at"] and row["last_seen_at"] >= cutoff:
             results.append({"status": "online", "mode": "local", "worker_id": identity})
@@ -4578,6 +4645,7 @@ def register_worker(body: WorkerRegister):
     now = _iso(_now())
     interrupted_run_id = None
     with get_db() as db:
+        db.execute('BEGIN IMMEDIATE')
         registration_root = flow_paths.get_flows_root(db)
         recovery_roots = {str(Path(registration_root) / ".metronome" / "artifacts")}
         for queued in db.execute("SELECT job_json FROM flow_runs WHERE status='queued'"):
@@ -4594,12 +4662,16 @@ def register_worker(body: WorkerRegister):
         ) if existing_worker else {}
         previous_pid = previous_capabilities.get("process_id")
         replacement_pid = body.capabilities.get("process_id")
+        if existing_worker and existing_worker['stop_requested_pid'] is not None and previous_pid == replacement_pid:
+            return {'worker_id': body.worker_id, 'status': 'stopping', 'flows_root': registration_root, 'artifact_store_roots': sorted(recovery_roots)}
+        recovered_parallel = flow_parallel.recover_worker(db, existing_worker, replacement_pid) if existing_worker else False
         process_restarted = (
             existing_worker is not None
             and existing_worker["current_run_id"] is not None
             and previous_pid is not None
             and replacement_pid is not None
             and str(previous_pid) != str(replacement_pid)
+            and not recovered_parallel
         )
         if process_restarted:
             run = db.execute(
@@ -4680,9 +4752,15 @@ def claim_run(worker_id: str):
     now = _iso(_now())
     with get_db() as db:
         db.execute("BEGIN IMMEDIATE")
+        flow_parallel.reap(db)
         worker = db.execute("SELECT * FROM flow_workers WHERE worker_id=?", (worker_id,)).fetchone()
         if not worker:
             raise HTTPException(404, "Register this worker before claiming work.")
+        if worker['stop_requested_pid'] is not None:
+            return {'run': None, 'scan': None, 'stopping': True}
+        if worker['current_task_id']:
+            task = flow_parallel.claim_task(db, worker_id)
+            return {'run': None, 'scan': None, 'task': task}
         capabilities = _loads(worker["capabilities_json"], {})
         artifact_stores = _worker_artifact_stores(capabilities)
         worker_mode = "headed" if capabilities.get("headed") else "headless"
@@ -4743,6 +4821,11 @@ def claim_run(worker_id: str):
                 "SELECT * FROM flow_runs WHERE status='queued' ORDER BY created_at, id"
             ).fetchall()
 
+        # Finish active bundles before taking another parent run.
+        task = flow_parallel.claim_task(db, worker_id)
+        if task:
+            return {'run': None, 'scan': None, 'task': task}
+
         # Recovery diagnostics must still reject an impossible producer-store
         # assignment when the pool is busy. Capacity gates new work only.
         if not flow_capacity.can_claim(db, worker_id, worker_mode):
@@ -4757,6 +4840,8 @@ def claim_run(worker_id: str):
             adapters = set(capabilities.get("adapters") or [])
             return (
                 execution.get("browser_mode", "headless") == worker_mode
+                and (not flow_tasks.enabled(job) or capabilities.get(flow_tasks.CAPABILITY))
+                and flow_parallel.portal_available(db, job)
                 and (not required_adapter or required_adapter in adapters)
                 and (not (job.get("paths") or {}).get("artifact_store_root") or capabilities.get("shared_flow_artifacts"))
                 and set(execution.get("required_artifact_store_ids") or []).issubset(artifact_stores)
@@ -4778,6 +4863,7 @@ def claim_run(worker_id: str):
             scan = next((candidate for candidate in queued_scans if (
                 _loads(candidate["job_json"], {}).get("execution", {}).get("browser_mode", "headless")
                 == worker_mode
+                and flow_parallel.portal_available(db, _loads(candidate['job_json'], {}))
             )), None)
             if scan:
                 cursor = db.execute(
@@ -5209,11 +5295,13 @@ def update_run(worker_id: str, run_id: int, body: WorkerProgress):
         raise HTTPException(400, "Unsupported run status.")
     now = _iso(_now())
     with get_db() as db:
+        db.execute('BEGIN IMMEDIATE')
         row = db.execute("SELECT * FROM flow_runs WHERE id=? AND worker_id=?", (run_id, worker_id)).fetchone()
         if not row:
             raise HTTPException(404, "Run is not assigned to this worker.")
         if row["status"] in RUN_TERMINAL:
             return {"run_id": run_id, "status": row["status"], "ignored": True}
+        flow_parallel.guard_progress(db, worker_id, run_id, body.status, body.finalizer_token, body.progress.get('stage'))
         started = row["started_at"] or (now if body.status == "running" else None)
         finished = now if body.status in RUN_TERMINAL else None
         # Artifacts only ever accumulate within a run. A report without any -
@@ -5221,6 +5309,11 @@ def update_run(worker_id: str, run_id: int, body: WorkerProgress):
         # worker's download loop - must not erase files earlier progress
         # already recorded: Resume depends on that record.
         stored_artifacts = body.artifacts or _loads(row["artifact_json"], [])
+        fanout = flow_parallel._fanout(db, run_id)
+        if fanout and not fanout['finalizer_token']:
+            # A coordinator snapshot can lag a helper's terminal report. The
+            # task ledger is authoritative until bundle finalization begins.
+            stored_artifacts = flow_parallel.snapshot(db, run_id)['artifacts']
         no_op = bool(body.progress.get("no_op"))
         db.execute(
             """UPDATE flow_runs SET status=?, progress_json=?, artifact_json=?, error=?,

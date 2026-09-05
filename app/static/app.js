@@ -10867,9 +10867,9 @@ function _flowRowHtml(row) {
         <td>${esc(row.type)}${flow.local_file_worksheet ? `<small>Worksheet: ${esc(flow.local_file_worksheet)}</small>` : ""}<small>${row.group === "Local" ? "Private snapshots · latest 3" : flow.output_mode === "direct_replace" ? "Exact-name replacement" : "Run folders"}</small></td>
         <td class="flow-path-cell">${esc(row.to || "—")}${flow.sql_handoff_enabled ? `<small>SQL ${esc(flow.sql_mode)} · ${esc(row.destination || "")}</small>` : ""}</td>
         <td>${esc(row.schedule)}${flow.next_run_at ? `<small>Next ${esc(formatDate(flow.next_run_at))}</small>` : ""}</td>
-        <td>${_flowStatusBadge(flow.last_status)}${flow.last_run_at ? `<small>${esc(timeAgo(flow.last_run_at))}</small>` : '<small>Not run yet</small>'}</td>
+        <td>${_flowStatusBadge(flow.last_status)}${flow.last_run_at ? `<small>${esc(timeAgo(flow.last_run_at))}</small>` : '<small>Not run yet</small>'}${flow.sql_reconciliation_required ? '<small class="flow-error">SQL reconciliation required</small>' : ''}${Number(flow.download_parallelism) > 1 ? `<small>Up to ${Number(flow.download_parallelism)} download slots</small>` : ''}</td>
         <td><label class="flow-switch"><input class="flow-enabled-switch" type="checkbox" data-id="${flow.id}" data-flow-focus="active-${flow.id}" aria-label="Active: ${esc(flow.name)}" ${flow.enabled ? "checked" : ""} ${flow.schedule_type === "manual" ? "disabled" : ""}><span aria-hidden="true"></span><strong>${flow.enabled ? "Active" : "Inactive"}</strong></label>${flow.schedule_type === "manual" ? '<small>Manual only</small>' : ""}</td>
-        <td class="flow-row-actions">${button("flow-run", activeRun?.status === "queued" ? "Start now" : activeRun ? "Running" : "Run", activeRun && activeRun.status !== "queued" ? "disabled" : "")}${activeRun ? `<button class="btn-sm btn-outline btn-danger-outline flow-stop" type="button" data-id="${flow.id}" data-flow-focus="flow-stop-${flow.id}">Stop</button>` : ""}${button("flow-edit", "Edit")}<details class="flow-row-menu"><summary aria-label="More actions: ${esc(flow.name)}" data-flow-focus="more-${flow.id}">More</summary><div>${button("flow-open-folder", "Open folder")}${flow.flow_folder ? button("flow-standalone-status", "Check standalone") + button("flow-standalone", "Generate standalone") : ""}<button class="btn-sm btn-outline btn-danger-outline flow-delete" type="button" data-id="${flow.id}" data-flow-focus="flow-delete-${flow.id}">Delete</button></div></details></td>
+        <td class="flow-row-actions">${button("flow-run", activeRun?.status === "queued" ? "Start now" : activeRun ? "Running" : "Run", activeRun && activeRun.status !== "queued" ? "disabled" : "")}${activeRun ? `<button class="btn-sm btn-outline btn-danger-outline flow-stop" type="button" data-id="${flow.id}" data-flow-focus="flow-stop-${flow.id}">Stop</button>` : ""}${button("flow-edit", "Edit")}<details class="flow-row-menu"><summary aria-label="More actions: ${esc(flow.name)}" data-flow-focus="more-${flow.id}">More</summary><div>${button("flow-open-folder", "Open folder")}${flow.flow_folder ? button("flow-standalone-status", "Check standalone") + button("flow-standalone", "Generate standalone") : ""}${flow.sql_reconciliation_required ? button('flow-sql-reconciled', 'Acknowledge SQL reconciliation') : ''}<button class="btn-sm btn-outline btn-danger-outline flow-delete" type="button" data-id="${flow.id}" data-flow-focus="flow-delete-${flow.id}">Delete</button></div></details></td>
     </tr>`;
 }
 
@@ -11309,6 +11309,7 @@ function _flowBuilderHtml(catalog, existing = null) {
                             <label id="flow-export-filter-details-row" class="flow-check flow-span-2" ${isAsap ? "" : "hidden"}><input id="flow-export-filter-details" type="checkbox" data-inherit="${filtersInherited}" ${filtersChecked ? "checked" : ""} ${asapCapability.known && !asapCapability.options.export_filter_details?.available ? "disabled" : ""}><span>Export filter details</span><small>${filtersInherited ? "Inherited from ASAP until a scan observes a consistent state." : "The runner enforces this saved Export Wizard choice."}</small></label>
                             <label><span>Excel pre-processing</span><select id="flow-excel-trim"><option value="none" ${excelTrim === "none" ? "selected" : ""}>None</option><option value="first_row_and_column" ${excelTrim === "first_row_and_column" ? "selected" : ""}>Drop first row and first column (GSCM report frame)</option></select><small>Applied while normalizing the downloaded workbook to CSV, before headers are detected and before any transformation or SQL handoff. Recorded on every run.</small></label>
                             <label><span>Browser mode</span><select id="flow-browser-mode"><option value="headless" ${existing?.browser_mode !== "headed" ? "selected" : ""}>Headless · background</option><option value="headed" ${existing?.browser_mode === "headed" ? "selected" : ""}>Headed · visible debugging</option></select><small id="flow-browser-mode-help">Headless is best for routine runs.</small></label>
+                            <label><span>Parallel downloads</span><select id="flow-download-parallelism" ${existing?.id && !existing?.flow_folder ? 'disabled data-unmanaged="true"' : ''}>${[1,2,3,4,5].map(n => `<option value="${n}" ${n === Number(existing?.download_parallelism || 1) ? 'selected' : ''}>${n}</option>`).join('')}</select><small>${existing?.id && !existing?.flow_folder ? 'Adopt the managed shared folder before enabling parallel downloads.' : 'Uses available background slots. SQL and transformations wait for the full bundle. Visible debugging uses one slot.'}</small></label>
                             <label class="flow-week-field"><span>Sell-out Week - start</span><select id="flow-start-week" required><option value="">Choose a discovered week...</option>${_flowDiscoveredWeeks(report, existing?.start_week || "")}</select></label>
                             <label class="flow-week-field"><span>Sell-out Week - end</span><select id="flow-end-week" required><option value="">Choose a discovered week...</option>${_flowDiscoveredWeeks(report, existing?.end_week || "")}</select></label>
                             <label id="flow-window-weeks-field"><span>Weeks per download</span><input id="flow-window-weeks" type="number" min="1" max="105" value="${esc(existing?.window_weeks || 1)}"><small>Each file covers this many consecutive weeks.</small></label>
@@ -11789,6 +11790,7 @@ function _flowCollectBuilder() {
         export_filter_details: isAsap
             ? (filterDetailsControl?.disabled || filterDetailsControl?.dataset.inherit === "true" ? null : Boolean(filterDetailsControl?.checked)) : null,
         browser_mode: $("#flow-browser-mode").value,
+        download_parallelism: $("#flow-browser-mode").value === 'headed' ? 1 : Number($("#flow-download-parallelism")?.value || 1),
         excel_trim: $("#flow-excel-trim")?.value || "none",
         start_week: periodStrategy === "none" ? null : ($("#flow-start-week").value || null),
         end_week: periodStrategy === "fixed" ? ($("#flow-end-week").value || null) : null,
@@ -12032,6 +12034,11 @@ function _bindFlowWorkspace() {
         try { const result = await api(`/api/flows/${button.dataset.id}/standalone`); toast(`Standalone: ${result.state.replaceAll("_", " ")}. Run Scripts/run_flow.py with installed Python; Saved SQL and transformation settings are used by default.`); }
         catch (err) { toast(err.message); }
     }));
+    document.querySelectorAll('.flow-sql-reconciled').forEach(button => button.addEventListener('click', async () => {
+        if (!window.confirm('Only continue after checking the SQL target and resolving any partial or duplicate data from the interrupted run. This acknowledges reconciliation and allows future runs.')) return;
+        try { await apiPostJson(`/api/flows/${button.dataset.id}/sql-reconciled`, {acknowledged:true}); toast('SQL reconciliation acknowledged'); await navigate('flows'); }
+        catch (error) { toast(error.message); }
+    }));
     document.querySelectorAll(".flow-open-folder").forEach(button => button.addEventListener("click", async () => {
         try {
             const result = await apiPost(`/api/flows/${button.dataset.id}/open-folder`);
@@ -12260,6 +12267,8 @@ function _bindFlowWorkspace() {
     $("#flow-report")?.addEventListener("change", async event => { const report = state.catalog.reports.find(item => String(item.id) === event.target.value); const section = $("#flow-report-filters"); if (!section) return; section.querySelector(".flow-form-grid").innerHTML = report && report.filters.filter(filter => filter.enabled && !filter.stale && filter.control_type !== "week").length ? report.filters.filter(filter => filter.enabled && !filter.stale && filter.control_type !== "week").map(definition => `<label><span>${esc(definition.label)}${definition.required ? " *" : ""}</span>${_flowFilterControl(definition, null)}</label>`).join("") : '<p class="flow-inline-empty">This discovered report has no additional configurable filters.</p>'; _flowSyncExportSections(report); const hasWeek = _flowHasWeekFilter(report); const period = $("#flow-period-strategy"); if (period) { period.value = hasWeek ? "latest" : "none"; period.dispatchEvent(new Event("change")); } const start = $("#flow-start-week"); const end = $("#flow-end-week"); if (start) start.innerHTML = `<option value="">Choose a discovered week...</option>${_flowDiscoveredWeeks(report, "")}`; if (end) end.innerHTML = `<option value="">Choose a discovered week...</option>${_flowDiscoveredWeeks(report, "")}`; if (report) { try { const estimates = await api(`/api/flows/estimates?site_id=${report.site_id}&report_id=${report.id}`); $("#flow-download-estimate").textContent = _flowDuration(estimates.flow_download.estimated_ms); $("#flow-download-estimate-source").textContent = estimates.flow_download.source; } catch (_) {} } });
     $("#flow-browser-mode")?.addEventListener("change", event => {
         const headed = event.target.value === "headed";
+        const parallel = $('#flow-download-parallelism');
+        if (parallel) { parallel.disabled = headed || parallel.dataset.unmanaged === 'true'; if (headed) parallel.value = '1'; }
         $("#flow-browser-mode-help").textContent = headed
             ? "Opens Edge in the signed-in BI desktop. Use it to build or debug a flow."
             : "Runs in the background. Best for routine and scheduled downloads.";
@@ -12557,7 +12566,12 @@ function _flowCapacityHtml(state) {
         <button class="btn-primary" type="submit">Save capacity</button> <button class="btn-secondary" type="button" id="flow-capacity-start">Start configured workers</button>
         <p id="flow-capacity-result" role="status"></p></form></section>
         <section class="settings-panel paths-panel"><h2>Background slots</h2><p>After adding capacity, run setup.ps1 on the BI desktop to install missing slots and sign in to each browser profile. Existing sessions stay separate.</p>
-        <table><thead><tr><th>Slot</th><th>Configured</th><th>Worker status</th><th>Current work</th></tr></thead><tbody>${state.slots.map(slot => `<tr><td>${slot.slot}</td><td>${slot.configured ? 'Yes' : 'No'}</td><td>${esc(slot.status)}</td><td>${slot.current_run_id ? 'Run ' + slot.current_run_id : slot.current_scan_id ? 'Scan ' + slot.current_scan_id : '—'}</td></tr>`).join('')}</tbody></table></section>`;
+        <table><thead><tr><th>Slot</th><th>Configured</th><th>Worker status</th><th>Current work</th></tr></thead><tbody>${state.slots.map(slot => `<tr><td>${slot.slot}</td><td>${slot.configured ? 'Yes' : 'No'}</td><td>${esc(slot.status)}</td><td>${slot.current_task_id ? 'Export task ' + slot.current_task_id : slot.current_run_id ? 'Run ' + slot.current_run_id : slot.current_scan_id ? 'Scan ' + slot.current_scan_id : '—'}</td></tr>`).join('')}</tbody></table></section>${_flowPortalCapacityHtml(state.portals || [])}`;
+}
+
+function _flowPortalCapacityHtml(portals) {
+    if (!portals.length) return '';
+    return `<section class="settings-panel paths-panel"><h2>Portal limits</h2><p>Each limit covers downloads and scans across flows using that portal. The global worker limit still applies.</p>${portals.map(portal => `<form class="flow-portal-capacity" data-id="${portal.id}"><label>${esc(portal.name)} <select aria-label="${esc(portal.name)} concurrent operations">${[1,2,3,4,5].map(n => `<option value="${n}" ${n === portal.capacity ? 'selected' : ''}>${n}</option>`).join('')}</select></label> <button type="submit" class="btn-secondary">Save portal limit</button></form>`).join('')}</section>`;
 }
 
 async function renderFlowSettings() {
@@ -12565,6 +12579,12 @@ async function renderFlowSettings() {
 }
 
 function bindFlowSettingsPage() {
+    document.querySelectorAll('.flow-portal-capacity').forEach(form => form.onsubmit = async event => {
+        event.preventDefault(); const button = form.querySelector('button'); button.disabled = true;
+        try { await apiPut(`/api/system/flows/portals/${form.dataset.id}`, {capacity:Number(form.querySelector('select').value)}); toast('Portal limit saved'); }
+        catch (error) { toast(error.message); }
+        finally { button.disabled = false; }
+    });
     $('#flow-capacity-form').onsubmit = async event => {
         event.preventDefault();
         const button = event.currentTarget.querySelector('[type="submit"]'); button.disabled = true;

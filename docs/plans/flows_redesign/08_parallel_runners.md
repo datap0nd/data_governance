@@ -56,6 +56,21 @@ Additive schema, default 1, capability-gated jobs. Drain task runs before revert
 B; never let an old worker reinterpret them. Retain history and files. Lowering
 capacity does not terminate active work.
 
+## Delivered behavior
+The coordinator uses one pool slot and may execute one download itself; helpers
+take free slots. Per-flow capacity defaults to 1 and per-portal capacity to 5,
+always bounded by the configured global capacity. Task leases renew for 90
+seconds; Stop uses exact process IDs and fences late reports. Parent progress
+cannot erase a helper's committed artifact. A stopped parent remains reserved
+until its coordinator and tasks are stopped or fenced by expiry.
+
+Uncertain SQL marks the Flow as requiring reconciliation. Run, Resume and SQL
+Retry reject it until an explicit acknowledgement after target reconciliation.
+SQL Retry also rejects incomplete parallel bundles. Deleting a paused, terminal
+Flow removes its task ledger together with run history and preserves files.
+Standalone processing remains sequential and honors all saved stage flags.
+See [operator details](../../flow_workers.md) and [delivery evidence](delivery_log.md).
+
 ## Acceptance criteria
 Independent connections test claim races, scans versus runs, headed limit,
 throttling, old recovery and exact slot stops. B tests stale/duplicate reports,

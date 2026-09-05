@@ -29,6 +29,7 @@ from app.database import get_db, init_db
 from app import remote_flow_control
 from app.routers.system_paths import router as system_paths_router
 from app.routers.system_flows import router as system_flows_router
+from app.routers.flow_tasks import router as flow_tasks_router
 from app.local_access import is_server_machine, require_app_access
 from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, data_quality, tasks, eventlog, people, archive, documentation, email, email_schedules, usage, materialized_views, recurrences, flows, query_history, pipelines, pipeline_insights
 from app.settings import (
@@ -951,6 +952,7 @@ app.include_router(recurrences.router)
 app.include_router(flows.router)
 app.include_router(system_paths_router)
 app.include_router(system_flows_router)
+app.include_router(flow_tasks_router)
 app.include_router(pipelines.router)
 app.include_router(pipeline_insights.router)
 
@@ -1506,6 +1508,7 @@ def _active_update_work(db) -> dict[str, int]:
         "scanner_jobs": ("scanner_jobs", "status IN ('queued','running')"),
         "scan_runs": ("scan_runs", "status='running'"),
         "flow_runs": ("flow_runs", "status IN ('queued','claimed','running')"),
+        "flow_download_tasks": ("flow_download_tasks", "state IN ('claimed','cancelling')"),
         "flow_catalog_scans": (
             "flow_catalog_scans",
             "status IN ('queued','claimed','running')",

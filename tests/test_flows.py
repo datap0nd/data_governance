@@ -1262,7 +1262,7 @@ def test_one_per_period_job_is_expanded_without_delete_or_overwrite(flow_db):
     assert queued["job"]["downloads"]["overwrite_existing"] is False
     assert queued["job"]["execution"] == {
         "mode": "local", "host": "bi_desktop", "browser_mode": "headless",
-        "worker_id": "bi-desktop-headless",
+        "worker_id": "bi-desktop-headless", "download_parallelism": 1,
     }
     assert queued["job"]["sql_handoff"] == {
         "enabled": False, "server": flows.normalize_server(flows.UPLOAD_PGHOST),
@@ -4960,7 +4960,7 @@ def test_worker_shares_the_artifact_list_with_its_failure_report():
     import ast
     tree = ast.parse(source)
     shared = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'execute_flow')
-    acquire = next(node for node in ast.walk(shared) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'execute_job')
+    acquire = next(node for node in ast.walk(shared) if isinstance(node, ast.Call) and any(isinstance(value, ast.Name) and value.id == 'execute_job' for value in ast.walk(node.func)))
     assert any(keyword.arg == 'artifacts' and isinstance(keyword.value, ast.Name) and keyword.value.id == 'artifacts' for keyword in acquire.keywords)
     assert 'state.update(artifacts=artifacts' in ast.get_source_segment(source, shared)
     worker = source[source.index('def run_worker('):]
