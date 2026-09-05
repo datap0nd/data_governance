@@ -28,7 +28,8 @@ from __future__ import annotations
 import json
 import re
 import shutil
-from datetime import date, datetime
+from app.flow_clock import dubai_today
+from datetime import timezone, date, datetime
 from pathlib import Path
 
 RUN_FOLDER_KEEP = 3
@@ -40,7 +41,7 @@ TOMBSTONE_RE = re.compile(r"^\.#\d+_\d{2}-\d{2}-\d{4}(?: \(\d+\))?\.op\d+\.delet
 
 
 def run_folder_name(run_id: int, on_date: date | None = None) -> str:
-    return f"#{run_id}_{(on_date or date.today()).strftime('%d-%m-%Y')}"
+    return f"#{run_id}_{(on_date or dubai_today()).strftime('%d-%m-%Y')}"
 
 
 def tombstone_name(folder_name: str, op_id: int) -> str:
@@ -82,7 +83,7 @@ def create_run_folder(target: Path, run_id: int, flow_id: int | None) -> Path:
             json.dumps({
                 "run_id": run_id,
                 "flow_id": flow_id,
-                "created_at": datetime.now().replace(microsecond=0).isoformat(),
+                "created_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
             }),
             encoding="utf-8",
         )

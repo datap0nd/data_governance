@@ -180,11 +180,11 @@ def test_next_run_weekly_and_monthly_clamping():
     monday_after = recurrences.calculate_next_run(
         "weekly", "08:00", ["monday"], None, datetime(2026, 7, 13, 9, 0)
     )
-    assert monday_after == datetime(2026, 7, 20, 8, 0)
+    assert monday_after == datetime(2026, 7, 20, 4, 0)
     february = recurrences.calculate_next_run(
         "monthly", "08:00", [], 31, datetime(2026, 2, 1, 9, 0)
     )
-    assert february == datetime(2026, 2, 28, 8, 0)
+    assert february == datetime(2026, 2, 28, 4, 0)
 
 
 @pytest.mark.parametrize(

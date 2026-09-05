@@ -9,6 +9,7 @@ This is a standing instruction from the repository owner, recorded in
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-09-05: Dubai time, redesign increment 1 | [Time-policy instructions](releases/2026-09-05-dubai-time/test-plan.md) | [Test report](releases/2026-09-05-dubai-time/test-report.md) |
 | 2026-09-05: Flows, PRs #67–#69 | [Work-PC test plan](releases/2026-09-05-flows/test-plan.md): recording controls, dates, GSCM, browser settings, workers and portability | [Verified automated report](releases/2026-09-05-flows/test-report.md); [live results worksheet](releases/2026-09-05-flows/manual-results.csv), initially NOT RUN |
 | 2026-09-05: testing documentation process, PR #70 | [Documentation checks](releases/2026-09-05-testing-process/test-plan.md) | [Documentation report](releases/2026-09-05-testing-process/test-report.md) |
 

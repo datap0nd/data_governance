@@ -48,7 +48,6 @@ window.FlowRecordings = (() => {
         return `<form data-review>
             ${firstDownload < 0 ? '<p role="alert">No download was captured. Record through a completed download, or mark its recorded triggering action as a download below if the portal already delivered the file. This draft cannot be activated until its download passes validation.</p>' : ''}
             <div class="flow-form-grid">
-                <label>Timezone <input name="timezone" required value="${h(definition.timezone)}"></label>
                 <label>Report title (exact visible text) <input name="identity" required value="${h(definition.identity?.text)}"></label>
                 <label>Title is in the same page/frame as <select name="identityFrame">${selectSteps(steps, steps.find(step => JSON.stringify(target(step)) === JSON.stringify(definition.identity?.target))?.id)}</select></label>
                 <label>Report generation action <select name="trigger">${selectSteps(steps, readiness.trigger_step_id || navigation?.id, step => ['goto','click','press','select_option'].includes(step.action))}</select></label>
@@ -87,7 +86,7 @@ window.FlowRecordings = (() => {
 
     function collect(form, original) {
         const definition = structuredClone(original), steps = all(definition.steps);
-        definition.timezone = form.elements.timezone.value;
+        definition.timezone = 'Asia/Dubai';
         const identityFrame = steps.find(step => step.id === form.elements.identityFrame.value);
         const identityTarget = frameTarget(identityFrame);
         identityTarget.locator.push({method:'get_by_text',args:[form.elements.identity.value],kwargs:{exact:true}});

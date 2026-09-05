@@ -5,6 +5,7 @@ import copy
 import re
 import threading
 import time
+from app.flow_clock import dubai_today
 from datetime import date
 from pathlib import Path
 
@@ -169,7 +170,7 @@ def acquire_bundle(client, worker_id, transport_state, page, job, progress, prof
     job['_runtime_artifact_store_ids'] = list(worker._runtime_store_ids(job, profile_dir))
     base = f'/api/flows/worker/{worker_id}/runs/{run_id}'
     try:
-        state = worker._api(client, 'POST', base + '/tasks', {'run_date': date.today().isoformat(), 'completed_keys': list(_valid_carried(job))})
+        state = worker._api(client, 'POST', base + '/tasks', {'run_date': dubai_today().isoformat(), 'completed_keys': list(_valid_carried(job))})
         while True:
             artifacts[:] = state['artifacts']
             if state['state'] == 'aborting':

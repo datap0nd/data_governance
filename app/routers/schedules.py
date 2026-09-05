@@ -3,6 +3,8 @@
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Query
+from app.flow_clock import dubai_today
+from app.freshness import host_timezone
 from app.database import get_db
 from app.scanner.findings import sync_managed_actions
 
@@ -23,7 +25,7 @@ def _next_weekday_date(day_name: str, with_iso: bool = False) -> str | dict:
     day_num = DAY_ORDER.get(day_name, -1)
     if day_num < 0:
         return {"label": day_name, "iso": None} if with_iso else day_name
-    today = datetime.now(timezone.utc).date()
+    today = dubai_today()
     today_dow = today.weekday()  # Monday=0, Sunday=6
     diff = day_num - today_dow
     if diff < 0:
@@ -31,7 +33,7 @@ def _next_weekday_date(day_name: str, with_iso: bool = False) -> str | dict:
     next_date = today + timedelta(days=diff)
     label = next_date.strftime("%d/%m")
     if with_iso:
-        iso = datetime(next_date.year, next_date.month, next_date.day, tzinfo=timezone.utc).isoformat()
+        iso = datetime(next_date.year, next_date.month, next_date.day, tzinfo=host_timezone()).isoformat()
         return {"label": label, "iso": iso}
     return label
 
@@ -201,7 +203,7 @@ def get_alert_trend():
     counts = {r["day"]: r["count"] for r in rows}
 
     # Fill in zero-count days for a continuous 30-day series
-    today = datetime.now(timezone.utc).date()
+    today = dubai_today()
     trend = []
     for i in range(29, -1, -1):
         day = (today - timedelta(days=i)).isoformat()
@@ -239,7 +241,7 @@ def get_health_trend():
             "unknown": (r["unknown"] or 0) + (r["no_rule"] or 0),
         }
 
-    today = datetime.now(timezone.utc).date()
+    today = dubai_today()
     trend = []
     last_known = None
     for i in range(29, -1, -1):

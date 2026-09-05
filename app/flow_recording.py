@@ -14,6 +14,7 @@ import re
 from datetime import datetime, timedelta
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
+from app.flow_clock import TIMEZONE
 
 VERSION = 1
 CAPABILITY = 'recorded_flows_v1'
@@ -118,7 +119,7 @@ def _validate_pages(steps, pages=None):
             pages.remove(name)
 
 
-def import_codegen(source, *, timezone='UTC'):
+def import_codegen(source, *, timezone=TIMEZONE):
     if len(source.encode()) > 1_000_000:
         raise ValueError('Recording exceeds the one megabyte limit.')
     tree = ast.parse(source)

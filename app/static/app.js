@@ -1081,14 +1081,14 @@ function typeBadge(type) {
 
 function daysOld(dateStr) {
     if (!dateStr) return null;
-    const d = new Date(dateStr);
+    const d = parseAppTimestamp(dateStr);
     if (isNaN(d.getTime())) return null;
     return Math.floor((Date.now() - d.getTime()) / 86400000);
 }
 
 function timeAgo(dateStr) {
     if (!dateStr) return "-";
-    const d = new Date(dateStr);
+    const d = parseAppTimestamp(dateStr);
     if (isNaN(d.getTime())) {
         return "-";
     }
@@ -1309,30 +1309,35 @@ function _bindFreshnessRuleForm(panel, source, opts = {}) {
     }
 }
 
+function parseAppTimestamp(value) {
+    if (!value) return new Date(NaN);
+    const raw = String(value).trim();
+    // Database monitoring timestamps without an offset are UTC.
+    return new Date(/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/.test(raw) ? raw.replace(' ', 'T') + 'Z' : raw);
+}
+
 function formatDate(dateStr) {
     if (!dateStr) return "-";
-    const d = new Date(dateStr);
+    const d = parseAppTimestamp(dateStr);
     if (isNaN(d.getTime())) return dateStr;
-    return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
-         + ' ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+    return d.toLocaleDateString('en-GB', { timeZone: 'Asia/Dubai', day: '2-digit', month: 'short', year: 'numeric' })
+         + ' ' + d.toLocaleTimeString('en-GB', { timeZone: 'Asia/Dubai', hour: '2-digit', minute: '2-digit' });
 }
 
 function formatDateOnly(dateStr) {
     if (!dateStr) return "-";
-    const d = new Date(dateStr);
+    const d = parseAppTimestamp(dateStr);
     if (isNaN(d.getTime())) return dateStr;
-    return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+    return d.toLocaleDateString("en-GB", { timeZone: "Asia/Dubai", day: "2-digit", month: "short", year: "numeric" });
 }
 
 function formatCompactTimestamp(dateStr) {
-    if (!dateStr) return "-";
-    const raw = String(dateStr).trim();
-    const exact = raw.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
-    if (exact) return `${exact[1]}-${exact[2]}-${exact[3]}-${exact[4]}-${exact[5]}`;
-    const d = new Date(raw);
-    if (isNaN(d.getTime())) return raw;
-    const pad = value => String(value).padStart(2, "0");
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}-${pad(d.getMinutes())}`;
+    if (!dateStr) return '-';
+    const d = parseAppTimestamp(dateStr);
+    if (isNaN(d.getTime())) return String(dateStr);
+    const parts = new Intl.DateTimeFormat('en-GB', {timeZone:'Asia/Dubai', year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hourCycle:'h23'}).formatToParts(d);
+    const value = type => parts.find(part => part.type === type).value;
+    return ['year','month','day','hour','minute'].map(value).join('-');
 }
 
 function exportTableCSV(tableId, filename) {
@@ -3972,7 +3977,7 @@ async function renderScannerAdmin() {
         <section class="scanner-admin-summary section">
             <div class="scanner-health"><span>Overall health</span>${_scannerModuleState({ status: overall })}</div>
             <div><span>Last full refresh</span><strong>${lastRun ? timeAgo(lastRun.started_at) : "Never"}</strong></div>
-            <div><span>Next scheduled run</span><strong>${schedule.next_run_at ? esc(formatDate(schedule.next_run_at)) : "Pending scheduler"}</strong><small>${esc(schedule.timezone || "Host timezone")}</small></div>
+            <div><span>Next scheduled run</span><strong>${schedule.next_run_at ? esc(formatDate(schedule.next_run_at)) : "Pending scheduler"}</strong></div>
             <label><span>Daily refresh time</span><input type="time" id="overall-refresh-time" value="${esc(schedule.refresh_time || "08:15")}" step="60"></label>
             <div class="scanner-summary-actions"><button id="btn-save-refresh-schedule" class="btn-outline">Save schedule</button><button id="btn-scan" ${laneBusy ? "disabled" : ""}>Run full refresh</button></div>
         </section>
@@ -4412,7 +4417,7 @@ async function renderChangelog() {
 
     const rows = days.map(day => {
         const d = new Date(day + "T00:00:00Z");
-        const label = d.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+        const label = d.toLocaleDateString("en-US", { timeZone: "Asia/Dubai", year: "numeric", month: "long", day: "numeric" });
         const items = grouped[day].map(e => {
             return `
                 <div class="changelog-item">
@@ -5710,9 +5715,10 @@ async function _recRequest(path, options = {}) {
 
 function _recDateTime(value) {
     if (!value) return "-";
-    const parsed = new Date(value);
+    const parsed = parseAppTimestamp(value);
     if (Number.isNaN(parsed.getTime())) return value;
     return new Intl.DateTimeFormat(undefined, {
+        timeZone: "Asia/Dubai",
         dateStyle: "medium",
         timeStyle: "short",
     }).format(parsed);
@@ -5805,7 +5811,7 @@ async function renderRecurrences() {
             <span>Power BI: <strong>${status.cached_account ? "Cached account connected" : "Reconnect required"}</strong></span>
             <span>Visual export: <strong>${status.playwright_installed && status.edge_detected ? "Headless Edge ready" : "Setup required"}</strong></span>
             <span>Refresh gate: <strong>Latest refresh must succeed</strong></span>
-            <span>Schedule timezone: <strong>${esc(status.system_timezone || "Local machine time")}</strong></span>
+
             <span>Export limit: <strong>${Number(status.max_rows || 30000).toLocaleString()} rows</strong></span>
         </div>
         ${runtimeReady ? "" : `
@@ -6132,7 +6138,7 @@ function _recStepFour(state) {
     return `
         <div class="rec-step-content">
             <h2>Name and schedule the recurrence</h2>
-            <p class="rec-step-intro">Metronome checks due recurrences every minute using the Windows host's local timezone. It sends only after the semantic model's latest refresh succeeds. If a send run fails, the alert owner receives the reason by email.</p>
+            <p class="rec-step-intro">Metronome checks due recurrences every minute . It sends only after the semantic model's latest refresh succeeds. If a send run fails, the alert owner receives the reason by email.</p>
             <div class="rec-form-grid">
                 <label class="rec-field full">Recurrence name
                     <input id="rec-name" type="text" maxlength="200" value="${esc(config.name)}" placeholder="Weekly subsidiary exceptions">
@@ -6163,7 +6169,7 @@ function _recStepFour(state) {
                 </label>
                 <label class="rec-field">Send time
                     <input id="rec-send-time" type="time" value="${esc(config.send_time)}">
-                    <small>${esc(window._recurrenceStatus?.system_timezone || "Windows host local time")}</small>
+
                 </label>
                 ${config.recurrence === "monthly" ? `
                     <label class="rec-field">Day of month
@@ -6720,8 +6726,8 @@ function bindExportPage() {
             // Build markdown
             status.textContent = "Building markdown...";
             const now = new Date();
-            const dateStr = now.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
-                + " " + now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+            const dateStr = now.toLocaleDateString("en-GB", { timeZone: "Asia/Dubai", day: "2-digit", month: "short", year: "numeric" })
+                + " " + now.toLocaleTimeString("en-GB", { timeZone: "Asia/Dubai", hour: "2-digit", minute: "2-digit" });
 
             const sections = [];
             let md = `# Data Governance Export\nGenerated: ${dateStr}\n`;
@@ -10601,7 +10607,7 @@ async function renderRefreshSchedule() {
                 <label class="flow-check"><input type="checkbox" id="pipeline-insights-explanations" ${insightSettings.explanations_scheduled ? "checked" : ""}><span>Schedule Pipeline explanations</span></label>
                 <label class="refresh-schedule-field"><span>Weekday</span><select id="pipeline-insights-weekday">${insightWeekdays.map(day => `<option value="${day}" ${day === insightSettings.weekday ? "selected" : ""}>${day[0].toUpperCase() + day.slice(1)}</option>`).join("")}</select></label>
                 <label class="refresh-schedule-field"><span>Local time</span><input type="time" id="pipeline-insights-time" value="${esc(insightSettings.time || "10:00")}" step="60"></label>
-                <div class="refresh-schedule-status"><span>Next run</span><strong>${insightSettings.next_run_at ? timeAgo(insightSettings.next_run_at) : "not scheduled"}</strong><small>${esc(insightSettings.timezone || "host timezone")}</small></div>
+                <div class="refresh-schedule-status"><span>Next run</span><strong>${insightSettings.next_run_at ? timeAgo(insightSettings.next_run_at) : "not scheduled"}</strong></div>
             </div>
             <label class="refresh-schedule-field" style="margin-top:0.75rem"><span>Exact PostgreSQL relation exclusions</span><textarea id="pipeline-insights-exclusions" rows="5" placeholder="server:port/database/schema.relation">${esc((insightSettings.exclusions || []).join("\n"))}</textarea><small>One exact normalized server/database/schema.relation identity per line.</small></label>
             <div class="refresh-schedule-actions"><button id="btn-save-pipeline-insights-settings">Save Pipeline Insights schedule</button></div>

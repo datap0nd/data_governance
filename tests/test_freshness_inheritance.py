@@ -93,11 +93,11 @@ def test_timed_health_enforces_only_post_baseline_occurrences():
     )["status"] == "healthy"
 
 
-def test_legacy_flow_and_source_naive_timestamps_use_distinct_conventions(monkeypatch):
+def test_migrated_flow_and_source_naive_timestamps_are_utc(monkeypatch):
     monkeypatch.setattr(freshness, "FLOW_TIMEZONE", "Europe/Lisbon")
     flow_value = freshness.parse_flow_timestamp("2026-07-01T08:00:00")
     source_value = freshness.parse_source_timestamp("2026-07-01T08:00:00")
-    assert flow_value == datetime(2026, 7, 1, 7, 0, tzinfo=timezone.utc)
+    assert flow_value == datetime(2026, 7, 1, 8, 0, tzinfo=timezone.utc)
     assert source_value == datetime(2026, 7, 1, 8, 0, tzinfo=timezone.utc)
 
 

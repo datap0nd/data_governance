@@ -1404,7 +1404,7 @@ def test_multiple_export_views_require_unique_filename_token():
 
 def test_monthly_schedule_skips_months_without_selected_day(monkeypatch):
     monkeypatch.setattr(flows, "_now", lambda: datetime(2026, 2, 1, 9, 0))
-    assert flows._schedule_next("monthly", "08:00", [], 31) == datetime(2026, 3, 31, 8, 0)
+    assert flows._schedule_next("monthly", "08:00", [], 31) == datetime(2026, 3, 31, 4, 0)
 
 
 def test_filename_uses_flow_start_end_and_selected_format():

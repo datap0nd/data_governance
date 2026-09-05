@@ -164,7 +164,7 @@ def finish_recording(flow_id: int, scan_id: int):
 @router.post('/{flow_id}/recordings/revisions')
 def save_revision(flow_id: int, body: RevisionWrite):
     try:
-        definition = flow_recording.validate_definition(body.definition, activation=False)
+        definition = flow_recording.validate_definition({**body.definition, 'timezone': 'Asia/Dubai'}, activation=False)
     except (ValueError, KeyError, TypeError) as exc:
         raise HTTPException(422, str(exc)) from exc
     if len(flow_recording.canonical(definition)) > 1_000_000:

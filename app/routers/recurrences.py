@@ -10,7 +10,8 @@ import json
 import logging
 import re
 import threading
-from datetime import date, datetime, time, timedelta
+from app.flow_clock import dubai_now
+from datetime import timezone, date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Literal
 from urllib.parse import urlsplit
@@ -260,7 +261,7 @@ class RunRequest(BaseModel):
 
 
 def _now() -> datetime:
-    return datetime.now().replace(microsecond=0)
+    return datetime.now(timezone.utc).replace(tzinfo=None, microsecond=0)
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -296,7 +297,17 @@ def _month_date(year: int, month: int, requested_day: int) -> date:
     return date(year, month, min(requested_day, calendar.monthrange(year, month)[1]))
 
 
-def calculate_next_run(
+def calculate_next_run(recurrence, send_time, weekdays, month_day, now=None):
+    from app.flow_clock import TIMEZONE
+    from zoneinfo import ZoneInfo
+    current = now or _now()
+    instant = current.replace(tzinfo=timezone.utc) if current.tzinfo is None else current
+    local = instant.astimezone(ZoneInfo(TIMEZONE)).replace(tzinfo=None)
+    result = _calendar_next_run(recurrence, send_time, weekdays, month_day, local)
+    return result.replace(tzinfo=ZoneInfo(TIMEZONE)).astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _calendar_next_run(
     recurrence: str,
     send_time: str,
     weekdays: list[str] | str | None,
@@ -1284,7 +1295,7 @@ def recurrence_status():
     return {
         "auth_mode": pbi_auth_mode(),
         "cached_account": pbi_auth.cached_token_available(),
-        "system_timezone": str(datetime.now().astimezone().tzinfo),
+        "system_timezone": str(dubai_now().tzinfo),
         **runtime,
     }
 

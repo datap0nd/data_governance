@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from app.flow_clock import TIMEZONE
 
 SETTING = 'flows_browser_channel'
 DEFAULT = 'chrome'
@@ -45,6 +46,7 @@ def launch(playwright, base, channel, *, headed, downloads=None, timezone=None):
     options = {'channel': channel, 'headless': not headed, 'accept_downloads': True}
     if downloads is not None:
         options['downloads_path'] = str(downloads)
+    options['timezone_id'] = timezone or TIMEZONE
     if timezone:
-        options.update(timezone_id=timezone, viewport={'width': 1440, 'height': 900})
+        options.update(viewport={'width': 1440, 'height': 900})
     return playwright.chromium.launch_persistent_context(str(profile_for(base, channel)), **options)

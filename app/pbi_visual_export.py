@@ -558,6 +558,7 @@ def _run_browser_attempt(playwright, config: dict):
     try:
         browser = _launch_browser(playwright)
         context = browser.new_context(
+            timezone_id="Asia/Dubai",
             viewport={"width": 1440, "height": 900},
             ignore_https_errors=False,
         )

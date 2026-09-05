@@ -4,7 +4,7 @@ const duration = ms => {
     const seconds = Math.max(0, Math.round(Number(ms) / 1000));
     return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 };
-const stamp = value => value ? new Date(value).toLocaleString() : "Not recorded";
+const stamp = value => value ? new Date(/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/.test(String(value)) ? String(value).replace(' ', 'T') + 'Z' : value).toLocaleString('en-GB', {timeZone:'Asia/Dubai'}) : "Not recorded";
 const label = value => String(value || "unknown").replaceAll("_", " ");
 const runId = Number(location.pathname.match(/\/flow-runs\/(\d+)/)?.[1]);
 

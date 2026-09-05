@@ -25,6 +25,7 @@ import time
 import traceback
 import zipfile
 from contextlib import contextmanager
+from app.flow_clock import dubai_today
 from datetime import date, datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
@@ -291,7 +292,7 @@ def _render_filename(
         "year": year,
         "week_number": week_number,
         "index": str(index),
-        "date": job.get('_runtime_task_date') or date.today().isoformat(),
+        "date": job.get('_runtime_task_date') or dubai_today().isoformat(),
     }
     name = template
     for key, value in values.items():

@@ -1,10 +1,7 @@
 import os
 from pathlib import Path
 
-try:
-    from tzlocal import get_localzone_name
-except ImportError:  # pragma: no cover - dependency is declared for installs
-    get_localzone_name = lambda: "UTC"
+from app.flow_clock import TIMEZONE
 
 # Base directory of the app
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -19,7 +16,7 @@ PIPELINE_INSIGHTS_DB_PATH = os.environ.get(
 # Flow schedules are wall-clock values in one named timezone.  Persisted
 # monitoring timestamps are UTC, so changing this setting does not reinterpret
 # new evidence; it only changes future schedule occurrences.
-FLOW_TIMEZONE = os.environ.get("DG_FLOW_TIMEZONE", "").strip() or get_localzone_name()
+FLOW_TIMEZONE = TIMEZONE
 
 # Folder where .pbix reports live (or TMDL exports as fallback)
 _report_root_env = (

@@ -1947,6 +1947,8 @@ def init_db():
     # makes it atomic and idempotent across startup retries.
     from app.freshness_inheritance import initialize_freshness_data
     initialize_freshness_data(conn)
+    from app.time_policy_migration import initialize_time_policy
+    initialize_time_policy(conn)
     # Old query-change actions were attached only to a deduplicated source and
     # cannot be mapped reliably to the report table whose M expression changed.
     # Any v2 action has at least one query_versions row, so this cleanup is safe
