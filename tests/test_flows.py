@@ -3566,7 +3566,8 @@ def test_setup_registers_on_demand_interactive_headed_worker():
     assert '$HeadedFlowTaskName = "Metronome_Flows_Headed"' in source
     assert "New-ScheduledTaskPrincipal" in source
     assert "-LogonType Interactive" in source
-    assert 'New-ScheduledTaskAction -Execute $PyExe' in source
+    assert 'New-ScheduledTaskAction -Execute $HeadedPython' in source
+    assert "Join-Path $PyDir 'pythonw.exe'" in source
     assert "--worker-id $($VisibleSlot.WorkerId)" in source
     assert "foreach ($VisibleSlot in 1..$FlowMaxSlots" in source
     assert "-TaskName $VisibleSlot.TaskName" in source

@@ -605,7 +605,8 @@ $HeadedTaskSettings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit (New-TimeSpan -Days 3) -MultipleInstances IgnoreNew
 foreach ($VisibleSlot in 1..$FlowMaxSlots | ForEach-Object { Get-MetronomeFlowSlot -Slot $_ -BaseProfile $HeadedFlowProfile -Headed }) {
     $HeadedTaskArguments = "`"$CodeDir\app\flow_worker.py`" --server http://127.0.0.1:$Port --worker-id $($VisibleSlot.WorkerId) --name $($VisibleSlot.WorkerId) --profile-dir `"$($VisibleSlot.Profile)`" --headed --idle-exit-seconds 60"
-    $HeadedTaskAction = New-ScheduledTaskAction -Execute $PyExe -Argument $HeadedTaskArguments -WorkingDirectory $CodeDir
+    $HeadedPython = Join-Path $PyDir 'pythonw.exe'
+    $HeadedTaskAction = New-ScheduledTaskAction -Execute $HeadedPython -Argument $HeadedTaskArguments -WorkingDirectory $CodeDir
     Register-ScheduledTask -TaskName $VisibleSlot.TaskName -Action $HeadedTaskAction `
         -Principal $HeadedTaskPrincipal -Settings $HeadedTaskSettings -Force | Out-Null
 }

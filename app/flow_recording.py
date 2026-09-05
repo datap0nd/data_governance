@@ -197,6 +197,14 @@ def import_codegen(source, *, timezone='UTC'):
                 if call.args or call.keywords:
                     raise ValueError('Unsupported close arguments.')
                 continue
+            if method == 'storage_state' and isinstance(receiver, ast.Name) and receiver.id == 'context':
+                # codegen --save-storage adds this cleanup statement. The
+                # worker owns protected authentication; never export its path
+                # or execute this source statement as part of a Flow.
+                args, kwargs = _arguments(call)
+                if args or set(kwargs) != {'path'} or not isinstance(kwargs['path'], str):
+                    raise ValueError('Unsupported recording storage-state cleanup.')
+                continue
             if method == 'save_as' and isinstance(receiver, ast.Name) and receiver.id in pending:
                 # The worker chooses staging/output paths. Ignore only the
                 # literal output path; never execute a recorded filesystem call.
@@ -347,11 +355,27 @@ def validate_definition(definition, *, activation=True):
             raise ValueError('Unsupported date format.')
         if parameter.get('mode') == 'fixed':
             datetime.strptime(parameter.get('value', ''), fmt)
+    batch = definition.get('date_batch')
+    if batch is not None:
+        if not isinstance(batch, dict) or type(batch.get('weeks')) is not int or not 1 <= batch['weeks'] <= 52:
+            raise ValueError('Date batch size must be between 1 and 52 weeks.')
+        names = [batch.get('start_parameter'), batch.get('end_parameter')]
+        if any(not isinstance(name, str) or name not in parameters for name in names) or names[0] == names[1]:
+            raise ValueError('Date batches need distinct start and end date parameters.')
+        fields = [parameters[name] for name in names]
+        if any(p.get('mode') == 'portal_default' or not p.get('step_id') for p in fields):
+            raise ValueError('Batch boundaries need recorded fields with fixed or calculated dates. Use today for a moving end date.')
+        if fields[0]['step_id'] == fields[1]['step_id']:
+            raise ValueError('Batch start and end must use different input fields.')
+        if all(p['mode'] == 'fixed' for p in fields):
+            resolve_batches(definition, {name: parameters[name]['value'] for name in names})
     return definition
 
 
 def resolve_parameters(definition, overrides=None, *, now=None):
-    now = now or datetime.now(ZoneInfo(definition['timezone']))
+    zone = ZoneInfo(definition['timezone'])
+    now = now or datetime.now(zone)
+    now = now.replace(tzinfo=zone) if now.tzinfo is None else now.astimezone(zone)
     day = now.astimezone(ZoneInfo(definition['timezone'])).date()
     month_start = day.replace(day=1)
     previous_end = month_start - timedelta(days=1)
@@ -371,4 +395,32 @@ def resolve_parameters(definition, overrides=None, *, now=None):
         if value is not None:
             datetime.strptime(value, fmt)
         result[name] = value
+    if definition.get('date_batch'):
+        resolve_batches(definition, result)
+    return result
+
+
+def resolve_batches(definition, parameters):
+    """Split an inclusive date range without gaps; resolve all dates once/run."""
+    batch = definition.get('date_batch')
+    if not batch:
+        return [{'period': None, 'parameters': dict(parameters)}]
+    start_name, end_name = batch['start_parameter'], batch['end_parameter']
+    start_format = definition['parameters'][start_name].get('format', '%Y-%m-%d')
+    end_format = definition['parameters'][end_name].get('format', '%Y-%m-%d')
+    start = datetime.strptime(parameters[start_name], start_format).date()
+    end = datetime.strptime(parameters[end_name], end_format).date()
+    if start > end:
+        raise ValueError('Batch start date must not be after its end date.')
+    days = batch['weeks'] * 7
+    if (end - start).days // days + 1 > 500:
+        raise ValueError('A recording can produce at most 500 date batches per run. Shorten the range.')
+    result = []
+    while start <= end:
+        last = start + timedelta(days=min(days - 1, (end - start).days))
+        values = {**parameters, start_name: start.strftime(start_format), end_name: last.strftime(end_format)}
+        result.append({'period': [start.isoformat(), last.isoformat()], 'parameters': values})
+        if last == end:
+            break
+        start = last + timedelta(days=1)
     return result

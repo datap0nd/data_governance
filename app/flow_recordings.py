@@ -94,7 +94,7 @@ def queue_operation(db, flow_id, operation, actor, *, revision_id=None):
     assert_resource_unlocked(db, 'flow', str(flow_id))
     site = dict(db.execute('SELECT * FROM flow_sites WHERE id=?', (flow['site_id'],)).fetchone())
     job = {'schema_version': 1, 'job_type': 'catalog_scan', 'recording_operation': operation,
-           'recording_flow_id': flow_id, 'execution': {'browser_mode': 'headed', 'browser_channel': flow_browser.configured(db)}, 'browser_channel': flow_browser.configured(db),
+           'recording_flow_id': flow_id, 'recorder_controls': 1, 'execution': {'browser_mode': 'headed', 'browser_channel': flow_browser.configured(db)}, 'browser_channel': flow_browser.configured(db),
            'site': {'id': site['id'], 'name': site['name'], 'adapter': site['adapter'],
                     'auth_url': site['auth_url'], 'base_url': site['base_url']},
            'flow_folder': flow['flow_folder'], 'report_url': flows._report_out(db, flow['report_id'])['report_url']}
@@ -136,6 +136,10 @@ def update_operation(db, row, worker_id, body, now):
     if not session:
         raise HTTPException(409, 'Recording session no longer exists.')
     result = body.recording_result or {}
+    if json.loads(row['job_json']).get('cancel_requested') and body.status in {'succeeded', 'failed'}:
+        body = body.model_copy(update={'status': 'cancelled', 'error': None, 'progress': {
+            'stage': 'cancelled', 'message': 'Recording cancelled. Unsaved actions were discarded.'}})
+        result = {}
     if len(json.dumps(result)) > 1_000_000:
         raise HTTPException(422, 'Recording result exceeds its size limit.')
     terminal = body.status in {'succeeded', 'failed', 'cancelled'}
@@ -150,10 +154,11 @@ def update_operation(db, row, worker_id, body, now):
         else:
             frozen = json.loads(row['job_json'])
             expected = frozen['validation_job']['recording']
-            expected_steps = {step['id'] for step in flow_recording.walk_steps(expected['definition']['steps']) if step['action'] == 'download'}
+            from app.flow_tasks import task_key, task_matrix
+            expected_steps = {item['key'] for item in task_matrix(frozen['validation_job'])}
             outputs = result.get('outputs', [])
             valid_outputs = isinstance(outputs, list) and all(isinstance(item, dict) for item in outputs)
-            actual_steps = {item.get('step_id') for item in outputs} if valid_outputs else set()
+            actual_steps = {task_key(item.get('step_id'), item.get('period_key')) for item in outputs} if valid_outputs else set()
             if (result.get('configuration_hash') != frozen['configuration_hash']
                     or result.get('engine_hash') != expected['engine_hash']
                     or actual_steps != expected_steps or len(outputs) != len(expected_steps)

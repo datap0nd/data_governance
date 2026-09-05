@@ -347,8 +347,8 @@ main:has(.flow-page-header) { max-width: none; }
 .flow-progress-heading { display: flex; justify-content: space-between; gap: 0.6rem; align-items: center; margin-bottom: 0.35rem; }
 .flow-workers { display: inline-flex; align-items: center; gap: 3px; color: var(--text-muted); font-size: 0.68rem; white-space: nowrap; }
 .flow-workers > span:last-child { margin-left: 3px; }
-.flow-worker-emoji { display: inline-block; font-size: 1.05rem; transform-origin: bottom center; animation: flow-worker-working 0.85s ease-in-out infinite alternate; animation-delay: var(--worker-delay, 0s); }
-@keyframes flow-worker-working { from { transform: rotate(-9deg) translateY(0); } to { transform: rotate(9deg) translateY(-2px); } }
+.flow-worker-emoji { display: inline-block; font-size: 1.05rem; transform-origin: bottom center; animation: flow-worker-working 0.9s ease-in-out infinite; animation-delay: var(--worker-delay, 0s); }
+@keyframes flow-worker-working { 0%, 100% { transform: translateY(0) rotate(-12deg); } 25% { transform: translateY(-3px) rotate(12deg); } 50% { transform: translateY(0) rotate(-8deg); } 75% { transform: translateY(-3px) rotate(10deg); } }
 .flow-progress-count { font-size: 0.65rem; color: var(--text-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .flow-progress-track { display: flex; gap: 3px; height: 6px; border-radius: 4px; overflow: hidden; }
 .flow-progress-phase { background: var(--border); overflow: hidden; min-width: 3px; border-radius: 2px; }

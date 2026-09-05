@@ -23,11 +23,16 @@ GSCM offers **Download bookmark** or **Recorded flow**. Migration is explicit;
 existing Flows retain catalog/bookmark execution.
 
 1. Create the disabled draft in its normal managed source folder.
-2. Select **Record flow**. A capable visible worker reserves capacity, signs
-   into the portal and starts the supported Playwright recording window.
+2. Select **Record flow**. Metronome starts one capable visible worker, signs
+   into the portal and opens the configured starting page in Playwright.
+   It does not start the whole headed pool. Worker consoles stay hidden;
+   diagnostics go to `worker-console.log` in that worker's profile folder.
 3. Interact with one report and its downloads. Record assertions on the report
-   title and its loading/result indicator where useful. Close the recording
-   browser to finish; Metronome imports its output automatically.
+   title and its loading/result indicator where useful. Wait for every required
+   download to complete, then click **Finish recording in Metronome**. This
+   closes Chrome/Edge and the Inspector and imports the saved steps.
+   Playwright's red square only pauses recording. Closing just Chrome may
+   leave the Inspector open; Finish recording still closes that session.
 4. Review the actions, page/frame identities, report title, generation action,
    completion signal, expected formats, columns and optional period checks.
    An unobserved download can be attached to its recorded trigger in the editor.
@@ -40,9 +45,40 @@ existing Flows retain catalog/bookmark execution.
 Validation runs the downloads and configured Python transformation in a private
 folder. It does not publish production files or execute SQL. Trace evidence is
 kept under `.recording-validation/<session>/` in the managed Flow folder.
-Cancel stops/fences the reserved worker process; lease expiry and worker restart
+Cancel discards unsaved actions and closes the recorder's owned process tree.
+The reservation remains occupied until the worker acknowledges cancellation.
+If it has not responded after ten seconds, **Force close recording** stops and
+fences that exact worker. Cancellation during authentication/validation also
+uses the exact-worker stop. Lease expiry and worker restart
 invalidate unfinished sessions. The updater sees these reservations as active
 catalog operations and waits for them to drain.
+
+### Multiple files and date batches
+
+For different outputs from one report, record all their downloads, wait for
+completion, then Finish once. Metronome checks the complete output bundle.
+It does not automatically stop at the first download.
+
+For the same report repeated over time, record **one representative date range**,
+including both input fields and its download(s). During review:
+
+1. Give those input steps date parameters named `start` and `end`.
+2. Set their fixed/calculated values to the **whole desired range**.
+3. Enable **Download in date batches**, select those parameter names, and set
+   the number of weeks (for example, 10).
+
+2025-01-01 through 2026-12-31 produces eleven inclusive ranges of at most 70
+days. The last range is 2026-12-02 through 2026-12-31. Each range repeats the
+whole recording in a fresh page, including navigation and generation checks.
+Two recorded downloads produce two files per range. Filenames receive a part
+number; output identities include both the step and date range.
+
+Both boundaries must be fixed or calculated; use `today` for a moving end.
+Portal-default fields remain supported outside the batch boundaries. Defaults
+must stay consistent across batches and recovery. Dates resolve once in the
+Flow timezone and queued jobs retain them. Ranges cannot exceed 500 batches.
+All acquisition and validation completes before publication, transformation
+and SQL. Portable scripts use this same loop; `--dry-run` lists the ranges.
 
 Recordings are parsed as Python syntax, never executed as imported code. Only
 the supported action/locator model can activate. Coordinate/forced actions,

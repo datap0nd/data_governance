@@ -2187,12 +2187,12 @@ def inspect_sql_retry_eligibility(
     source_artifacts = _loads(source["artifact_json"], [])
     transformed = bool(source_job.get("transformation", {}).get("enabled"))
     if source_job.get('flow', {}).get('execution_method') == 'recorded':
-        from app.flow_tasks import task_matrix
-        expected = {task['export_view'] for task in task_matrix(source_job)}
+        from app.flow_tasks import task_matrix, task_key
+        expected = {task['key'] for task in task_matrix(source_job)}
         saved = [item for item in source_artifacts if item.get('status') == 'saved']
         ready = [item for item in source_artifacts if item.get('status') == 'transformed'] if transformed else saved
-        if (not expected or len(saved) != len(expected) or {item.get('export_view') for item in saved} != expected
-                or len(ready) != len(expected) or {item.get('export_view') for item in ready} != expected):
+        if (not expected or len(saved) != len(expected) or {task_key(item.get('export_view'), item.get('period_key')) for item in saved} != expected
+                or len(ready) != len(expected) or {task_key(item.get('export_view'), item.get('period_key')) for item in ready} != expected):
             return _recovery_result('blocked', 'download_bundle_incomplete',
                 'Recorded SQL retry requires every validated output and its configured transformation.', _source=source)
     if transformed:
@@ -3804,6 +3804,7 @@ def stop_scan(scan_id: int, request: Request):
     site_name = None
     message = ""
     with get_db() as db:
+        db.execute('BEGIN IMMEDIATE')
         row = db.execute(
             """SELECT c.*, s.name AS site_name, s.discovery_weekday, s.discovery_time
                FROM flow_catalog_scans c
@@ -5015,8 +5016,14 @@ def claim_run(worker_id: str):
                 "SELECT * FROM flow_runs WHERE status='queued' ORDER BY created_at, id"
             ).fetchall()
 
-        # Finish active bundles before taking another parent run.
-        task = flow_parallel.claim_task(db, worker_id)
+        # A recorder request reserves this slot's next assignment. It must not
+        # open a different queued report when the user clicks Record flow.
+        recording_reserved = db.execute("""SELECT 1 FROM flow_catalog_scans WHERE status='queued'
+            AND json_extract(job_json,'$.recording_operation') IS NOT NULL
+            AND json_extract(job_json,'$.execution.worker_id')=? LIMIT 1""", (worker_id,)).fetchone()
+        # Finish active bundles before taking another parent run, except on a
+        # slot explicitly reserved for user authoring.
+        task = None if recording_reserved else flow_parallel.claim_task(db, worker_id)
         if task:
             return {'run': None, 'scan': None, 'task': task}
 
@@ -5037,6 +5044,8 @@ def claim_run(worker_id: str):
             return (
                 execution.get("browser_mode", "headless") == worker_mode
                 and (job.get('flow', {}).get('execution_method') != 'recorded' or capabilities.get('recorded_flows_v1'))
+                and (not job.get('recording', {}).get('definition', {}).get('date_batch')
+                     or job.get('job_type') == 'sql_retry' or capabilities.get('recorded_date_batches_v1'))
                 and (not flow_tasks.enabled(job) or flow_tasks.supported(job, capabilities))
                 and flow_parallel.portal_available(db, job)
                 and (not required_adapter or required_adapter in adapters)
@@ -5048,20 +5057,27 @@ def claim_run(worker_id: str):
                 )
             )
 
-        row = next((candidate for candidate in queued_runs if worker_can_claim(candidate)), None)
+        row = None if recording_reserved else next((candidate for candidate in queued_runs if worker_can_claim(candidate)), None)
         if not row:
             # A scan runs on the worker whose mode its job names, exactly like
             # a run: a GSCM scan must walk the portal in the same browser,
             # profile, and session as the site's working flow runs. Scans
             # without a stored mode predate this routing and stay headless.
             queued_scans = db.execute(
-                "SELECT * FROM flow_catalog_scans WHERE status='queued' ORDER BY created_at, id"
+                """SELECT * FROM flow_catalog_scans WHERE status='queued'
+                ORDER BY CASE WHEN json_extract(job_json,'$.execution.worker_id')=? THEN 0 ELSE 1 END, created_at, id""",
+                (worker_id,),
             ).fetchall()
             scan = next((candidate for candidate in queued_scans if (
                 _loads(candidate["job_json"], {}).get("execution", {}).get("browser_mode", "headless")
                 == worker_mode
                 and flow_browser.can_claim(_loads(candidate['job_json'], {}), capabilities)
+                and (not _loads(candidate['job_json'], {}).get('recording_operation')
+                     or not _loads(candidate['job_json'], {}).get('execution', {}).get('worker_id')
+                     or _loads(candidate['job_json'], {}).get('execution', {}).get('worker_id') == worker_id)
+                and (not recording_reserved or _loads(candidate['job_json'], {}).get('execution', {}).get('worker_id') == worker_id)
                 and (not _loads(candidate['job_json'], {}).get('recording_operation') or capabilities.get('flow_recorder_v1'))
+                and (not _loads(candidate['job_json'], {}).get('recorder_controls') or capabilities.get('flow_recorder_controls_v1'))
                 and flow_parallel.portal_available(db, _loads(candidate['job_json'], {}))
             )), None)
             if scan:
@@ -5103,6 +5119,7 @@ def claim_run(worker_id: str):
 def update_scan(worker_id: str, scan_id: int, body: ScanProgress):
     now = _iso(_now())
     with get_db() as db:
+        db.execute('BEGIN IMMEDIATE')
         row = db.execute(
             "SELECT * FROM flow_catalog_scans WHERE id=? AND worker_id=?", (scan_id, worker_id)
         ).fetchone()

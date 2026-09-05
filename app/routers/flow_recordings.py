@@ -24,7 +24,9 @@ def recording_control(worker_id: str, scan_id: int):
         if row['status'] in {'claimed', 'running'}:
             db.execute('UPDATE flow_catalog_scans SET heartbeat_at=? WHERE id=?', (now, scan_id))
             db.execute('UPDATE flow_workers SET last_seen_at=?,updated_at=? WHERE worker_id=? AND current_scan_id=?', (now, now, worker_id, scan_id))
-        return {'status': row['status'], 'finish_requested': bool(json.loads(row['job_json']).get('finish_requested'))}
+        job = json.loads(row['job_json'])
+        return {'status': row['status'], 'finish_requested': bool(job.get('finish_requested')),
+                'cancel_requested': bool(job.get('cancel_requested'))}
 
 
 class RecordingDraft(BaseModel):
@@ -40,7 +42,32 @@ class RevisionWrite(BaseModel):
 
 def _launch(scan_id):
     from app.flow_local_runner import launch_local_worker
-    return {'scan_id': scan_id, 'worker': launch_local_worker('headed')}
+    from app import flow_capacity
+    # Pick and pin one slot under the same transaction. Concurrent recording
+    # requests account for each other's queued reservations as well as work.
+    with get_db() as db:
+        db.execute('BEGIN IMMEDIATE')
+        row = db.execute('SELECT * FROM flow_catalog_scans WHERE id=?', (scan_id,)).fetchone()
+        if row['status'] != 'queued':
+            return {'scan_id': scan_id, 'worker': {'status': 'already_assigned'}}
+        occupied = [item['worker_id'] for item in flow_capacity.assignments(db, 'headed')]
+        for pending in db.execute("SELECT job_json FROM flow_catalog_scans WHERE status='queued' AND id<>?", (scan_id,)):
+            occupied.append(json.loads(pending['job_json']).get('execution', {}).get('worker_id'))
+        slot = min(range(1, flow_capacity.capacity(db, 'headed') + 1),
+                   key=lambda number: occupied.count(flow_capacity.worker_id(number, 'headed')))
+        job = json.loads(row['job_json'])
+        job['execution']['worker_id'] = flow_capacity.worker_id(slot, 'headed')
+        db.execute('UPDATE flow_catalog_scans SET job_json=? WHERE id=?', (json.dumps(job), scan_id))
+    worker = launch_local_worker('headed', slot=slot)
+    if worker.get('status') == 'error':
+        with get_db() as db:
+            changed = db.execute("UPDATE flow_catalog_scans SET status='failed',error=?,finished_at=? WHERE id=? AND status='queued'",
+                       (worker.get('message', 'Could not start recording worker.'), datetime.now(timezone.utc).isoformat(), scan_id))
+            if changed.rowcount:
+                db.execute("UPDATE flow_recording_revisions SET status='draft' WHERE id=(SELECT revision_id FROM flow_recording_sessions WHERE scan_id=?) AND status='validating'", (scan_id,))
+            else:
+                worker = {'status': 'already_assigned'}
+    return {'scan_id': scan_id, 'worker': worker}
 
 
 @router.post('/recordings/draft')
@@ -74,7 +101,9 @@ def list_recordings(flow_id: int):
             item['evidence'] = json.loads(item.pop('evidence_json') or '{}')
             item.pop('transformation_source', None)
             revisions.append(item)
-        sessions = [dict(row) for row in db.execute('''SELECT s.*, c.status,c.progress_json,c.error,c.result_json
+        sessions = [dict(row) for row in db.execute('''SELECT s.*, c.status,c.progress_json,c.error,c.result_json,
+            json_extract(c.job_json,'$.finish_requested') AS finish_requested,
+            json_extract(c.job_json,'$.cancel_requested') AS cancel_requested
             FROM flow_recording_sessions s JOIN flow_catalog_scans c ON c.id=s.scan_id
             WHERE s.flow_id=? ORDER BY c.id DESC LIMIT 10''', (flow_id,))]
         return {'flow': flow, 'revisions': revisions, 'sessions': sessions}
@@ -91,8 +120,24 @@ def start_recording(flow_id: int, request: Request):
 @router.post('/{flow_id}/recordings/{scan_id}/cancel')
 def cancel_recording(flow_id: int, scan_id: int, request: Request):
     with get_db() as db:
-        if not db.execute('SELECT 1 FROM flow_recording_sessions WHERE scan_id=? AND flow_id=?', (scan_id, flow_id)).fetchone():
+        db.execute('BEGIN IMMEDIATE')
+        row = db.execute('''SELECT c.* FROM flow_recording_sessions s JOIN flow_catalog_scans c ON c.id=s.scan_id
+            WHERE s.scan_id=? AND s.flow_id=?''', (scan_id, flow_id)).fetchone()
+        if not row:
             raise HTTPException(404, 'Recording session not found.')
+        job = json.loads(row['job_json'])
+        stage = json.loads(row['progress_json'] or '{}').get('stage')
+        now = datetime.now(timezone.utc)
+        requested = job.get('cancel_requested')
+        if row['status'] == 'running' and stage in {'recording', 'finishing', 'cancelling'}:
+            if not requested or (now - datetime.fromisoformat(requested)).total_seconds() < 10:
+                job['cancel_requested'] = requested or now.isoformat()
+                progress = {'stage': 'cancelling', 'message': 'Closing this recording and discarding its unsaved actions.'}
+                db.execute('UPDATE flow_catalog_scans SET job_json=?,progress_json=? WHERE id=?',
+                           (json.dumps(job), json.dumps(progress), scan_id))
+                return {'scan_id': scan_id, 'status': 'cancelling', 'message': progress['message']}
+    # Authentication/validation may be blocked inside a portal call. The
+    # existing exact-worker stop is also the fallback for an unresponsive CLI.
     return flows.stop_scan(scan_id, request)
 
 
@@ -106,9 +151,14 @@ def finish_recording(flow_id: int, scan_id: int):
             raise HTTPException(404, 'Recording session not found.')
         if session['status'] in {'queued', 'claimed', 'running'}:
             job = json.loads(session['job_json'])
+            if job.get('cancel_requested'):
+                raise HTTPException(409, 'This recording is being cancelled.')
+            if json.loads(session['progress_json'] or '{}').get('stage') not in {'recording', 'finishing'}:
+                raise HTTPException(409, 'Wait for the recording window to open before finishing.')
             job['finish_requested'] = True
-            db.execute('UPDATE flow_catalog_scans SET job_json=? WHERE id=?', (json.dumps(job), scan_id))
-    return {'scan_id': scan_id, 'message': 'Finish requested. Close the recording browser to save its final actions.'}
+            progress = {'stage': 'finishing', 'message': 'Saving the recorded actions and closing the recording windows.'}
+            db.execute('UPDATE flow_catalog_scans SET job_json=?,progress_json=? WHERE id=?', (json.dumps(job), json.dumps(progress), scan_id))
+    return {'scan_id': scan_id, 'message': 'Finishing recording. Its reviewed steps will appear here.'}
 
 
 @router.post('/{flow_id}/recordings/revisions')

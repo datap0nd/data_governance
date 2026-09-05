@@ -7133,7 +7133,9 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
         registration['capabilities'][flow_tasks.HEADED_CAPABILITY] = True
         registration['capabilities'][flow_browser.CAPABILITY] = True
         registration['capabilities']['recorded_flows_v1'] = True
+        registration['capabilities']['recorded_date_batches_v1'] = True
         registration['capabilities']['flow_recorder_v1'] = headed
+        registration['capabilities']['flow_recorder_controls_v1'] = headed
         # Metronome can take several minutes to boot after an update (service
         # reinstall, migrations, first-request warmup), and this worker now
         # starts first. Outlasting that boot beats dying at two minutes and
@@ -7178,7 +7180,8 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                 work = run or scan or claimed.get('task')
                 if work:
                     browser_job = work['job']
-                    portal_work = browser_job.get('flow', {}).get('source_type') not in {'file', 'outlook'} and browser_job.get('job_type') != 'sql_retry'
+                    portal_work = (browser_job.get('flow', {}).get('source_type') not in {'file', 'outlook'}
+                                   and browser_job.get('job_type') != 'sql_retry' and not browser_job.get('recording_operation'))
                     requested_channel = flow_browser.channel_for(browser_job)
                     if portal_work and (context is None or requested_channel != current_channel):
                         try:
@@ -7233,7 +7236,9 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                         try:
                             if not headed:
                                 raise RuntimeError('Recording requires a visible worker.')
-                            context.close()
+                            if context is not None:
+                                context.close()
+                            context, page = None, None
                             definition = (scan['job'].get('validation_job') or {}).get('recording', {}).get('definition', {})
                             with flow_recorder_worker.reservation_heartbeat(server, worker_id, scan_id), flow_recorder_worker.browser_session(
                                     playwright, profile_dir, flow_browser.channel_for(scan['job']),
@@ -7244,6 +7249,8 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                                 else:
                                     result = flow_recorder_worker.validate(scan, recording_page, recording_profile, recording_progress)
                             recording_progress('succeeded', {'stage': 'complete', 'message': 'Recording operation completed.'}, recording_result=result)
+                        except flow_recorder_worker.RecordingCancelled as exc:
+                            recording_progress('cancelled', {'stage': 'cancelled', 'message': str(exc)})
                         except Exception as exc:
                             recording_progress('failed', {'stage': 'failed', 'message': str(exc)}, error=str(exc)[:10000])
                         finally:
@@ -7532,6 +7539,13 @@ def main():
     parser.add_argument("--idle-exit-seconds", type=int, default=0, help="Exit after this many idle seconds.")
     args = parser.parse_args()
     profile_dir = Path(args.profile_dir)
+    if sys.stdout is None or sys.stderr is None:
+        # Interactive scheduled tasks use pythonw: keep diagnostics on disk
+        # without opening a console alongside the user's recording browser.
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        log = (profile_dir / 'worker-console.log').open('a', encoding='utf-8', buffering=1)
+        sys.stdout = sys.stdout or log
+        sys.stderr = sys.stderr or log
     if args.authenticate_url:
         from app import flow_browser
         with httpx.Client(base_url=args.server.rstrip('/')) as settings_client:
