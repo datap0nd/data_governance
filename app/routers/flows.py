@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 
 from app.config import DB_PATH, UPLOAD_PGHOST, UPLOAD_PGPORT
 from app.database import get_db
-from app import flow_paths, flow_layout
+from app import flow_paths, flow_layout, flow_capacity
 from app.flow_credentials import asap_credential_status, save_asap_credentials
 from app.flow_asap_exports import (
     public_asap_download_types,
@@ -2529,6 +2529,8 @@ def list_workers():
     for row in rows:
         item = dict(row)
         item["capabilities"] = _loads(item.pop("capabilities_json"), {})
+        item["pool"] = "headed" if item["capabilities"].get("headed") else "headless"
+        item["slot"] = 1 if item["pool"] == "headed" else flow_capacity.slot_number(item["worker_id"])
         if not item["last_seen_at"] or item["last_seen_at"] < cutoff:
             item["status"] = "offline"
         result.append(item)
@@ -3316,7 +3318,7 @@ def stop_run(flow_id: int, request: Request):
             )
         log_event(db, "flow", flow_id, flow["name"], "run_cancelled", f"run_id={run_id}", get_actor(request))
     stopped = (
-        stop_local_worker(browser_mode, process_id)
+        stop_local_worker(browser_mode, process_id, worker_id=worker_id)
         if stop_assigned_worker
         else {"status": "not_needed", "message": "The run had not been assigned to a worker."}
     )
@@ -3330,18 +3332,23 @@ def stop_run(flow_id: int, request: Request):
 
 
 def ensure_local_worker() -> dict:
-    """Restart the resident BI desktop worker when it is not online or busy."""
+    """Ensure configured fixed slots; never stop busy slots after a reduction."""
     cutoff = _iso(_now() - timedelta(seconds=90))
     with get_db() as db:
-        row = db.execute(
-            "SELECT status, current_run_id, current_scan_id, last_seen_at FROM flow_workers WHERE worker_id=?",
-            (LOCAL_WORKER_ID,),
-        ).fetchone()
-    if row and (row["current_run_id"] or row["current_scan_id"]):
-        return {"status": "busy", "mode": "local", "worker_id": LOCAL_WORKER_ID}
-    if row and row["last_seen_at"] and row["last_seen_at"] >= cutoff:
-        return {"status": "online", "mode": "local", "worker_id": LOCAL_WORKER_ID}
-    return launch_local_worker("headless")
+        capacity = flow_capacity.headless_capacity(db)
+        rows = {row["worker_id"]: row for row in db.execute(
+            "SELECT worker_id, status, current_run_id, current_scan_id, last_seen_at FROM flow_workers")}
+    results = []
+    for slot in range(1, capacity + 1):
+        identity = flow_capacity.worker_id(slot)
+        row = rows.get(identity)
+        if row and (row["current_run_id"] or row["current_scan_id"]):
+            results.append({"status": "busy", "mode": "local", "worker_id": identity})
+        elif row and row["status"] != "offline" and row["last_seen_at"] and row["last_seen_at"] >= cutoff:
+            results.append({"status": "online", "mode": "local", "worker_id": identity})
+        else:
+            results.append(launch_local_worker("headless") if slot == 1 else launch_local_worker("headless", slot=slot))
+    return {**results[0], "headless_capacity": capacity, "slots": results}
 
 
 def _scan_out(row) -> dict:
@@ -3614,7 +3621,7 @@ def stop_scan(scan_id: int, request: Request):
         )
 
     stopped = (
-        stop_local_worker(scan_browser_mode, process_id)
+        stop_local_worker(scan_browser_mode, process_id, worker_id=worker_id)
         if stop_assigned_worker
         else {"status": "not_needed", "message": "The scan had not been assigned to a worker."}
     )
@@ -4672,6 +4679,7 @@ def _worker_artifact_stores(capabilities: dict) -> set[str]:
 def claim_run(worker_id: str):
     now = _iso(_now())
     with get_db() as db:
+        db.execute("BEGIN IMMEDIATE")
         worker = db.execute("SELECT * FROM flow_workers WHERE worker_id=?", (worker_id,)).fetchone()
         if not worker:
             raise HTTPException(404, "Register this worker before claiming work.")
@@ -4734,6 +4742,12 @@ def claim_run(worker_id: str):
             queued_runs = db.execute(
                 "SELECT * FROM flow_runs WHERE status='queued' ORDER BY created_at, id"
             ).fetchall()
+
+        # Recovery diagnostics must still reject an impossible producer-store
+        # assignment when the pool is busy. Capacity gates new work only.
+        if not flow_capacity.can_claim(db, worker_id, worker_mode):
+            db.execute("UPDATE flow_workers SET status='idle', current_run_id=NULL, current_scan_id=NULL, last_seen_at=?, updated_at=? WHERE worker_id=?", (now, now, worker_id))
+            return {"run": None, "scan": None, "waiting_for_capacity": True}
 
         def worker_can_claim(candidate) -> bool:
             job = _loads(candidate["job_json"], {})

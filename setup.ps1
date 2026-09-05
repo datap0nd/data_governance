@@ -10,7 +10,8 @@
 # Uses a portable Python 3.13 (no system changes) so pbixray works.
 
 param(
-    [switch]$Unattended
+    [switch]$Unattended,
+    [ValidateRange(0,5)][int]$FlowHeadlessSlots = 0 # 0 reads the saved setting
 )
 
 # --- Self-elevate to Admin if needed ---
@@ -18,7 +19,8 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
     $ElevationArguments = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
     if (-not $Unattended) { $ElevationArguments = "-NoExit $ElevationArguments" }
     if ($Unattended) { $ElevationArguments += " -Unattended" }
-    Start-Process powershell.exe $ElevationArguments -Verb RunAs
+    if ($FlowHeadlessSlots) { $ElevationArguments += " -FlowHeadlessSlots $FlowHeadlessSlots" }
+    Start-Process powershell.exe $ElevationArguments -Verb RunAs -WindowStyle Hidden
     exit
 }
 
@@ -304,6 +306,18 @@ if ($existingFlowService) {
     }
 }
 
+# Quiesce every installed extra slot, including slots above today's capacity.
+# This runs before replacing code, for manual and unattended updates alike.
+foreach ($PoolSlot in 2..5) {
+    $PoolServiceName = "MXFlowsWorker$PoolSlot"
+    $PoolService = Get-Service -Name $PoolServiceName -ErrorAction SilentlyContinue
+    if ($PoolService) {
+        & $NssmExe stop $PoolServiceName 2>&1 | Out-Null
+        try { $PoolService.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Stopped, [TimeSpan]::FromSeconds(30)) }
+        catch { throw "Flow slot $PoolSlot did not stop. Update aborted before replacing code." }
+    }
+}
+
 # Kill any orphaned worker or automation Edge still holding a flow profile.
 # A leftover process keeps the profile's .worker.lock, so every new service
 # instance exits with "already running" and the worker never registers.
@@ -370,6 +384,7 @@ if (-not $env:DG_SETUP_RELAUNCHED) {
         $env:DG_SETUP_RELAUNCHED = "1"
         $RelaunchArguments = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $SetupScriptPath)
         if ($Unattended) { $RelaunchArguments += "-Unattended" }
+        if ($FlowHeadlessSlots) { $RelaunchArguments += @('-FlowHeadlessSlots', "$FlowHeadlessSlots") }
         & powershell.exe @RelaunchArguments
         exit $LASTEXITCODE
     }
@@ -428,6 +443,15 @@ if ($LASTEXITCODE -ne 0) {
     throw "Python dependency installation failed with exit code $LASTEXITCODE"
 }
 
+# Read the persisted capacity after the new code and Python are available.
+. (Join-Path $CodeDir 'tools\flow_pool.ps1')
+$PoolConfigArguments = @((Join-Path $CodeDir 'tools\flow_pool_config.py'), $DbPath)
+if ($FlowHeadlessSlots) { $PoolConfigArguments += @('--capacity', "$FlowHeadlessSlots") }
+$ConfiguredFlowSlots = [int](& $PyExe @PoolConfigArguments)
+if ($LASTEXITCODE -ne 0 -or $ConfiguredFlowSlots -lt 1 -or $ConfiguredFlowSlots -gt 5) { throw 'Could not read Flow worker capacity.' }
+$FlowSlots = @(1..$ConfiguredFlowSlots | ForEach-Object { Get-MetronomeFlowSlot -Slot $_ -BaseProfile $FlowProfile })
+$MissingExtraSlots = @($FlowSlots | Where-Object { $_.Slot -gt 1 -and -not (Get-Service -Name $_.ServiceName -ErrorAction SilentlyContinue) })
+
 # --- Create and start service ---
 Write-Host "Starting service..." -ForegroundColor Yellow
 $NssmExe = "$CodeDir\tools\nssm.exe"
@@ -457,6 +481,7 @@ if (-not $HadExistingService) {
 # updates preserve the installed credentials so unattended setup never prompts.
 $ExistingAutoUpdateTask = Get-ScheduledTask -TaskName $AutoUpdateTaskName -ErrorAction SilentlyContinue
 $NeedsServiceCredential = (-not $HadExistingService) -or (-not $existingFlowService) -or (-not $ExistingAutoUpdateTask)
+if (-not $Unattended -and $MissingExtraSlots.Count) { $NeedsServiceCredential = $true }
 $ServicePassword = $null
 $SetServiceCredentials = $false
 if ($env:DG_SVC_PASSWORD) {
@@ -514,6 +539,39 @@ if ($SetServiceCredentials) {
 & $NssmExe set $FlowServiceName AppRotateFiles 1
 & $NssmExe set $FlowServiceName AppRotateSeconds 86400
 & $NssmExe set $FlowServiceName AppRotateBytes 10485760
+
+# Slot 1 keeps its service, worker ID, profile and logs for historic recovery.
+# New slots require explicit account credentials from interactive setup. An
+# unattended update preserves installed slots and reports missing ones offline.
+foreach ($FlowSlot in $FlowSlots | Where-Object { $_.Slot -gt 1 }) {
+    $SlotService = $FlowSlot.ServiceName
+    $InstalledSlot = Get-Service -Name $SlotService -ErrorAction SilentlyContinue
+    if (-not $InstalledSlot -and -not $SetServiceCredentials) {
+        Write-Host "  Slot $($FlowSlot.Slot) is configured but not installed. Run setup.ps1 manually to enroll its service account." -ForegroundColor Yellow
+        continue
+    }
+    $SlotArguments = "`"$CodeDir\app\flow_worker.py`" --server http://127.0.0.1:$Port --worker-id $($FlowSlot.WorkerId) --name $($FlowSlot.WorkerId) --profile-dir `"$($FlowSlot.Profile)`""
+    if (-not $InstalledSlot) { & $NssmExe install $SlotService $PyExe $SlotArguments }
+    & $NssmExe set $SlotService Application $PyExe
+    & $NssmExe set $SlotService AppParameters $SlotArguments
+    & $NssmExe set $SlotService AppDirectory $CodeDir
+    & $NssmExe set $SlotService DisplayName "Metronome - Flows Worker $($FlowSlot.Slot)"
+    & $NssmExe set $SlotService Start SERVICE_AUTO_START
+    & $NssmExe set $SlotService AppEnvironmentExtra "METRONOME_FLOW_PROFILE=$FlowProfile"
+    if ($SetServiceCredentials) { & $NssmExe set $SlotService ObjectName "$env:USERDOMAIN\$env:USERNAME" $ServicePassword }
+    & $NssmExe set $SlotService AppExit Default Restart
+    & $NssmExe set $SlotService AppRestartDelay 10000
+    & $NssmExe set $SlotService AppStdout "$LogDir\$($FlowSlot.LogName).log"
+    & $NssmExe set $SlotService AppStderr "$LogDir\$($FlowSlot.LogName)_error.log"
+    & $NssmExe set $SlotService AppRotateFiles 1
+    & $NssmExe set $SlotService AppRotateSeconds 86400
+    & $NssmExe set $SlotService AppRotateBytes 10485760
+}
+# Preserve unused services and profiles; don't auto-start them after an update.
+foreach ($DisabledSlot in 1..5 | Where-Object { $_ -gt $ConfiguredFlowSlots }) {
+    $DisabledService = (Get-MetronomeFlowSlot -Slot $DisabledSlot -BaseProfile $FlowProfile).ServiceName
+    if (Get-Service -Name $DisabledService -ErrorAction SilentlyContinue) { & $NssmExe set $DisabledService Start SERVICE_DEMAND_START }
+}
 
 $HeadedTaskArguments = "`"$CodeDir\app\flow_worker.py`" --server http://127.0.0.1:$Port --worker-id bi-desktop-headed --name BI-desktop-headed --profile-dir `"$HeadedFlowProfile`" --headed --idle-exit-seconds 60"
 $HeadedTaskAction = New-ScheduledTaskAction -Execute $PyExe -Argument $HeadedTaskArguments
@@ -601,10 +659,11 @@ if ((Test-Path $DbPath) -and (Test-Path $FlowCredentialPath)) {
             # cannot share a Chromium profile concurrently), and Samsung SSO
             # sessions live per profile. Signing in only the headless profile
             # left every headed run parked on the SSO form, so bootstrap both.
-            foreach ($ProfileTarget in @(
+            $AuthenticationProfiles = @(
                 @{ Path = $FlowProfile;       Label = "headless service" },
                 @{ Path = $HeadedFlowProfile; Label = "headed on-demand" }
-            )) {
+            ) + @($FlowSlots | Where-Object { $_.Slot -gt 1 } | ForEach-Object { @{ Path = $_.Profile; Label = "headless slot $($_.Slot)" } })
+            foreach ($ProfileTarget in $AuthenticationProfiles) {
                 Write-Host "Authenticating the $($ProfileTarget.Label) Flows browser for $PortalLabel..." -ForegroundColor Yellow
                 Write-Host "  Complete $PortalLabel sign-in in the Edge window if prompted." -ForegroundColor DarkGray
                 try {
@@ -647,6 +706,14 @@ if ($WorkerStartOutput -match 'already running') {
     Write-Host "  Flows worker service was already running - OK." -ForegroundColor DarkGray
 }
 
+$ExpectedWorkerIds = @('bi-desktop-headless')
+foreach ($FlowSlot in $FlowSlots | Where-Object { $_.Slot -gt 1 }) {
+    if (Get-Service -Name $FlowSlot.ServiceName -ErrorAction SilentlyContinue) {
+        & $NssmExe start $FlowSlot.ServiceName 2>&1 | Out-Null
+        $ExpectedWorkerIds += $FlowSlot.WorkerId
+    }
+}
+
 & $NssmExe start $ServiceName
 Start-Sleep -Seconds 3
 
@@ -666,11 +733,18 @@ if (-not $MetronomeHealthy -and $Unattended) {
 }
 
 function Describe-WorkerRegistrationFailure {
-    param($Port, $CodeDir, $LogDir, $WorkerStartedAt)
+    param($Port, $CodeDir, $LogDir, $WorkerStartedAt, $ExpectedWorkerIds = @('bi-desktop-headless'))
     try {
         $Workers = @(Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/flows/workers" -TimeoutSec 5)
     } catch {
         return "Metronome is not answering on port $Port, so the worker cannot register. Check $LogDir\mx_analytics_error.log."
+    }
+    $MissingWorkers = @($ExpectedWorkerIds | Where-Object {
+        $ExpectedId = $_
+        -not @($Workers | Where-Object { $_.worker_id -eq $ExpectedId -and $_.status -ne 'offline' -and $_.last_seen_at -and ([datetime]$_.last_seen_at) -ge $WorkerStartedAt.AddSeconds(-5) }).Count
+    })
+    if ($MissingWorkers.Count -and $MissingWorkers -notcontains 'bi-desktop-headless') {
+        return "Background slots not registered after update: $($MissingWorkers -join ', '). Check their flow_worker2..5_error.log files and System > Flow workers."
     }
     $Row = $Workers | Where-Object { $_.worker_id -eq "bi-desktop-headless" } | Select-Object -First 1
     $LiveWorkers = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
@@ -707,9 +781,9 @@ function Describe-WorkerRegistrationFailure {
     try {
         $ExistingWorkers = @(Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/flows/workers" -TimeoutSec 5)
         $WorkerOnline = @($ExistingWorkers | Where-Object {
-            $_.worker_id -eq "bi-desktop-headless" -and $_.status -ne "offline" -and
+            $ExpectedWorkerIds -contains $_.worker_id -and $_.status -ne "offline" -and
             $_.last_seen_at -and ([datetime]$_.last_seen_at) -ge $WorkerStartedAt.AddSeconds(-5)
-        }).Count -gt 0
+        }).Count -eq $ExpectedWorkerIds.Count
     } catch {}
     if (-not $WorkerOnline) {
         for ($attempt = 0; $attempt -lt 60; $attempt++) {
@@ -717,9 +791,9 @@ function Describe-WorkerRegistrationFailure {
             try {
                 $RegisteredWorkers = @(Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/flows/workers" -TimeoutSec 5)
                 if (@($RegisteredWorkers | Where-Object {
-                    $_.worker_id -eq "bi-desktop-headless" -and $_.status -ne "offline" -and
+                    $ExpectedWorkerIds -contains $_.worker_id -and $_.status -ne "offline" -and
                     $_.last_seen_at -and ([datetime]$_.last_seen_at) -ge $WorkerStartedAt.AddSeconds(-5)
-                }).Count -gt 0) {
+                }).Count -eq $ExpectedWorkerIds.Count) {
                     $WorkerOnline = $true
                     break
                 }
@@ -729,7 +803,7 @@ function Describe-WorkerRegistrationFailure {
     if ($WorkerOnline) {
         Write-Host "  Flows worker registered with Metronome." -ForegroundColor Green
     } else {
-        $Reason = Describe-WorkerRegistrationFailure -Port $Port -CodeDir $CodeDir -LogDir $LogDir -WorkerStartedAt $WorkerStartedAt
+        $Reason = Describe-WorkerRegistrationFailure -Port $Port -CodeDir $CodeDir -LogDir $LogDir -WorkerStartedAt $WorkerStartedAt -ExpectedWorkerIds $ExpectedWorkerIds
         if ($Reason -like "STILL STARTING:*") {
             Write-Host "  Flows worker has not registered yet. $Reason" -ForegroundColor DarkYellow
         } else {

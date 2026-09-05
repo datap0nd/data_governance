@@ -3529,9 +3529,13 @@ def test_worker_launcher_appends_diagnostic_log():
     assert '"flow_worker_{0}.log"' in source
 
 
-def test_service_starts_headless_worker_service_instead_of_child_process():
+def test_service_starts_headless_worker_service_instead_of_child_process(monkeypatch):
+    commands = []
+    monkeypatch.setattr(flow_local_runner.platform, 'system', lambda: 'Windows')
+    monkeypatch.setattr(flow_local_runner.subprocess, 'run', lambda command, **kwargs: commands.append(command) or SimpleNamespace(returncode=0, stdout='', stderr=''))
+    flow_local_runner.launch_local_worker('headless')
+    assert commands == [['sc.exe', 'start', 'MXFlowsWorker']]
     source = Path(__file__).parents[1].joinpath("app", "flow_local_runner.py").read_text()
-    assert '["sc.exe", "start", SERVICE_NAME]' in source
     assert '"System32", "schtasks.exe"' in source
     assert '[schtasks, "/Run", "/TN", HEADED_TASK_PATH]' in source
     assert 'HEADED_TASK_PATH = rf"\\{HEADED_TASK_NAME}"' in source
@@ -4072,7 +4076,7 @@ def test_stop_cancels_assigned_run_and_targets_reported_worker_pid(flow_db, monk
     stopped = []
     monkeypatch.setattr(
         flows, "stop_local_worker",
-        lambda mode, pid: stopped.append((mode, pid)) or {"status": "stopped", "process_id": pid},
+        lambda mode, pid, **kwargs: stopped.append((mode, pid)) or {"status": "stopped", "process_id": pid},
     )
 
     result = flows.stop_run(saved["id"], _request())
@@ -4103,7 +4107,7 @@ def test_stop_cancels_queued_run_without_stopping_another_flows_worker(flow_db, 
     stopped = []
     monkeypatch.setattr(
         flows, "stop_local_worker",
-        lambda mode, pid: stopped.append((mode, pid)) or {"status": "stopped"},
+        lambda mode, pid, **kwargs: stopped.append((mode, pid)) or {"status": "stopped"},
     )
 
     result = flows.stop_run(second_flow["id"], _request())
@@ -4136,7 +4140,7 @@ def test_stop_cancels_assigned_headless_run(flow_db, monkeypatch):
     stopped = []
     monkeypatch.setattr(
         flows, "stop_local_worker",
-        lambda mode, pid: stopped.append((mode, pid)) or {"status": "stopped", "process_id": pid},
+        lambda mode, pid, **kwargs: stopped.append((mode, pid)) or {"status": "stopped", "process_id": pid},
     )
 
     result = flows.stop_run(saved["id"], _request())
@@ -4154,7 +4158,7 @@ def test_stop_cancels_queued_catalog_scan_without_stopping_worker(flow_db, monke
     stopped = []
     monkeypatch.setattr(
         flows, "stop_local_worker",
-        lambda mode, pid: stopped.append((mode, pid)) or {"status": "stopped"},
+        lambda mode, pid, **kwargs: stopped.append((mode, pid)) or {"status": "stopped"},
     )
 
     result = flows.stop_scan(queued["id"], _request())
@@ -4194,7 +4198,7 @@ def test_stop_cancels_running_catalog_scan_and_ignores_late_success(flow_db, mon
     stopped = []
     monkeypatch.setattr(
         flows, "stop_local_worker",
-        lambda mode, pid: stopped.append((mode, pid)) or {"status": "stopped", "process_id": pid},
+        lambda mode, pid, **kwargs: stopped.append((mode, pid)) or {"status": "stopped", "process_id": pid},
     )
 
     result = flows.stop_scan(queued["id"], _request())
@@ -5320,6 +5324,9 @@ def test_folder_key_groups_path_spellings(flow_db):
 
 
 def test_an_active_runs_folder_is_never_assigned_for_cleanup(flow_db):
+    # Exercise retention while two operations run; capacity defaults to one.
+    with database.get_db() as db:
+        flows.flow_paths.save_setting(db, 'flows_headless_capacity', 2)
     target = "/reports/downloads"
     saved, site, report = _retention_flow(target)
     # An old run that is still running (its worker is alive) sits below the

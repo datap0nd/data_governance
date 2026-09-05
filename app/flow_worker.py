@@ -7120,6 +7120,8 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
             "display_name": display_name,
             "capabilities": {"adapters": ["web_export", ASAP_PORTAL_ADAPTER, GSCM_PORTAL_ADAPTER, OUTLOOK_ATTACHMENT_ADAPTER, LOCAL_FILE_ADAPTER], "headed": headed, "process_id": os.getpid(), "delete_existing": False, "overwrite_existing": True, "artifact_store_id": flow_publish.artifact_store_id(profile_dir), "code_version": code_version},
         }
+        from app.flow_capacity import slot_number
+        registration['capabilities'].update(pool='headed' if headed else 'headless', slot=1 if headed else slot_number(worker_id))
         # Metronome can take several minutes to boot after an update (service
         # reinstall, migrations, first-request warmup), and this worker now
         # starts first. Outlasting that boot beats dying at two minutes and
