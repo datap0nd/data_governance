@@ -49,7 +49,7 @@ def _recorded_source(raw):
 
 
 @contextmanager
-def browser_session(playwright, base_profile, channel, *, headed=True, timezone='UTC'):
+def browser_session(playwright, base_profile, channel, *, headed=True, timezone='Asia/Dubai'):
     from app import flow_browser, flow_browser_state
     state = flow_browser_state.load(base_profile, channel)
     if state is None:
@@ -117,10 +117,10 @@ def authenticate(page, job, profile, progress, *, headed=True):
 
 def record(client, worker_id, scan, page, context, profile, progress):
     from app import flow_worker
-    from tzlocal import get_localzone_name
+    from app.flow_clock import TIMEZONE
     job, scan_id = scan['job'], scan['id']
     authenticate(page, job, profile, progress)
-    zone = get_localzone_name()
+    zone = TIMEZONE
     private = profile / 'recordings' / str(scan_id)
     private.mkdir(parents=True, exist_ok=False)
     raw = private / 'codegen.py'

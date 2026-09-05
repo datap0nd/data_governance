@@ -43,7 +43,7 @@ existing Flows retain catalog/bookmark execution.
    activate until a configured download passes validation.
 5. Configure dates if needed. Fixed start + portal-default end omits the end
    field write and logs the portal's value. Calculated dates resolve once per
-   run in the saved timezone. Date ranges are checked before accepting output.
+   run in Dubai time. Date ranges are checked before accepting output.
 6. Save the reviewed revision, validate it on the worker, then activate it.
    Configure/enable the existing schedule through Pipeline and schedule settings.
 
@@ -80,8 +80,8 @@ number; output identities include both the step and date range.
 
 Both boundaries must be fixed or calculated; use `today` for a moving end.
 Portal-default fields remain supported outside the batch boundaries. Defaults
-must stay consistent across batches and recovery. Dates resolve once in the
-Flow timezone and queued jobs retain them. Ranges cannot exceed 500 batches.
+must stay consistent across batches and recovery. Dates resolve once in
+Dubai time and queued jobs retain them. Ranges cannot exceed 500 batches.
 All acquisition and validation completes before publication, transformation
 and SQL. Portable scripts use this same loop; `--dry-run` lists the ranges.
 

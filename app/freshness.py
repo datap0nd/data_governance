@@ -81,12 +81,12 @@ def parse_source_timestamp(value: str | datetime | None) -> datetime | None:
 
 
 def parse_flow_timestamp(value: str | datetime | None) -> datetime | None:
-    """Parse Flow history; legacy naive values mean host-local wall time."""
+    """Parse UTC Flow history after the one-time legacy wall-time migration."""
     parsed = _parse(value)
     if parsed is None:
         return None
     if parsed.tzinfo is None:
-        parsed = localize_wall_time(parsed, host_timezone())
+        parsed = parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
 
 

@@ -357,7 +357,7 @@ def test_recorded_sql_retry_rejects_a_partial_bundle(flow_db):
 
 
 @pytest.mark.parametrize('aware',[False,True])
-def test_recording_lease_expiry_accepts_local_and_offset_timestamps(flow_db,monkeypatch,aware):
+def test_recording_lease_expiry_accepts_utc_and_offset_timestamps(flow_db,monkeypatch,aware):
     from datetime import timedelta
     monkeypatch.setattr(routes,'_launch',lambda scan_id:{'scan_id':scan_id})
     saved,job=draft_job()
@@ -365,7 +365,7 @@ def test_recording_lease_expiry_accepts_local_and_offset_timestamps(flow_db,monk
     flows.register_worker(flows.WorkerRegister(worker_id='lease',display_name='lease',capabilities={
         'headed':True,'browser_switch_v1':True,'flow_recorder_v1':True,'flow_recorder_controls_v1':True,'process_id':123}))
     flows.claim_run('lease')
-    stamp=(datetime.now(timezone(timedelta(hours=5))) if aware else datetime.now())-timedelta(minutes=4)
+    stamp=(datetime.now(timezone(timedelta(hours=5))) if aware else datetime.now(timezone.utc).replace(tzinfo=None))-timedelta(minutes=4)
     with database.get_db() as db:
         db.execute('UPDATE flow_catalog_scans SET heartbeat_at=? WHERE id=?',(stamp.isoformat(),started['scan_id']))
         flow_recordings.reap(db)

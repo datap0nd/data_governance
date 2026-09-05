@@ -10,6 +10,7 @@ import ntpath
 import os
 import re
 import sqlite3
+from app.flow_clock import dubai_now
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -96,7 +97,7 @@ SAFE_NAME_RE = re.compile(r"^[^<>:\"/\\|?*\x00-\x1f]+$")
 
 
 def _now() -> datetime:
-    return datetime.now().replace(microsecond=0)
+    return datetime.now(timezone.utc).replace(tzinfo=None, microsecond=0)
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -363,11 +364,12 @@ def notify_flow_owner_of_failure(run_id: int) -> dict:
 
 
 def _contact_time(value: str | None) -> datetime | None:
-    """Read legacy local timestamps and parallel workers' aware UTC stamps."""
+    """Read migrated UTC timestamps and workers' explicit-offset stamps."""
     if not value:
         return None
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
     except (TypeError, ValueError):
         return None
 
@@ -378,7 +380,7 @@ def fail_stale_runs(
     """Fail runs whose assigned worker has stopped responding."""
     now = _now()
     now_text = _iso(now)
-    cutoff = now.astimezone(timezone.utc) - timedelta(seconds=timeout_seconds)
+    cutoff = now.replace(tzinfo=timezone.utc) - timedelta(seconds=timeout_seconds)
     failed = []
     with get_db() as db:
         db.execute('BEGIN IMMEDIATE')
@@ -544,12 +546,12 @@ def _schedule_next(
     if rule is None:
         return None
     zone = host_timezone()
-    after = localize_wall_time(_now(), zone).astimezone(timezone.utc)
-    return next_occurrence(rule, after=after).astimezone(zone).replace(tzinfo=None)
+    after = _now().replace(tzinfo=timezone.utc)
+    return next_occurrence(rule, after=after).astimezone(timezone.utc).replace(tzinfo=None)
 
 
 def _next_weekly_scan(weekday: str, time_value: str, now: datetime | None = None) -> datetime:
-    now = now or _now()
+    now = (now or _now()).replace(tzinfo=timezone.utc).astimezone(host_timezone()).replace(tzinfo=None)
     hour, minute = (int(part) for part in time_value.split(":"))
     target = WEEKDAYS[weekday]
     for offset in range(8):
@@ -558,7 +560,7 @@ def _next_weekly_scan(weekday: str, time_value: str, now: datetime | None = None
             continue
         candidate = datetime.combine(candidate_date, datetime.min.time()).replace(hour=hour, minute=minute)
         if candidate > now:
-            return candidate
+            return candidate.replace(tzinfo=host_timezone()).astimezone(timezone.utc).replace(tzinfo=None)
     raise ValueError("Could not calculate the next discovery scan.")
 
 

@@ -2,6 +2,7 @@
 
 import calendar
 import html
+from app.flow_clock import dubai_now
 from datetime import date, datetime, timezone, time, timedelta
 
 from fastapi import APIRouter, HTTPException, Request
@@ -126,7 +127,7 @@ def _text_link_items(items: list[dict]) -> str:
 
 
 def _now() -> datetime:
-    return datetime.now().replace(microsecond=0)
+    return datetime.now(timezone.utc).replace(tzinfo=None, microsecond=0)
 
 
 def _iso(dt: datetime | None) -> str | None:
@@ -183,7 +184,17 @@ def _clamped_month_date(year: int, month: int, requested_day: int) -> date:
     return date(year, month, min(max(requested_day, 1), last_day))
 
 
-def _calculate_next_run(
+def _calculate_next_run(recurrence, send_time, weekdays, month_day, now=None):
+    from app.flow_clock import TIMEZONE
+    from zoneinfo import ZoneInfo
+    current = now or _now()
+    instant = current.replace(tzinfo=timezone.utc) if current.tzinfo is None else current
+    local = instant.astimezone(ZoneInfo(TIMEZONE)).replace(tzinfo=None)
+    result = _calendar_next_run(recurrence, send_time, weekdays, month_day, local)
+    return result.replace(tzinfo=ZoneInfo(TIMEZONE)).astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _calendar_next_run(
     recurrence: str,
     send_time: str | None,
     weekdays: list[str] | str | None,
@@ -409,7 +420,7 @@ def _build_task_summary_email() -> tuple[str, str]:
             item.update(_task_link_columns(db, row["id"]))
             tasks.append(item)
 
-    today = _now().strftime("%d %b %Y")
+    today = dubai_now().strftime("%d %b %Y")
     grouped: dict[str, list[dict]] = {key: [] for key in _STATUS_LABELS}
     for task in tasks:
         grouped.setdefault(task["status"], []).append(task)
@@ -547,7 +558,7 @@ def _parse_aware_dt(value: str | None) -> datetime | None:
 
 
 def _required_pbi_sync_after() -> datetime | None:
-    now_local = datetime.now().astimezone()
+    now_local = dubai_now()
     refresh_time = get_overall_refresh_time()
     expected_local = datetime.combine(
         now_local.date(),

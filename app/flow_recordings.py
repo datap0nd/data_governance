@@ -18,9 +18,10 @@ def reap(db, *, restarted_worker=None, timeout_seconds=180):
     for row in sessions:
         stamp = row['heartbeat_at'] or row['claimed_at']
         try:
-            # Older scan claims use server-local naive timestamps; recording
-            # heartbeats use aware UTC. astimezone handles both conventions.
-            last = datetime.fromisoformat(stamp.replace('Z','+00:00')).astimezone(timezone.utc) if stamp else now
+            # The time-policy migration normalizes old naive claims to UTC.
+            # New worker heartbeats may also carry an explicit offset.
+            last = datetime.fromisoformat(stamp.replace('Z','+00:00')) if stamp else now
+            last = last.replace(tzinfo=timezone.utc) if last.tzinfo is None else last.astimezone(timezone.utc)
         except (TypeError, ValueError):
             last = now
         if row['worker_id'] != restarted_worker and last >= cutoff:
