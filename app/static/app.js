@@ -11130,6 +11130,49 @@ function _flowDestinationHtml(existing) {
     return `<div id="flow-destination" class="flow-span-2 flow-dialog-help"><strong>Flow folder</strong><p>${existing?.id && existing.flow_folder ? esc(existing.flow_folder) : "Metronome creates a folder with this flow's name and ID when you save."}</p><small>${existing?.source_type === "file" || existing?._source_type === "file" ? "Source snapshots stay private; the source file is never moved." : "Downloads and Scripts have separate subfolders. Renaming the flow preserves this path."}</small>${existing?.id && existing.flow_folder ? `<button type="button" class="btn-secondary" id="flow-repair-layout" data-id="${existing.id}">Repair folder layout</button>` : ""}${existing?.id && !existing.flow_folder ? `<button type="button" class="btn-secondary" id="flow-adopt-folder" data-id="${existing.id}">Adopt managed folder</button>` : ""}</div>`;
 }
 
+function _flowSyncParallelism() {
+    const control = $('#flow-download-parallelism');
+    if (!control) return;
+    const headed = $('#flow-browser-mode')?.value === 'headed';
+    const unmanaged = control.dataset.unmanaged === 'true';
+    control.disabled = headed || unmanaged;
+    if (headed) control.value = '1';
+    const help = $('#flow-download-parallelism-help');
+    if (help) help.textContent = [
+        headed ? 'To use more than one download, change Browser mode to Headless · background.' : '',
+        unmanaged ? 'In Where it goes, choose Adopt managed folder to enable parallel downloads. New downloads will use that folder; historical files stay where they are.' : '',
+        !headed && !unmanaged ? 'Uses available background slots configured in System > Flow workers. SQL and transformations wait for the full bundle.' : '',
+    ].filter(Boolean).join(' ');
+}
+
+function _flowBindFolderActions(state) {
+    const repair = $('#flow-repair-layout');
+    if (repair) repair.onclick = async event => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+            await apiPost(`/api/flows/${button.dataset.id}/repair-layout`);
+            toast('Folder layout checked and repaired.');
+        } catch (err) { toast(err.message); }
+        finally { button.disabled = false; }
+    };
+    const adopt = $('#flow-adopt-folder');
+    if (adopt) adopt.onclick = async event => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+            const updated = await apiPost(`/api/flows/${button.dataset.id}/adopt-folder`);
+            Object.assign(state.flows.find(flow => flow.id === updated.id) || {}, updated);
+            $('#flow-destination').outerHTML = _flowDestinationHtml(updated);
+            const parallel = $('#flow-download-parallelism');
+            if (parallel) parallel.dataset.unmanaged = 'false';
+            _flowSyncParallelism();
+            _flowBindFolderActions(state);
+            toast('Managed folder created. Historical files stay in their original folder.');
+        } catch (err) { toast('Folder not adopted: ' + err.message); button.disabled = false; }
+    };
+}
+
 function _flowOutlookBuilderHtml(existing = null) {
     const isFile = existing?.source_type === "file" || existing?._source_type === "file";
     const scheduleDays = new Set(existing?.schedule_days || []);
@@ -11309,7 +11352,7 @@ function _flowBuilderHtml(catalog, existing = null) {
                             <label id="flow-export-filter-details-row" class="flow-check flow-span-2" ${isAsap ? "" : "hidden"}><input id="flow-export-filter-details" type="checkbox" data-inherit="${filtersInherited}" ${filtersChecked ? "checked" : ""} ${asapCapability.known && !asapCapability.options.export_filter_details?.available ? "disabled" : ""}><span>Export filter details</span><small>${filtersInherited ? "Inherited from ASAP until a scan observes a consistent state." : "The runner enforces this saved Export Wizard choice."}</small></label>
                             <label><span>Excel pre-processing</span><select id="flow-excel-trim"><option value="none" ${excelTrim === "none" ? "selected" : ""}>None</option><option value="first_row_and_column" ${excelTrim === "first_row_and_column" ? "selected" : ""}>Drop first row and first column (GSCM report frame)</option></select><small>Applied while normalizing the downloaded workbook to CSV, before headers are detected and before any transformation or SQL handoff. Recorded on every run.</small></label>
                             <label><span>Browser mode</span><select id="flow-browser-mode"><option value="headless" ${existing?.browser_mode !== "headed" ? "selected" : ""}>Headless · background</option><option value="headed" ${existing?.browser_mode === "headed" ? "selected" : ""}>Headed · visible debugging</option></select><small id="flow-browser-mode-help">Headless is best for routine runs.</small></label>
-                            <label><span>Parallel downloads</span><select id="flow-download-parallelism" ${existing?.id && !existing?.flow_folder ? 'disabled data-unmanaged="true"' : ''}>${[1,2,3,4,5].map(n => `<option value="${n}" ${n === Number(existing?.download_parallelism || 1) ? 'selected' : ''}>${n}</option>`).join('')}</select><small>${existing?.id && !existing?.flow_folder ? 'Adopt the managed shared folder before enabling parallel downloads.' : 'Uses available background slots. SQL and transformations wait for the full bundle. Visible debugging uses one slot.'}</small></label>
+                            <label><span>Parallel downloads</span><select id="flow-download-parallelism" aria-describedby="flow-download-parallelism-help" ${existing?.id && !existing?.flow_folder ? 'disabled data-unmanaged="true"' : ''}>${[1,2,3,4,5].map(n => `<option value="${n}" ${n === Number(existing?.download_parallelism || 1) ? 'selected' : ''}>${n}</option>`).join('')}</select><small id="flow-download-parallelism-help" aria-live="polite"></small></label>
                             <label class="flow-week-field"><span>Sell-out Week - start</span><select id="flow-start-week" required><option value="">Choose a discovered week...</option>${_flowDiscoveredWeeks(report, existing?.start_week || "")}</select></label>
                             <label class="flow-week-field"><span>Sell-out Week - end</span><select id="flow-end-week" required><option value="">Choose a discovered week...</option>${_flowDiscoveredWeeks(report, existing?.end_week || "")}</select></label>
                             <label id="flow-window-weeks-field"><span>Weeks per download</span><input id="flow-window-weeks" type="number" min="1" max="105" value="${esc(existing?.window_weeks || 1)}"><small>Each file covers this many consecutive weeks.</small></label>
@@ -12047,25 +12090,7 @@ function _bindFlowWorkspace() {
             catch (_) { window.prompt("Copy this path and open it on the worker PC:", result.path); }
         } catch (err) { toast(err.message); }
     }));
-    $("#flow-repair-layout")?.addEventListener("click", async event => {
-        const button = event.currentTarget;
-        button.disabled = true;
-        try {
-            await apiPost(`/api/flows/${button.dataset.id}/repair-layout`);
-            toast("Folder layout checked and repaired.");
-        } catch (err) { toast(err.message); }
-        finally { button.disabled = false; }
-    });
-    $("#flow-adopt-folder")?.addEventListener("click", async event => {
-        const button = event.currentTarget;
-        button.disabled = true;
-        try {
-            const updated = await apiPost(`/api/flows/${button.dataset.id}/adopt-folder`);
-            Object.assign(state.flows.find(flow => flow.id === updated.id) || {}, updated);
-            $("#flow-destination").outerHTML = _flowDestinationHtml(updated);
-            toast("Managed folder created. Historical files stay in their original folder.");
-        } catch (err) { toast("Folder not adopted: " + err.message); button.disabled = false; }
-    });
+    _flowBindFolderActions(state);
     $("#flow-add-site-empty")?.addEventListener("click", () => _flowSiteDialog());
     $("#flow-scan-empty")?.addEventListener("click", async () => { const site = state.catalog.sites.find(item => item.enabled); if (!site) return; try { await apiPost(`/api/flows/sites/${site.id}/scan`); toast("Catalog discovery queued"); await navigate("flows"); } catch (err) { toast("Scan not queued: " + err.message); } });
     $("#flow-create-empty")?.addEventListener("click", () => _flowShowView("source-picker"));
@@ -12267,8 +12292,7 @@ function _bindFlowWorkspace() {
     $("#flow-report")?.addEventListener("change", async event => { const report = state.catalog.reports.find(item => String(item.id) === event.target.value); const section = $("#flow-report-filters"); if (!section) return; section.querySelector(".flow-form-grid").innerHTML = report && report.filters.filter(filter => filter.enabled && !filter.stale && filter.control_type !== "week").length ? report.filters.filter(filter => filter.enabled && !filter.stale && filter.control_type !== "week").map(definition => `<label><span>${esc(definition.label)}${definition.required ? " *" : ""}</span>${_flowFilterControl(definition, null)}</label>`).join("") : '<p class="flow-inline-empty">This discovered report has no additional configurable filters.</p>'; _flowSyncExportSections(report); const hasWeek = _flowHasWeekFilter(report); const period = $("#flow-period-strategy"); if (period) { period.value = hasWeek ? "latest" : "none"; period.dispatchEvent(new Event("change")); } const start = $("#flow-start-week"); const end = $("#flow-end-week"); if (start) start.innerHTML = `<option value="">Choose a discovered week...</option>${_flowDiscoveredWeeks(report, "")}`; if (end) end.innerHTML = `<option value="">Choose a discovered week...</option>${_flowDiscoveredWeeks(report, "")}`; if (report) { try { const estimates = await api(`/api/flows/estimates?site_id=${report.site_id}&report_id=${report.id}`); $("#flow-download-estimate").textContent = _flowDuration(estimates.flow_download.estimated_ms); $("#flow-download-estimate-source").textContent = estimates.flow_download.source; } catch (_) {} } });
     $("#flow-browser-mode")?.addEventListener("change", event => {
         const headed = event.target.value === "headed";
-        const parallel = $('#flow-download-parallelism');
-        if (parallel) { parallel.disabled = headed || parallel.dataset.unmanaged === 'true'; if (headed) parallel.value = '1'; }
+        _flowSyncParallelism();
         $("#flow-browser-mode-help").textContent = headed
             ? "Opens Edge in the signed-in BI desktop. Use it to build or debug a flow."
             : "Runs in the background. Best for routine and scheduled downloads.";

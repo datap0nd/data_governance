@@ -32,3 +32,64 @@ log.render(run);
 assert.doesNotMatch(container.innerHTML, /id="flow-retry-sql"/);
 assert.match(container.innerHTML, /SQL reconciliation required/);
 console.log('Parallel download display tests passed');
+
+// Run the actual folder click handlers: replacing the destination must unlock
+// parallelism immediately without rebuilding or discarding the user's draft.
+const controls = {};
+const setup = headed => {
+    controls['#flow-download-parallelism'] = {value:'1', disabled:true, dataset:{unmanaged:'true'}};
+    controls['#flow-download-parallelism-help'] = {textContent:''};
+    controls['#flow-browser-mode'] = {value:headed ? 'headed' : 'headless'};
+    controls['#flow-name'] = {value:'Unsaved draft name'};
+    controls['#flow-adopt-folder'] = {dataset:{id:'7'}, disabled:false};
+    delete controls['#flow-repair-layout'];
+    controls['#flow-destination'] = {set outerHTML(html) {
+        assert.match(html, /Repair folder layout/);
+        delete controls['#flow-adopt-folder'];
+        controls['#flow-repair-layout'] = {dataset:{id:'7'}, disabled:false};
+    }};
+};
+const requests = [];
+const messages = [];
+const folder = {$: id => controls[id], esc: value => String(value ?? ''), toast: message => messages.push(message),
+    apiPost: async url => { requests.push(url); return {id:7, flow_folder:'/flows/Example', target_folder:'/flows/Example/Downloads'}; }};
+vm.createContext(folder);
+vm.runInContext(source.slice(source.indexOf('function _flowDestinationHtml('), source.indexOf('function _flowOutlookBuilderHtml(')), folder);
+for (const headed of [false,true]) {
+    setup(headed);
+    const state = {flows:[{id:7, target_folder:'/old'}]};
+    folder._flowSyncParallelism();
+    assert.match(controls['#flow-download-parallelism-help'].textContent, /Where it goes.*Adopt managed folder/);
+    if (headed) assert.match(controls['#flow-download-parallelism-help'].textContent, /Headless/);
+    folder._flowBindFolderActions(state);
+    const adopt = controls['#flow-adopt-folder'];
+    await adopt.onclick({currentTarget:adopt});
+    assert.equal(controls['#flow-download-parallelism'].disabled, headed);
+    assert.equal(controls['#flow-name'].value, 'Unsaved draft name');
+    assert.equal(state.flows[0].flow_folder, '/flows/Example');
+    assert.doesNotMatch(controls['#flow-download-parallelism-help'].textContent, /Adopt managed folder/);
+    const repair = controls['#flow-repair-layout'];
+    assert.equal(typeof repair.onclick, 'function');
+    await repair.onclick({currentTarget:repair});
+    assert.equal(repair.disabled, false);
+    controls['#flow-browser-mode'].value = 'headless';
+    folder._flowSyncParallelism();
+    assert.equal(controls['#flow-download-parallelism'].disabled, false);
+    controls['#flow-download-parallelism'].value = '4';
+    folder._flowSyncParallelism();
+    assert.equal(controls['#flow-download-parallelism'].value, '4');
+    controls['#flow-browser-mode'].value = 'headed';
+    folder._flowSyncParallelism();
+    assert.equal(controls['#flow-download-parallelism'].value, '1');
+    assert.equal(controls['#flow-download-parallelism'].disabled, true);
+}
+assert.deepEqual(requests, ['/api/flows/7/adopt-folder','/api/flows/7/repair-layout','/api/flows/7/adopt-folder','/api/flows/7/repair-layout']);
+setup(false);
+folder.apiPost = async () => {throw new Error('Flow is active');};
+folder._flowBindFolderActions({flows:[{id:7}]});
+const failedAdopt = controls['#flow-adopt-folder'];
+await failedAdopt.onclick({currentTarget:failedAdopt});
+assert.equal(controls['#flow-download-parallelism'].disabled, true);
+assert.equal(failedAdopt.disabled, false);
+assert.match(messages.at(-1), /Flow is active/);
+console.log('Parallel download availability and adoption tests passed');
