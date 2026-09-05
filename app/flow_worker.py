@@ -7122,8 +7122,9 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
         }
         from app.flow_capacity import slot_number
         from app import flow_tasks
-        registration['capabilities'].update(pool='headed' if headed else 'headless', slot=1 if headed else slot_number(worker_id))
+        registration['capabilities'].update(pool='headed' if headed else 'headless', slot=slot_number(worker_id, 'headed' if headed else 'headless'))
         registration['capabilities'][flow_tasks.CAPABILITY] = True
+        registration['capabilities'][flow_tasks.HEADED_CAPABILITY] = True
         # Metronome can take several minutes to boot after an update (service
         # reinstall, migrations, first-request warmup), and this worker now
         # starts first. Outlasting that boot beats dying at two minutes and
@@ -7175,13 +7176,16 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                 if claimed.get('task'):
                     from app.flow_parallel_worker import execute_task
                     idle_since = time.monotonic()
-                    execute_task(client, worker_id, claimed['task'], page, profile_dir, download_staging_dir)
+                    execute_task(client, worker_id, claimed['task'], page, profile_dir, download_staging_dir, headed=headed)
+                    idle_since = time.monotonic()
                     if once:
                         break
                     continue
                 if not run and not scan:
                     if once:
                         break
+                    if headed and registered.get('headed_work_pending'):
+                        idle_since = time.monotonic()
                     if idle_exit_seconds and time.monotonic() - idle_since >= idle_exit_seconds:
                         break
                     time.sleep(10)
@@ -7241,6 +7245,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                             timings=[{"phase": "total", "duration_ms": round((time.perf_counter() - scan_started) * 1000), "status": "failed"}],
                             error=failure_message, complete=False,
                         )
+                    idle_since = time.monotonic()
                     if once:
                         break
                     continue
@@ -7362,6 +7367,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                     execution_locks.release()
                     heartbeat_stop.set()
                     heartbeat_thread.join(timeout=2)
+                idle_since = time.monotonic()
                 if once:
                     break
             context.close()

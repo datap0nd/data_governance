@@ -60,11 +60,11 @@ for (const headed of [false,true]) {
     const state = {flows:[{id:7, target_folder:'/old'}]};
     folder._flowSyncParallelism();
     assert.match(controls['#flow-download-parallelism-help'].textContent, /Where it goes.*Adopt managed folder/);
-    if (headed) assert.match(controls['#flow-download-parallelism-help'].textContent, /Headless/);
+    if (headed) assert.match(controls['#flow-download-parallelism-help'].textContent, /visible slots/);
     folder._flowBindFolderActions(state);
     const adopt = controls['#flow-adopt-folder'];
     await adopt.onclick({currentTarget:adopt});
-    assert.equal(controls['#flow-download-parallelism'].disabled, headed);
+    assert.equal(controls['#flow-download-parallelism'].disabled, false);
     assert.equal(controls['#flow-name'].value, 'Unsaved draft name');
     assert.equal(state.flows[0].flow_folder, '/flows/Example');
     assert.doesNotMatch(controls['#flow-download-parallelism-help'].textContent, /Adopt managed folder/);
@@ -80,8 +80,8 @@ for (const headed of [false,true]) {
     assert.equal(controls['#flow-download-parallelism'].value, '4');
     controls['#flow-browser-mode'].value = 'headed';
     folder._flowSyncParallelism();
-    assert.equal(controls['#flow-download-parallelism'].value, '1');
-    assert.equal(controls['#flow-download-parallelism'].disabled, true);
+    assert.equal(controls['#flow-download-parallelism'].value, '4');
+    assert.equal(controls['#flow-download-parallelism'].disabled, false);
 }
 assert.deepEqual(requests, ['/api/flows/7/adopt-folder','/api/flows/7/repair-layout','/api/flows/7/adopt-folder','/api/flows/7/repair-layout']);
 setup(false);

@@ -3537,7 +3537,7 @@ def test_service_starts_headless_worker_service_instead_of_child_process(monkeyp
     assert commands == [['sc.exe', 'start', 'MXFlowsWorker']]
     source = Path(__file__).parents[1].joinpath("app", "flow_local_runner.py").read_text()
     assert '"System32", "schtasks.exe"' in source
-    assert '[schtasks, "/Run", "/TN", HEADED_TASK_PATH]' in source
+    assert '[schtasks, "/Run", "/TN", task_path]' in source
     assert 'HEADED_TASK_PATH = rf"\\{HEADED_TASK_NAME}"' in source
     assert "subprocess.Popen" not in source
 
@@ -3565,7 +3565,9 @@ def test_setup_registers_on_demand_interactive_headed_worker():
     assert "New-ScheduledTaskPrincipal" in source
     assert "-LogonType Interactive" in source
     assert 'New-ScheduledTaskAction -Execute $PyExe' in source
-    assert "--worker-id bi-desktop-headed" in source
+    assert "--worker-id $($VisibleSlot.WorkerId)" in source
+    assert "foreach ($VisibleSlot in 1..5" in source
+    assert "-TaskName $VisibleSlot.TaskName" in source
     assert "--headed --idle-exit-seconds 60" in source
     assert ".metronome-flow-browser-headed" in source
 

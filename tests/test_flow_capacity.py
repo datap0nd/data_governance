@@ -21,9 +21,9 @@ def no_service_launch(monkeypatch):
     monkeypatch.setattr(flows, 'launch_local_worker', lambda *a, **k: {'status': 'test'})
 
 
-def configure(value):
+def configure(value, mode='headless'):
     with database.get_db() as db:
-        flow_paths.save_setting(db, pool.CAPACITY_KEY, value)
+        flow_paths.save_setting(db, pool.HEADED_CAPACITY_KEY if mode == 'headed' else pool.CAPACITY_KEY, value)
 
 
 def worker(identity, *, headed=False):
@@ -42,12 +42,13 @@ def queue_jobs(count, *, mode='headless', catalog=None):
 
 
 @pytest.mark.parametrize('capacity', [1, 3, 5])
-def test_independent_connections_cannot_oversubscribe(flow_db, capacity):
-    configure(capacity)
-    runs = queue_jobs(7)
+@pytest.mark.parametrize('mode', ['headless', 'headed'])
+def test_independent_connections_cannot_oversubscribe(flow_db, capacity, mode):
+    configure(capacity, mode)
+    runs = queue_jobs(7, mode=mode)
     identities = [f'race-{index}' for index in range(8)]
     for identity in identities:
-        worker(identity)
+        worker(identity, headed=mode == 'headed')
     barrier = Barrier(len(identities))
     def claim(identity):
         barrier.wait(timeout=15)
@@ -85,7 +86,7 @@ def test_scans_and_finalization_consume_capacity_and_lowering_drains(flow_db):
     assert flows.claim_run(pool.worker_id(1))['run']['id'] in run_ids
 
 
-def test_headed_is_one_even_when_background_capacity_is_five(flow_db):
+def test_headed_defaults_to_one_independently_of_background_capacity(flow_db):
     configure(5)
     queue_jobs(2, mode='headed')
     worker('visible-one', headed=True); worker('visible-two', headed=True); worker('background')
@@ -101,16 +102,26 @@ def test_capacity_api_persistence_validation_and_online_status(flow_db, monkeypa
         assert client.get('/api/system/flows').json()['headless_capacity'] == 1
         for invalid in [0, 6, -1, '3', True, 2.5]:
             assert client.put('/api/system/flows', json={'headless_capacity': invalid}).status_code == 422
+            assert client.put('/api/system/flows', json={'headless_capacity': 3, 'headed_capacity': invalid}).status_code == 422
+        assert client.put('/api/system/flows', json={'headless_capacity': 3, 'headed_capacity': 4}).json()['headed_capacity'] == 4
         result = client.put('/api/system/flows', json={'headless_capacity': 3})
         assert result.status_code == 200 and result.json()['online_capacity'] == 0
         worker(pool.worker_id(2))
         state = client.get('/api/system/flows').json()
         assert state['online_capacity'] == 1 and state['headless_capacity'] == 3
         assert state['slots'][1]['service_name'] == 'MXFlowsWorker2'
+        assert state['headed_capacity'] == 4  # older clients do not reset it
+        worker(pool.worker_id(3, 'headed'), headed=True)
+        state = client.get('/api/system/flows').json()
+        assert state['online_headed_capacity'] == 1
+        assert state['headed_slots'][2]['task_name'] == 'Metronome_Flows_Headed3'
     with database.get_db() as db:
         readiness = pipelines._worker_readiness(db, {'headless'})[0]
         assert readiness['ready'] and readiness['worker_id'] == pool.worker_id(2)
         assert readiness['configured_capacity'] == 3
+        visible = pipelines._worker_readiness(db, {'headed'})[0]
+        assert visible['ready'] and visible['worker_id'] == pool.worker_id(3, 'headed')
+        assert visible['configured_capacity'] == 4
 
 
 def test_watchdog_only_starts_missing_configured_slots(flow_db, monkeypatch):
@@ -149,21 +160,68 @@ def test_installer_reads_saved_capacity_and_only_explicit_override_writes(tmp_pa
     before = path.read_bytes()
     assert installer_capacity(path) == 4 and path.read_bytes() == before
     assert installer_capacity(path, 2) == 2
+    assert installer_capacity(path, mode='headed') == 1
+    assert installer_capacity(path, 3, mode='headed') == 3
+    assert installer_capacity(path, mode='headed') == 3 and installer_capacity(path) == 2
     with pytest.raises(ValueError):
         installer_capacity(path, 6)
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='PowerShell service configuration')
-def test_installer_slot_profiles_and_ids_match_server_without_running_services():
-    command = ". ./tools/flow_pool.ps1; @(1..5 | ForEach-Object { Get-MetronomeFlowSlot -Slot $_ -BaseProfile 'C:\\Users\\BI\\.metronome-flow-browser' }) | ConvertTo-Json -Compress"
+@pytest.mark.parametrize('mode', ['headless', 'headed'])
+def test_installer_slot_profiles_and_ids_match_server_without_running_services(mode):
+    flag = '-Headed' if mode == 'headed' else ''
+    command = f". ./tools/flow_pool.ps1; @(1..5 | ForEach-Object {{ Get-MetronomeFlowSlot -Slot $_ -BaseProfile 'C:\\Users\\BI\\.metronome-flow-browser' {flag} }}) | ConvertTo-Json -Compress"
     result = subprocess.run(['powershell.exe', '-NoProfile', '-Command', command], capture_output=True, text=True, check=True)
     slots = json.loads(result.stdout)
     assert len({slot['Profile'] for slot in slots}) == 5
     for slot in slots:
-        assert slot['WorkerId'] == pool.worker_id(slot['Slot'])
+        assert slot['WorkerId'] == pool.worker_id(slot['Slot'], mode)
         assert slot['ServiceName'] == pool.service_name(slot['Slot'])
+        assert slot['TaskName'] == pool.task_name(slot['Slot'])
     assert slots[0]['Profile'].endswith('.metronome-flow-browser')
     source = Path('setup.ps1').read_text()
     assert source.index('foreach ($PoolSlot in 2..5)') < source.index('& robocopy.exe')
     assert source.index('$PoolService.WaitForStatus') < source.index('& robocopy.exe')
     assert 'flow_pool_config.py' in source and '$ExpectedWorkerIds -contains' in source
+
+
+def test_headed_launcher_starts_only_configured_interactive_tasks_and_stops_exact_slot(flow_db, monkeypatch):
+    configure(3, 'headed')
+    monkeypatch.setattr(flow_local_runner.platform, 'system', lambda: 'Windows')
+    commands = []
+    monkeypatch.setattr(flow_local_runner.subprocess, 'run', lambda command, **kwargs: commands.append(command) or SimpleNamespace(returncode=0, stdout='', stderr=''))
+    result = flow_local_runner.launch_local_worker('headed')
+    assert [slot['worker_id'] for slot in result['slots']] == [pool.worker_id(n, 'headed') for n in [1, 2, 3]]
+    assert [command[1:] for command in commands] == [['/Run', '/TN', '\\' + pool.task_name(n)] for n in [1, 2, 3]]
+    flow_local_runner.stop_local_worker('headed', None, worker_id=pool.worker_id(3, 'headed'))
+    assert commands[-1][1:] == ['/End', '/TN', '\\Metronome_Flows_Headed3']
+    before = len(commands)
+    assert flow_local_runner.stop_local_worker('headed', None, worker_id='unknown')['status'] == 'error'
+    assert len(commands) == before
+
+
+def test_headed_capacity_reduction_preserves_assignments_but_disables_extra_slots(flow_db):
+    configure(2, 'headed')
+    queue_jobs(3, mode='headed')
+    first, second = pool.worker_id(1, 'headed'), pool.worker_id(2, 'headed')
+    worker(first, headed=True); worker(second, headed=True)
+    one, two = flows.claim_run(first)['run'], flows.claim_run(second)['run']
+    configure(1, 'headed')
+    assert flows.claim_run(second)['run']['id'] == two['id']
+    flows.update_run(second, two['id'], flows.WorkerProgress(status='failed', error='fixture'))
+    flows.update_run(first, one['id'], flows.WorkerProgress(status='failed', error='fixture'))
+    assert flows.claim_run(second)['waiting_for_capacity']
+    assert flows.claim_run(first)['run']
+
+
+def test_visible_helpers_stay_available_while_work_is_queued_or_running(flow_db):
+    runs = queue_jobs(1, mode='headed')
+    registration = flows.WorkerRegister(worker_id='visible-helper', display_name='Visible', capabilities={'headed':True})
+    assert flows.register_worker(registration)['headed_work_pending']
+    with database.get_db() as db:
+        db.execute("UPDATE flow_runs SET status='running' WHERE id=?", (runs[0],))
+    assert flows.register_worker(registration)['headed_work_pending']
+    with database.get_db() as db:
+        db.execute("UPDATE flow_runs SET status='succeeded' WHERE id=?", (runs[0],))
+    assert not flows.register_worker(registration)['headed_work_pending']

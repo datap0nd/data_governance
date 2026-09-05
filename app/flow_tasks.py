@@ -4,6 +4,12 @@ from __future__ import annotations
 import json
 
 CAPABILITY = 'flow_download_tasks_v1'
+HEADED_CAPABILITY = 'flow_headed_download_tasks_v1'
+
+
+def supported(job: dict, capabilities: dict) -> bool:
+    return bool(capabilities.get(CAPABILITY) and (
+        job.get('execution', {}).get('browser_mode') != 'headed' or capabilities.get(HEADED_CAPABILITY)))
 
 
 def task_key(export_view, period) -> str:
@@ -26,7 +32,7 @@ def task_matrix(job: dict) -> list[dict]:
 
 def parallelism(job: dict) -> int:
     execution = job.get('execution') or {}
-    if job.get('job_type') == 'sql_retry' or job.get('flow', {}).get('source_type', 'portal') != 'portal' or execution.get('browser_mode') == 'headed':
+    if job.get('job_type') == 'sql_retry' or job.get('flow', {}).get('source_type', 'portal') != 'portal':
         return 1
     return max(1, min(5, int(execution.get('download_parallelism') or 1)))
 

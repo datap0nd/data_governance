@@ -1,8 +1,10 @@
 # Plan 8 — Capacity then per-flow download fan-out
 
 ## Goal
-One headed plus up to five headless slots; complete-bundle downstream processing.
-Deliver phases A and B as separate merges.
+Up to five headed and five headless slots with independent limits;
+complete-bundle downstream processing. Phases A and B shipped separately.
+The subsequent headed-parallel update replaces the original one-headed-slot
+restriction at the owner's request, as its own reversible merge.
 
 ## Current state
 claim_run checks mode/adapter/store, not ordinary worker_id pinning. Scans consume
@@ -10,7 +12,7 @@ browsers. execute_job owns the ordered task matrix and whole-run ordinals.
 Publication/SQL happen later in shared execute_flow; queued runs hold resource reservations.
 
 ## Phase A
-- Capacity 1..5, default 1; headed always 1. Count claimed/running runs AND scans
+- Capacity 1..5 per browser mode, default 1. Count claimed/running runs AND scans
   within BEGIN IMMEDIATE and conditional claim. Return existing assignments first.
 - Preserve MXFlowsWorker/bi-desktop-headless/profile as slot 1. Add slots 2..5
   with distinct services/profiles/staging; never remove existing services or copy
@@ -30,7 +32,7 @@ Publication/SQL happen later in shared execute_flow; queued runs hold resource r
 - Durable tasks: run FK, key, ordinal, state, attempt, lease token/worker,
   timestamps/progress/artifacts/error; conditional claims fence stale reports.
 - Negotiate task capability so old workers never run task jobs as whole runs.
-  Default per-flow parallelism 1; explicit 1..5, headed fixed 1.
+  Default per-flow parallelism 1; explicit 1..5 in either browser mode.
 - Task-local staging and immutable output; retain whole-run indices. Do not slice
   execute_job jobs if doing so resets ordinal and names.
 - Parent stays running with finalizing stage until terminal, retaining all
@@ -50,6 +52,22 @@ Publication/SQL happen later in shared execute_flow; queued runs hold resource r
 A: settings/atomic caps → add slots/lifecycle/readiness → tests/docs → merge.
 B: matrix/capability schema → fenced lifecycle → worker task execution →
 finalizer → cancellation/recovery → UI → race and full regression suites → merge.
+
+## Headed-parallel follow-up
+- Separate headed capacity and fixed interactive tasks/profiles for slots 1–5.
+  Preserve headed slot 1's task, worker ID and profile for recovery.
+- Setup registers five on-demand interactive tasks, quiesces all before update,
+  and authenticates configured profiles separately. Never run visible browsers
+  as service-session child processes or share a live profile.
+- Launch the configured headed tasks for queued runs/scans/pipelines. Idle
+  helpers stay alive during preparation and SSO, then exit after 60 idle seconds.
+- Match helpers to the frozen browser mode and require a new headed protocol
+  capability. Propagate headed authentication behavior into task execution.
+- Count task workers against the right mode; retain cross-mode portal limits,
+  one complete-bundle finalizer, exact-process Stop and existing recovery fences.
+- Allow headed parallelism in the builder and expose visible slot status. Test
+  headed claim races, concurrent download execution, mode isolation, old-worker
+  rejection, reductions, task identities and stop targets before merging.
 
 ## Migration and rollback
 Additive schema, default 1, capability-gated jobs. Drain task runs before reverting

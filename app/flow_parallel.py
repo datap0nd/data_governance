@@ -141,7 +141,8 @@ def claim_task(db, worker_id, *, run_id=None):
     if worker['stop_requested_pid'] is not None:
         return None
     caps = json.loads(worker['capabilities_json'] or '{}')
-    if caps.get('headed') or not caps.get(flow_tasks.CAPABILITY) or not caps.get('shared_flow_artifacts'):
+    mode = 'headed' if caps.get('headed') else 'headless'
+    if not caps.get(flow_tasks.CAPABILITY) or not caps.get('shared_flow_artifacts'):
         return None
     if worker['current_task_id']:
         existing = db.execute("SELECT * FROM flow_download_tasks WHERE id=? AND worker_id=? AND state='claimed'", (worker['current_task_id'], worker_id)).fetchone()
@@ -155,10 +156,12 @@ def claim_task(db, worker_id, *, run_id=None):
           AND (? IS NULL OR t.run_id=?) ORDER BY t.run_id,t.ordinal""", (run_id, run_id)).fetchall()
     for task in candidates:
         job = _job(task)
+        if job.get('execution', {}).get('browser_mode', 'headless') != mode or not flow_tasks.supported(job, caps):
+            continue
         owner = task['coordinator_id'] == worker_id and worker['current_run_id'] == task['run_id']
         if worker['current_run_id'] and not owner:
             continue
-        if not owner and not flow_capacity.can_claim(db, worker_id, 'headless'):
+        if not owner and not flow_capacity.can_claim(db, worker_id, mode):
             return None
         if not portal_available(db, job, existing_worker=worker_id if owner else None):
             continue
@@ -390,7 +393,8 @@ def stop_download_workers(run_id, *, exclude_worker=None, include_coordinator=Fa
             return target, {'status': 'replaced'}
         if target['pid'] is None:
             return target, {'status': 'unconfirmed', 'message': 'No process ID; the fenced task must acknowledge cancellation or its lease must expire.'}
-        return target, stop_local_worker('headless', target['pid'], worker_id=target['worker_id'])
+        mode = 'headed' if json.loads(target['capabilities_json'] or '{}').get('headed') else 'headless'
+        return target, stop_local_worker(mode, target['pid'], worker_id=target['worker_id'])
     if not targets:
         return []
     with ThreadPoolExecutor(max_workers=len(targets)) as executor:

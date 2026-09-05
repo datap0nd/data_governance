@@ -254,7 +254,7 @@ def _worker_readiness(db, modes: set[str]) -> list[dict]:
     cutoff = _iso(_now() - WORKER_READY_AGE)
     result = []
     for mode in sorted(modes):
-        identities = [HEADED_WORKER_ID] if mode == "headed" else [flow_capacity.worker_id(slot) for slot in range(1, flow_capacity.headless_capacity(db) + 1)]
+        identities = [flow_capacity.worker_id(slot, mode) for slot in range(1, flow_capacity.capacity(db, mode) + 1)]
         rows = [db.execute("SELECT worker_id, display_name, status, last_seen_at FROM flow_workers WHERE worker_id=?", (identity,)).fetchone() for identity in identities]
         online = [row for row in rows if row and row["last_seen_at"] and row["last_seen_at"] >= cutoff and row["status"] != 'offline']
         row = online[0] if online else next((row for row in rows if row), None)

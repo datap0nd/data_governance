@@ -15,19 +15,21 @@ from test_flows import flow_db, _request, _seed_catalog, _mark_discovered, _flow
 
 
 @pytest.fixture
-def bundle(flow_db, tmp_path, monkeypatch):
+def bundle(flow_db, tmp_path, monkeypatch, request):
+    mode = getattr(request, 'param', 'headless')
     monkeypatch.setattr(flows, 'launch_local_worker', lambda *a, **k: {'status':'test'})
     site, report = _seed_catalog(); _mark_discovered(report['id'])
     saved = flows.create_flow(_flow(site['id'], report['id'], target_folder=None,
-        download_parallelism=3, filename_template='export_{index}_{week}.csv'), _request())
+        download_parallelism=3, browser_mode=mode, filename_template='export_{index}_{week}.csv'), _request())
     queued = flows.queue_run(saved['id'], _request())
     with database.get_db() as db:
         flow_paths.save_setting(db, flow_capacity.CAPACITY_KEY, 3)
+        flow_paths.save_setting(db, flow_capacity.HEADED_CAPACITY_KEY, 3)
         job = flows._build_job(db, saved['id'])
     profile = tmp_path / 'coordinator'
     store = flow_publish.artifact_store_id(profile, store_root=Path(job['paths']['artifact_store_root']))
     for slot in range(1,6):
-        register(f'worker-{slot}', store, pid=1000+slot)
+        register(f'worker-{slot}', store, pid=1000+slot, headed=mode == 'headed')
     run = flows.claim_run('worker-1')['run']
     folder = worker._prepare_run_folder(job, profile, run_id=run['id'],
         register_folder=lambda folder: flows.register_run_folder('worker-1', run['id'], flows.FolderRegister(run_folder=folder)),
@@ -36,10 +38,11 @@ def bundle(flow_db, tmp_path, monkeypatch):
     return {'saved':saved, 'run':run, 'job':job, 'profile':profile, 'folder':folder, 'state':state, 'store':store, 'site':site}
 
 
-def register(identity, store, *, pid=99, capable=True):
+def register(identity, store, *, pid=99, capable=True, headed=False, headed_capable=True):
     flows.register_worker(flows.WorkerRegister(worker_id=identity, display_name=identity,
         capabilities={'process_id':pid, 'adapters':['web_export','asap_portal'], 'shared_flow_artifacts':True,
-                      'artifact_store_ids':[store], flow_tasks.CAPABILITY:capable}))
+                      'artifact_store_ids':[store], 'headed':headed,
+                      flow_tasks.CAPABILITY:capable, flow_tasks.HEADED_CAPABILITY:headed_capable}))
 
 
 def claim(identity, run_id=None):
@@ -78,6 +81,7 @@ def test_matrix_preserves_views_links_period_order_and_serial_keys():
     assert [task['download_link'] for task in flow_tasks.task_matrix(job)] == ['Link one','Link one','Link two','Link two']
 
 
+@pytest.mark.parametrize('bundle', ['headless', 'headed'], indirect=True)
 def test_claim_race_counts_coordinator_tasks_and_global_limit(bundle):
     barrier=Barrier(4)
     def race(identity):
@@ -89,7 +93,7 @@ def test_claim_race_counts_coordinator_tasks_and_global_limit(bundle):
     own=claim('worker-1',bundle['run']['id'])
     assert own and own['id'] not in {task['id'] for task in tasks}
     with database.get_db() as db:
-        assert len(flow_capacity.assignments(db,'headless'))==3
+        assert len(flow_capacity.assignments(db,bundle['job']['execution']['browser_mode']))==3
     idle=next(identity for identity in ['worker-2','worker-3','worker-4','worker-5'] if identity not in {task['worker_id'] for task in tasks})
     assert claim(idle) is None
 
@@ -103,6 +107,44 @@ def test_old_workers_cannot_claim_task_or_parallel_parent(bundle):
     second=flows.create_flow(_flow(bundle['site']['id'],bundle['saved']['report_id'], name='Second parallel', target_folder=None, download_parallelism=2),_request())
     flows.queue_run(second['id'],_request())
     assert flows.claim_run('old')['run'] is None
+
+
+@pytest.mark.parametrize('bundle', ['headless', 'headed'], indirect=True)
+def test_helpers_cannot_cross_browser_modes(bundle):
+    headed = bundle['job']['execution']['browser_mode'] == 'headed'
+    register('other-mode', bundle['store'], headed=not headed)
+    assert claim('other-mode') is None
+    assert claim('worker-2')
+    with database.get_db() as db:
+        assert len(flow_capacity.assignments(db, 'headed' if headed else 'headless')) == 2
+        assert not flow_capacity.assignments(db, 'headless' if headed else 'headed')
+
+
+@pytest.mark.parametrize('bundle', ['headed'], indirect=True)
+def test_headed_parent_and_helpers_require_new_protocol_capability(bundle):
+    register('old-headed', bundle['store'], headed=True, headed_capable=False)
+    assert claim('old-headed') is None
+    second = flows.create_flow(_flow(bundle['site']['id'], bundle['saved']['report_id'],
+        name='Visible parallel', target_folder=None, browser_mode='headed', download_parallelism=3), _request())
+    queued = flows.queue_run(second['id'], _request())
+    assert flows.claim_run('old-headed')['run'] is None
+    with database.get_db() as db:
+        assert db.execute('SELECT status FROM flow_runs WHERE id=?', (queued['id'],)).fetchone()[0] == 'queued'
+
+
+@pytest.mark.parametrize('bundle', ['headed'], indirect=True)
+def test_headed_task_refuses_invisible_executor_before_download(bundle, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app.flow_parallel_worker import execute_task
+    app = FastAPI(); app.include_router(flows.router); app.include_router(routes.router)
+    task = claim('worker-2')
+    monkeypatch.setattr(worker, 'execute_job', lambda *a, **k: pytest.fail('Mismatched worker must not download'))
+    with TestClient(app) as client:
+        assert not execute_task(client, 'worker-2', task, None, bundle['profile'], None, headed=False)
+    with database.get_db() as db:
+        result = db.execute('SELECT state,error FROM flow_download_tasks WHERE id=?', (task['id'],)).fetchone()
+        assert result['state'] == 'failed' and 'browser mode' in result['error']
 
 
 def test_portal_and_flow_limits_hold_even_with_free_global_slots(bundle):
@@ -219,6 +261,7 @@ def test_actual_task_download_keeps_full_index_and_never_finalizes(bundle,tmp_pa
     assert Path(artifacts[0]['file_path']).name=='export_2_2026-W31.csv'
 
 
+@pytest.mark.parametrize('bundle', ['headless', 'headed'], indirect=True)
 def test_shared_runner_receives_full_bundle_before_transform_and_sql(bundle,monkeypatch):
     state=complete_all(bundle)
     job=bundle['job']; job['sql_handoff']['enabled']=True; job['transformation']['enabled']=True
@@ -237,8 +280,9 @@ def test_shared_runner_receives_full_bundle_before_transform_and_sql(bundle,monk
         events.append('sql'); return {'rows_written':3,'files_loaded':3,'target':'Db.Mixed.Table'}
     monkeypatch.setattr(flow_sql,'load_artifacts',sql)
     def acquire(*a,**kwargs):
+        assert kwargs['headed'] == (job['execution']['browser_mode'] == 'headed')
         return assemble_bundle(job,state,bundle['profile']),[{'phase':'total','duration_ms':1,'status':'succeeded'}]
-    worker.execute_flow(None,job,lambda *a,**k:None,bundle['profile'],run_id=bundle['run']['id'],register_folder=lambda *a:{},acquire_bundle=acquire)
+    worker.execute_flow(None,job,lambda *a,**k:None,bundle['profile'],run_id=bundle['run']['id'],register_folder=lambda *a:{},acquire_bundle=acquire,headed=job['execution']['browser_mode']=='headed')
     assert events==['publish','transform','sql']
 
 
@@ -249,12 +293,14 @@ def test_lagging_parent_progress_does_not_erase_helper_success(bundle):
         assert json.loads(db.execute('SELECT artifact_json FROM flow_runs WHERE id=?',(bundle['run']['id'],)).fetchone()[0])==[artifact]
 
 
+@pytest.mark.parametrize('bundle', ['headless', 'headed'], indirect=True)
 def test_stop_drains_all_exact_workers_and_preserves_history(bundle,monkeypatch):
     from app import flow_local_runner
     saved=complete(claim('worker-2'))
     own=claim('worker-1',bundle['run']['id']); helper=claim('worker-3')
     stopped=[]
     def stop(mode,pid,*,worker_id):
+        assert mode == bundle['job']['execution']['browser_mode']
         stopped.append((worker_id,pid))
         return {'status':'stopped'}
     monkeypatch.setattr(flow_local_runner,'stop_local_worker',stop)
@@ -264,7 +310,7 @@ def test_stop_drains_all_exact_workers_and_preserves_history(bundle,monkeypatch)
     with database.get_db() as db:
         assert parallel.snapshot(db,bundle['run']['id'])['drained']
         assert db.execute('SELECT count(*) FROM flow_run_files WHERE run_id=?',(bundle['run']['id'],)).fetchone()[0]==1
-        assert not flow_capacity.assignments(db,'headless')
+        assert not flow_capacity.assignments(db,bundle['job']['execution']['browser_mode'])
     assert Path(saved['file_path']).is_file()
     for task in [own,helper]:
         assert routes.task_progress(task['worker_id'],task['id'],routes.TaskReport(lease_token=task['lease_token'],status='succeeded'))['ignored']
@@ -337,6 +383,7 @@ def test_portal_scan_and_task_claims_share_limit(bundle):
         assert db.execute('SELECT status FROM flow_catalog_scans WHERE id=?',(scan_id,)).fetchone()[0]=='queued'
 
 
+@pytest.mark.parametrize('bundle', ['headless', 'headed'], indirect=True)
 def test_coordinator_api_path_completes_download_only_tasks_and_finalizes(bundle,monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
@@ -345,6 +392,7 @@ def test_coordinator_api_path_completes_download_only_tasks_and_finalizes(bundle
     monkeypatch.setattr(worker,'_prepare_run_folder',lambda *a,**k:bundle['folder'])
     seen=[]
     def download(page,job,progress,profile,staging,*,artifacts,run_id,register_folder,headed,task_assignment):
+        assert headed == (bundle['job']['execution']['browser_mode'] == 'headed')
         task=task_assignment
         target=task_output_folder(job,task,run_id)
         spec=flow_tasks.task_matrix(job)[task['ordinal']-1]
@@ -358,7 +406,7 @@ def test_coordinator_api_path_completes_download_only_tasks_and_finalizes(bundle
     def progress(status,detail,artifacts=None):
         flows.update_run('worker-1',bundle['run']['id'],flows.WorkerProgress(status=status,progress=detail,artifacts=artifacts or [],finalizer_token=transport.get('finalizer_token')))
     with TestClient(app) as client:
-        artifacts,timings=acquire_bundle(client,'worker-1',transport,None,bundle['job'],progress,bundle['profile'],None,artifacts=[],run_id=bundle['run']['id'],register_folder=lambda *a:{})
+        artifacts,timings=acquire_bundle(client,'worker-1',transport,None,bundle['job'],progress,bundle['profile'],None,artifacts=[],run_id=bundle['run']['id'],register_folder=lambda *a:{},headed=bundle['job']['execution']['browser_mode']=='headed')
     assert seen==[1,2,3] and len(artifacts)==3 and transport['finalizer_token']
     assert all(Path(item['file_path']).parent==bundle['folder'] for item in artifacts)
 
@@ -381,6 +429,7 @@ def test_original_deliverable_and_normalized_roles_survive_assembly(bundle,direc
     assert result[0]['deliverable_file_path']==result[0]['original_file_path' if direct else 'file_path']
 
 
+@pytest.mark.parametrize('bundle', ['headless', 'headed'], indirect=True)
 def test_three_actual_task_executors_can_download_concurrently(bundle,monkeypatch,tmp_path):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
@@ -401,7 +450,7 @@ def test_three_actual_task_executors_can_download_concurrently(bundle,monkeypatc
         task['job']['site']['adapter']='asap_portal'
         profile=tmp_path/task['worker_id']
         with TestClient(app) as client:
-            return execute_task(client,task['worker_id'],task,object(),profile,profile/'staging')
+            return execute_task(client,task['worker_id'],task,object(),profile,profile/'staging',headed=bundle['job']['execution']['browser_mode']=='headed')
     with ThreadPoolExecutor(max_workers=3) as executor:
         outcomes=list(executor.map(execute,tasks))
         with database.get_db() as db:
@@ -413,7 +462,7 @@ def test_three_actual_task_executors_can_download_concurrently(bundle,monkeypatc
     assert all('MixedCase' in Path(item['file_path']).read_text() for item in artifacts)
 
 
-def test_parallel_settings_validate_persist_and_headed_stays_serial(bundle,monkeypatch):
+def test_parallel_settings_validate_persist_and_headed_is_parallel(bundle,monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from app.routers import system_flows
@@ -427,9 +476,53 @@ def test_parallel_settings_validate_persist_and_headed_stays_serial(bundle,monke
         state=client.get('/api/system/flows').json()
         assert next(item for item in state['portals'] if item['id']==bundle['site']['id'])['capacity']==2
     headed=_flow(bundle['site']['id'],bundle['saved']['report_id'],download_parallelism=5,browser_mode='headed')
-    assert headed.download_parallelism==1
+    assert headed.download_parallelism==5
     job=copy.deepcopy(bundle['job']); job['job_type']='sql_retry'
     assert not flow_tasks.enabled(job)
+
+
+def test_inline_browser_switch_keeps_parallelism_and_refreshes_standalone(bundle):
+    saved = flows.create_flow(_flow(bundle['site']['id'], bundle['saved']['report_id'],
+        name='Inline visible', target_folder=None, download_parallelism=3), _request())
+    result = flows.patch_flow(saved['id'], flows.FlowInlineWrite(browser_mode='headed'), _request())
+    generated = result['standalone']
+    assert generated['state'] == 'current'
+    frozen = json.loads(Path(generated['launcher']).with_name('flow-config-' + generated['config_hash'] + '.json').read_text())['job']
+    assert frozen['execution']['browser_mode'] == 'headed'
+    assert flow_tasks.parallelism(frozen) == 1  # standalone has no server task pool
+    with database.get_db() as db:
+        job = flows._build_job(db, saved['id'])
+    assert job['execution']['browser_mode'] == 'headed' and flow_tasks.parallelism(job) == 3
+
+
+def test_visible_worker_keeps_helpers_during_preparation_and_idles_after_download(tmp_path, monkeypatch):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from app import flow_parallel_worker
+    clock = [0]
+    launches, registrations, completed = [], [], []
+    context = SimpleNamespace(pages=[object()], close=lambda: completed.append('closed'))
+    def launch(profile, **options):
+        launches.append((profile, options)); return context
+    monkeypatch.setattr(worker, 'sync_playwright', lambda: nullcontext(SimpleNamespace(chromium=SimpleNamespace(launch_persistent_context=launch))))
+    monkeypatch.setattr(worker.time, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(worker.time, 'sleep', lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    def api(client, method, path, body=None):
+        assert clock[0] <= 280, 'Worker failed to exit after the idle timeout'
+        if path.endswith('/register'):
+            registrations.append(body['capabilities'].copy())
+            return {'headed_work_pending': clock[0] < 100}
+        assert path.endswith('/claim')
+        return {'task': {'id': 1}} if clock[0] == 100 else {}
+    def execute(client, identity, task, page, profile, staging, *, headed):
+        assert headed and identity == 'bi-desktop-headed-2'
+        completed.append(task['id']); clock[0] += 120
+    monkeypatch.setattr(worker, '_api', api)
+    monkeypatch.setattr(flow_parallel_worker, 'execute_task', execute)
+    worker.run_worker('http://127.0.0.1:1', 'bi-desktop-headed-2', 'Visible 2', tmp_path/'profile-2', True, False, idle_exit_seconds=60)
+    assert completed == [1, 'closed'] and clock[0] == 280
+    assert launches[0][0] == str(tmp_path/'profile-2') and launches[0][1]['headless'] is False
+    assert registrations[0][flow_tasks.HEADED_CAPABILITY] and registrations[0]['slot'] == 2
 
 
 def test_deleting_paused_parallel_flow_removes_ledger_and_preserves_files(bundle):

@@ -36,7 +36,7 @@ def task_output_folder(job, task, run_id):
     return expected
 
 
-def execute_task(client, worker_id, task, page, profile_dir, staging):
+def execute_task(client, worker_id, task, page, profile_dir, staging, *, headed=False):
     """No publication, transformations, SQL or retention calls are possible here."""
     from app import flow_worker as worker
     job = copy.deepcopy(task['job'])
@@ -65,9 +65,11 @@ def execute_task(client, worker_id, task, page, profile_dir, staging):
     thread = threading.Thread(target=heartbeat, daemon=True)
     thread.start()
     try:
+        if (job.get('execution', {}).get('browser_mode') == 'headed') != headed:
+            raise RuntimeError('Download task browser mode does not match this worker.')
         send('running', {'stage': 'download_task', 'message': f"Downloading export {task['ordinal']}."})
         artifacts, timings = worker.execute_job(page, job, progress, profile_dir, staging,
-            artifacts=artifacts, run_id=task['run_id'], register_folder=lambda _: {}, headed=False, task_assignment=task)
+            artifacts=artifacts, run_id=task['run_id'], register_folder=lambda _: {}, headed=headed, task_assignment=task)
         send('succeeded', {'stage': 'task_complete', 'timings': timings}, artifacts)
         return True
     except Exception as exc:
@@ -178,7 +180,7 @@ def acquire_bundle(client, worker_id, transport_state, page, job, progress, prof
                 break
             claimed = worker._api(client, 'POST', base + '/tasks/claim')
             if claimed.get('task'):
-                execute_task(client, worker_id, claimed['task'], page, profile_dir, staging)
+                execute_task(client, worker_id, claimed['task'], page, profile_dir, staging, headed=headed)
             else:
                 time.sleep(1)
             state = worker._api(client, 'GET', base + '/tasks')

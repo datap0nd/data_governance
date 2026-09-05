@@ -11155,13 +11155,13 @@ function _flowSyncParallelism() {
     if (!control) return;
     const headed = $('#flow-browser-mode')?.value === 'headed';
     const unmanaged = control.dataset.unmanaged === 'true';
-    control.disabled = headed || unmanaged;
-    if (headed) control.value = '1';
+    control.disabled = unmanaged;
     const help = $('#flow-download-parallelism-help');
     if (help) help.textContent = [
-        headed ? 'To use more than one download, change Browser mode to Headless · background.' : '',
+        headed ? 'Uses visible slots configured in System > Flow workers. Each window has its own browser profile; complete sign-in in each window if prompted.' : '',
         unmanaged ? 'In Where it goes, choose Adopt managed folder to enable parallel downloads. New downloads will use that folder; historical files stay where they are.' : '',
-        !headed && !unmanaged ? 'Uses available background slots configured in System > Flow workers. SQL and transformations wait for the full bundle.' : '',
+        !headed && !unmanaged ? 'Uses available background slots configured in System > Flow workers.' : '',
+        !unmanaged ? 'SQL and transformations wait for the full bundle.' : '',
     ].filter(Boolean).join(' ');
 }
 
@@ -11982,7 +11982,7 @@ function _flowCollectBuilder() {
         export_filter_details: isAsap
             ? (filterDetailsControl?.disabled || filterDetailsControl?.dataset.inherit === "true" ? null : Boolean(filterDetailsControl?.checked)) : null,
         browser_mode: $("#flow-browser-mode").value,
-        download_parallelism: $("#flow-browser-mode").value === 'headed' ? 1 : Number($("#flow-download-parallelism")?.value || 1),
+        download_parallelism: Number($("#flow-download-parallelism")?.value || 1),
         excel_trim: $("#flow-excel-trim")?.value || "none",
         start_week: periodStrategy === "none" ? null : ($("#flow-start-week").value || null),
         end_week: periodStrategy === "fixed" ? ($("#flow-end-week").value || null) : null,
@@ -12753,15 +12753,19 @@ function bindPathsPage() {
 }
 
 function _flowCapacityHtml(state) {
-    return `<div class="page-header"><div><h1>Flow workers</h1><p>Capacity for background Flows and catalog scans.</p></div></div>
+    const slotTable = slots => `<table><thead><tr><th>Slot</th><th>Configured</th><th>Worker status</th><th>Current work</th></tr></thead><tbody>${slots.map(slot => `<tr><td>${slot.slot}</td><td>${slot.configured ? 'Yes' : 'No'}</td><td>${esc(slot.status)}</td><td>${slot.current_task_id ? 'Export task ' + slot.current_task_id : slot.current_run_id ? 'Run ' + slot.current_run_id : slot.current_scan_id ? 'Scan ' + slot.current_scan_id : '—'}</td></tr>`).join('')}</tbody></table>`;
+    return `<div class="page-header"><div><h1>Flow workers</h1><p>Capacity for visible and background Flows and catalog scans.</p></div></div>
         <section class="settings-panel paths-panel"><form id="flow-capacity-form">
         <h2>Concurrent workers</h2><label>Headless capacity <select id="flow-headless-capacity">${[1,2,3,4,5].map(n => `<option value="${n}" ${n === state.headless_capacity ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+        <label>Headed capacity · visible windows <select id="flow-headed-capacity">${[1,2,3,4,5].map(n => `<option value="${n}" ${n === (state.headed_capacity || 1) ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
         <p>${state.online_capacity} of ${state.headless_capacity} configured background slots are online. ${state.active_headless} background operations are active.</p>
-        <p>Visible debugging uses one separate headed slot. Downloads, scans and final processing all count toward capacity. Lowering capacity lets active work finish.</p>
-        <button class="btn-primary" type="submit">Save capacity</button> <button class="btn-secondary" type="button" id="flow-capacity-start">Start configured workers</button>
+        <p>${state.online_headed_capacity || 0} of ${state.headed_capacity || 1} configured visible slots are online. ${state.active_headed || 0} visible operations are active.</p>
+        <p>Downloads, scans and final processing all count toward their browser mode's capacity. Lowering capacity lets active work finish.</p>
+        <button class="btn-primary" type="submit">Save capacity</button> <button class="btn-secondary" type="button" id="flow-capacity-start">Start background workers</button> <button class="btn-secondary" type="button" id="flow-capacity-start-headed">Start visible workers</button>
         <p id="flow-capacity-result" role="status"></p></form></section>
         <section class="settings-panel paths-panel"><h2>Background slots</h2><p>After adding capacity, run setup.ps1 on the BI desktop to install missing slots and sign in to each browser profile. Existing sessions stay separate.</p>
-        <table><thead><tr><th>Slot</th><th>Configured</th><th>Worker status</th><th>Current work</th></tr></thead><tbody>${state.slots.map(slot => `<tr><td>${slot.slot}</td><td>${slot.configured ? 'Yes' : 'No'}</td><td>${esc(slot.status)}</td><td>${slot.current_task_id ? 'Export task ' + slot.current_task_id : slot.current_run_id ? 'Run ' + slot.current_run_id : slot.current_scan_id ? 'Scan ' + slot.current_scan_id : '—'}</td></tr>`).join('')}</tbody></table></section>${_flowPortalCapacityHtml(state.portals || [])}`;
+        ${slotTable(state.slots)}</section>
+        <section class="settings-panel paths-panel"><h2>Visible slots</h2><p>Headed runs start these windows automatically on the signed-in BI desktop. Each slot has a separate browser profile; complete sign-in in each window if prompted. Windows close after work finishes and they have been idle for 60 seconds.</p><p>Update Metronome once to install the five interactive tasks. Save capacity before starting workers.</p>${slotTable(state.headed_slots || [])}</section>${_flowPortalCapacityHtml(state.portals || [])}`;
 }
 
 function _flowPortalCapacityHtml(portals) {
@@ -12783,12 +12787,12 @@ function bindFlowSettingsPage() {
     $('#flow-capacity-form').onsubmit = async event => {
         event.preventDefault();
         const button = event.currentTarget.querySelector('[type="submit"]'); button.disabled = true;
-        try { await apiPut('/api/system/flows', {headless_capacity: Number($('#flow-headless-capacity').value)}); toast('Flow capacity saved'); await navigate('flow-settings'); }
+        try { await apiPut('/api/system/flows', {headless_capacity: Number($('#flow-headless-capacity').value), headed_capacity: Number($('#flow-headed-capacity').value)}); toast('Flow capacity saved'); await navigate('flow-settings'); }
         catch (error) { $('#flow-capacity-result').textContent = error.message; button.disabled = false; }
     };
-    $('#flow-capacity-start').onclick = async event => {
+    for (const [selector, mode] of [['#flow-capacity-start', 'headless'], ['#flow-capacity-start-headed', 'headed']]) $(selector).onclick = async event => {
         const button = event.currentTarget; button.disabled = true;
-        try { const result = await apiPost('/api/system/flows/start'); $('#flow-capacity-result').textContent = (result.slots || [result]).map(slot => `${slot.worker_id || 'Worker'}: ${slot.message || slot.status}`).join(' · '); }
+        try { const result = await apiPost(`/api/system/flows/start?mode=${mode}`); $('#flow-capacity-result').textContent = (result.slots || [result]).map(slot => `${slot.worker_id || 'Worker'}: ${slot.message || slot.status}`).join(' · '); }
         catch (error) { $('#flow-capacity-result').textContent = error.message; }
         finally { button.disabled = false; }
     };

@@ -17,7 +17,7 @@ HEADED_WORKER_ID = "bi-desktop-headed"
 WORKER_NAME = "BI desktop - headless"
 
 
-def launch_local_worker(browser_mode: str = "headless", *, slot: int = 1) -> dict:
+def launch_local_worker(browser_mode: str = "headless", *, slot: int | None = None) -> dict:
     """Start the installed worker that matches a flow's browser mode.
 
     Metronome itself runs in service session 0. A child process launched by the
@@ -29,10 +29,18 @@ def launch_local_worker(browser_mode: str = "headless", *, slot: int = 1) -> dic
         return {"status": "skipped", "mode": "local", "message": "Local flow execution is Windows-only."}
     if browser_mode not in {"headless", "headed"}:
         return {"status": "error", "mode": browser_mode, "message": "Unsupported browser mode."}
-    worker_id = HEADED_WORKER_ID if browser_mode == "headed" else flow_capacity.worker_id(slot)
-    display_name = "BI desktop - headed" if browser_mode == "headed" else WORKER_NAME
+    if slot is None and browser_mode == 'headed':
+        from app.database import get_db
+        with get_db() as db:
+            capacity = flow_capacity.capacity(db, 'headed')
+        results = [launch_local_worker('headed', slot=number) for number in range(1, capacity + 1)]
+        return {**results[0], 'headed_capacity': capacity, 'slots': results}
+    slot = 1 if slot is None else slot
+    worker_id = flow_capacity.worker_id(slot, browser_mode)
+    display_name = f"BI desktop - {browser_mode} {slot}"
     schtasks = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "System32", "schtasks.exe")
-    command = [schtasks, "/Run", "/TN", HEADED_TASK_PATH] if browser_mode == "headed" else ["sc.exe", "start", flow_capacity.service_name(slot)]
+    task_path = '\\' + flow_capacity.task_name(slot)
+    command = [schtasks, "/Run", "/TN", task_path] if browser_mode == "headed" else ["sc.exe", "start", flow_capacity.service_name(slot)]
     try:
         completed = subprocess.run(
             command,
@@ -72,11 +80,12 @@ def stop_local_worker(browser_mode: str, process_id: int | None, *, worker_id: s
                 return {"status": "error", "message": detail or "Windows could not stop the flow worker."}
             return {"status": "stopped", "process_id": process_id, "message": detail}
         if browser_mode == "headed":
-            if worker_id and worker_id != HEADED_WORKER_ID:
+            slot = flow_capacity.slot_number(worker_id or HEADED_WORKER_ID, 'headed')
+            if slot is None:
                 return {"status": "error", "message": "An exact process ID is required for this headed worker."}
             schtasks = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "System32", "schtasks.exe")
             completed = subprocess.run(
-                [schtasks, "/End", "/TN", HEADED_TASK_PATH],
+                [schtasks, "/End", "/TN", '\\' + flow_capacity.task_name(slot)],
                 capture_output=True, text=True, timeout=15,
             )
             detail = (completed.stdout or completed.stderr or "").strip()

@@ -148,6 +148,30 @@
 - All planned stages are implemented. Separate merge boundaries preserve the
   reviewed sequence; operator setup and live data validation remain distinct.
 
+## Headed parallel downloads follow-up
+- Replaces the original one-headed-slot restriction at the owner's request.
+  System > Flow workers saves independent visible capacity 1–5; the Flow
+  builder preserves parallelism in either browser mode. Default capacity is 1.
+- Setup enrolls five interactive tasks with separate profiles, keeps headed
+  slot 1's identity, stops every task before updates, and authenticates the
+  configured profiles. Queued headed runs/scans start the configured windows.
+- Helpers match the frozen browser mode and negotiate a new headed capability.
+  Capacity includes task workers without double-counting the coordinator.
+  Complete-bundle finalization, SQL, exact-process Stop and recovery remain shared.
+- Idle helpers stay alive through preparation/SSO; workers close after 60 seconds
+  idle following work. Inline browser changes refresh the standalone launcher.
+- Synthetic coverage includes headed claim races at capacities 1/3/5, three
+  concurrent task executors, mode isolation, old-worker rejection, reductions,
+  exact stop targets, profile/task mappings and the visible worker's idle loop.
+- Browser preview saved headed capacity 3 and a headed Flow with parallelism 4,
+  confirming both controls remain editable and persist. Live portal/SSO and
+  Windows task installation still require the BI desktop.
+- All 21 frontend suites, both JavaScript syntax checks and PowerShell parsing
+  pass. Full regression: 1,423 passed; final affected lifecycle, activity and
+  standalone checks after the idle/inline refinements: 63 passed.
+- Rollback boundary is the headed-parallel merge, based on main `9efa214c`.
+  Drain runs and reset headed/per-flow capacity to 1 before reverting it.
+
 ## Operational verification
 Actual appliance SSO, service installation, visible Explorer and real SQL are
 not established by local synthetic tests. No historic files or stores are moved.
