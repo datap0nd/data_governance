@@ -1077,7 +1077,7 @@ def _report_out(db, report_id: int) -> dict:
 def _flow_out(db, flow_id: int, *, include_private_storage: bool = False) -> dict:
     row = db.execute(
         """SELECT f.*, s.name AS site_name, s.adapter AS source_adapter,
-                  r.name AS report_name,
+                  r.name AS report_name, r.automation_json AS report_automation_json,
                   p.name AS owner_name, p.email AS owner_email
            FROM flows f
            JOIN flow_sites s ON s.id = f.site_id
@@ -1094,6 +1094,8 @@ def _flow_out(db, flow_id: int, *, include_private_storage: bool = False) -> dic
         if result.get("flow_folder") and flow_paths.is_inside(result["flow_folder"], flow_paths.get_flows_root(db), resolve=False)
         else result.get("flow_folder")
     )
+    category = _loads(result.pop("report_automation_json", None), {}).get("category_path", [])
+    result["category_path"] = category if isinstance(category, list) else []
     result["enabled"] = bool(result["enabled"])
     result["sql_handoff_enabled"] = bool(result["sql_handoff_enabled"])
     result["sql_uppercase"] = bool(result.get("sql_uppercase"))
@@ -2716,6 +2718,18 @@ def adopt_flow_folder(flow_id: int, request: Request):
         if isinstance(exc, (OSError, ValueError)):
             raise HTTPException(409, f"Flow folder could not be adopted: {exc}") from exc
         raise
+
+
+@router.post("/{flow_id}/open-folder")
+def open_flow_folder(flow_id: int, request: Request):
+    from app.flow_folder_access import open_folder
+    with get_db() as db:
+        flow = _flow_out(db, flow_id, include_private_storage=True)
+        rules = flow_paths.policy(db, flow)
+    try:
+        return open_folder(flow, rules, request)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.post("/{flow_id}/repair-layout")

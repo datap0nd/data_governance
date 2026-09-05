@@ -7722,3 +7722,19 @@ body.remote-flow-control-enabled { padding-top: 32px; }
     font-family: ui-monospace, Consolas, monospace;
     overflow-wrap: anywhere;
 }
+/* Grouped flow list: fixed source order, readable paths, native controls. */
+.flow-grouped-table { min-width: 1020px; }
+.flow-grouped-table td { vertical-align: top; white-space: normal; overflow-wrap: anywhere; }
+.flow-grouped-table .flow-row-actions { min-width: 140px; }
+.flow-grouped-table .flow-row-actions .btn-sm { margin: 0 4px 4px 0; }
+.flow-grouped-table .flow-path-cell { min-width: 140px; max-width: 260px; overflow-wrap: anywhere; }
+.flow-group-heading th { padding: 0; background: var(--surface-2); }
+.flow-group-toggle { display: flex; align-items: center; gap: 10px; width: 100%; padding: 13px 16px; border: 0; background: transparent; color: inherit; text-align: left; font: inherit; font-weight: 650; cursor: pointer; }
+.flow-group-count { border-radius: 12px; background: var(--surface); padding: 1px 8px; font-size: 12px; }
+.flow-group-toggle small { font-weight: 400; }
+.flow-group-failed { color: var(--danger, #d9534f); }
+.flow-grouped-table tbody[hidden] { display: none; }
+.flow-row-menu { position: relative; display: inline-block; }
+.flow-row-menu summary { cursor: pointer; padding: 5px 8px; border-radius: 5px; }
+.flow-row-menu[open] > div { display: flex; gap: 4px; flex-wrap: wrap; padding: 6px 0; }
+.flow-group-toggle:focus-visible, .flow-row-menu summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
