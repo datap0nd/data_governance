@@ -58,5 +58,13 @@ jobs:
         run: node tests/test_flow_builder_contract.mjs
       - name: Run Flow capacity display tests
         run: node tests/test_flow_capacity_display.mjs
+      - name: Run parallel download display tests
+        run: node tests/test_flow_parallel_display.mjs
+      - name: Run pipeline insights display tests
+        run: node tests/test_pipeline_insights_display.mjs
+      - name: Run scanner modules display tests
+        run: node tests/test_scanner_modules_display.mjs
       - name: Check frontend JavaScript syntax
         run: node --check app/static/app.js
+      - name: Check run log JavaScript syntax
+        run: node --check app/static/flow_run_log.js

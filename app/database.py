@@ -714,6 +714,44 @@ CREATE TABLE IF NOT EXISTS flow_catalog_scans (
     heartbeat_at    DATETIME
 );
 
+CREATE TABLE IF NOT EXISTS flow_run_fanout (
+    run_id INTEGER PRIMARY KEY REFERENCES flow_runs(id),
+    coordinator_id TEXT NOT NULL,
+    coordinator_stopped INTEGER NOT NULL DEFAULT 0,
+    state TEXT NOT NULL DEFAULT 'downloading',
+    run_folder TEXT NOT NULL,
+    matrix_json TEXT NOT NULL,
+    run_date TEXT NOT NULL,
+    finalizer_token TEXT,
+    sql_started INTEGER NOT NULL DEFAULT 0,
+    terminal_status TEXT,
+    abort_deadline TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS flow_download_tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL REFERENCES flow_runs(id),
+    task_key TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    state TEXT NOT NULL DEFAULT 'queued',
+    attempt INTEGER NOT NULL DEFAULT 0,
+    lease_token TEXT,
+    worker_id TEXT,
+    lease_expires_at TEXT,
+    output_folder TEXT,
+    progress_json TEXT NOT NULL DEFAULT '{}',
+    artifact_json TEXT NOT NULL DEFAULT '[]',
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(run_id, task_key),
+    UNIQUE(run_id, ordinal)
+);
+CREATE INDEX IF NOT EXISTS idx_flow_download_tasks_claim ON flow_download_tasks(state, run_id, ordinal);
+
 CREATE TABLE IF NOT EXISTS flow_scan_events (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     scan_id         INTEGER NOT NULL REFERENCES flow_catalog_scans(id),
@@ -808,6 +846,10 @@ SCHEDULED_TASK_REBUILD_MIGRATIONS = [
 MIGRATIONS = [
     "ALTER TABLE flows ADD COLUMN flow_folder TEXT",
     "ALTER TABLE flows ADD COLUMN folder_slug TEXT",
+    "ALTER TABLE flows ADD COLUMN download_parallelism INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE flows ADD COLUMN sql_reconciliation_required INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE flow_workers ADD COLUMN current_task_id INTEGER REFERENCES flow_download_tasks(id)",
+    "ALTER TABLE flow_workers ADD COLUMN stop_requested_pid INTEGER",
     "ALTER TABLE flows ADD COLUMN folder_state TEXT NOT NULL DEFAULT 'unmanaged'",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_flows_folder ON flows(flow_folder)",
     """CREATE TABLE IF NOT EXISTS source_activity_history (

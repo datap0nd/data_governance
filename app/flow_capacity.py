@@ -42,6 +42,12 @@ def assignments(db, mode: str) -> list[dict]:
         job = json.loads(row['job_json'] or '{}')
         if job.get('execution', {}).get('browser_mode', 'headless') == mode:
             result.append({'kind': row['kind'], 'id': row['id'], 'worker_id': row['worker_id']})
+    if mode == 'headless':
+        occupied = {item['worker_id'] for item in result if item['worker_id']}
+        for task in db.execute("SELECT id,worker_id FROM flow_download_tasks WHERE state IN ('claimed','cancelling')"):
+            if task['worker_id'] not in occupied:
+                result.append({'kind': 'task', 'id': task['id'], 'worker_id': task['worker_id']})
+                occupied.add(task['worker_id'])
     return result
 
 
@@ -66,6 +72,7 @@ def state(db) -> dict:
                       'configured': slot <= capacity, 'online': online,
                       'status': row.get('status', 'not_registered') if online else 'offline',
                       'current_run_id': row.get('current_run_id'), 'current_scan_id': row.get('current_scan_id')})
+        slots[-1]['current_task_id'] = row.get('current_task_id')
     return {'headless_capacity': capacity, 'headed_capacity': 1,
             'online_capacity': sum(item['online'] and item['configured'] for item in slots),
             'active_headless': len(assignments(db, 'headless')), 'active_headed': len(assignments(db, 'headed')),
