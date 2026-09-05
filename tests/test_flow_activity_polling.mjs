@@ -36,7 +36,7 @@ const fireTimer = () => {
 context._flowRefreshActivity();
 assert.equal(requests.length, 1, "immediate request on entry");
 requests.shift().resolve({ status: "idle" }); await tick();
-assert.equal(indicator.textContent, "Live · every 5s");
+assert.equal(indicator.textContent, "");
 fireTimer(); assert.equal(requests.length, 1, "idle lists still poll");
 requests.shift().reject(new Error("offline")); await tick();
 assert.equal(indicator.textContent, "Reconnecting…");
@@ -95,8 +95,8 @@ context.document.querySelectorAll = selector => {
 };
 context.document.activeElement = select;
 context._flowLastRunHtml = run => run?.status || "none";
-context._flowPatchActivityEntries = () => {};
-vm.runInContext(source.slice(source.indexOf("function _flowPatchActivity(activity)"), source.indexOf("function _flowPatchActivityEntries")), context);
+context._flowPatchRowProgress = () => {};
+vm.runInContext(source.slice(source.indexOf("function _flowPatchActivity(activity)"), source.indexOf("function _flowScheduleCatalogMonitor")), context);
 for (const status of ["queued", "claimed", "running", "succeeded", "failed", "cancelled"]) {
     const run = { id: 10, flow_id: 1, status };
     const active = ["queued", "claimed", "running"].includes(status);
@@ -107,40 +107,6 @@ for (const status of ["queued", "claimed", "running", "succeeded", "failed", "ca
     assert.equal(context.document.activeElement, select);
     assert.equal(select.value, "7");
 }
-
-// Feed entries are reconciled by key, keeping existing links and scroll offset.
-const scroller = { scrollTop: 90 };
-const container = {
-    children: [], parentElement: scroller,
-    insertBefore(node, before) {
-        this.children = this.children.filter(child => child !== node);
-        const index = before ? this.children.indexOf(before) : this.children.length;
-        this.children.splice(index, 0, node);
-    },
-};
-context.document.getElementById = () => container;
-context.document.createElement = () => {
-    const parts = { time: {}, span: {}, a: {} };
-    const node = {
-        dataset: {},
-        querySelector: tag => parts[tag],
-        remove: () => { container.children = container.children.filter(child => child !== node); },
-    };
-    return node;
-};
-context.formatDate = value => value;
-vm.runInContext(source.slice(source.indexOf("function _flowPatchActivityEntries"), end), context);
-const entry = key => ({ key, run_id: 10, flow_name: "Export", status: "running", stage: "download", message: "Working", created_at: "10:00" });
-context._flowPatchActivityEntries("events", [entry("old")]);
-const original = container.children[0];
-const focusedLink = original.querySelector("a");
-context._flowPatchActivityEntries("events", [entry("new"), { ...entry("old"), message: "Completed" }]);
-assert.equal(container.children[1], original);
-assert.equal(container.children[1].querySelector("a"), focusedLink);
-assert.equal(scroller.scrollTop, 90);
-assert.match(original.querySelector("span").textContent, /Completed/);
-context._flowPatchActivityEntries("events", [entry("new")]);
-assert.equal(container.children.length, 1);
 
 // Inline saves send exactly one field, lock the native control, and roll back.
 const bindStart = source.indexOf("function _bindFlowWorkspace() {");

@@ -1982,38 +1982,22 @@ def flow_activity():
             f"""SELECT {columns} FROM flow_runs r JOIN flows f ON f.id=r.flow_id
                 WHERE r.status IN ('queued','claimed','running') ORDER BY r.id DESC"""
         ).fetchall()
-        # Queue/claim/stop can change state without posting worker progress.
-        # Synthesize only the current state when no event records that state.
-        events = db.execute(
-            """SELECT * FROM (
-                SELECT 'event:' || e.id AS key, e.id AS event_id, r.id AS run_id,
-                       r.flow_id, f.name AS flow_name, e.status, e.stage,
-                       substr(e.message, 1, 1000) AS message, e.created_at
-                FROM flow_run_events e JOIN flow_runs r ON r.id=e.run_id
-                JOIN flows f ON f.id=r.flow_id
-                UNION ALL
-                SELECT 'state:' || r.id || ':' || r.status, 0, r.id,
-                       r.flow_id, f.name, r.status, r.status,
-                       CASE r.status WHEN 'queued' THEN 'Waiting for a worker'
-                           WHEN 'claimed' THEN 'Claimed by a worker'
-                           WHEN 'running' THEN 'Run in progress'
-                           WHEN 'cancelled' THEN 'Run cancelled'
-                           WHEN 'succeeded' THEN 'Run succeeded' ELSE 'Run failed' END,
-                       coalesce(r.finished_at, r.started_at, r.claimed_at, r.created_at)
-                FROM flow_runs r JOIN flows f ON f.id=r.flow_id
-                WHERE NOT EXISTS (SELECT 1 FROM flow_run_events e
-                                  WHERE e.run_id=r.id AND e.status=r.status)
-            ) ORDER BY datetime(created_at) DESC, run_id DESC, event_id DESC LIMIT 50"""
-        ).fetchall()
+        from app.flow_activity import row_progress
+        summaries = {}
+        for row in [*latest, *active]:
+            item = dict(row)
+            if item["id"] is not None and item["id"] not in summaries:
+                run = db.execute("SELECT id,status,worker_id,job_json,progress_json,artifact_json FROM flow_runs WHERE id=?", (item["id"],)).fetchone()
+                summaries[item["id"]] = row_progress(db, run)
         workers = db.execute(
             """SELECT count(*) AS total,
                       coalesce(sum(CASE WHEN last_seen_at>=? AND status!='offline'
                                         THEN 1 ELSE 0 END), 0) AS online
                FROM flow_workers""", (cutoff,),
         ).fetchone()
-    return {"latest_runs": [dict(row) for row in latest],
-            "active_runs": [dict(row) for row in active],
-            "events": [dict(row) for row in events], "workers": dict(workers)}
+    return {"latest_runs": [{**dict(row), "progress": summaries.get(row["id"])} for row in latest],
+            "active_runs": [{**dict(row), "progress": summaries[row["id"]]} for row in active],
+            "workers": dict(workers)}
 
 
 @router.get("/runs")

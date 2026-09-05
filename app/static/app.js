@@ -10821,12 +10821,12 @@ function _flowSourcePickerHtml(catalog) {
 }
 
 function _flowListHtml(flows, workers, catalog, runs = []) {
-    if (!flows.length) return _flowActivityPanelHtml() + _flowEmptyState(catalog);
+    if (!flows.length) return _flowEmptyState(catalog);
     const opened = _flowOpenGroups();
     const rows = flows.map(flow => _flowRowModel(flow, runs, catalog));
     const online = workers.filter(worker => worker.status !== "offline").length;
-    return `<div class="flow-status-strip"><span><strong>${flows.length}</strong> configured flows</span><span id="flow-worker-count"><strong>${online}</strong> online workers</span><span>Newest 3 producing runs retained; active recovery files stay protected.</span></div>
-        ${_flowActivityPanelHtml()}<div class="flow-table-wrap"><table class="flow-table flow-grouped-table">
+    return `<div class="flow-status-strip"><span><strong>${flows.length}</strong> configured flows</span><span id="flow-worker-count"><strong>${online}</strong> online workers</span><span>Newest 3 producing runs retained; active recovery files stay protected.</span><span id="flow-activity-connection" role="status"></span></div>
+        <div class="flow-table-wrap"><table class="flow-table flow-grouped-table">
         <thead><tr>${_flowSortHeaders()}</tr></thead>
         ${_flowGroups().map(group => {
             const items = _flowSortRows(rows.filter(row => row.group === group), _flowSortState());
@@ -10862,14 +10862,14 @@ function _flowRowHtml(row) {
     const {flow, activeRun} = row;
     const button = (cls, label, extra = "") => `<button type="button" class="btn-sm ${cls}" data-id="${flow.id}" data-flow-focus="${cls}-${flow.id}" ${extra}>${label}</button>`;
     return `<tr data-flow-id="${flow.id}">
-        <td><strong>${esc(flow.name)}</strong>${window._remoteFlowControlStatus?.enabled && flow.enabled ? `<small class="remote-control-code">Remote target: ${esc(window._remoteFlowControlStatus.installation_id)}:${esc(flow.id)}</small>` : ""}</td>
+        <td class="flow-name-cell"><strong>${esc(flow.name)}</strong>${window._remoteFlowControlStatus?.enabled && flow.enabled ? `<small class="remote-control-code">Remote target: ${esc(window._remoteFlowControlStatus.installation_id)}:${esc(flow.id)}</small>` : ""}<div class="flow-row-progress" ${activeRun ? "" : "hidden"}>${_flowRowProgressHtml(activeRun)}</div></td>
         <td><label class="flow-switch" title="${flow.schedule_type === "manual" ? "Choose a schedule to activate this flow" : "Activate or pause this flow"}"><input class="flow-enabled-switch" data-flow-focus="active-${flow.id}" type="checkbox" aria-label="Active: ${esc(flow.name)}" data-id="${flow.id}" ${flow.enabled ? "checked" : ""} ${flow.schedule_type === "manual" ? "disabled" : ""}><span aria-hidden="true"></span></label></td>
         <td><select class="flow-inline-edit" data-id="${flow.id}" data-field="owner_person_id" data-flow-focus="owner-${flow.id}" aria-label="Owner: ${esc(flow.name)}"><option value="">Unassigned</option>${(window._flowsState?.people || []).map(person => `<option value="${person.id}" ${person.id === flow.owner_person_id ? "selected" : ""}>${esc(person.name)}</option>`).join("")}</select></td>
         <td class="flow-path-cell">${esc(row.source || "—")}</td>
         <td>${flow.source_type === "outlook" ? `CSV or Excel attachment<small>Original filename · default Inbox</small>` : flow.source_type === "file" ? `CSV or Excel file<small>${flow.local_file_worksheet ? `Worksheet: ${esc(flow.local_file_worksheet)} · ` : ""}Private snapshots · latest 3</small>` : `${esc(flow.download_mode === "one_per_period" || flow.download_mode === "one_per_week" ? `One ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} every ${flow.window_weeks || 1} week(s)` : `${flow.export_views?.length || 1} ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} export(s)`)}<small>${flow.period_strategy === "none" ? "No period prompt" : flow.period_strategy === "latest" ? "Start to latest available" : flow.period_strategy === "rolling" ? "Rolling window" : "Fixed start + end"}</small>`}<small>${flow.output_mode === "direct_replace" ? "Direct files · exact-name replacement" : "Run folders · newest 3"}</small><small>${esc(row.to || "")}${flow.sql_handoff_enabled ? ` · SQL ${esc(flow.sql_mode)}` : ""}</small></td>
         <td>${["outlook", "file"].includes(flow.source_type) ? "—" : `<select class="flow-inline-edit" data-id="${flow.id}" data-field="browser_mode" data-flow-focus="browser-${flow.id}" aria-label="Browser: ${esc(flow.name)}"><option value="headless" ${flow.browser_mode !== "headed" ? "selected" : ""}>Headless</option><option value="headed" ${flow.browser_mode === "headed" ? "selected" : ""}>Headed</option></select>`}</td>
         <td>${esc(_flowScheduleLabel(flow))}</td>
-        <td><div class="flow-last-run">${_flowLastRunHtml(activeRun || { status: flow.last_status, created_at: flow.last_run_at })}</div>${flow.sql_reconciliation_required ? '<small class="flow-error">SQL reconciliation required</small>' : ""}${Number(flow.download_parallelism) > 1 ? `<small>Up to ${Number(flow.download_parallelism)} download slots</small>` : ""}</td>
+        <td><div class="flow-last-run">${_flowLastRunHtml(activeRun || { status: flow.last_status, created_at: flow.last_run_at })}</div>${flow.sql_reconciliation_required ? '<small class="flow-error">SQL reconciliation required</small>' : ""}</td>
         <td class="flow-row-actions">${button("flow-run", activeRun?.status === "queued" ? "Start now" : activeRun ? "Running" : "Run", activeRun && activeRun.status !== "queued" ? "disabled" : "")}<button class="btn-sm btn-outline btn-danger-outline flow-stop" type="button" data-id="${flow.id}" data-flow-focus="flow-stop-${flow.id}" ${activeRun ? "" : "hidden"}>Stop</button>${button("flow-edit", "Edit")}<details class="flow-row-menu"><summary aria-label="More actions: ${esc(flow.name)}" data-flow-focus="more-${flow.id}">More</summary><div>${button("flow-open-folder", "Open folder")}${flow.flow_folder ? button("flow-standalone-status", "Check standalone") + button("flow-standalone", "Generate standalone") : ""}${flow.sql_reconciliation_required ? button('flow-sql-reconciled', 'Acknowledge SQL reconciliation') : ''}<button class="btn-sm btn-outline btn-danger-outline flow-delete" type="button" data-id="${flow.id}" data-flow-focus="flow-delete-${flow.id}">Delete</button></div></details></td>
     </tr>`;
 }
@@ -10934,12 +10934,58 @@ function _flowScheduleLabel(flow) {
 }
 
 function _flowLastRunHtml(run) {
-    const working = ["claimed", "running"].includes(run?.status);
-    return `<span class="flow-run-status">${working ? '<span aria-label="In progress">🔧</span> ' : ""}${_flowStatusBadge(run?.status)}${run?.status === "queued" ? " · Waiting" : ""}</span><small>${run?.created_at ? esc(timeAgo(run.created_at)) : "Not run yet"}</small>`;
+    return `<span class="flow-run-status">${_flowStatusBadge(run?.status)}${run?.status === "queued" ? " · Waiting" : ""}</span><small>${run?.created_at ? esc(timeAgo(run.created_at)) : "Not run yet"}</small>`;
 }
 
-function _flowActivityPanelHtml() {
-    return `<section class="flow-activity" aria-label="Live flow activity"><div class="flow-panel-head"><h2>Live activity</h2><span id="flow-activity-connection" role="status">Connecting…</span></div><div class="flow-activity-scroll" tabindex="0" aria-label="Active runs and recent events"><div id="flow-active-runs"></div><div id="flow-recent-events"></div></div></section>`;
+function _flowRowProgressHtml(run) {
+    if (!run || !["queued", "claimed", "running"].includes(run.status)) return "";
+    const progress = run.progress || {};
+    const runners = progress.runners || [];
+    const known = Number.isFinite(progress.total) && progress.total > 0;
+    const done = known ? Math.max(0, Math.min(progress.total, progress.completed || 0)) : 0;
+    const working = run.status !== "queued";
+    const workers = runners.map((runner, index) => `<span class="flow-worker-emoji" data-worker-id="${esc(runner.id)}" role="img" aria-label="${esc(runner.id)}: ${esc(runner.message)}" title="${esc(runner.id)} · ${esc(runner.message)}" style="--worker-delay:${index * -0.17}s">👷</span>`).join("");
+    const phases = (progress.phases || []).map(phase => `<span class="flow-progress-phase" style="flex:${phase.total}" title="${esc(phase.label)}: ${phase.completed} / ${phase.total}"><span style="width:${Math.max(0, Math.min(100, phase.completed / phase.total * 100))}%"></span></span>`).join("");
+    return `<div class="flow-progress-heading"><span class="flow-workers">${workers}<span>${runners.length ? `${runners.length} worker${runners.length === 1 ? "" : "s"}` : working ? "Starting worker" : "Queued"}</span></span><span class="flow-progress-count">${known ? `${done} / ${progress.total} steps` : "Preparing steps"}</span></div>
+        <div class="flow-progress-track ${known ? "" : "flow-progress-unknown"}" role="progressbar" aria-label="Flow work completed" aria-valuemin="0" ${known ? `aria-valuemax="${progress.total}" aria-valuenow="${done}" aria-valuetext="${done} of ${progress.total} steps completed"` : 'aria-valuetext="Preparing steps"'}>${phases}</div>
+        <div class="flow-progress-message" title="${esc(progress.message || "")}">${esc(progress.message || (working ? "Preparing run" : "Waiting for a worker"))}</div>`;
+}
+
+function _flowPatchRowProgress(container, run) {
+    const html = _flowRowProgressHtml(run);
+    if (!html) { container.hidden = true; return; }
+    container.hidden = false;
+    if (!container.firstElementChild) { container.innerHTML = html; return; }
+    // Keep the animated workers and progress segments mounted between polls.
+    const next = document.createElement("div");
+    next.innerHTML = html;
+    const workers = container.querySelector(".flow-workers");
+    const newWorkers = next.querySelector(".flow-workers");
+    const ids = node => Array.from(node.querySelectorAll("[data-worker-id]"), worker => worker.dataset.workerId).join("\n");
+    if (ids(workers) !== ids(newWorkers)) workers.innerHTML = newWorkers.innerHTML;
+    else {
+        Array.from(workers.children).forEach((worker, index) => {
+            const updated = newWorkers.children[index];
+            worker.title = updated.title;
+            if (updated.hasAttribute("aria-label")) worker.setAttribute("aria-label", updated.getAttribute("aria-label"));
+            if (!worker.dataset.workerId) worker.textContent = updated.textContent;
+        });
+    }
+    for (const selector of [".flow-progress-count", ".flow-progress-message"]) {
+        const old = container.querySelector(selector), updated = next.querySelector(selector);
+        old.textContent = updated.textContent;
+        old.title = updated.title;
+    }
+    const track = container.querySelector(".flow-progress-track"), updated = next.querySelector(".flow-progress-track");
+    for (const attr of ["class", "aria-valuemax", "aria-valuenow", "aria-valuetext"]) {
+        if (updated.hasAttribute(attr)) track.setAttribute(attr, updated.getAttribute(attr)); else track.removeAttribute(attr);
+    }
+    if (track.children.length !== updated.children.length) { track.innerHTML = updated.innerHTML; return; }
+    Array.from(track.children).forEach((phase, index) => {
+        phase.style.flex = updated.children[index].style.flex;
+        phase.title = updated.children[index].title;
+        phase.firstElementChild.style.width = updated.children[index].firstElementChild.style.width;
+    });
 }
 
 /** The folder a report sits in, and its own name, from the discovery path.
@@ -11638,7 +11684,7 @@ const _flowActivityPoll = { generation: 0, timer: null, inFlight: null, pending:
 
 function _flowActivityVisible() {
     return currentPage === "flows" && window._flowsState?.view === "list"
-        && !document.hidden && !!document.getElementById("flow-activity-connection");
+        && !document.hidden && !!document.getElementById("flow-workspace");
 }
 
 function _flowStopActivityMonitor() {
@@ -11665,10 +11711,12 @@ function _flowRefreshActivity() {
             if (generation !== poll.generation || state !== window._flowsState || !_flowActivityVisible()) return;
             state.activity = activity;
             _flowPatchActivity(activity);
-            document.getElementById("flow-activity-connection").textContent = "Live · every 5s";
+            const connection = document.getElementById("flow-activity-connection");
+            if (connection) connection.textContent = "";
         } catch (_) {
             if (generation === poll.generation && state === window._flowsState && _flowActivityVisible()) {
-                document.getElementById("flow-activity-connection").textContent = "Reconnecting…";
+                const connection = document.getElementById("flow-activity-connection");
+                if (connection) connection.textContent = "Reconnecting…";
             }
         } finally {
             poll.inFlight = null;
@@ -11710,6 +11758,7 @@ function _flowPatchActivity(activity) {
     document.querySelectorAll("tr[data-flow-id]").forEach(row => {
         const flowId = Number(row.dataset.flowId);
         const run = active.get(flowId);
+        _flowPatchRowProgress(row.querySelector(".flow-row-progress"), run);
         const last = row.querySelector(".flow-last-run");
         const html = _flowLastRunHtml(run || latest.get(flowId));
         if (last.innerHTML !== html) last.innerHTML = html;
@@ -11722,37 +11771,6 @@ function _flowPatchActivity(activity) {
     });
     const workers = document.getElementById("flow-worker-count");
     if (workers) workers.textContent = `${activity.workers.online} online worker${activity.workers.online === 1 ? "" : "s"}`;
-    _flowPatchActivityEntries("flow-active-runs", activity.active_runs.map(run => ({
-        ...run, key: `active:${run.id}`, run_id: run.id, stage: run.status,
-        message: run.status === "queued" ? "Waiting for a worker" : run.status === "claimed" ? "Claimed by a worker" : "Run in progress",
-        created_at: run.started_at || run.claimed_at || run.created_at,
-    })));
-    _flowPatchActivityEntries("flow-recent-events", activity.events);
-}
-
-function _flowPatchActivityEntries(id, entries) {
-    const container = document.getElementById(id);
-    const scroller = container.parentElement;
-    const scrollTop = scroller.scrollTop;
-    const existing = new Map(Array.from(container.children, node => [node.dataset.key, node]));
-    entries.forEach((entry, index) => {
-        let node = existing.get(entry.key);
-        if (!node) {
-            node = document.createElement("div");
-            node.className = "flow-activity-entry";
-            node.dataset.key = entry.key;
-            node.innerHTML = '<time></time><span></span><a target="_blank" rel="noopener">Full run log</a>';
-            node.querySelector("a").href = `/flow-runs/${entry.run_id}`;
-        }
-        existing.delete(entry.key);
-        const time = node.querySelector("time");
-        time.dateTime = entry.created_at || "";
-        time.textContent = entry.created_at ? formatDate(entry.created_at) : "";
-        node.querySelector("span").textContent = `${["claimed", "running"].includes(entry.status) ? "🔧 " : ""}${entry.flow_name} · Run #${entry.run_id} · ${entry.stage || entry.status} · ${entry.message || ""}`;
-        if (container.children[index] !== node) container.insertBefore(node, container.children[index] || null);
-    });
-    existing.forEach(node => node.remove());
-    scroller.scrollTop = scrollTop;
 }
 
 function _flowScheduleCatalogMonitor() {

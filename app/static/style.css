@@ -340,22 +340,27 @@ main {
 }
 
 main:has(.flow-page-header) { max-width: none; }
-.flow-activity { margin: 1rem 0; border: 1px solid var(--border); border-radius: 8px; padding: 0.75rem; }
-.flow-activity .flow-panel-head { margin-bottom: 0.5rem; }
-#flow-activity-connection { font-size: 0.75rem; color: var(--text-muted); }
-.flow-activity-scroll { height: 160px; overflow: auto; overflow-anchor: none; }
-.flow-activity-entry { display: flex; gap: 0.6rem; padding: 0.25rem 0; font-size: 0.75rem; align-items: baseline; }
-.flow-activity-entry time, .flow-activity-entry a { white-space: nowrap; }
-.flow-activity-entry span { flex: 1; overflow-wrap: anywhere; min-width: 0; }
-#flow-active-runs:not(:empty) { border-bottom: 1px solid var(--border); margin-bottom: 0.4rem; }
+#flow-activity-connection { font-size: 0.75rem; color: var(--text-muted); margin-left: auto; }
+.flow-name-cell { min-width: 260px; max-width: 360px; }
+.flow-row-progress { margin-top: 0.65rem; min-width: 235px; max-width: 340px; }
+.flow-row-progress[hidden] { display: none; }
+.flow-progress-heading { display: flex; justify-content: space-between; gap: 0.6rem; align-items: center; margin-bottom: 0.35rem; }
+.flow-workers { display: inline-flex; align-items: center; gap: 3px; color: var(--text-muted); font-size: 0.68rem; white-space: nowrap; }
+.flow-workers > span:last-child { margin-left: 3px; }
+.flow-worker-emoji { display: inline-block; font-size: 1.05rem; transform-origin: bottom center; animation: flow-worker-working 0.85s ease-in-out infinite alternate; animation-delay: var(--worker-delay, 0s); }
+@keyframes flow-worker-working { from { transform: rotate(-9deg) translateY(0); } to { transform: rotate(9deg) translateY(-2px); } }
+.flow-progress-count { font-size: 0.65rem; color: var(--text-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.flow-progress-track { display: flex; gap: 3px; height: 6px; border-radius: 4px; overflow: hidden; }
+.flow-progress-phase { background: var(--border); overflow: hidden; min-width: 3px; border-radius: 2px; }
+.flow-progress-phase > span { display: block; height: 100%; background: var(--green, #29945d); transition: width 0.35s ease; }
+.flow-progress-unknown { background: var(--border); }
+.flow-progress-message { margin-top: 0.4rem; font-size: 0.7rem; line-height: 1.4; color: var(--text-muted); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
+@media (prefers-reduced-motion: reduce) { .flow-worker-emoji { animation: none; } .flow-progress-phase > span { transition: none; } }
 #flow-workspace .flow-table:has(.flow-inline-edit) { min-width: 1250px; }
 .flow-inline-edit { min-width: 100px; max-width: 190px; width: 100%; font: inherit; }
 .flow-table .flow-last-run, .flow-table .flow-last-run small, .flow-run-status, .flow-run-status .badge { white-space: nowrap; overflow-wrap: normal; word-break: normal; }
 .flow-stop[hidden] { display: none; }
-@media (max-width: 700px) {
-    .flow-activity-entry { flex-wrap: wrap; }
-    .flow-activity-entry span { flex-basis: 70%; }
-}
+
 
 .page-header {
     margin-bottom: 1.25rem;

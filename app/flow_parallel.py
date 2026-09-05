@@ -223,6 +223,9 @@ def report_task(db, worker_id, task_id, token, status, progress, artifacts):
                 raise HTTPException(409, 'The task result points outside its immutable output folder.')
         if not artifact.get('checksum') or not isinstance(artifact.get('file_size'), int):
             raise HTTPException(409, 'The task result needs a checksum and file size.')
+    # Lease heartbeats must not erase the worker's current visible action.
+    if status == 'running' and progress.get('stage') == 'task_heartbeat':
+        progress = json.loads(task['progress_json'] or '{}')
     db.execute('UPDATE flow_download_tasks SET state=?,progress_json=?,artifact_json=?,lease_expires_at=?,error=?,updated_at=? WHERE id=? AND lease_token=?',
                ('claimed' if status == 'running' else status, _json(progress), _json(artifacts if status == 'succeeded' else []), expiry,
                 progress.get('message') if status == 'failed' else None, now, task_id, token))

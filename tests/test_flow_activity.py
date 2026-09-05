@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from app import database
 from app.routers import flows
 from test_flows import flow_db, _flow, _seed_catalog, _mark_discovered, _person, _request
+from test_flow_parallel import bundle, claim, complete
 
 
 @pytest.fixture
@@ -45,14 +46,14 @@ def test_activity_tracks_all_states_without_progress(activity_client, terminal):
         data = response.json()
         assert data["latest_runs"][0]["status"] == state
         assert bool(data["active_runs"]) == (state in {"queued", "claimed", "running"})
-        assert data["events"][0]["status"] == state
-        assert data["events"][0]["key"] == f"state:{run_id}:{state}"
+        assert data["latest_runs"][0]["progress"]["stage"] == state
+        assert data["latest_runs"][0]["progress"]["total"] is None
         assert "payload" not in response.text
     with database.get_db() as db:
         assert db.execute("SELECT count(*) FROM flow_run_events").fetchone()[0] == 0
 
 
-def test_activity_includes_old_active_runs_and_only_50_lightweight_events(activity_client):
+def test_activity_includes_old_active_runs_without_returning_history(activity_client):
     client, flow = activity_client
     active_id = add_run(flow["id"], "running", "2025-01-01T00:00:00")
     for _ in range(105):
@@ -66,11 +67,8 @@ def test_activity_includes_old_active_runs_and_only_50_lightweight_events(activi
     data = client.get("/api/flows/activity").json()
     assert data["active_runs"][0]["id"] == active_id
     assert data["latest_runs"][0]["id"] == run_id
-    assert len(data["events"]) == 50
-    assert data["events"][0]["run_id"] == run_id
-    assert all(len(event["message"]) == 1000 for event in data["events"])
-    assert all(event["key"].startswith("event:") for event in data["events"])
-    assert not {"job_json", "artifacts", "traceback", "details_json", "error"} & set(data["events"][0])
+    assert "events" not in data
+    assert not {"job_json", "artifacts", "traceback", "details_json", "error"} & set(data["active_runs"][0])
     assert "trace-secret" not in json.dumps(data)
     assert data["workers"] == {"total": 0, "online": 0}
 
@@ -91,7 +89,7 @@ def test_activity_stop_without_event_and_worker_heartbeat_counts(activity_client
     data = client.get("/api/flows/activity").json()
     assert not data["active_runs"]
     assert data["latest_runs"][0]["status"] == "cancelled"
-    assert any(e["key"] == f"state:{queued['id']}:cancelled" for e in data["events"])
+    assert data["latest_runs"][0]["progress"]["message"] == "Cancelled"
     assert data["workers"] == {"total": 3, "online": 1}
 
 
@@ -141,3 +139,90 @@ def test_inline_rejects_unsupported_browser_and_honors_locks(activity_client, so
         db.execute("INSERT INTO pipeline_resource_locks(resource_type,resource_key,run_id) VALUES ('flow',?,1)", (str(flow["id"]),))
     assert client.patch(url, json={"owner_person_id": None}).status_code == 409
     assert client.patch("/api/flows/999999", json={"owner_person_id": None}).status_code == 404
+
+
+def progress_run(flow_id, count=1, **extra):
+    job = {"flow": {"source_type": "portal"}, "downloads": {"periods": list(range(count))},
+           "report": {}, "sql_handoff": {"enabled": True}, **extra}
+    run_id = add_run(flow_id)
+    with database.get_db() as db:
+        db.execute("UPDATE flow_runs SET job_json=? WHERE id=?", (json.dumps(job), run_id))
+    return run_id
+
+
+def report_progress(run_id, stage, status="running", artifacts=None):
+    with database.get_db() as db:
+        detail = {"stage": stage, "message": f"Now {stage}"}
+        db.execute("UPDATE flow_runs SET status=?,progress_json=? WHERE id=?", (status, json.dumps(detail), run_id))
+        db.execute("INSERT INTO flow_run_events(run_id,status,stage) VALUES (?,?,?)", (run_id, status, stage))
+        if artifacts is not None:
+            db.execute("UPDATE flow_runs SET artifact_json=? WHERE id=?", (json.dumps(artifacts), run_id))
+
+
+def test_simple_sql_flow_has_five_evidence_based_steps(activity_client):
+    client, flow = activity_client
+    run_id = progress_run(flow["id"])
+    def read():
+        return client.get("/api/flows/activity").json()["latest_runs"][0]["progress"]
+    assert (read()["completed"], read()["total"]) == (0, 5)
+    report_progress(run_id, "opening_report")
+    assert read()["completed"] == 0
+    report_progress(run_id, "file_export")
+    assert read()["completed"] == 1
+    report_progress(run_id, "sql_insertion", artifacts=[{"status": "saved", "bundle_index": 1}])
+    assert read()["completed"] == 3
+    assert read()["message"] == "Now sql_insertion"
+    # COPY progress does not mean a SQL transaction has committed.
+    report_progress(run_id, "sql_copy")
+    assert read()["completed"] == 3
+    report_progress(run_id, "sql_insertion_complete")
+    assert read()["completed"] == 4
+    report_progress(run_id, "complete", "succeeded")
+    assert read()["completed"] == 5
+    assert read()["runners"] == []
+
+
+@pytest.mark.parametrize("terminal", ["failed", "cancelled"])
+def test_long_flow_keeps_three_of_fifty_steps_on_failure(activity_client, terminal):
+    client, flow = activity_client
+    run_id = progress_run(flow["id"], count=46)
+    artifacts = [{"status": "saved", "bundle_index": index} for index in [1, 2, 2]]
+    report_progress(run_id, "file_export", artifacts=artifacts)
+    report_progress(run_id, terminal, terminal)
+    progress = client.get("/api/flows/activity").json()["latest_runs"][0]["progress"]
+    assert (progress["completed"], progress["total"]) == (3, 50)
+    assert progress["runners"] == []
+
+
+def test_progress_uses_frozen_configuration_and_noop_skips_unused_work(activity_client):
+    client, flow = activity_client
+    run_id = progress_run(flow["id"], transformation={"enabled": True},
+                          downloads={"output_mode": "direct_replace"})
+    assert client.get("/api/flows/activity").json()["latest_runs"][0]["progress"]["total"] == 7
+    report_progress(run_id, "local_file_no_op")
+    progress = client.get("/api/flows/activity").json()["latest_runs"][0]["progress"]
+    assert (progress["completed"], progress["total"]) == (1, 2)
+    assert [item["label"] for item in progress["phases"]] == ["Check source", "Finish"]
+
+
+def test_parallel_row_counts_real_workers_and_heartbeats_preserve_actions(bundle):
+    from app.routers import flow_tasks as routes
+    tasks = [claim("worker-1", bundle["run"]["id"]), claim("worker-2"), claim("worker-3")]
+    for index, task in enumerate(tasks):
+        routes.task_progress(task["worker_id"], task["id"], routes.TaskReport(
+            lease_token=task["lease_token"], status="running",
+            progress={"stage": "file_export", "message": f"Downloading export {index + 1}"},
+        ))
+    task = tasks[0]
+    routes.task_progress(task["worker_id"], task["id"], routes.TaskReport(
+        lease_token=task["lease_token"], status="running", progress={"stage": "task_heartbeat"},
+    ))
+    progress = flows.flow_activity()["active_runs"][0]["progress"]
+    assert len(progress["runners"]) == 3  # Coordinator's own task counts once.
+    assert progress["runners"][0]["message"] == "Downloading export 1"
+    assert progress["completed"] == 1
+    complete(tasks[1])
+    progress = flows.flow_activity()["active_runs"][0]["progress"]
+    assert len(progress["runners"]) == 2
+    assert progress["completed"] == 2
+    assert "1 of 3" in progress["message"]

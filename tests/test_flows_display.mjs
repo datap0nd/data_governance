@@ -42,7 +42,7 @@ console.log("flows display tests passed");
 
 const render = flow => context.renderFlowList([{ id: 2, name: "Export", ...flow }], [], {}, []);
 assert.deepEqual(Array.from(context._flowSortColumns(), column => column[1]), ["Flow", "Active", "Owner", "Source", "Download", "Browser", "Schedule", "Last run"]);
-assert.ok(html.indexOf('class="flow-activity"') < html.indexOf('<table class="flow-table'));
+assert.doesNotMatch(html, /flow-activity-scroll|Live activity/);
 assert.match(render({ schedule_type: "manual" }), /aria-label="Active: Export"[^>]*disabled/);
 assert.match(render({ schedule_type: "manual" }), /title="Choose a schedule to activate this flow"/);
 assert.doesNotMatch(render({ owner_name: "Dana" }), /Owner: Dana|No owner/);
@@ -58,7 +58,7 @@ for (const [config, label] of [
     [{ schedule_type: "monthly", schedule_day: 15 }, "Monthly · day 15"],
 ]) assert.match(render({ ...config, next_run_at: "hidden-next" }), new RegExp(`<td>${label}</td>`));
 assert.doesNotMatch(render({ next_run_at: "hidden-next" }), /hidden-next|Next /);
-for (const status of ["claimed", "running"]) assert.match(render({ last_status: status }), /🔧/);
+
 assert.match(render({ last_status: "queued" }), /Waiting/);
 context.window._flowsState.people = [{ id: 7, name: "Dana" }];
 assert.match(render({ owner_person_id: 7 }), /<option value="7" selected>Dana/);
@@ -66,3 +66,15 @@ assert.match(render({}), /<option value="">Unassigned/);
 const css = fs.readFileSync(new URL("../app/static/style.css", import.meta.url), "utf8");
 assert.match(css, /main:has\(\.flow-page-header\) \{ max-width: none;/);
 assert.match(css, /\.flow-run-status \.badge \{ white-space: nowrap; overflow-wrap: normal;/);
+
+const running = { id: 10, flow_id: 2, status: "running", progress: { completed: 3, total: 50, message: "Inserting into SQL", runners: [{id:"one",message:"Download"},{id:"two",message:"Download"},{id:"three",message:"Prepare"}], phases: [{label:"Download",completed:3,total:50}] } };
+const live = context.renderFlowList([{ id: 2, name: "Export" }], [], {}, [running]);
+assert.equal((live.match(/class="flow-worker-emoji"/g) || []).length, 3);
+assert.match(live, /3 workers/);
+assert.match(live, /3 \/ 50 steps/);
+assert.match(live, /aria-valuenow="3"/);
+assert.match(live, /Inserting into SQL/);
+assert.match(live, /class="flow-name-cell"[\s\S]*class="flow-row-progress"/);
+assert.match(css, /@keyframes flow-worker-working/);
+assert.match(css, /prefers-reduced-motion: reduce/);
+assert.equal(context._flowRowProgressHtml({...running, status: "succeeded"}), "");
