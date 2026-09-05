@@ -46,6 +46,7 @@ window.FlowRecordings = (() => {
         const navigation = steps.filter((step, i) => step.action === 'goto' && (firstDownload < 0 || i < firstDownload)).at(-1);
         const params = definition.parameters || {};
         return `<form data-review>
+            ${firstDownload < 0 ? '<p role="alert">No download was captured. Record through a completed download, or mark its recorded triggering action as a download below if the portal already delivered the file. This draft cannot be activated until its download passes validation.</p>' : ''}
             <div class="flow-form-grid">
                 <label>Timezone <input name="timezone" required value="${h(definition.timezone)}"></label>
                 <label>Report title (exact visible text) <input name="identity" required value="${h(definition.identity?.text)}"></label>

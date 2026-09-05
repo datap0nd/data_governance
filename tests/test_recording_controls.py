@@ -175,10 +175,14 @@ def test_cli_finish_cancel_and_auth_cleanup(tmp_path, monkeypatch, control):
         'finish_requested': control in {'finish_requested', 'missing_download'}, 'cancel_requested': control == 'cancel_requested'})
     args = (None, 'worker', {'id': 12, 'job': {'site': {'adapter': 'asap_portal'}, 'browser_channel': 'chrome', 'report_url': 'http://localhost/report'}},
         None, Context(), tmp_path, lambda *a, **k: None)
-    if control == 'finish_requested':
+    if control in {'finish_requested', 'missing_download'}:
         result = recorder.record(*args)
-        assert any(step['action'] == 'download' for step in result['definition']['steps'])
+        assert any(step['action'] == 'download' for step in result['definition']['steps']) == (control == 'finish_requested')
         assert 'private-auth.json' not in json.dumps(result)
+        if control == 'missing_download':
+            from app import flow_recording
+            with pytest.raises(ValueError, match='download'):
+                flow_recording.validate_definition(result['definition'])
     else:
         error = recorder.RecordingCancelled if control == 'cancel_requested' else RuntimeError
         with pytest.raises(error): recorder.record(*args)

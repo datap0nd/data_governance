@@ -36,6 +36,8 @@ existing Flows retain catalog/bookmark execution.
 4. Review the actions, page/frame identities, report title, generation action,
    completion signal, expected formats, columns and optional period checks.
    An unobserved download can be attached to its recorded trigger in the editor.
+   Finish preserves partial recordings as drafts with a warning; they cannot
+   activate until a configured download passes validation.
 5. Configure dates if needed. Fixed start + portal-default end omits the end
    field write and logs the portal's value. Calculated dates resolve once per
    run in the saved timezone. Date ranges are checked before accepting output.

@@ -185,8 +185,9 @@ def _run_recorder(command, client, worker_id, scan_id, raw, private, zone, job, 
                 raise RuntimeError('Playwright recording ended unexpectedly. Check the local recorder log and record again.')
             # Read again after shutdown so the final completed action is kept.
             definition = flow_recording.import_codegen(_recorded_source(raw), timezone=zone)
-            if not any(step['action'] == 'download' for step in flow_recording.walk_steps(definition['steps'])):
-                raise RuntimeError('No download was recorded. Record through the file download, then finish in Metronome.')
+            # Keep partial recordings as drafts so a native portal download
+            # can be attached to its observed trigger during review. Activation
+            # still requires a download and successful output validation.
             definition['adapter'] = job['site']['adapter']
             definition['browser_channel'] = channel
             if not finished_by_user:
