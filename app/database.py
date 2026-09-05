@@ -806,6 +806,10 @@ SCHEDULED_TASK_REBUILD_MIGRATIONS = [
 
 
 MIGRATIONS = [
+    "ALTER TABLE flows ADD COLUMN flow_folder TEXT",
+    "ALTER TABLE flows ADD COLUMN folder_slug TEXT",
+    "ALTER TABLE flows ADD COLUMN folder_state TEXT NOT NULL DEFAULT 'unmanaged'",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_flows_folder ON flows(flow_folder)",
     """CREATE TABLE IF NOT EXISTS source_activity_history (
            id INTEGER PRIMARY KEY AUTOINCREMENT,
            source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,

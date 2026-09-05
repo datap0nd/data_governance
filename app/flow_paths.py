@@ -117,7 +117,7 @@ def validate_flow(flow: dict, rules: dict | None, *, resolve=True):
         assert_inside(flow.get("target_folder"), source, label="Target folder", resolve=resolve)
     elif rules.get("enforced"):
         assert_inside(flow.get("local_file_path"), str(Path(root) / "Local"), label="Source file", resolve=resolve)
-    if flow.get("transform_enabled"):
+    if flow.get("transform_enabled") and rules.get("enforced"):
         assert_inside(flow.get("transform_script_path"), root, label="Transformation script", resolve=resolve)
 
 

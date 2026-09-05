@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+const source = fs.readFileSync(new URL('../app/static/app.js', import.meta.url), 'utf8');
+const context = {esc: s => String(s ?? '').replaceAll('<','&lt;')};
+vm.createContext(context);
+vm.runInContext(source.slice(source.indexOf('function _flowDestinationHtml'), source.indexOf('function _flowOutlookBuilderHtml')), context);
+assert.doesNotMatch(context._flowDestinationHtml(null), /flow-target-folder/);
+assert.match(context._flowDestinationHtml({id:1,target_folder:'/old'}), /flow-target-folder/);
+assert.match(context._flowDestinationHtml({id:1,source_type:'file'}), /snapshots stay private/);
+const managed = context._flowDestinationHtml({id:1,flow_folder:'/flows/<name>'});
+assert.doesNotMatch(managed, /flow-target-folder|flow-adopt-folder/);
+assert.match(managed, /&lt;name>/);
+console.log('flow destination display tests passed');

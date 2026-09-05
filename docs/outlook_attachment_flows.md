@@ -2,7 +2,7 @@
 
 Choose **Create flow > Outlook** to acquire emailed flat files through the
 signed-in user's desktop Outlook profile. The flow stores a free-text subject
-substring, an existing target folder, an optional transformation, the existing
+substring, an automatically created managed folder, an optional transformation, the existing
 daily/weekly/monthly schedule, and the normal optional SQL handoff.
 
 ## Message selection
