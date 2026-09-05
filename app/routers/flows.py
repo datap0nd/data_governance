@@ -809,7 +809,7 @@ class FlowWrite(BaseModel):
                 raise ValueError("Unsupported period strategy.")
             if self.browser_mode not in BROWSER_MODES:
                 raise ValueError("Browser mode must be headed or headless.")
-        if self.source_type != "portal" or self.browser_mode == "headed":
+        if self.source_type != "portal":
             self.download_parallelism = 1
         if self.source_type != "file":
             if self.target_folder and not _is_absolute_worker_path(self.target_folder):
@@ -2614,7 +2614,7 @@ def list_workers():
         item = dict(row)
         item["capabilities"] = _loads(item.pop("capabilities_json"), {})
         item["pool"] = "headed" if item["capabilities"].get("headed") else "headless"
-        item["slot"] = 1 if item["pool"] == "headed" else flow_capacity.slot_number(item["worker_id"])
+        item["slot"] = flow_capacity.slot_number(item["worker_id"], item["pool"])
         if not item["last_seen_at"] or item["last_seen_at"] < cutoff:
             item["status"] = "offline"
         result.append(item)
@@ -3117,7 +3117,11 @@ def patch_flow(flow_id: int, body: FlowInlineWrite, request: Request):
         log_event(db, "flow", flow_id, flow["name"], "updated",
                   detail=json.dumps({key: {"before": flow[key], "after": value}
                                      for key, value in changes.items()}), actor=get_actor(request))
-        return {"id": flow_id, **changes}
+        saved = {'id': flow_id, 'flow_folder': flow['flow_folder']}
+    result = {"id": flow_id, **changes}
+    if 'browser_mode' in changes and saved['flow_folder']:
+        result['standalone'] = _generate_saved_standalone(saved)['standalone']
+    return result
 
 
 @router.patch("/{flow_id}/enabled")
@@ -4823,6 +4827,7 @@ def register_worker(body: WorkerRegister):
                  last_seen_at=excluded.last_seen_at, updated_at=excluded.updated_at""",
             (body.worker_id, body.display_name, _json(body.capabilities), now, now, now),
         )
+        headed_work_pending = bool(body.capabilities.get('headed') and flow_capacity.pending_work(db, 'headed'))
     if interrupted_run_id is not None:
         notify_flow_owner_of_failure(interrupted_run_id)
     return {
@@ -4831,6 +4836,7 @@ def register_worker(body: WorkerRegister):
         "interrupted_run_id": interrupted_run_id,
         "flows_root": registration_root,
         "artifact_store_roots": sorted(recovery_roots),
+        "headed_work_pending": headed_work_pending,
     }
 
 
@@ -4933,7 +4939,7 @@ def claim_run(worker_id: str):
             adapters = set(capabilities.get("adapters") or [])
             return (
                 execution.get("browser_mode", "headless") == worker_mode
-                and (not flow_tasks.enabled(job) or capabilities.get(flow_tasks.CAPABILITY))
+                and (not flow_tasks.enabled(job) or flow_tasks.supported(job, capabilities))
                 and flow_parallel.portal_available(db, job)
                 and (not required_adapter or required_adapter in adapters)
                 and (not (job.get("paths") or {}).get("artifact_store_root") or capabilities.get("shared_flow_artifacts"))

@@ -11,7 +11,8 @@
 
 param(
     [switch]$Unattended,
-    [ValidateRange(0,5)][int]$FlowHeadlessSlots = 0 # 0 reads the saved setting
+    [ValidateRange(0,5)][int]$FlowHeadlessSlots = 0, # 0 reads the saved setting
+    [ValidateRange(0,5)][int]$FlowHeadedSlots = 0
 )
 
 # --- Self-elevate to Admin if needed ---
@@ -20,6 +21,7 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
     if (-not $Unattended) { $ElevationArguments = "-NoExit $ElevationArguments" }
     if ($Unattended) { $ElevationArguments += " -Unattended" }
     if ($FlowHeadlessSlots) { $ElevationArguments += " -FlowHeadlessSlots $FlowHeadlessSlots" }
+    if ($FlowHeadedSlots) { $ElevationArguments += " -FlowHeadedSlots $FlowHeadedSlots" }
     Start-Process powershell.exe $ElevationArguments -Verb RunAs -WindowStyle Hidden
     exit
 }
@@ -274,6 +276,9 @@ try {
 # authentication, or download failure must leave the currently installed app
 # and workers running.
 Stop-ScheduledTask -TaskName $HeadedFlowTaskName -ErrorAction SilentlyContinue
+foreach ($HeadedSlot in 2..5) {
+    Stop-ScheduledTask -TaskName "$HeadedFlowTaskName$HeadedSlot" -ErrorAction SilentlyContinue
+}
 $NssmExe = "$CodeDir\tools\nssm.exe"
 $ErrorActionPreference = "Continue"
 $existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
@@ -385,6 +390,7 @@ if (-not $env:DG_SETUP_RELAUNCHED) {
         $RelaunchArguments = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $SetupScriptPath)
         if ($Unattended) { $RelaunchArguments += "-Unattended" }
         if ($FlowHeadlessSlots) { $RelaunchArguments += @('-FlowHeadlessSlots', "$FlowHeadlessSlots") }
+        if ($FlowHeadedSlots) { $RelaunchArguments += @('-FlowHeadedSlots', "$FlowHeadedSlots") }
         & powershell.exe @RelaunchArguments
         exit $LASTEXITCODE
     }
@@ -451,6 +457,11 @@ $ConfiguredFlowSlots = [int](& $PyExe @PoolConfigArguments)
 if ($LASTEXITCODE -ne 0 -or $ConfiguredFlowSlots -lt 1 -or $ConfiguredFlowSlots -gt 5) { throw 'Could not read Flow worker capacity.' }
 $FlowSlots = @(1..$ConfiguredFlowSlots | ForEach-Object { Get-MetronomeFlowSlot -Slot $_ -BaseProfile $FlowProfile })
 $MissingExtraSlots = @($FlowSlots | Where-Object { $_.Slot -gt 1 -and -not (Get-Service -Name $_.ServiceName -ErrorAction SilentlyContinue) })
+$HeadedPoolArguments = @((Join-Path $CodeDir 'tools\flow_pool_config.py'), $DbPath, '--mode', 'headed')
+if ($FlowHeadedSlots) { $HeadedPoolArguments += @('--capacity', "$FlowHeadedSlots") }
+$ConfiguredHeadedSlots = [int](& $PyExe @HeadedPoolArguments)
+if ($LASTEXITCODE -ne 0 -or $ConfiguredHeadedSlots -lt 1 -or $ConfiguredHeadedSlots -gt 5) { throw 'Could not read headed Flow worker capacity.' }
+$HeadedSlots = @(1..$ConfiguredHeadedSlots | ForEach-Object { Get-MetronomeFlowSlot -Slot $_ -BaseProfile $HeadedFlowProfile -Headed })
 
 # --- Create and start service ---
 Write-Host "Starting service..." -ForegroundColor Yellow
@@ -573,16 +584,22 @@ foreach ($DisabledSlot in 1..5 | Where-Object { $_ -gt $ConfiguredFlowSlots }) {
     if (Get-Service -Name $DisabledService -ErrorAction SilentlyContinue) { & $NssmExe set $DisabledService Start SERVICE_DEMAND_START }
 }
 
-$HeadedTaskArguments = "`"$CodeDir\app\flow_worker.py`" --server http://127.0.0.1:$Port --worker-id bi-desktop-headed --name BI-desktop-headed --profile-dir `"$HeadedFlowProfile`" --headed --idle-exit-seconds 60"
-$HeadedTaskAction = New-ScheduledTaskAction -Execute $PyExe -Argument $HeadedTaskArguments
-$HeadedTaskPrincipal = New-ScheduledTaskPrincipal `
-    -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Highest
+# Interactive tasks do not need a stored password. Enroll all five so changing
+# visible capacity later takes effect immediately, without another setup run.
+$ExistingHeadedTask = Get-ScheduledTask -TaskName $HeadedFlowTaskName -ErrorAction SilentlyContinue
+$HeadedTaskPrincipal = if ($ExistingHeadedTask) { $ExistingHeadedTask.Principal } else {
+    New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Highest
+}
 $HeadedTaskSettings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -ExecutionTimeLimit (New-TimeSpan -Days 3) -MultipleInstances IgnoreNew
-Register-ScheduledTask -TaskName $HeadedFlowTaskName -Action $HeadedTaskAction `
-    -Principal $HeadedTaskPrincipal -Settings $HeadedTaskSettings -Force | Out-Null
-Write-Host "  Headed Flows worker registered for on-demand interactive runs." -ForegroundColor Green
+foreach ($VisibleSlot in 1..5 | ForEach-Object { Get-MetronomeFlowSlot -Slot $_ -BaseProfile $HeadedFlowProfile -Headed }) {
+    $HeadedTaskArguments = "`"$CodeDir\app\flow_worker.py`" --server http://127.0.0.1:$Port --worker-id $($VisibleSlot.WorkerId) --name $($VisibleSlot.WorkerId) --profile-dir `"$($VisibleSlot.Profile)`" --headed --idle-exit-seconds 60"
+    $HeadedTaskAction = New-ScheduledTaskAction -Execute $PyExe -Argument $HeadedTaskArguments -WorkingDirectory $CodeDir
+    Register-ScheduledTask -TaskName $VisibleSlot.TaskName -Action $HeadedTaskAction `
+        -Principal $HeadedTaskPrincipal -Settings $HeadedTaskSettings -Force | Out-Null
+}
+Write-Host "  Five headed Flows tasks registered; $ConfiguredHeadedSlots visible slots enabled on demand." -ForegroundColor Green
 
 # Register one fixed, non-interactive bridge while setup already has the
 # service account credential. The web app writes an exact-SHA request and
@@ -662,7 +679,7 @@ if ((Test-Path $DbPath) -and (Test-Path $FlowCredentialPath)) {
             $AuthenticationProfiles = @(
                 @{ Path = $FlowProfile;       Label = "headless service" },
                 @{ Path = $HeadedFlowProfile; Label = "headed on-demand" }
-            ) + @($FlowSlots | Where-Object { $_.Slot -gt 1 } | ForEach-Object { @{ Path = $_.Profile; Label = "headless slot $($_.Slot)" } })
+            ) + @($FlowSlots | Where-Object { $_.Slot -gt 1 } | ForEach-Object { @{ Path = $_.Profile; Label = "headless slot $($_.Slot)" } }) + @($HeadedSlots | Where-Object { $_.Slot -gt 1 } | ForEach-Object { @{ Path = $_.Profile; Label = "headed slot $($_.Slot)" } })
             foreach ($ProfileTarget in $AuthenticationProfiles) {
                 Write-Host "Authenticating the $($ProfileTarget.Label) Flows browser for $PortalLabel..." -ForegroundColor Yellow
                 Write-Host "  Complete $PortalLabel sign-in in the Edge window if prompted." -ForegroundColor DarkGray

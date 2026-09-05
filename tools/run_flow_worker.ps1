@@ -13,14 +13,14 @@ $ProjectDir = Split-Path $CodeDir
 $Python = Join-Path $ProjectDir "python313\python.exe"
 $LogDir = Join-Path $ProjectDir "logs"
 . (Join-Path $PSScriptRoot 'flow_pool.ps1')
-$SlotConfig = Get-MetronomeFlowSlot -Slot $Slot -BaseProfile (Join-Path $env:USERPROFILE '.metronome-flow-browser')
-if ($Headed -and $Slot -ne 1) { throw 'There is only one headed slot.' }
+$ProfileName = if ($Headed) { '.metronome-flow-browser-headed' } else { '.metronome-flow-browser' }
+$SlotConfig = Get-MetronomeFlowSlot -Slot $Slot -BaseProfile (Join-Path $env:USERPROFILE $ProfileName) -Headed:$Headed
 if (-not $PSBoundParameters.ContainsKey('WorkerId')) {
-    $WorkerId = if ($Headed) { 'bi-desktop-headed' } else { $SlotConfig.WorkerId }
+    $WorkerId = $SlotConfig.WorkerId
 }
 if (-not $PSBoundParameters.ContainsKey('WorkerName')) { $WorkerName = $WorkerId }
 if (-not $ProfileDir) {
-    $ProfileDir = if ($Headed) { Join-Path $env:USERPROFILE '.metronome-flow-browser-headed' } else { $SlotConfig.Profile }
+    $ProfileDir = $SlotConfig.Profile
 }
 $WorkerLog = Join-Path $LogDir ("flow_worker_{0}.log" -f $WorkerId)
 
