@@ -10823,9 +10823,9 @@ function _flowListHtml(flows, workers, catalog, runs = []) {
     const online = workers.filter(worker => worker.status !== "offline").length;
     return `<div class="flow-status-strip"><span><strong>${flows.length}</strong> configured flows</span><span><strong>${online}</strong> online workers</span><span>Newest 3 producing runs retained; active recovery files stay protected.</span></div>
         <div class="flow-table-wrap"><table class="flow-table flow-grouped-table">
-        <thead><tr>${["Flow", "Source", "Owner", "Type", "To", "Schedule", "Last run", "Active", "Actions"].map(label => `<th scope="col">${label}</th>`).join("")}</tr></thead>
+        <thead><tr>${_flowSortHeaders()}</tr></thead>
         ${_flowGroups().map(group => {
-            const items = rows.filter(row => row.group === group);
+            const items = _flowSortRows(rows.filter(row => row.group === group), _flowSortState());
             if (!items.length) return "";
             const active = items.filter(row => row.activeRun).length;
             const failed = items.filter(row => row.flow.last_status === "failed").length;
@@ -10868,6 +10868,55 @@ function _flowRowHtml(row) {
         <td><label class="flow-switch"><input class="flow-enabled-switch" type="checkbox" data-id="${flow.id}" data-flow-focus="active-${flow.id}" aria-label="Active: ${esc(flow.name)}" ${flow.enabled ? "checked" : ""} ${flow.schedule_type === "manual" ? "disabled" : ""}><span aria-hidden="true"></span><strong>${flow.enabled ? "Active" : "Inactive"}</strong></label>${flow.schedule_type === "manual" ? '<small>Manual only</small>' : ""}</td>
         <td class="flow-row-actions">${button("flow-run", activeRun?.status === "queued" ? "Start now" : activeRun ? "Running" : "Run", activeRun && activeRun.status !== "queued" ? "disabled" : "")}${activeRun ? button("flow-stop", "Stop") : ""}${button("flow-edit", "Edit")}<details class="flow-row-menu"><summary aria-label="More actions: ${esc(flow.name)}" data-flow-focus="more-${flow.id}">More</summary><div>${button("flow-open-folder", "Open folder")}${button("flow-delete", "Delete")}</div></details></td>
     </tr>`;
+}
+
+function _flowSortColumns() {
+    return [["name", "Flow"], ["source", "Source"], ["owner", "Owner"], ["type", "Type"], ["to", "To"], ["schedule", "Schedule"], ["lastRun", "Last run"], ["active", "Active"]];
+}
+
+function _flowValidSort(value) {
+    return value && _flowSortColumns().some(([key]) => key === value.key) && ["asc", "desc"].includes(value.direction) ? {key: value.key, direction: value.direction} : null;
+}
+
+function _flowSortState() {
+    if (!Object.prototype.hasOwnProperty.call(window, "_flowSortMemory")) {
+        let value = null;
+        try { value = JSON.parse(sessionStorage.getItem("metronome.flowSort") || "null"); } catch (_) {}
+        window._flowSortMemory = _flowValidSort(value);
+    }
+    return window._flowSortMemory;
+}
+
+function _flowNextSort(current, key) {
+    const first = key === "lastRun" ? "desc" : "asc";
+    if (current?.key !== key) return {key, direction: first};
+    return current.direction === first ? {key, direction: first === "asc" ? "desc" : "asc"} : null;
+}
+
+function _flowSortRows(rows, state) {
+    const sort = _flowValidSort(state);
+    if (!sort) return [...rows];
+    const value = row => {
+        const raw = row[sort.key];
+        if (raw === null || raw === undefined || raw === "") return null;
+        if (sort.key === "lastRun") { const date = Date.parse(raw); return Number.isFinite(date) ? date : null; }
+        return sort.key === "active" ? Number(raw) : String(raw).trim() || null;
+    };
+    return rows.map((row, index) => ({row, index, value: value(row)})).sort((a, b) => {
+        if (a.value === null || b.value === null) return a.value === b.value ? a.index - b.index : a.value === null ? 1 : -1;
+        const compared = typeof a.value === "number" ? a.value - b.value : a.value.localeCompare(b.value, undefined, {numeric: true, sensitivity: "base"});
+        return (sort.direction === "desc" ? -compared : compared) || a.index - b.index;
+    }).map(item => item.row);
+}
+
+function _flowSortHeaders() {
+    const state = _flowSortState();
+    return _flowSortColumns().map(([key, label]) => {
+        const active = state?.key === key;
+        const next = _flowNextSort(state, key);
+        const hint = next ? `Sort ${label} ${next.direction === "asc" ? "ascending" : "descending"}` : "Restore original order";
+        return `<th scope="col"${active ? ` aria-sort="${state.direction === "asc" ? "ascending" : "descending"}"` : ""}><button type="button" class="flow-sort" id="flow-sort-${key}" data-key="${key}" title="${hint}">${label}<span aria-hidden="true">${active ? state.direction === "asc" ? " ↑" : " ↓" : " ↕"}</span></button></th>`;
+    }).join("") + '<th scope="col">Actions</th>';
 }
 
 /** The folder a report sits in, and its own name, from the discovery path.
@@ -11853,6 +11902,11 @@ function _pollPipelineRun(runId, expectedReportId) {
 
 function _bindFlowWorkspace() {
     const state = window._flowsState;
+    document.querySelectorAll(".flow-sort").forEach(button => button.addEventListener("click", () => {
+        window._flowSortMemory = _flowNextSort(_flowSortState(), button.dataset.key);
+        try { sessionStorage.setItem("metronome.flowSort", JSON.stringify(window._flowSortMemory)); } catch (_) {}
+        _flowShowView("list");
+    }));
     document.querySelectorAll(".flow-group-toggle").forEach(button => button.addEventListener("click", () => {
         const opened = _flowOpenGroups();
         if (opened.has(button.dataset.group)) opened.delete(button.dataset.group); else opened.add(button.dataset.group);

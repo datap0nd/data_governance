@@ -1,0 +1,36 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+const source = fs.readFileSync(new URL('../app/static/app.js', import.meta.url), 'utf8');
+const context = {window: {}};
+vm.createContext(context);
+vm.runInContext(source.slice(source.indexOf('function _flowSortColumns'), source.indexOf('/** The folder a report sits in')), context);
+const ids = rows => Array.from(rows, row => row.id);
+for (const [key] of context._flowSortColumns()) {
+    const a = key === 'lastRun' ? '2026-01-01T00:00:00Z' : key === 'active' ? false : 'A2';
+    const b = key === 'lastRun' ? '2026-02-01T00:00:00Z' : key === 'active' ? true : 'A10';
+    const rows = [{id: 1, [key]: b}, {id: 2, [key]: null}, {id: 3, [key]: a}, {id: 4, [key]: a}];
+    assert.deepEqual(ids(context._flowSortRows(rows, {key, direction: 'asc'})), [3,4,1,2], key);
+    assert.deepEqual(ids(context._flowSortRows(rows, {key, direction: 'desc'})), [1,3,4,2], key);
+    assert.deepEqual(ids(rows), [1,2,3,4], 'input is immutable');
+    let state = context._flowNextSort(null, key);
+    assert.equal(state.direction, key === 'lastRun' ? 'desc' : 'asc');
+    state = context._flowNextSort(state, key);
+    state = context._flowNextSort(state, key);
+    assert.equal(state, null);
+    assert.deepEqual(ids(context._flowSortRows(rows, state)), [1,2,3,4], 'third click restores exact API order');
+}
+const dates = [{id: 1, lastRun: 'invalid'}, {id: 2, lastRun: '2026-09-01'}, {id: 3, lastRun: ''}];
+for (const direction of ['asc', 'desc']) assert.deepEqual(ids(context._flowSortRows(dates, {key:'lastRun',direction})), [2,1,3]);
+context.window._flowSortMemory = {key:'lastRun', direction:'desc'};
+let html = context._flowSortHeaders();
+assert.match(html, /aria-sort="descending"/); assert.equal(html.match(/aria-sort/g).length, 1);
+assert.match(html, /title="Sort Last run ascending"/);
+delete context.window._flowSortMemory;
+context.sessionStorage = {getItem() { throw Error('disabled'); }};
+assert.equal(context._flowSortState(), null);
+delete context.window._flowSortMemory;
+context.sessionStorage.getItem = () => '{"key":"evil","direction":"asc"}';
+assert.equal(context._flowSortState(), null);
+assert.equal(context._flowValidSort({key:'name',direction:'sideways'}), null);
+console.log('flow sorting tests passed');

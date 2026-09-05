@@ -7738,3 +7738,6 @@ body.remote-flow-control-enabled { padding-top: 32px; }
 .flow-row-menu summary { cursor: pointer; padding: 5px 8px; border-radius: 5px; }
 .flow-row-menu[open] > div { display: flex; gap: 4px; flex-wrap: wrap; padding: 6px 0; }
 .flow-group-toggle:focus-visible, .flow-row-menu summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+.flow-sort { border: 0; background: transparent; color: inherit; font: inherit; text-transform: inherit; padding: 0; cursor: pointer; text-align: left; white-space: nowrap; }
+.flow-sort span { opacity: .65; }
+.flow-sort:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }

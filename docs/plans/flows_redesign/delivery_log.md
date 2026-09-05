@@ -47,6 +47,8 @@
 - All 15 frontend suites and JavaScript syntax pass.
 
 ## Plan 5 — Grouped list and folder access
+- PR #56: https://github.com/datap0nd/data_governance/pull/56
+- Merged as dd14b7ba.
 - Fixed source groups, persisted expansion, active/failure counts, shared row
   semantics, preserved Run/Stop/Active controls and accessible overflow actions.
 - Folder action opens only a saved, checked path in a verified local interactive
@@ -55,8 +57,16 @@
 - Browser verified collapsed defaults, expansion/focus and persistence on reload.
   Local private output and exact SQL identifier case have regression coverage.
 
+## Plan 6 — Sorting
+- Per-group stable sorting, native buttons with accurate aria-sort, session
+  persistence and third-click reset. Null/invalid values stay last both ways.
+- All eight keys are tested in both directions, including ties, invalid dates,
+  immutability, unavailable/corrupt storage and exact API-order reset.
+- All 17 frontend suites and syntax pass. Browser verified newest-first,
+  three-click cycle, retained expansion/focus and wrapped paths/actions.
+
 ## Remaining sequence
-6 Sorting → 7 Builder → 4 Standalone →
+7 Builder → 4 Standalone →
 8A Capacity → 8B Fan-out. Each has its own tested PR and merge boundary.
 
 ## Operational verification
