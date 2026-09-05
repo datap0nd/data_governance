@@ -16,3 +16,16 @@ existing ownership. Historic recovery jobs retain their frozen configuration.
 
 Uploaded scripts are staged under .metronome/uploads in unique directories.
 No user files are moved or deleted by changing these settings.
+
+## Managed flow folders
+
+New flows created in the builder receive a source folder containing a sanitized
+flow name and stable ID, with Downloads, Scripts and an ownership manifest.
+Display-name edits keep that path stable. Deleting a paused flow preserves all
+files and marks its manifest deleted. Folder creation refuses existing foreign
+folders and compensates failures only when its new directories are still empty.
+
+Legacy flows keep their current destination input. Adopt managed folder changes
+future output and leaves historic downloads/recovery paths intact. It waits for
+active runs and pipeline reservations. The source file of a Local flow never
+moves: its visible folder does not publish the private source snapshots.

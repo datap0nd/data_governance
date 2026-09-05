@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 
 from app.config import DB_PATH, UPLOAD_PGHOST, UPLOAD_PGPORT
 from app.database import get_db
-from app import flow_paths
+from app import flow_paths, flow_layout
 from app.flow_credentials import asap_credential_status, save_asap_credentials
 from app.flow_asap_exports import (
     public_asap_download_types,
@@ -796,7 +796,7 @@ class FlowWrite(BaseModel):
             if self.browser_mode not in BROWSER_MODES:
                 raise ValueError("Browser mode must be headed or headless.")
         if self.source_type != "file":
-            if not self.target_folder or not _is_absolute_worker_path(self.target_folder):
+            if self.target_folder and not _is_absolute_worker_path(self.target_folder):
                 raise ValueError("Target folder must be an absolute path visible to the worker.")
             if self.output_mode == "private_snapshot":
                 raise ValueError("Private snapshot storage is reserved for file-source Flows.")
@@ -1089,6 +1089,11 @@ def _flow_out(db, flow_id: int, *, include_private_storage: bool = False) -> dic
     if not row:
         raise HTTPException(404, "Flow not found.")
     result = dict(row)
+    result["folder_relative"] = (
+        os.path.relpath(result["flow_folder"], flow_paths.get_flows_root(db))
+        if result.get("flow_folder") and flow_paths.is_inside(result["flow_folder"], flow_paths.get_flows_root(db), resolve=False)
+        else result.get("flow_folder")
+    )
     result["enabled"] = bool(result["enabled"])
     result["sql_handoff_enabled"] = bool(result["sql_handoff_enabled"])
     result["sql_uppercase"] = bool(result.get("sql_uppercase"))
@@ -1510,6 +1515,7 @@ def _build_job(db, flow_id: int, *, force_reprocess: bool = False) -> dict:
         "flow": {
             "id": flow["id"], "name": flow["name"],
             "source_type": source_type,
+            "folder": flow.get("flow_folder"),
         },
         "site": {
             "id": flow["site_id"], "name": flow["site_name"],
@@ -2585,15 +2591,23 @@ def refresh_sql_catalog_now(request: Request):
 
 @router.post("")
 def create_flow(body: FlowWrite, request: Request):
+    managed = not body.target_folder
+    allocated = None
+    flow_id = None
     now = _iso(_now())
     next_run = _iso(_schedule_next(
         body.schedule_type, body.schedule_time, body.schedule_days, body.schedule_day,
     )) if body.enabled else None
     try:
         with get_db() as db:
+            db.execute("BEGIN IMMEDIATE")
             _resolve_flow_source(db, body)
             if body.source_type == "file":
                 body.target_folder = new_local_file_storage_key()
+            elif managed:
+                adapter = db.execute("SELECT adapter FROM flow_sites WHERE id=?", (body.site_id,)).fetchone()
+                if adapter:
+                    body.target_folder = str(Path(flow_paths.get_flows_root(db)) / flow_paths.source_folder_name(adapter[0]) / "pending")
             _validate_flow_selections(db, body, new_flow=True)
             _validate_sql_target(db, body)
             _validate_owner(db, body)
@@ -2623,6 +2637,12 @@ def create_flow(body: FlowWrite, request: Request):
                  iso_utc(utc_now()) if body.enabled and body.schedule_type != "manual" else None),
             )
             flow_id = cursor.lastrowid
+            if managed:
+                adapter = db.execute("SELECT adapter FROM flow_sites WHERE id=?", (body.site_id,)).fetchone()[0]
+                allocated = flow_layout.create_flow_folder(flow_paths.get_flows_root(db), adapter, body.name, flow_id)
+                db.execute("""UPDATE flows SET flow_folder=?, folder_slug=?, folder_state='managed',
+                    target_folder=? WHERE id=?""", (str(allocated), allocated.name,
+                    body.target_folder if body.source_type == "file" else str(allocated / "Downloads"), flow_id))
             from app.freshness_inheritance import reconcile_file_binding, reconcile_source
             reconcile_file_binding(db, flow_id, reconcile_sources=False)
             if sql_target_source_id is not None:
@@ -2630,7 +2650,51 @@ def create_flow(body: FlowWrite, request: Request):
             log_event(db, "flow", flow_id, body.name, "created", f"sql_handoff={body.sql_handoff_enabled}", get_actor(request))
             return _flow_out(db, flow_id)
     except sqlite3.IntegrityError as exc:
+        if allocated:
+            flow_layout.cleanup_empty_creation(allocated, flow_id)
         raise HTTPException(409, "A flow with that name already exists.") from exc
+    except Exception as exc:
+        if allocated:
+            flow_layout.cleanup_empty_creation(allocated, flow_id)
+        if isinstance(exc, (OSError, ValueError)):
+            raise HTTPException(409, f"Flow folder could not be created: {exc}") from exc
+        raise
+
+
+@router.post("/{flow_id}/adopt-folder")
+def adopt_flow_folder(flow_id: int, request: Request):
+    allocated = None
+    try:
+        with get_db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            flow = _flow_out(db, flow_id, include_private_storage=True)
+            from app.routers.pipelines import assert_resource_unlocked
+            assert_resource_unlocked(db, "flow", str(flow_id))
+            if db.execute("SELECT 1 FROM flow_runs WHERE flow_id=? AND status IN ('queued','claimed','running')", (flow_id,)).fetchone():
+                raise HTTPException(409, "Wait for this flow's active run before adopting a folder.")
+            root = flow_paths.get_flows_root(db)
+            if flow.get("flow_folder") and flow_paths.is_inside(flow["flow_folder"], root):
+                flow_layout.read_manifest(flow["flow_folder"], flow_id)
+                return flow
+            previous = flow["target_folder"] if flow["source_type"] != "file" else None
+            allocated = flow_layout.create_flow_folder(root, flow["source_adapter"], flow["name"], flow_id)
+            flow["flow_folder"] = str(allocated)
+            if flow["source_type"] != "file":
+                flow["target_folder"] = str(allocated / "Downloads")
+            flow_paths.validate_flow(flow, flow_paths.policy(db, flow))
+            db.execute("""UPDATE flows SET flow_folder=?, folder_slug=?, folder_state='managed',
+                target_folder=?, updated_at=? WHERE id=?""", (str(allocated), allocated.name,
+                flow["target_folder"], _iso(_now()), flow_id))
+            from app.freshness_inheritance import reconcile_file_binding
+            reconcile_file_binding(db, flow_id)
+            log_event(db, "flow", flow_id, flow["name"], "folder_adopted", "Historical files preserved", get_actor(request))
+            return {**_flow_out(db, flow_id), "previous_target_folder": previous}
+    except Exception as exc:
+        if allocated:
+            flow_layout.cleanup_empty_creation(allocated, flow_id)
+        if isinstance(exc, (OSError, ValueError)):
+            raise HTTPException(409, f"Flow folder could not be adopted: {exc}") from exc
+        raise
 
 
 @router.post("/transform-script")
@@ -2684,7 +2748,7 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
             """SELECT source_type, enabled, schedule_type, schedule_time, schedule_days,
                       schedule_day, freshness_effective_from_at,
                       sql_database, sql_schema, sql_table, sql_target_source_id,
-                      target_folder, local_file_path, local_file_worksheet,
+                      target_folder, local_file_path, local_file_worksheet, flow_folder,
                       local_file_last_identity, local_file_config_revision
                FROM flows WHERE id=?""",
             (flow_id,),
@@ -2696,6 +2760,16 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
         if (existing["source_type"] or "portal") != body.source_type:
             raise HTTPException(409, "A flow's source category cannot be changed after creation.")
         _resolve_flow_source(db, body)
+        if existing["flow_folder"] or not body.target_folder:
+            body.target_folder = existing["target_folder"]
+        if existing["flow_folder"]:
+            adapter = db.execute("SELECT adapter FROM flow_sites WHERE id=?", (body.site_id,)).fetchone()
+            if adapter:
+                candidate = {**body.model_dump(), "flow_folder": existing["flow_folder"], "source_adapter": adapter[0]}
+                try:
+                    flow_paths.validate_flow(candidate, flow_paths.policy(db, candidate))
+                except ValueError as exc:
+                    raise HTTPException(409, str(exc)) from exc
         local_file_revision = int(existing["local_file_config_revision"] or 1)
         local_file_last_identity = existing["local_file_last_identity"]
         if body.source_type == "file":
@@ -2772,6 +2846,11 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
         for source_id in {existing["sql_target_source_id"], sql_target_source_id} - {None}:
             reconcile_source(db, int(source_id))
         log_event(db, "flow", flow_id, body.name, "updated", actor=get_actor(request))
+        if existing["flow_folder"]:
+            try:
+                flow_layout.update_manifest(existing["flow_folder"], flow_id, flow_name=body.name)
+            except (OSError, ValueError) as exc:
+                log_event(db, "flow", flow_id, body.name, "folder_manifest_warning", str(exc), get_actor(request))
         return _flow_out(db, flow_id)
 
 
@@ -2831,7 +2910,7 @@ def delete_flow(flow_id: int, body: FlowDeleteWrite, request: Request):
     with get_db() as db:
         db.execute("BEGIN IMMEDIATE")
         flow = db.execute(
-            "SELECT id, name, enabled, sql_target_source_id FROM flows WHERE id=?",
+            "SELECT id, name, enabled, sql_target_source_id, flow_folder FROM flows WHERE id=?",
             (flow_id,),
         ).fetchone()
         if not flow:
@@ -2933,6 +3012,11 @@ def delete_flow(flow_id: int, body: FlowDeleteWrite, request: Request):
         db.execute("DELETE FROM flows WHERE id=?", (flow_id,))
         for source_id in linked_source_ids:
             reconcile_source(db, source_id)
+        if flow["flow_folder"]:
+            try:
+                flow_layout.update_manifest(flow["flow_folder"], flow_id, deleted_at=now)
+            except (OSError, ValueError) as exc:
+                log_event(db, "flow", flow_id, flow["name"], "folder_manifest_warning", str(exc), get_actor(request))
         log_event(
             db,
             "flow",

@@ -2,6 +2,7 @@
 
 Configure Flow folders in **System > Paths**. See
 [Flow paths](docs/flow_paths.md) for staged enforcement and migration behavior.
+New builder flows receive stable folders with Downloads and Scripts automatically.
 
 A web-based panel that monitors your Power BI reports, tracks data sources, and validates data quality.
 

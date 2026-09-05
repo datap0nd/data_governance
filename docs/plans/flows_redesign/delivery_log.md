@@ -7,6 +7,8 @@
 - Validation: documentation diff check; Ubuntu CI passed.
 
 ## Plan 1 — Paths
+- PR #53: https://github.com/datap0nd/data_governance/pull/53
+- Merged as 812c6161. Ubuntu CI passed; Windows CI was still pending when checked.
 - System > Paths, root diagnostics, staged enforcement, server/worker preflight,
   source-junction checks and unique contained upload staging.
 - Existing schedules keep their paths until explicit enforcement/adoption.
@@ -19,8 +21,17 @@
 - Local pytest needs its best-effort current-directory symlink helper disabled
   because Windows cannot resolve those links. Application symlink tests still run.
 
+## Plan 2 — Folders
+- Automatic managed folders for new builder flows, stable physical paths on
+  rename, preserved files on delete, explicit legacy adoption and compensation
+  for empty allocations after I/O/database failure.
+- 44 affected tests and all 15 frontend suites pass. Local browser created a
+  paused Local flow without a target input and showed the saved owned folder.
+- Full suite: 1,335 passed; final nine layout tests passed, including database
+  failure compensation after allocation. No existing tests were weakened.
+
 ## Remaining sequence
-2 Folders → 3 Layout → 5 List → 6 Sorting → 7 Builder → 4 Standalone →
+3 Layout → 5 List → 6 Sorting → 7 Builder → 4 Standalone →
 8A Capacity → 8B Fan-out. Each has its own tested PR and merge boundary.
 
 ## Operational verification

@@ -11048,6 +11048,13 @@ function _flowSqlLinkHtml(existing) {
     return `<div class="flow-span-2 flow-dialog-help pipeline-warning">Pipeline link unresolved. Run a full TMDL and PostgreSQL dependency scan, then reopen this Flow.${legacy.length ? ` Legacy display-name suggestion: ${legacy.map(item => esc(item.name)).join(", ")}. Suggestions are not executable.` : ""}</div>`;
 }
 
+function _flowDestinationHtml(existing) {
+    if (existing?.id && !existing.flow_folder && existing.source_type !== "file") {
+        return `<div id="flow-destination" class="flow-span-2"><label><span>Current target folder</span><input id="flow-target-folder" required value="${esc(existing.target_folder || "")}"></label><p>Historic files stay here after adoption.</p><button type="button" class="btn-secondary" id="flow-adopt-folder" data-id="${existing.id}">Adopt managed folder</button></div>`;
+    }
+    return `<div id="flow-destination" class="flow-span-2 flow-dialog-help"><strong>Flow folder</strong><p>${existing?.id && existing.flow_folder ? esc(existing.flow_folder) : "Metronome creates a folder with this flow's name and ID when you save."}</p><small>${existing?.source_type === "file" || existing?._source_type === "file" ? "Source snapshots stay private; the source file is never moved." : "Downloads and Scripts have separate subfolders. Renaming the flow preserves this path."}</small>${existing?.id && !existing.flow_folder ? `<button type="button" class="btn-secondary" id="flow-adopt-folder" data-id="${existing.id}">Adopt managed folder</button>` : ""}</div>`;
+}
+
 function _flowOutlookBuilderHtml(existing = null) {
     const isFile = existing?.source_type === "file" || existing?._source_type === "file";
     const scheduleDays = new Set(existing?.schedule_days || []);
@@ -11071,13 +11078,14 @@ function _flowOutlookBuilderHtml(existing = null) {
                         <label class="flow-span-2"><span>Source file</span><input id="flow-local-file-path" required maxlength="2000" value="${esc(existing?.local_file_path || "")}" placeholder="\\\\server\\share\\folder\\data.xlsx"><small>Enter one absolute local or UNC path ending in .csv, .xls, .xlt, .xlsb, .xlsx, .xlsm, .xltx, or .xltm. Access is determined by the worker service account.</small></label>
                         <label class="flow-span-2" id="flow-local-file-worksheet-field"><span>Excel worksheet</span><input id="flow-local-file-worksheet" maxlength="500" value="${esc(existing?.local_file_worksheet || "")}" placeholder="Data"><small>The title must match exactly, including case and spaces. CSV files do not use this field.</small></label>
                         <div class="flow-span-2 flow-dialog-help">Producing runs keep the original bytes and normalized CSV in the private worker store. Only the newest 3 snapshots are retained; unchanged scheduled checks create no snapshot.</div>
+                        ${_flowDestinationHtml(existing)}
                     </div>` : `
                     <div class="flow-section-head"><h2>Outlook source</h2><p>Metronome searches the signed-in user's default, top-level Inbox and selects the newest email whose subject contains this text.</p></div>
                     <div class="flow-form-grid">
                         <label><span>Flow name</span><input id="flow-name" required maxlength="200" value="${esc(existing?.name || "")}" placeholder="Daily emailed data"></label>
                         <label><span>Subject contains</span><input id="flow-outlook-subject" required maxlength="500" value="${esc(existing?.outlook_subject_contains || "")}" placeholder="Customer data code"></label>
                         <label><span>Output storage</span><select id="flow-output-mode"><option value="run_folders" ${existing?.output_mode !== "direct_replace" ? "selected" : ""}>Run folders · keep newest 3</option><option value="direct_replace" ${existing?.output_mode === "direct_replace" ? "selected" : ""}>Direct files · replace same name</option></select><small id="flow-output-mode-help">${existing?.output_mode === "direct_replace" ? "The attachment is published directly after validation. Outlook keeps the original attachment name, so dated names accumulate and only an identical name is replaced." : "Each producing run keeps the attachment inside its own #id_dd-mm-yyyy folder; only the newest 3 are kept."}</small></label>
-                        <label class="flow-span-2"><span>Target folder</span><input id="flow-target-folder" required value="${esc(existing?.target_folder || "")}" placeholder="C:\\Reports\\Downloads"><small>The newest matching message must have exactly one .csv or supported Excel attachment (.xls, .xlt, .xlsb, .xlsx, .xlsm, .xltx, or .xltm). No match or an already-processed attachment succeeds without creating or publishing files.</small></label>
+                        ${_flowDestinationHtml(existing)}
                     </div>`}
                 </div>
                 <div class="flow-form-section">
@@ -11229,7 +11237,7 @@ function _flowBuilderHtml(catalog, existing = null) {
                             <label class="flow-week-field"><span>Sell-out Week - end</span><select id="flow-end-week" required><option value="">Choose a discovered week...</option>${_flowDiscoveredWeeks(report, existing?.end_week || "")}</select></label>
                             <label id="flow-window-weeks-field"><span>Weeks per download</span><input id="flow-window-weeks" type="number" min="1" max="105" value="${esc(existing?.window_weeks || 1)}"><small>Each file covers this many consecutive weeks.</small></label>
                             <label><span>Output storage</span><select id="flow-output-mode"><option value="run_folders" ${existing?.output_mode !== "direct_replace" ? "selected" : ""}>Run folders · keep newest 3</option><option value="direct_replace" ${existing?.output_mode === "direct_replace" ? "selected" : ""}>Direct files · replace same name</option></select><small id="flow-output-mode-help">${existing?.output_mode === "direct_replace" ? "The full validated bundle is published directly. Only an identical resolved filename is replaced; date and week tokens intentionally create additional files." : "Each run downloads into its own #id_dd-mm-yyyy subfolder; only the newest 3 are kept."}</small></label>
-                            <label class="flow-span-2"><span>Target folder</span><input id="flow-target-folder" required value="${esc(existing?.target_folder || "")}" placeholder="C:\\Reports\\Downloads"><small>The folder must already exist on the authenticated worker machine. Direct mode keeps three private immutable run copies under the worker profile for Resume and SQL Retry.</small></label>
+                            ${_flowDestinationHtml(existing)}
                             <label class="flow-span-2"><span>Filename template</span><input id="flow-filename" required value="${esc(existing?.filename_template || defaultFilename)}"><small>${isGscm ? "One bookmark saves one file per run." : "Use {export} when downloading multiple views."} Tokens: {flow}, {report}, {export}, {week}, {start_period}, {end_period}, {year}, {week_number}, {index}, {date}.</small></label>
                         </div>
                     </div>
@@ -11815,6 +11823,16 @@ function _pollPipelineRun(runId, expectedReportId) {
 
 function _bindFlowWorkspace() {
     const state = window._flowsState;
+    $("#flow-adopt-folder")?.addEventListener("click", async event => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+            const updated = await apiPost(`/api/flows/${button.dataset.id}/adopt-folder`);
+            Object.assign(state.flows.find(flow => flow.id === updated.id) || {}, updated);
+            $("#flow-destination").outerHTML = _flowDestinationHtml(updated);
+            toast("Managed folder created. Historical files stay in their original folder.");
+        } catch (err) { toast("Folder not adopted: " + err.message); button.disabled = false; }
+    });
     $("#flow-add-site-empty")?.addEventListener("click", () => _flowSiteDialog());
     $("#flow-scan-empty")?.addEventListener("click", async () => { const site = state.catalog.sites.find(item => item.enabled); if (!site) return; try { await apiPost(`/api/flows/sites/${site.id}/scan`); toast("Catalog discovery queued"); await navigate("flows"); } catch (err) { toast("Scan not queued: " + err.message); } });
     $("#flow-create-empty")?.addEventListener("click", () => _flowShowView("source-picker"));
