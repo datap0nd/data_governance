@@ -9,15 +9,16 @@ This is a standing instruction from the repository owner, recorded in
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-09-05: visual recording editor, increment 3 | [Start here: record, review, test and schedule](releases/2026-09-05-visual-recording-editor/test-plan.md) | [Test report](releases/2026-09-05-visual-recording-editor/test-report.md) |
 | 2026-09-05: recording v2, redesign increment 2 | [Compatibility instructions](releases/2026-09-05-recording-v2/test-plan.md) | [Test report](releases/2026-09-05-recording-v2/test-report.md) |
 | 2026-09-05: Dubai time, redesign increment 1 | [Time-policy instructions](releases/2026-09-05-dubai-time/test-plan.md) | [Test report](releases/2026-09-05-dubai-time/test-report.md) |
 | 2026-09-05: Flows, PRs #67–#69 | [Work-PC test plan](releases/2026-09-05-flows/test-plan.md): recording controls, dates, GSCM, browser settings, workers and portability | [Verified automated report](releases/2026-09-05-flows/test-report.md); [live results worksheet](releases/2026-09-05-flows/manual-results.csv), initially NOT RUN |
 | 2026-09-05: testing documentation process, PR #70 | [Documentation checks](releases/2026-09-05-testing-process/test-plan.md) | [Documentation report](releases/2026-09-05-testing-process/test-report.md) |
 
-For the first work-PC session, follow setup in the Flows plan, then run
-ENV-01, REC-01 through REC-05, REV-01 and DATE-01. Continue with the complete
-matrix before qualifying the remaining features. A quick check does not replace
-the full plan.
+For the redesigned recording editor, start with the first-work-PC sequence in
+its guide above. Historical releases retain their original tests and results;
+the older date-batching tests describe that historical release, not current
+supported execution. Then complete the matrix for each affected portal.
 
 ## For each future main merge
 

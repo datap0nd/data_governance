@@ -119,7 +119,7 @@ def queue_operation(db, flow_id, operation, actor, *, revision_id=None):
         snapshot['recording'] = {'revision': revision_id, 'definition': definition,
                                   'definition_hash': flow_recording.digest(definition), 'transformation_source': transform, 'engine_hash': execution_hash()}
         snapshot['recording_parameters'] = flow_recording.resolve_parameters(definition)
-        job.update(validation_job=snapshot, configuration_hash=config_hash(snapshot), browser_channel=flow_browser.configured(db))
+        job.update(validation_job=snapshot, configuration_hash=config_hash(snapshot), browser_channel=flow_browser.configured(db), requires_recording_engine_validation=True)
         db.execute('UPDATE flow_recording_revisions SET status=?, config_hash=?, transformation_source=? WHERE id=?',
                    ('validating', job['configuration_hash'], transform, revision_id))
     now = datetime.now(timezone.utc).isoformat()
@@ -169,6 +169,18 @@ def update_operation(db, row, worker_id, body, now):
                        ('validated', json.dumps(result), now, session['revision_id']))
     elif terminal and session['revision_id'] and session['operation'] == 'validate':
         db.execute("UPDATE flow_recording_revisions SET status='draft' WHERE id=?", (session['revision_id'],))
+    # Completion/heartbeat messages omit per-step detail. Retain the last
+    # accumulated outcomes so the visual review remains useful after testing.
+    progress = dict(body.progress)
+    outcomes = dict(json.loads(row['progress_json'] or '{}').get('step_outcomes') or {})
+    outcomes.update(progress.get('step_outcomes') or {})
+    if body.status == 'cancelled':
+        outcomes = {key: ({**value, 'outcome': 'cancelled', 'message': 'Test cancelled.'}
+                         if value.get('outcome') in {'started', 'running', 'ready'} else value)
+                    for key, value in outcomes.items()}
+    if outcomes:
+        progress['step_outcomes'] = outcomes
+    body = body.model_copy(update={'progress': progress})
     db.execute('''INSERT INTO flow_scan_events(scan_id,status,stage,message,details_json,created_at)
         VALUES (?,?,?,?,?,?)''', (row['id'], body.status, body.progress.get('stage'), body.progress.get('message'), json.dumps(body.progress), now))
     db.execute('''UPDATE flow_catalog_scans SET status=?,progress_json=?,result_json=?,error=?,

@@ -5084,6 +5084,7 @@ def claim_run(worker_id: str):
                 and (not _loads(candidate['job_json'], {}).get('recording_operation') or capabilities.get('flow_recorder_v1'))
                 and (not _loads(candidate['job_json'], {}).get('recorder_controls') or capabilities.get('flow_recorder_controls_v1'))
                 and (_loads(candidate['job_json'], {}).get('recording_version', 1) < 2 or capabilities.get('recorded_flows_v2'))
+                and (not _loads(candidate['job_json'], {}).get('requires_recording_engine_validation') or capabilities.get('recorded_validation_engine_v1'))
                 and flow_parallel.portal_available(db, _loads(candidate['job_json'], {}))
             )), None)
             if scan:
