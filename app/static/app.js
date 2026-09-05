@@ -11052,7 +11052,7 @@ function _flowDestinationHtml(existing) {
     if (existing?.id && !existing.flow_folder && existing.source_type !== "file") {
         return `<div id="flow-destination" class="flow-span-2"><label><span>Current target folder</span><input id="flow-target-folder" required value="${esc(existing.target_folder || "")}"></label><p>Historic files stay here after adoption.</p><button type="button" class="btn-secondary" id="flow-adopt-folder" data-id="${existing.id}">Adopt managed folder</button></div>`;
     }
-    return `<div id="flow-destination" class="flow-span-2 flow-dialog-help"><strong>Flow folder</strong><p>${existing?.id && existing.flow_folder ? esc(existing.flow_folder) : "Metronome creates a folder with this flow's name and ID when you save."}</p><small>${existing?.source_type === "file" || existing?._source_type === "file" ? "Source snapshots stay private; the source file is never moved." : "Downloads and Scripts have separate subfolders. Renaming the flow preserves this path."}</small>${existing?.id && !existing.flow_folder ? `<button type="button" class="btn-secondary" id="flow-adopt-folder" data-id="${existing.id}">Adopt managed folder</button>` : ""}</div>`;
+    return `<div id="flow-destination" class="flow-span-2 flow-dialog-help"><strong>Flow folder</strong><p>${existing?.id && existing.flow_folder ? esc(existing.flow_folder) : "Metronome creates a folder with this flow's name and ID when you save."}</p><small>${existing?.source_type === "file" || existing?._source_type === "file" ? "Source snapshots stay private; the source file is never moved." : "Downloads and Scripts have separate subfolders. Renaming the flow preserves this path."}</small>${existing?.flow_folder ? `<button type="button" class="btn-secondary" id="flow-repair-layout" data-id="${existing.id}">Repair folder layout</button>` : ""}${existing?.id && !existing.flow_folder ? `<button type="button" class="btn-secondary" id="flow-adopt-folder" data-id="${existing.id}">Adopt managed folder</button>` : ""}</div>`;
 }
 
 function _flowOutlookBuilderHtml(existing = null) {
@@ -11823,6 +11823,15 @@ function _pollPipelineRun(runId, expectedReportId) {
 
 function _bindFlowWorkspace() {
     const state = window._flowsState;
+    $("#flow-repair-layout")?.addEventListener("click", async event => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+            await apiPost(`/api/flows/${button.dataset.id}/repair-layout`);
+            toast("Folder layout checked and repaired.");
+        } catch (err) { toast(err.message); }
+        finally { button.disabled = false; }
+    });
     $("#flow-adopt-folder")?.addEventListener("click", async event => {
         const button = event.currentTarget;
         button.disabled = true;

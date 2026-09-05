@@ -103,7 +103,12 @@ def policy(db, flow: dict) -> dict | None:
     if not enforced and not flow.get("flow_folder"):
         return None
     root = get_flows_root(db)
+    scripts = str(Path(flow["flow_folder"]) / "Scripts") if flow.get("flow_folder") else None
+    # Keep a pre-layout saved script runnable until save/repair copies it.
+    script_policy = scripts if scripts and (not flow.get("transform_enabled") or is_inside(flow.get("transform_script_path"), scripts, resolve=False)) else None
     return {"flows_root": root, "source_folder": source_folder_name(flow["source_adapter"]),
+            **({"artifact_store_root": str(Path(root) / ".metronome" / "artifacts")} if flow.get("flow_folder") else {}),
+            **({"scripts_folder": script_policy} if script_policy else {}),
             "enforced": enforced, "flow_folder": flow.get("flow_folder"), "version": 1}
 
 
@@ -113,12 +118,14 @@ def validate_flow(flow: dict, rules: dict | None, *, resolve=True):
     root = rules["flows_root"]
     source = str(Path(root) / rules["source_folder"])
     assert_inside(source, root, label="Source folder", resolve=resolve)
+    if rules.get("flow_folder"):
+        assert_inside(rules["flow_folder"], source, label="Flow folder", resolve=resolve)
     if flow.get("source_type") != "file":
         assert_inside(flow.get("target_folder"), source, label="Target folder", resolve=resolve)
     elif rules.get("enforced"):
         assert_inside(flow.get("local_file_path"), str(Path(root) / "Local"), label="Source file", resolve=resolve)
-    if flow.get("transform_enabled") and rules.get("enforced"):
-        assert_inside(flow.get("transform_script_path"), root, label="Transformation script", resolve=resolve)
+    if flow.get("transform_enabled") and (rules.get("enforced") or rules.get("scripts_folder")):
+        assert_inside(flow.get("transform_script_path"), rules.get("scripts_folder") or root, label="Transformation script", resolve=resolve)
 
 
 def assert_job_paths(job: dict):
@@ -127,13 +134,25 @@ def assert_job_paths(job: dict):
         return
     if rules.get("version") != 1:
         raise PathOutsideRoot("Unsupported Flow path policy version.")
+    if rules.get("flow_folder"):
+        from app import flow_layout
+        flow_layout.read_manifest(rules["flow_folder"], job.get("flow", {}).get("id"))
+        for name in ("Downloads", "Scripts"):
+            child = Path(rules["flow_folder"]) / name
+            flow_layout._regular(child)
+            assert_inside(str(child), rules["flow_folder"], label=name)
+    if rules.get("artifact_store_root"):
+        expected = str(Path(rules["flows_root"]) / ".metronome" / "artifacts")
+        if os.path.normcase(os.path.abspath(rules["artifact_store_root"])) != os.path.normcase(os.path.abspath(expected)):
+            raise PathOutsideRoot("Invalid managed artifact store.")
+        assert_inside(expected, rules["flows_root"], label="Artifact store")
     validate_flow({**job.get("flow", {}),
         "target_folder": job.get("downloads", {}).get("target_folder"),
         "local_file_path": job.get("local_file", {}).get("path"),
         "transform_enabled": job.get("transformation", {}).get("enabled"),
         "transform_script_path": job.get("transformation", {}).get("script_path")}, rules)
     for section in ("resume", "sql_retry"):
-        for item in (job.get(section) or {}).get("artifacts", []):
+        for item in (job.get(section) or {}).get("completed" if section == "resume" else "artifacts", []):
             # Legacy private recovery has its own exact store/checksum protocol.
-            if item.get("storage_scope") != "worker_private":
+            if rules.get("enforced") and item.get("storage_scope") != "worker_private":
                 assert_inside(item.get("file_path"), rules["flows_root"], label="Recovery artifact")

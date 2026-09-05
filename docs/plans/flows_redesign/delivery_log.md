@@ -22,6 +22,8 @@
   because Windows cannot resolve those links. Application symlink tests still run.
 
 ## Plan 2 — Folders
+- PR #54: https://github.com/datap0nd/data_governance/pull/54
+- Merged as 47305001.
 - Automatic managed folders for new builder flows, stable physical paths on
   rename, preserved files on delete, explicit legacy adoption and compensation
   for empty allocations after I/O/database failure.
@@ -30,8 +32,20 @@
 - Full suite: 1,335 passed; final nine layout tests passed, including database
   failure compensation after allocation. No existing tests were weakened.
 
+## Plan 3 — Layout and shared storage
+- Ownership-checked explicit repair, immutable script copies on managed saves,
+  shared storage for new managed jobs and legacy recovery identities preserved.
+- New coverage executes a real Local acquisition into the shared store, checks
+  run-folder registration, capability negotiation, script version preservation,
+  foreign/link repair refusal and cross-profile store identity.
+- Full regression: 1,341 passed; one new test inspected the raw snapshot
+  instead of the normalized artifact and was corrected. All seven final shared
+  layout tests pass, including that case; 24 layout/publication tests passed.
+- Local browser repair succeeded on a paused managed Local flow.
+- All 15 frontend suites and JavaScript syntax pass.
+
 ## Remaining sequence
-3 Layout → 5 List → 6 Sorting → 7 Builder → 4 Standalone →
+5 List → 6 Sorting → 7 Builder → 4 Standalone →
 8A Capacity → 8B Fan-out. Each has its own tested PR and merge boundary.
 
 ## Operational verification

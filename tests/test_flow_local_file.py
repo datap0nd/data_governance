@@ -468,6 +468,6 @@ def test_worker_claim_requires_local_file_capability(local_file_db, tmp_path):
 
     flows.register_worker(flows.WorkerRegister(
         worker_id="new-worker", display_name="New worker",
-        capabilities={"adapters": ["web_export", "local_file"], "headed": False},
+        capabilities={"adapters": ["web_export", "local_file"], "headed": False, "shared_flow_artifacts": True},
     ))
     assert flows.claim_run("new-worker")["run"]["flow_id"] == saved["id"]

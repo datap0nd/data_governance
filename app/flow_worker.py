@@ -42,6 +42,7 @@ if str(_CODE_DIR) not in sys.path:
     sys.path.insert(0, str(_CODE_DIR))
 
 from app.flow_paths import assert_job_paths
+from app import flow_layout
 
 try:
     from app import flow_gscm, flow_outlook, flow_publish, flow_replay, flow_retention
@@ -5700,6 +5701,21 @@ def _export_task_key(export_view, period) -> str:
     return json.dumps({"export_view": export_view, "period_key": period}, sort_keys=True)
 
 
+def _job_store_root(job: dict) -> Path | None:
+    value = (job.get("paths") or {}).get("artifact_store_root")
+    return Path(value) if value else None
+
+
+def _job_store_id(job: dict, profile_dir: Path) -> str:
+    return flow_publish.artifact_store_id(profile_dir, store_root=_job_store_root(job))
+
+
+def _runtime_store_ids(job: dict, profile_dir: Path) -> set[str]:
+    return {flow_publish.artifact_store_id(profile_dir), _job_store_id(job, profile_dir),
+            *(flow_publish.artifact_store_id(profile_dir, store_root=Path(root))
+              for root in (job.get("resume") or {}).get("artifact_store_roots", []))}
+
+
 def _decorate_artifact_storage(artifact: dict, job: dict, profile_dir: Path) -> dict:
     """Freeze the private deliverable needed by direct publish and Resume."""
     output_mode = job.get("downloads", {}).get("output_mode", "run_folders")
@@ -5733,7 +5749,7 @@ def _decorate_artifact_storage(artifact: dict, job: dict, profile_dir: Path) -> 
     observed = flow_publish.read_size_checksum(deliverable)
     artifact.update({
         "storage_scope": "worker_private" if private else "target_run_folder",
-        "artifact_store_id": flow_publish.artifact_store_id(profile_dir) if private else None,
+        "artifact_store_id": _job_store_id(job, profile_dir) if private else None,
         "deliverable_file_path": str(deliverable),
         "deliverable_filename": deliverable.name,
         "deliverable_file_size": observed["file_size"],
@@ -5759,7 +5775,7 @@ def _validated_resume_artifacts(job: dict) -> dict[str, dict]:
             available = (
                 item.get("storage_scope") == "worker_private"
                 and bool(job.get("_runtime_artifact_store_id"))
-                and item.get("artifact_store_id") == job.get("_runtime_artifact_store_id")
+                and item.get("artifact_store_id") in set(job.get("_runtime_artifact_store_ids") or [job.get("_runtime_artifact_store_id")])
                 and flow_publish.artifact_file_valid(item, require_deliverable=True)
             )
         else:
@@ -5907,6 +5923,8 @@ def _prepare_run_folder(
 ) -> Path:
     """Create/register a producing run folder and execute assigned retention."""
     assert_job_paths(job)
+    if (job.get("paths") or {}).get("flow_folder"):
+        flow_layout.ensure_layout(job["paths"]["flow_folder"], job["flow"]["id"])
     output_mode = job.get("downloads", {}).get("output_mode", "run_folders")
     direct = output_mode == "direct_replace"
     private_snapshot = output_mode == "private_snapshot"
@@ -5914,11 +5932,12 @@ def _prepare_run_folder(
     if private_snapshot:
         storage_root = flow_publish.private_local_file_root(
             profile_dir, (job.get("local_file") or {}).get("private_store_key") or "",
+            store_root=_job_store_root(job),
         )
     else:
         if not target.is_dir():
             raise RuntimeError(f"Target folder does not exist: {target}")
-        storage_root = flow_publish.private_target_root(profile_dir, target) if direct else target
+        storage_root = flow_publish.private_target_root(profile_dir, target, store_root=_job_store_root(job)) if direct else target
     run_folder = flow_retention.create_run_folder(
         storage_root, run_id, job.get("flow", {}).get("id"),
     )
@@ -5997,7 +6016,8 @@ def execute_outlook_job(
         job, profile_dir, run_id=run_id, register_folder=register_folder,
         report_progress=report_progress,
     )
-    job["_runtime_artifact_store_id"] = flow_publish.artifact_store_id(profile_dir)
+    job["_runtime_artifact_store_id"] = _job_store_id(job, profile_dir)
+    job["_runtime_artifact_store_ids"] = list(_runtime_store_ids(job, profile_dir))
     job["_runtime_bundle_count"] = 1
     output = _safe_output_path(run_folder, acquisition["filename"])
     report_progress("running", {
@@ -6087,7 +6107,8 @@ def execute_local_file_job(
         job, profile_dir, run_id=run_id, register_folder=register_folder,
         report_progress=report_progress,
     )
-    job["_runtime_artifact_store_id"] = flow_publish.artifact_store_id(profile_dir)
+    job["_runtime_artifact_store_id"] = _job_store_id(job, profile_dir)
+    job["_runtime_artifact_store_ids"] = list(_runtime_store_ids(job, profile_dir))
     job["_runtime_bundle_count"] = 1
     source_folder = run_folder / "source"
     source_folder.mkdir()
@@ -6186,7 +6207,8 @@ def execute_job(
     # caller's failure report - the record Resume later relies on.
     assert_job_paths(job)
     timings = _Timings()
-    job["_runtime_artifact_store_id"] = flow_publish.artifact_store_id(profile_dir)
+    job["_runtime_artifact_store_id"] = _job_store_id(job, profile_dir)
+    job["_runtime_artifact_store_ids"] = list(_runtime_store_ids(job, profile_dir))
     report_progress("running", {"stage": "opening_report", "message": "Opening the configured report."})
     is_asap = job["site"].get("adapter") == ASAP_PORTAL_ADAPTER
     is_gscm = job["site"].get("adapter") == GSCM_PORTAL_ADAPTER
@@ -6783,6 +6805,7 @@ def _publish_direct_artifacts(
     for task_key, carried in _validated_resume_artifacts(job).items():
         if task_key not in by_task:
             by_task[task_key] = _copy_carried_artifact(carried, run_folder)
+            by_task[task_key]["artifact_store_id"] = job.get("_runtime_artifact_store_id")
     bundle = sorted(
         by_task.values(),
         key=lambda item: (
@@ -6884,7 +6907,16 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
         # leaning on the service manager's restart loop.
         for attempt in range(300):
             try:
-                _api(client, "POST", "/api/flows/worker/register", registration)
+                registered = _api(client, "POST", "/api/flows/worker/register", registration)
+                shared_root = registered.get("flows_root")
+                if shared_root:
+                    store = Path(shared_root) / ".metronome" / "artifacts"
+                    registration["capabilities"]["shared_flow_artifacts"] = True
+                    registration["capabilities"]["artifact_store_ids"] = [
+                        flow_publish.artifact_store_id(profile_dir),
+                        flow_publish.artifact_store_id(profile_dir, store_root=store),
+                    ]
+                    _api(client, "POST", "/api/flows/worker/register", registration)
                 break
             except (httpx.HTTPError, OSError) as exc:
                 if attempt == 299:
@@ -6904,6 +6936,16 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
             page = context.pages[0] if context.pages else context.new_page()
             idle_since = time.monotonic()
             while True:
+                # Refresh concrete shared roots before claims, including roots
+                # frozen in queued recovery jobs after a Paths setting change.
+                registered = _api(client, "POST", "/api/flows/worker/register", registration)
+                roots = registered.get("artifact_store_roots") or []
+                if roots:
+                    ids = {flow_publish.artifact_store_id(profile_dir),
+                           *(flow_publish.artifact_store_id(profile_dir, store_root=Path(root)) for root in roots)}
+                    if ids != set(registration["capabilities"].get("artifact_store_ids") or []):
+                        registration["capabilities"].update(shared_flow_artifacts=True, artifact_store_ids=sorted(ids))
+                        _api(client, "POST", "/api/flows/worker/register", registration)
                 claimed = _api(client, "POST", f"/api/flows/worker/{worker_id}/claim")
                 run = claimed.get("run")
                 scan = claimed.get("scan")
@@ -7034,8 +7076,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                         required_store = run["job"].get("sql_retry", {}).get(
                             "required_artifact_store_id"
                         )
-                        current_store = flow_publish.artifact_store_id(profile_dir)
-                        if required_store and required_store != current_store:
+                        if required_store and required_store not in _runtime_store_ids(run["job"], profile_dir):
                             raise RuntimeError(
                                 "SQL Retry was claimed by a worker that cannot access its private artifact store."
                             )
