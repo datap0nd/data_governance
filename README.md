@@ -1,5 +1,8 @@
 # Data Governance Panel
 
+Configure Flow folders in **System > Paths**. See
+[Flow paths](docs/flow_paths.md) for staged enforcement and migration behavior.
+
 A web-based panel that monitors your Power BI reports, tracks data sources, and validates data quality.
 
 ## Quick Start (Windows)

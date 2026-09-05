@@ -1674,6 +1674,16 @@ button.btn-blue { background: var(--accent); }
     padding: 1rem;
 }
 
+.paths-panel { margin-bottom: var(--space-lg); overflow-wrap: anywhere; font-size: 0.85rem; }
+.paths-panel h2 { margin-bottom: var(--space-md); font-size: 1.05rem; }
+.paths-panel p { margin: var(--space-sm) 0; line-height: 1.5; }
+.paths-root-label { display: grid; gap: var(--space-sm); margin-top: var(--space-lg); font-weight: 600; }
+#paths-root { width: 100%; min-height: 38px; padding: var(--space-sm); border: 1px solid var(--border-light); border-radius: 5px; background: var(--surface); color: var(--text); font: inherit; }
+.paths-panel input:focus-visible, .paths-panel button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+#paths-impact ul { padding-left: var(--space-xl); }
+#paths-impact li { margin-bottom: var(--space-md); }
+#paths-error { color: var(--red); }
+
 /* Summary counts */
 .summary-counts {
     display: flex;

@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 
 from app.config import DB_PATH, UPLOAD_PGHOST, UPLOAD_PGPORT
 from app.database import get_db
+from app import flow_paths
 from app.flow_credentials import asap_credential_status, save_asap_credentials
 from app.flow_asap_exports import (
     public_asap_download_types,
@@ -1330,6 +1331,13 @@ def _resolve_sql_target_source(
 
 
 def _validate_flow_selections(db, body: FlowWrite, *, new_flow: bool = False):
+    source = db.execute("SELECT adapter FROM flow_sites WHERE id=?", (body.site_id,)).fetchone()
+    if source:
+        candidate = {**body.model_dump(), "source_adapter": source["adapter"]}
+        try:
+            flow_paths.validate_flow(candidate, flow_paths.policy(db, candidate))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
     if body.source_type == "outlook":
         expected_site, expected_report = _outlook_source_ids(db)
         if body.site_id != expected_site or body.report_id != expected_report:
@@ -1463,6 +1471,11 @@ def _validate_flow_selections(db, body: FlowWrite, *, new_flow: bool = False):
 
 def _build_job(db, flow_id: int, *, force_reprocess: bool = False) -> dict:
     flow = _flow_out(db, flow_id, include_private_storage=True)
+    paths = flow_paths.policy(db, flow)
+    try:
+        flow_paths.validate_flow(flow, paths)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
     report = _report_out(db, flow["report_id"])
     if flow.get("period_strategy") == "none":
         weeks = []
@@ -1490,6 +1503,7 @@ def _build_job(db, flow_id: int, *, force_reprocess: bool = False) -> dict:
         execution["required_adapter"] = LOCAL_FILE_ADAPTER
     return {
         "schema_version": 3,
+        **({"paths": paths} if paths else {}),
         "execution": {
             **execution,
         },
@@ -1669,7 +1683,13 @@ def queue_due_flows() -> dict:
             )
             if active:
                 continue
-            job = _build_job(db, row["id"])
+            try:
+                job = _build_job(db, row["id"])
+            except HTTPException as exc:
+                if exc.status_code != 409:
+                    raise
+                db.execute("UPDATE flows SET last_error=? WHERE id=?", (str(exc.detail), row["id"]))
+                continue
             try:
                 assert_flow_target_available(
                     db, flow_target_resource_key_from_job(job)
@@ -2616,17 +2636,24 @@ def create_flow(body: FlowWrite, request: Request):
 @router.post("/transform-script")
 async def add_transform_script(request: Request, file: UploadFile = File(...)):
     """Store a user-selected script locally without committing it to the repository."""
-    filename = Path(file.filename or "").name
+    filename = Path(ntpath.basename(file.filename or "")).name
     suffix = Path(filename).suffix.casefold()
     if not filename or suffix not in TRANSFORM_SCRIPT_SUFFIXES:
         raise HTTPException(400, "Choose a .py, .ps1, or .exe transformation script.")
+    if (not SAFE_NAME_RE.fullmatch(filename) or filename.endswith((".", " "))
+            or re.fullmatch(r"(?i)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])", filename.split(".")[0])):
+        raise HTTPException(400, "Choose a script with a safe Windows filename.")
     content = await file.read(10 * 1024 * 1024 + 1)
     if not content:
         raise HTTPException(400, "The selected transformation script is empty.")
     if len(content) > 10 * 1024 * 1024:
         raise HTTPException(413, "Transformation scripts must be 10 MB or smaller.")
-    folder = Path(DB_PATH).resolve().parent / "flow_scripts"
-    folder.mkdir(parents=True, exist_ok=True)
+    import uuid
+    with get_db() as db:
+        root = flow_paths.get_flows_root(db)
+    folder = Path(root) / ".metronome" / "uploads" / str(uuid.uuid4())
+    flow_paths.assert_inside(str(folder), root, label="Upload folder")
+    folder.mkdir(parents=True, exist_ok=False)
     candidate = folder / filename
     if candidate.exists():
         stem = candidate.stem
@@ -2636,7 +2663,8 @@ async def add_transform_script(request: Request, file: UploadFile = File(...)):
                 break
         else:
             raise HTTPException(409, "Could not reserve a unique script filename.")
-    candidate.write_bytes(content)
+    with candidate.open("xb") as handle:
+        handle.write(content)
     with get_db() as db:
         log_event(
             db, "flow_transform_script", None, candidate.name,

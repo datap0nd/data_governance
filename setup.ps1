@@ -65,6 +65,10 @@ $AutoUpdateTaskName = "Metronome_Auto_Update"
 $CodeDir     = $PSScriptRoot
 $ProjectDir  = Split-Path $CodeDir
 $DbPath      = "$ProjectDir\governance.db"
+$FlowsRoot = if ($env:DG_FLOWS_ROOT) { $env:DG_FLOWS_ROOT } else { Join-Path $ProjectDir 'metronome\flows' }
+foreach ($FlowSourceFolder in @('ASAP', 'GSCM', 'Outlook', 'Local', 'Web')) {
+    New-Item -ItemType Directory -Force -Path (Join-Path $FlowsRoot $FlowSourceFolder) | Out-Null
+}
 $ReportsPath = "\\MX-SHARE\Users\METOMX\Desktop\BI Report Originals"
 $ScriptsPath = "\\MX-SHARE\Users\METOMX\Desktop;\\MX-SHARE\Users\meto.mx\Desktop;\\METO-MX02\Users\METOMX\Desktop"
 $Port        = 8000
@@ -440,6 +444,7 @@ if (-not $HadExistingService) {
 
 & $NssmExe set $ServiceName AppEnvironmentExtra `
     "DG_DB_PATH=$DbPath" `
+    "DG_FLOWS_ROOT=$FlowsRoot" `
     "DG_REPORTS_PATH=$ReportsPath" `
     "DG_SCRIPTS_PATH=$ScriptsPath" `
     "DG_SCHTASK_REMOTES=MX-Share" `

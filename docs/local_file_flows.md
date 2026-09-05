@@ -6,8 +6,9 @@ configure the same schedule, owner, transformation, and SQL append/replace
 options used by other Flows.
 
 The background worker reads the path with its Windows service account. There
-is no Metronome path allowlist: a run succeeds only when that account can read
-the configured file. A missing, inaccessible, changing, encrypted, malformed,
+is an optional path policy in System > Paths: when enforcement is enabled the
+source must be under the root's Local directory. The account must also be able
+to read the configured file. A missing, inaccessible, changing, encrypted, malformed,
 or incorrectly labelled file fails before transformation or SQL starts.
 
 ## Supported files

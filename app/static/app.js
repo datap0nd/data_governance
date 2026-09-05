@@ -12264,6 +12264,43 @@ function bindFlowsPage() {
     _bindFlowWorkspace();
 }
 
+// ── System > Paths ──
+function _pathsImpactHtml(rows) {
+    return rows.length ? `<ul>${rows.map(row => `<li><strong>${esc(row.name)}</strong>: ${esc(row.reason)}<br><small>${esc(row.target_folder)}</small></li>`).join("")}</ul>` : '<p>All configured paths fit this root.</p>';
+}
+
+async function renderPaths() {
+    const state = await api("/api/system/paths");
+    return `<div class="page-header"><div><h1>Paths</h1><p>Folders used by Metronome Flows.</p></div></div>
+        <section class="settings-panel paths-panel"><form id="paths-form">
+        <h2>Flows root</h2><p>Changing the root does not move files. Existing flows keep their paths until adopted. Enforcing paths blocks runs with sources or destinations outside this root.</p>
+        <label class="paths-root-label">Root folder <input id="paths-root" required value="${esc(state.flows_root)}"></label>
+        <p class="text-muted">Value from ${esc(state.source)}. Default: ${esc(state.default)}</p>
+        <label><input type="checkbox" id="paths-create" checked> Create missing source folders</label><br>
+        <label><input type="checkbox" id="paths-enforced" ${state.enforced ? "checked" : ""}> Enforce paths for existing flows</label>
+        <p>Transformation scripts still run with the worker account's file permissions.</p>
+        <div class="flow-builder-actions"><button type="button" class="btn-secondary" id="paths-check">Check impact</button><button type="submit" class="btn-primary">Save paths</button></div>
+        <p id="paths-error" role="alert"></p></form></section>
+        <section class="settings-panel paths-panel"><h2>Source folders</h2>${state.source_folders.map(folder => `<p><strong>${esc(folder.name)}</strong> — ${esc(folder.path)}</p>`).join("")}</section>
+        <section class="settings-panel paths-panel"><h2>Flows needing relocation if enforcement is enabled</h2><div id="paths-impact">${_pathsImpactHtml(state.flows_outside_root)}</div></section>`;
+}
+
+function bindPathsPage() {
+    const form = $("#paths-form");
+    const body = () => ({flows_root: $("#paths-root").value, create: $("#paths-create").checked, enforced: $("#paths-enforced").checked});
+    $("#paths-check").onclick = async () => {
+        try { const state = await apiPostJson("/api/system/paths/validate", body()); $("#paths-impact").innerHTML = _pathsImpactHtml(state.flows_outside_root); $("#paths-error").textContent = ""; }
+        catch (err) { $("#paths-error").textContent = err.message; }
+    };
+    form.onsubmit = async event => {
+        event.preventDefault();
+        const button = form.querySelector('[type="submit"]');
+        button.disabled = true;
+        try { await apiPut("/api/system/paths", body()); toast("Flow paths saved"); await navigate("paths"); }
+        catch (err) { $("#paths-error").textContent = err.message; button.disabled = false; }
+    };
+}
+
 // ── Router ──
 
 const pages = {
@@ -12284,6 +12321,7 @@ const pages = {
     faq: renderFaq,
     ai: renderAISettings,
     updates: renderUpdates,
+    paths: renderPaths,
     refreshschedule: renderScannerAdmin,
     premiumviewers: renderPremiumViewers,
 };
@@ -12422,6 +12460,7 @@ async function navigate(page) {
         if (page === "eventlog") bindEventLogPage();
         if (page === "ai") bindAISettingsPage();
         if (page === "updates") bindUpdatesPage();
+        if (page === "paths") bindPathsPage();
         if (page === "premiumviewers") bindPremiumViewersPage();
         if (page === "lineage") bindLineageDiagramPage();
     } catch (err) {
