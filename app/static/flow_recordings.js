@@ -29,7 +29,7 @@ window.FlowRecordings = (() => {
             const catalog = await api('/api/flows/catalog');
             const sites = catalog.sites.filter(site => site.enabled && ['asap_portal', 'gscm_portal'].includes(site.adapter));
             if (!sites.length) throw new Error('Add an ASAP or GSCM website in Catalog first. A catalog scan is not required.');
-            body.innerHTML = `<form class="flow-form-grid"><label>Name <input name="name" required maxlength="160"></label><label>Website <select name="site">${sites.map(site => option(String(site.id), site.name, '')).join('')}</select></label><label class="flow-span-2">Starting report URL (optional)<input name="route" type="url" placeholder="Leave empty to start at the portal"></label><p class="flow-span-2">Metronome opens the starting page on one worker. Complete sign-in if prompted, navigate to the report, set filters and download the required file(s). Wait for every download to complete, then click Finish recording here. To repeat the same report over date ranges, record one range and configure date batches during review.</p><button class="btn-primary" type="submit">Create draft</button></form>`;
+            body.innerHTML = `<form class="flow-form-grid"><label>Name <input name="name" required maxlength="160"></label><label>Website <select name="site">${sites.map(site => option(String(site.id), site.name, '')).join('')}</select></label><label class="flow-span-2">Starting report URL (optional)<input name="route" type="url" placeholder="Leave empty to start at the portal"></label><p class="flow-span-2">Metronome opens the starting page on one worker. Complete sign-in if prompted, navigate to the report, set filters and download the required file(s). Wait for every download to complete, then click Finish recording here.</p><button class="btn-primary" type="submit">Create draft</button></form>`;
             body.querySelector('form').onsubmit = async event => {
                 event.preventDefault(); const form = event.currentTarget, button = form.querySelector('button'); button.disabled = true;
                 try {
@@ -41,6 +41,7 @@ window.FlowRecordings = (() => {
     }
 
     function editor(definition) {
+        if ('date_batch' in definition) return `<form data-convert><p role="alert">Date batching has been removed. This flow is paused. Choose one explicit range, then test it before enabling its schedule. Historical results are preserved.</p><label>Start date <input name="start" required placeholder="Recorded date format"></label><label>End date <input name="end" required placeholder="Recorded date format"></label><button class="btn-primary" type="submit">Convert to one range</button></form>`;
         const steps = all(definition.steps), readiness = definition.readiness || {};
         const firstDownload = steps.findIndex(step => step.action === 'download');
         const navigation = steps.filter((step, i) => step.action === 'goto' && (firstDownload < 0 || i < firstDownload)).at(-1);
@@ -67,12 +68,6 @@ window.FlowRecordings = (() => {
                 </li>`;
             }).join('')}</ol>
             <p>To keep an end date at the portal default, select “Portal default” on its recorded input step. The replay omits that write and logs the value supplied by the portal.</p>
-            <fieldset><legend>Repeat this report over date ranges</legend>
-                <label><input type="checkbox" name="batchEnabled" ${definition.date_batch ? 'checked' : ''}> Download in date batches</label>
-                <p>Record one representative range, including both date fields and its download(s). Choose fixed or calculated dates above for the complete range. Each batch repeats all recorded steps and downloads, with an inclusive end date and no gaps. All files are collected before transformation or SQL.</p>
-                <div class="flow-form-grid"><label>Start parameter name <input name="batchStart" value="${h(definition.date_batch?.start_parameter || 'start')}"></label><label>End parameter name <input name="batchEnd" value="${h(definition.date_batch?.end_parameter || 'end')}"></label><label>Weeks per file batch <input name="batchWeeks" type="number" min="1" max="52" value="${h(definition.date_batch?.weeks || 10)}"></label></div>
-                <p>Example: 2025-01-01 through 2026-12-31 in 10-week batches. The final batch is shorter. Use calculated “today” for a moving end; a portal-default boundary cannot be split reliably. Batch files receive a part number.</p>
-            </fieldset>
             <button class="btn-primary" type="submit">Save reviewed revision</button>
         </form>`;
     }
@@ -87,6 +82,7 @@ window.FlowRecordings = (() => {
     function collect(form, original) {
         const definition = structuredClone(original), steps = all(definition.steps);
         definition.timezone = 'Asia/Dubai';
+        definition.version = 2;
         const identityFrame = steps.find(step => step.id === form.elements.identityFrame.value);
         const identityTarget = frameTarget(identityFrame);
         identityTarget.locator.push({method:'get_by_text',args:[form.elements.identity.value],kwargs:{exact:true}});
@@ -122,9 +118,6 @@ window.FlowRecordings = (() => {
                 delete step.args; delete step.kwargs;
             }
         }
-        if (form.elements.batchEnabled.checked) {
-            definition.date_batch = {start_parameter:form.elements.batchStart.value.trim(),end_parameter:form.elements.batchEnd.value.trim(),weeks:Number(form.elements.batchWeeks.value)};
-        } else delete definition.date_batch;
         return definition;
     }
 
@@ -167,6 +160,8 @@ window.FlowRecordings = (() => {
                     body.querySelector('[data-start]').onclick = () => action(`/api/flows/${flowId}/recordings/start`);
                     body.querySelector('[data-config]').onclick = async () => { element.close(); await navigate('flows'); _flowShowView('builder', data.flow); };
                     body.querySelector('[data-revision]').onchange = event => { selected = Number(event.target.value); dirty = false; refresh(true); };
+                    const conversion = body.querySelector('[data-convert]');
+                    if (conversion) conversion.onsubmit = event => { event.preventDefault(); action(`/api/flows/${flowId}/recordings/revisions/${selected}/convert-single-range`, {start:conversion.elements.start.value,end:conversion.elements.end.value}); };
                     const form = body.querySelector('[data-review]');
                     if (form) {
                         form.oninput = () => { dirty = true; updateButtons(); };
@@ -200,7 +195,7 @@ window.FlowRecordings = (() => {
             const revision = data?.revisions.find(item => item.id === Number(selected));
             const start = body.querySelector('[data-start]'); if (start) start.disabled = pending || Boolean(active);
             const config = body.querySelector('[data-config]'); if (config) config.disabled = pending || Boolean(active);
-            const validate = body.querySelector('[data-validate]'); if (validate) validate.disabled = pending || active || dirty;
+            const validate = body.querySelector('[data-validate]'); if (validate) validate.disabled = pending || active || dirty || Boolean(revision?.definition?.date_batch);
             const activate = body.querySelector('[data-activate]'); if (activate) activate.disabled = pending || active || dirty || revision?.status !== 'validated';
             const save = body.querySelector('[data-review] button[type=submit]'); if (save) save.disabled = pending || Boolean(active);
             const finish = body.querySelector('[data-finish]');

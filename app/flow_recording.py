@@ -16,7 +16,8 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 from app.flow_clock import TIMEZONE
 
-VERSION = 1
+VERSION = 2
+V2_CAPABILITY = 'recorded_flows_v2'
 CAPABILITY = 'recorded_flows_v1'
 RECORD_CAPABILITY = 'flow_recorder_v1'
 LOCATORS = {'locator', 'get_by_role', 'get_by_label', 'get_by_text', 'get_by_placeholder',
@@ -32,6 +33,54 @@ SENSITIVE = re.compile(r'password|passwd|authorization|cookie|token|secret|otp|v
 
 def canonical(value):
     return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(',', ':'))
+
+
+def suggest_review(definition):
+    """Carry recorded evidence into authoring; never infer a download by label."""
+    result = copy.deepcopy(definition)
+    steps = list(walk_steps(result.get('steps', [])))
+    before = steps[:next((i for i, step in enumerate(steps) if step['action'] == 'download'), len(steps))]
+    generic = {'asap', 'gscm', 'microstrategy', 'home', 'login', 'sign in', 'loading', 'loading...', 'ready', 'complete', 'completed', 'idle', 'success', 'excel down', 'download', 'run', 'generate'}
+    candidates = []
+    for step in before:
+        parts = step.get('locator', [])
+        last = parts[-1] if parts else {}
+        role = last.get('args', [None])[0] if last.get('args') else None
+        if last.get('method') == 'get_by_role' and role in {'button', 'textbox', 'checkbox', 'combobox', 'option'}:
+            continue
+        text, proven, kind = None, False, 'element'
+        if step['action'] == 'assert' and step.get('assertion') in {'to_have_text', 'to_have_title'}:
+            args = step.get('args', [])
+            text = args[0] if args and isinstance(args[0], str) else None
+            kind = 'page_title' if step['assertion'] == 'to_have_title' else 'element'
+            proven = True
+        elif last.get('method') == 'get_by_text' and last.get('kwargs', {}).get('exact') is True:
+            text = last.get('args', [None])[0]
+            proven = step['action'] == 'assert' and step.get('assertion') == 'to_be_visible'
+        elif last.get('method') == 'get_by_role' and role == 'heading':
+            text = last.get('kwargs', {}).get('name')
+            proven = step['action'] == 'assert'
+        if not isinstance(text, str) or not text.strip() or text.strip().casefold() in generic:
+            continue
+        candidate = {'text': text, 'kind': kind, 'target': {'page': step['page'], 'locator': copy.deepcopy(parts)},
+                     'step_id': step['id'], 'source': 'assertion' if proven else 'recorded_text'}
+        key = canonical({k: candidate[k] for k in ('text', 'kind', 'target')})
+        existing = next((c for c in candidates if canonical({k: c[k] for k in ('text', 'kind', 'target')}) == key), None)
+        if existing is None:
+            candidates.append(candidate)
+        elif proven:
+            existing.update(candidate)
+    result['identity_candidates'] = candidates
+    assertions = [candidate for candidate in candidates if candidate['source'] == 'assertion']
+    if not result.get('identity', {}).get('text') and len(assertions) == 1:
+        result['identity'] = {key: copy.deepcopy(assertions[0][key]) for key in ('text', 'kind', 'target')}
+    if not result.get('readiness'):
+        navigations = [i for i, step in enumerate(before) if step['action'] == 'goto']
+        if navigations:
+            index = navigations[-1]
+            if all(step['action'] in {'assert'} for step in before[index + 1:]):
+                result['readiness'] = {'mode': 'navigation', 'trigger_step_id': before[index]['id']}
+    return result
 
 
 def digest(value):
@@ -94,29 +143,38 @@ def _validate_target(target, *, activation):
             raise ValueError('Positional locators must be repaired to identify a unique element before activation.')
 
 
-def _validate_pages(steps, pages=None):
+def _validate_pages(steps, pages=None, created=None, snapshots=None):
     pages = {'page'} if pages is None else pages
+    created = set() if created is None else created
+    snapshots = {} if snapshots is None else snapshots
     for step in steps:
+        snapshots[step['id']] = set(pages)
         name = step.get('page')
         if not isinstance(name, str) or not name:
             raise ValueError('Every action must identify its page.')
+        if step['action'] == 'wait':
+            continue
         if step['action'] == 'new_page':
-            if name in pages and name != 'page':
+            if name in created or (name in pages and name != 'page'):
                 raise ValueError('A page identity cannot be reused.')
             pages.add(name)
+            created.add(name)
         elif name not in pages:
             raise ValueError('An action references an unopened or closed page.')
         if step['action'] in {'popup', 'download'}:
-            _validate_pages(step['steps'], pages)
+            _validate_pages(step['steps'], pages, created, snapshots)
         elif step.get('steps'):
             raise ValueError('Only popup and download events may contain nested actions.')
         if step['action'] == 'popup':
             result = step.get('result_page')
-            if not isinstance(result, str) or not result or result in pages:
+            if not isinstance(result, str) or not result or result in pages or result in created:
                 raise ValueError('A popup requires a new page identity.')
             pages.add(result)
+            created.add(result)
         if step['action'] == 'close':
             pages.remove(name)
+            created.add(name)
+    return snapshots
 
 
 def import_codegen(source, *, timezone=TIMEZONE):
@@ -231,12 +289,14 @@ def import_codegen(source, *, timezone=TIMEZONE):
     definition = {'version': VERSION, 'timezone': timezone, 'steps': steps, 'parameters': {},
                   'identity': {'target': {}, 'text': ''}}
     validate_definition(definition, activation=False)
-    return definition
+    return suggest_review(definition)
 
 
 def validate_definition(definition, *, activation=True):
-    if not isinstance(definition, dict) or definition.get('version') != VERSION:
+    if not isinstance(definition, dict) or definition.get('version') not in {1, VERSION}:
         raise ValueError('Unsupported recording version.')
+    if 'date_batch' in definition:
+        raise ValueError('Date batching has been removed. Convert this recording to a single range and test it.')
     if len(canonical(definition).encode()) > 1_000_000:
         raise ValueError('Recording exceeds the one megabyte limit.')
     ZoneInfo(definition.get('timezone', 'UTC'))
@@ -262,8 +322,15 @@ def validate_definition(definition, *, activation=True):
         if definition.get('adapter') == 'gscm_portal' and activation:
             from app.flow_recording_nexacro import validate_target
             validate_target(step)
-        if action not in ACTIONS | {'new_page', 'goto', 'close', 'download', 'popup', 'assert'}:
+        if action not in ACTIONS | {'new_page', 'goto', 'close', 'download', 'popup', 'assert', 'wait'}:
             raise ValueError(f'Unsupported recorded action: {action}.')
+        if 'label' in step and (not isinstance(step['label'], str) or len(step['label']) > 160):
+            raise ValueError('Step names must be text of at most 160 characters.')
+        if action == 'wait':
+            if definition['version'] < 2 or type(step.get('seconds')) is not int or not 1 <= step['seconds'] <= 600:
+                raise ValueError('Wait steps need version 2 and a whole number of seconds from 1 to 600.')
+            if step.get('locator') or step.get('args') or step.get('kwargs'):
+                raise ValueError('Wait steps cannot target an element or contain browser arguments.')
         if action == 'assert' and step.get('assertion') not in ASSERTIONS:
             raise ValueError('Unsupported assertion.')
         if step.get('kwargs', {}).get('force') or step.get('kwargs', {}).get('position') or step.get('kwargs', {}).get('trial'):
@@ -302,14 +369,20 @@ def validate_definition(definition, *, activation=True):
                 raise ValueError('Period checks require a column and a known date parameter.')
             if output['format'] in {'html', 'txt'} and (output.get('headers') or checks):
                 raise ValueError('Column and period checks require CSV or Excel output.')
-    _validate_pages(definition['steps'])
+    page_states = _validate_pages(definition['steps'])
     if activation and not downloads:
         raise ValueError('The recording did not capture a download. Record through the download button.')
     identity = definition.get('identity') or {}
     if not isinstance(identity, dict) or not isinstance(identity.get('text', ''), str):
         raise ValueError('Report identity must contain exact text and a locator.')
-    if activation and (not identity.get('text') or not identity.get('target', {}).get('locator')):
+    if identity.get('kind', 'element') not in {'element', 'page_title'}:
+        raise ValueError('Unsupported report identity kind.')
+    if identity.get('kind') == 'page_title' and (definition['version'] < 2 or identity.get('target', {}).get('locator')):
+        raise ValueError('Page-title checks require version 2 and a page target.')
+    if activation and (not identity.get('text') or (identity.get('kind') != 'page_title' and not identity.get('target', {}).get('locator'))):
         raise ValueError('Choose a report identity locator and its exact expected text before validation.')
+    if activation and any(identity.get('target', {}).get('page') not in page_states[step['id']] for step in downloads):
+        raise ValueError('The report title page must be open before each download.')
     readiness = definition.get('readiness') or {}
     if not isinstance(readiness, dict):
         raise ValueError('Invalid report readiness definition.')
@@ -319,6 +392,8 @@ def validate_definition(definition, *, activation=True):
             raise ValueError('Choose the report generation action and its completion signal.')
         if readiness['mode'] == 'navigation' and trigger['action'] != 'goto':
             raise ValueError('Navigation completion must reference a navigation action.')
+        if readiness['mode'] != 'navigation' and readiness.get('target', {}).get('page') not in page_states[trigger['id']]:
+            raise ValueError('The completion signal page must be open before report generation.')
         if readiness['mode'] != 'navigation' and not readiness.get('target', {}).get('locator'):
             raise ValueError('Choose the loading indicator or result value used to confirm completion.')
         if steps.index(trigger) >= min(steps.index(step) for step in downloads):
@@ -356,20 +431,6 @@ def validate_definition(definition, *, activation=True):
             raise ValueError('Unsupported date format.')
         if parameter.get('mode') == 'fixed':
             datetime.strptime(parameter.get('value', ''), fmt)
-    batch = definition.get('date_batch')
-    if batch is not None:
-        if not isinstance(batch, dict) or type(batch.get('weeks')) is not int or not 1 <= batch['weeks'] <= 52:
-            raise ValueError('Date batch size must be between 1 and 52 weeks.')
-        names = [batch.get('start_parameter'), batch.get('end_parameter')]
-        if any(not isinstance(name, str) or name not in parameters for name in names) or names[0] == names[1]:
-            raise ValueError('Date batches need distinct start and end date parameters.')
-        fields = [parameters[name] for name in names]
-        if any(p.get('mode') == 'portal_default' or not p.get('step_id') for p in fields):
-            raise ValueError('Batch boundaries need recorded fields with fixed or calculated dates. Use today for a moving end date.')
-        if fields[0]['step_id'] == fields[1]['step_id']:
-            raise ValueError('Batch start and end must use different input fields.')
-        if all(p['mode'] == 'fixed' for p in fields):
-            resolve_batches(definition, {name: parameters[name]['value'] for name in names})
     return definition
 
 
@@ -396,32 +457,4 @@ def resolve_parameters(definition, overrides=None, *, now=None):
         if value is not None:
             datetime.strptime(value, fmt)
         result[name] = value
-    if definition.get('date_batch'):
-        resolve_batches(definition, result)
-    return result
-
-
-def resolve_batches(definition, parameters):
-    """Split an inclusive date range without gaps; resolve all dates once/run."""
-    batch = definition.get('date_batch')
-    if not batch:
-        return [{'period': None, 'parameters': dict(parameters)}]
-    start_name, end_name = batch['start_parameter'], batch['end_parameter']
-    start_format = definition['parameters'][start_name].get('format', '%Y-%m-%d')
-    end_format = definition['parameters'][end_name].get('format', '%Y-%m-%d')
-    start = datetime.strptime(parameters[start_name], start_format).date()
-    end = datetime.strptime(parameters[end_name], end_format).date()
-    if start > end:
-        raise ValueError('Batch start date must not be after its end date.')
-    days = batch['weeks'] * 7
-    if (end - start).days // days + 1 > 500:
-        raise ValueError('A recording can produce at most 500 date batches per run. Shorten the range.')
-    result = []
-    while start <= end:
-        last = start + timedelta(days=min(days - 1, (end - start).days))
-        values = {**parameters, start_name: start.strftime(start_format), end_name: last.strftime(end_format)}
-        result.append({'period': [start.isoformat(), last.isoformat()], 'parameters': values})
-        if last == end:
-            break
-        start = last + timedelta(days=1)
     return result

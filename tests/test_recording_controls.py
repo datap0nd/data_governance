@@ -19,7 +19,7 @@ from test_flows import flow_db, _request
 
 def register(identity, *, controls=True):
     flows.register_worker(flows.WorkerRegister(worker_id=identity, display_name=identity, capabilities={
-        'headed': True, 'browser_switch_v1': True, 'flow_recorder_v1': True,
+        'headed': True, 'browser_switch_v1': True, 'flow_recorder_v1': True, 'recorded_flows_v2': True,
         'flow_recorder_controls_v1': controls, 'process_id': 123}))
 
 

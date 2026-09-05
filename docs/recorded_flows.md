@@ -58,32 +58,23 @@ uses the exact-worker stop. Lease expiry and worker restart
 invalidate unfinished sessions. The updater sees these reservations as active
 catalog operations and waits for them to drain.
 
-### Multiple files and date batches
+### Multiple files and explicit dates
 
 For different outputs from one report, record all their downloads, wait for
 completion, then Finish once. Metronome checks the complete output bundle.
 It does not automatically stop at the first download.
 
-For the same report repeated over time, record **one representative date range**,
-including both input fields and its download(s). During review:
+Date batching is removed. Older batched flows are paused; queued batched jobs
+are cancelled with a review reason. Historical revisions, artifacts and copied
+portable scripts remain historical evidence. Use **Convert to one range** with
+explicit start/end values to create a new draft, then test it before enabling.
+Conversion never turns the old whole batch into an automatic large export.
 
-1. Give those input steps date parameters named `start` and `end`.
-2. Set their fixed/calculated values to the **whole desired range**.
-3. Enable **Download in date batches**, select those parameter names, and set
-   the number of weeks (for example, 10).
-
-2025-01-01 through 2026-12-31 produces eleven inclusive ranges of at most 70
-days. The last range is 2026-12-02 through 2026-12-31. Each range repeats the
-whole recording in a fresh page, including navigation and generation checks.
-Two recorded downloads produce two files per range. Filenames receive a part
-number; output identities include both the step and date range.
-
-Both boundaries must be fixed or calculated; use `today` for a moving end.
-Portal-default fields remain supported outside the batch boundaries. Defaults
-must stay consistent across batches and recovery. Dates resolve once in
-Dubai time and queued jobs retain them. Ranges cannot exceed 500 batches.
-All acquisition and validation completes before publication, transformation
-and SQL. Portable scripts use this same loop; `--dry-run` lists the ranges.
+Definition version 2 supports readable labels and Wait actions of 1-600 whole
+seconds. Waits send progress/heartbeats and remain cancellable. They supplement
+report completion checks. Workers advertise `recorded_flows_v2`; older workers
+cannot claim new recording or validation jobs. Existing non-batched version 1
+definitions remain readable. Edited definitions are saved as version 2.
 
 Recordings are parsed as Python syntax, never executed as imported code. Only
 the supported action/locator model can activate. Coordinate/forced actions,
