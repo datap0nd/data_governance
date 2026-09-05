@@ -260,14 +260,61 @@ _BOOKMARK_DATASET_JS = """(columns) => {
     const ds = app && app.gds_bookmark;
     if (!ds || typeof ds.getRowCount !== 'function'
             || typeof ds.getColumn !== 'function') return null;
+    // NF reads include locally filtered rows; their indexes must never be
+    // reused for selection in the Grid's filtered, sorted binding.
+    const unfiltered = typeof ds.getRowCountNF === 'function'
+        && typeof ds.getColumnNF === 'function';
+    const count = unfiltered ? ds.getRowCountNF() : ds.getRowCount();
     const rows = [];
-    for (let rowIndex = 0; rowIndex < ds.getRowCount(); rowIndex++) {
+    for (let rowIndex = 0; rowIndex < count; rowIndex++) {
         const row = {};
-        for (const column of columns) row[column] = ds.getColumn(rowIndex, column);
+        for (const column of columns) row[column] = unfiltered
+            ? ds.getColumnNF(rowIndex, column) : ds.getColumn(rowIndex, column);
         rows.push(row);
     }
-    return {available: true, rows};
+    return {available: true, rows, filtered_count: ds.getRowCount(),
+        total_count: count, unfiltered, filter: String(ds.filterstr || '')};
 }"""
+
+# Observe public Dataset load events. A timeout/unchanged row count is not
+# evidence that an empty tab finished loading. Never replace portal handlers.
+_BOOKMARK_LOAD_JS = r"""(reset) => {
+    if (typeof nexacro === 'undefined' || !nexacro.getApplication) return null;
+    const ds = nexacro.getApplication()?.gds_bookmark;
+    if (!ds || !ds.getRowCount || !ds.getColumn) return null;
+    const key = '__metronomeBookmarkLoad';
+    const snapshot = obj => {
+        const nf = typeof obj.getRowCountNF === 'function' && typeof obj.getColumnNF === 'function';
+        if (!nf && obj.filterstr) return null;
+        const count = nf ? obj.getRowCountNF() : obj.getRowCount(), rows = [];
+        for (let row=0; row<count; row++) rows.push(['userreportid','userreportname','publicscope','scope','gbm'].map(
+            column => nf ? obj.getColumnNF(row,column) : obj.getColumn(row,column)));
+        return JSON.stringify(rows);
+    };
+    if (!ds[key]) {
+        ds[key] = {generation:0, error:false, snapshot:null};
+        if (typeof ds.addEventHandler === 'function') ds.addEventHandler('onload', function(obj,event) {
+            obj[key].generation++;
+            obj[key].error = Number(event?.errorcode || 0) < 0;
+            obj[key].snapshot = obj[key].error ? null : snapshot(obj);
+        }, ds);
+    }
+    const state = ds[key], current = snapshot(ds);
+    if (reset) state.baseline = state.generation;
+    return {loaded: state.generation > 0 && state.snapshot !== null && state.snapshot === current,
+        changed: state.generation > (state.baseline || 0), error: state.error,
+        filtered_count: ds.getRowCount(), total_count: ds.getRowCountNF ? ds.getRowCountNF() : ds.getRowCount(),
+        filter: String(ds.filterstr || ''), unfiltered: current !== null};
+}"""
+
+
+def _observe_bookmark_loads(page):
+    # Subscribe as the public Dataset appears during navigation, before a
+    # portal load can be confused with an already populated partial dataset.
+    script = '(() => { const observe = ' + _BOOKMARK_LOAD_JS + '; const timer = setInterval(() => { try { if(observe(false)) clearInterval(timer); } catch (_) {} }, 10); setTimeout(() => clearInterval(timer), 180000); })()'
+    page.add_init_script(script=script)
+    page.evaluate(script)
+
 
 #: One bounded snapshot of the contract between the Nexacro application
 #: dataset and the rendered Favorite grid.  It deliberately reports raw
@@ -1620,6 +1667,7 @@ def bookmark_dataset_entries(page) -> list[dict] | None:
             "bookmark_id": _exact_bookmark_id(row.get("userreportid")),
             "menu_id": _clean_name(row.get("menuid")),
             "scope": scope,
+            "module": _clean_name(row.get('gbm') or row.get('menuscope') or scope),
             "owner_id": _clean_name(row.get("userid")),
             "origin_owner_id": _clean_name(row.get("originuserid")),
             "source": "gds_bookmark",
@@ -2960,6 +3008,8 @@ def discovered_report(entry: dict, report_url: str, catalog_name: str | None = N
             "favorite_bookmark_id": entry.get("bookmark_id") or None,
             "favorite_menu_id": entry.get("menu_id") or None,
             "favorite_scope": entry.get("scope") or None,
+            "favorite_module": entry.get("module") or None,
+            "favorite_module_control": entry.get("module_control_suffix") or None,
             "favorite_scope_raw": entry.get("scope_raw") or None,
             "favorite_owner_id": entry.get("owner_id") or None,
             "favorite_origin_owner_id": entry.get("origin_owner_id") or None,
@@ -2969,23 +3019,16 @@ def discovered_report(entry: dict, report_url: str, catalog_name: str | None = N
     }
 
 
-def _tab_bookmarks(page, tab: str, notify) -> list[dict] | None:
-    """One scope tab, activated the way a flow run activates it, then read.
+def _tab_bookmarks(page, tab: str, notify, *, diagnostic_grid: bool = False) -> list[dict] | None:
+    """Read one activated scope, using the dataset in normal operation.
 
-    Returns ``None`` when the tab is not on this screen at all.  Dataset rows
-    are accepted before rendered-grid readiness: that is the contract a run
-    now uses as well, and it prevents a healthy dataset from being hidden by a
-    Nexacro grid that failed to bind in this browser session.
-
-    The ``gds_bookmark`` dataset supplies authoritative stable ids and scope
-    once the tab is active. The rendered grid is also inventoried whenever it
-    binds, then explicitly reconciled with the dataset; it remains the fallback
-    identity source when the runtime does not expose the dataset. An exposed
-    dataset with nothing under the tab, agreeing with an empty grid, is proof
-    of a genuinely empty tab and skips the retry.
+    The explicit diagnostic path below retains rendered-grid inspection for
+    portal builds whose dataset load lifecycle has not yet been qualified.
     """
     if not find_by_label(page, [tab]):
         return None
+    if not diagnostic_grid:
+        return _dataset_tab_bookmarks(page, tab, notify)
     activated_once = False
     for attempt in range(2):
         if attempt:
@@ -3041,6 +3084,36 @@ def _tab_bookmarks(page, tab: str, notify) -> list[dict] | None:
     # even on portal deployments that do not expose the backing dataset.  Only
     # a missing or unactivatable tab makes the scan incomplete.
     return [] if activated_once else None
+
+
+def _dataset_tab_bookmarks(page, tab: str, notify) -> list[dict] | None:
+    """Inventory loaded records without traversing any virtualized Grid rows."""
+    _evaluate_everywhere(page, _BOOKMARK_LOAD_JS, True)
+    if not select_scope_tab(page, tab, require_rows=False):
+        notify(f"{tab}: scope_activation_failed; preserving the previous catalog.")
+        return None
+    # Allow bounded asynchronous loading. Grid binding is observed once, never
+    # swept, and is independent of whether an individual row is on screen.
+    for attempt in range(40):
+        entries = bookmark_dataset_entries(page)
+        events = [value for _, value in _evaluate_everywhere(page, _BOOKMARK_LOAD_JS, False)
+                  if isinstance(value, dict)]
+        if any(event.get('error') for event in events):
+            notify(f"{tab}: scope_load_failed; preserving the previous catalog.")
+            return None
+        loaded = any(event.get('loaded') and event.get('changed') for event in events)
+        scoped = [entry for entry in entries or [] if entry.get('tab', '').casefold() == tab.casefold()]
+        if entries is not None and loaded and not wait_window_visible(page):
+            if scoped:
+                notify(f"{tab}: dataset_ready; {len(scoped)} stable bookmark identities; no grid sweep.")
+                return scoped
+            if loaded:
+                notify(f"{tab}: loaded_empty; dataset load completed without bookmark rows.")
+                return []
+        page.wait_for_timeout(250)
+    notify(f"{tab}: scope_load_unproven; no matching completed dataset load was observed. "
+           "The previous catalog will be preserved.")
+    return None
 
 
 def _entry_path_identity(entry: dict, *, include_tab: bool) -> tuple:
@@ -3217,20 +3290,19 @@ def _target_entries(entries: list[dict], target: dict) -> list[dict]:
 
 
 def discover_catalog(page, job: dict, report_progress) -> tuple[list[dict], bool]:
-    """Catalog GSCM bookmarks by walking Setting > Favorite like a flow run.
+    """Activate each configured module/scope and read its loaded source dataset.
 
-    Discovery takes the exact route ``open_bookmark`` takes - portal, Setting
-    gear, Favorite panel, one scope tab at a time with the run's rebind
-    retries - and stops where a run would press ``Go >>``: it reads each
-    activated tab's bookmarks and lists them. The in-memory dataset alone is
-    trusted only when the dialog cannot be opened at all, because reading it
-    without activating the tabs misses the scopes GSCM loads on selection.
+    Normal discovery never enumerates rendered rows. A public dataset load
+    event certifies the matching snapshot; diagnostic_grid enables the
+    legacy rendered-grid sweep for unsupported portal builds.
     """
     url = portal_url(job)
     report_progress("running", {
         "stage": "navigation",
         "message": "Opening the GSCM portal for bookmark discovery.",
     })
+    if not (job.get('discovery') or {}).get('diagnostic_grid'):
+        _observe_bookmark_loads(page)
     open_portal(page, url)
 
     def notify_discovery(message: str) -> None:
@@ -3238,6 +3310,8 @@ def discover_catalog(page, job: dict, report_progress) -> tuple[list[dict], bool
             "stage": "report_discovery", "message": message,
         })
 
+    if not (job.get('discovery') or {}).get('diagnostic_grid'):
+        _observe_bookmark_loads(page)
     raw_entries: list[dict] = []
 
     dialog_error: RuntimeError | None = None
@@ -3252,33 +3326,57 @@ def discover_catalog(page, job: dict, report_progress) -> tuple[list[dict], bool
         dialog_error = error
 
     if dialog_error is None:
-        for tab in SCOPE_TABS:
-            tab_entries = _tab_bookmarks(page, tab, notify_discovery)
-            if tab_entries is None:
-                incomplete_walk = True
-                notify_discovery(
-                    f"GSCM's {tab} bookmark tab could not be found or activated; "
-                    "the scan is incomplete and the prior snapshot will be preserved.",
+        from app import flow_gscm_modules
+        discovery = job.get('discovery') or {}
+        module_suffix = discovery.get('module_control_suffix')
+        requested_modules = discovery.get('modules') or [None]
+        for requested_module in requested_modules:
+            resolved_module_suffix = module_suffix
+            if requested_module is not None:
+                try:
+                    selected_module = flow_gscm_modules.select(page, requested_module, module_suffix)
+                    resolved_module_suffix = selected_module['suffix']
+                except RuntimeError as exc:
+                    incomplete_walk = True
+                    notify_discovery(f'{requested_module}: module_selection_failed; {exc}')
+                    continue
+            requested_tabs = (job.get('discovery') or {}).get('scope_tabs') or SCOPE_TABS
+            if any(tab not in SCOPE_TABS for tab in requested_tabs):
+                raise ValueError('Unsupported GSCM bookmark scope tab.')
+            for tab in requested_tabs:
+                tab_entries = _tab_bookmarks(
+                    page, tab, notify_discovery,
+                    diagnostic_grid=bool((job.get('discovery') or {}).get('diagnostic_grid')),
                 )
-                continue
-            raw_entries.extend(tab_entries)
-            # Unknown publicscope rows do not belong to a known tab and would
-            # otherwise disappear behind the per-tab filter. Preserve them as
-            # evidence so the fail-closed warning below makes the scan partial.
-            raw_entries.extend(
-                entry for entry in (bookmark_dataset_entries(page) or [])
-                if entry.get("tab") not in SCOPE_TABS
-            )
-            source = (
-                " from GSCM's in-memory gds_bookmark dataset"
-                if any(item.get("source") == "gds_bookmark" for item in tab_entries)
-                else " from the Favorite grid" if tab_entries else ""
-            )
-            report_progress("running", {
-                "stage": "report_discovery",
-                "message": f"{tab}: {len(tab_entries)} bookmark observation(s){source}.",
-                "item_count": len(tab_entries),
-            })
+                if tab_entries is None:
+                    incomplete_walk = True
+                    notify_discovery(
+                        f"GSCM's {tab} bookmark tab could not be found or activated; "
+                        "the scan is incomplete and the prior snapshot will be preserved.",
+                    )
+                    continue
+                for entry in tab_entries:
+                    entry['module_control_suffix'] = resolved_module_suffix
+                if requested_module is not None:
+                    tab_entries = [entry for entry in tab_entries if entry.get('module') == requested_module]
+                raw_entries.extend(tab_entries)
+                # Unknown publicscope rows do not belong to a known tab and would
+                # otherwise disappear behind the per-tab filter. Preserve them as
+                # evidence so the fail-closed warning below makes the scan partial.
+                raw_entries.extend(
+                    entry for entry in (bookmark_dataset_entries(page) or [])
+                    if entry.get("tab") not in SCOPE_TABS
+                )
+                source = (
+                    " from GSCM's in-memory gds_bookmark dataset"
+                    if any(item.get("source") == "gds_bookmark" for item in tab_entries)
+                    else " from the Favorite grid" if tab_entries else ""
+                )
+                report_progress("running", {
+                    "stage": "report_discovery",
+                    "message": f"{tab}: {len(tab_entries)} bookmark observation(s){source}.",
+                    "item_count": len(tab_entries),
+                })
     else:
         # The Setting gear could not be reached on this build, so the walk a
         # run would take is unavailable. The dataset is the only remaining
@@ -3294,12 +3392,12 @@ def discover_catalog(page, job: dict, report_progress) -> tuple[list[dict], bool
         raw_entries.extend(dataset_entries)
         incomplete_walk = True
 
+    if not raw_entries and (job.get('discovery') or {}).get('diagnostic_grid'):
+        _fail_with_screen(page, 'GSCM exposed no bookmark rows in gds_bookmark or its Setting > Favorite tabs (Private, Public, Custom).')
+    if not raw_entries and not incomplete_walk:
+        return [], _target_catalog_request(job) is None
     if not raw_entries:
-        _fail_with_screen(
-            page,
-            "GSCM exposed no bookmark rows in gds_bookmark or its Setting > "
-            "Favorite tabs (Private, Public, Custom).",
-        )
+        return [], False
 
     # Preserve fail-closed evidence before stable-id reconciliation. A corrupt
     # dataset can list the same id once under Public and once under an unmapped
@@ -3513,6 +3611,9 @@ def open_bookmark(page, job: dict, report_progress=None) -> str:
 
     open_portal(page, portal_url(job))
     open_favorites_dialog(page, report_progress)
+    if automation.get('favorite_module_control') and automation.get('favorite_module'):
+        from app.flow_gscm_modules import select
+        select(page, automation['favorite_module'], automation['favorite_module_control'])
     # The portal populates gds_bookmark asynchronously after the Setting shell
     # appears. Resolve scope from the exact stable identity before selecting.
     dataset = wait_for_bookmark_dataset(page, bookmark_id=bookmark_id)

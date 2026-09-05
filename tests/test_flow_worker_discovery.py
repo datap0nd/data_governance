@@ -839,7 +839,7 @@ def test_gscm_call_waits_for_the_human_and_retries_when_headed(monkeypatch, tmp_
     assert result == "opened"
     assert len(attempts) == 2
     assert len(waited) == 1
-    assert any("visible Edge window" in message for message in notifications)
+    assert any("visible browser window" in message for message in notifications)
 
 
 def test_gscm_auto_login_is_a_noop_without_a_stored_credential(monkeypatch, tmp_path):

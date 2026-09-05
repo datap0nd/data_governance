@@ -517,7 +517,7 @@ def test_visible_worker_keeps_helpers_during_preparation_and_idles_after_downloa
             registrations.append(body['capabilities'].copy())
             return {'headed_work_pending': clock[0] < 100}
         assert path.endswith('/claim')
-        return {'task': {'id': 1}} if clock[0] == 100 else {}
+        return {'task': {'id': 1, 'job': {'execution': {'browser_mode': 'headed', 'browser_channel': 'msedge'}}}} if clock[0] == 100 else {}
     def execute(client, identity, task, page, profile, staging, *, headed):
         assert headed and identity == 'bi-desktop-headed-2'
         completed.append(task['id']); clock[0] += 120

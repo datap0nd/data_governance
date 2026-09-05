@@ -11,7 +11,7 @@ const capacity = context._flowCapacityHtml({headless_capacity:3, online_capacity
 assert.match(capacity, /Export task 9/);
 assert.match(capacity, /&lt;Portal>/);
 assert.match(capacity, /value="2" selected/);
-assert.match(capacity, /Save portal limit/);
+assert.match(capacity, /Save portal settings/);
 const logSource = fs.readFileSync(new URL('../app/static/flow_run_log.js', import.meta.url), 'utf8');
 const container = {innerHTML:''};
 const log = {location:{pathname:'/flow-runs/4'}, document:{getElementById:id => id === 'flow-run-log' ? container : null}};

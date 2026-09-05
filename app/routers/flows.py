@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 
 from app.config import DB_PATH, UPLOAD_PGHOST, UPLOAD_PGPORT
 from app.database import get_db
-from app import flow_paths, flow_layout, flow_capacity, flow_tasks, flow_parallel
+from app import flow_paths, flow_layout, flow_capacity, flow_tasks, flow_parallel, flow_browser
 from app.flow_credentials import asap_credential_status, save_asap_credentials
 from app.flow_asap_exports import (
     public_asap_download_types,
@@ -382,6 +382,8 @@ def fail_stale_runs(
     failed = []
     with get_db() as db:
         db.execute('BEGIN IMMEDIATE')
+        from app.flow_recordings import reap as reap_recordings
+        reap_recordings(db, timeout_seconds=timeout_seconds)
         flow_parallel.reap(db)
         rows = db.execute(
             """SELECT r.id, r.flow_id, r.worker_id, r.heartbeat_at, r.claimed_at,
@@ -664,6 +666,7 @@ class ReportWrite(BaseModel):
 
 class FlowWrite(BaseModel):
     name: str = Field(min_length=1, max_length=200)
+    execution_method: Literal['catalog', 'recorded'] | None = None
     source_type: str = "portal"
     site_id: int | None = Field(default=None, ge=1)
     report_id: int | None = Field(default=None, ge=1)
@@ -711,6 +714,17 @@ class FlowWrite(BaseModel):
     @model_validator(mode="after")
     def validate_flow(self):
         self.name = self.name.strip()
+        if self.execution_method == 'recorded':
+            if self.source_type != 'portal':
+                raise ValueError('Recording is available only for portal Flows.')
+            self.period_strategy = 'none'
+            self.download_parallelism = 1
+            self.asap_download_type = None
+            self.export_report_title = self.export_filter_details = None
+            self.export_views = []
+            self.download_links = []
+            if self.transform_enabled and Path(self.transform_script_path or '').suffix.lower() != '.py':
+                raise ValueError('Recorded Flows require a Python transformation.')
         self.source_type = self.source_type.strip().casefold()
         if self.source_type not in SOURCE_TYPES:
             raise ValueError("Flow source type must be a website report, Outlook attachment, or file.")
@@ -1034,6 +1048,7 @@ class ScanProgress(BaseModel):
     complete: bool = True
     error: str | None = Field(default=None, max_length=10000)
     skipped_reports: list[dict[str, Any]] = Field(default_factory=list, max_length=1000)
+    recording_result: dict[str, Any] | None = None
 
     @field_validator("progress")
     @classmethod
@@ -1396,6 +1411,12 @@ def _validate_flow_selections(db, body: FlowWrite, *, new_flow: bool = False):
     if not report or report["site_id"] != body.site_id:
         raise HTTPException(400, "Choose an enabled report from the selected website.")
     adapter = report["adapter"]
+    if body.execution_method == 'recorded':
+        if adapter not in {ASAP_PORTAL_ADAPTER, GSCM_PORTAL_ADAPTER}:
+            raise HTTPException(400, 'Record a Flow on ASAP or GSCM.')
+        if new_flow and body.enabled:
+            raise HTTPException(409, 'Record and validate the draft before enabling its schedule.')
+        return
     if adapter == ASAP_PORTAL_ADAPTER:
         try:
             download_type = resolve_asap_download_type(
@@ -1508,7 +1529,7 @@ def _validate_flow_selections(db, body: FlowWrite, *, new_flow: bool = False):
             raise HTTPException(400, f"Invalid {row['label']} value: {invalid[0]}")
 
 
-def _build_job(db, flow_id: int, *, force_reprocess: bool = False) -> dict:
+def _build_job(db, flow_id: int, *, force_reprocess: bool = False, recording_draft: bool = False) -> dict:
     flow = _flow_out(db, flow_id, include_private_storage=True)
     if flow.get('sql_reconciliation_required'):
         raise HTTPException(409, 'A prior SQL commit may have completed. Reconcile the target and acknowledge it before another run.')
@@ -1543,7 +1564,8 @@ def _build_job(db, flow_id: int, *, force_reprocess: bool = False) -> dict:
     }
     if source_type == "file":
         execution["required_adapter"] = LOCAL_FILE_ADAPTER
-    return {
+    execution['browser_channel'] = flow_browser.configured(db)
+    job = {
         "schema_version": 3,
         **({"paths": paths} if paths else {}),
         "execution": {
@@ -1551,6 +1573,7 @@ def _build_job(db, flow_id: int, *, force_reprocess: bool = False) -> dict:
         },
         "flow": {
             "id": flow["id"], "name": flow["name"],
+            "execution_method": flow.get('execution_method', 'catalog'),
             "source_type": source_type,
             "folder": flow.get("flow_folder"),
         },
@@ -1636,6 +1659,10 @@ def _build_job(db, flow_id: int, *, force_reprocess: bool = False) -> dict:
             "table": flow.get("sql_table"),
         },
     }
+    if flow.get('execution_method') == 'recorded':
+        from app.flow_recordings import attach_job
+        attach_job(db, flow, job, allow_draft=recording_draft)
+    return job
 
 
 def queue_flow_run_service(
@@ -1646,6 +1673,8 @@ def queue_flow_run_service(
     trigger_type: str,
 ) -> tuple[int, dict]:
     """Create one durable Flow run for manual, scheduled, or pipeline callers."""
+    from app.flow_recordings import assert_flow_idle
+    assert_flow_idle(db, flow_id)
     if trigger_type not in {"manual", "scheduled", "pipeline", "resume", "sql_retry"}:
         raise ValueError("Unsupported Flow trigger type.")
     # The folder-wide direct-publish availability check and the queued row are
@@ -2157,6 +2186,15 @@ def inspect_sql_retry_eligibility(
         )
     source_artifacts = _loads(source["artifact_json"], [])
     transformed = bool(source_job.get("transformation", {}).get("enabled"))
+    if source_job.get('flow', {}).get('execution_method') == 'recorded':
+        from app.flow_tasks import task_matrix
+        expected = {task['export_view'] for task in task_matrix(source_job)}
+        saved = [item for item in source_artifacts if item.get('status') == 'saved']
+        ready = [item for item in source_artifacts if item.get('status') == 'transformed'] if transformed else saved
+        if (not expected or len(saved) != len(expected) or {item.get('export_view') for item in saved} != expected
+                or len(ready) != len(expected) or {item.get('export_view') for item in ready} != expected):
+            return _recovery_result('blocked', 'download_bundle_incomplete',
+                'Recorded SQL retry requires every validated output and its configured transformation.', _source=source)
     if transformed:
         candidates = [item for item in source_artifacts if item.get("status") == "transformed"]
     else:
@@ -2372,6 +2410,29 @@ def inspect_resume_eligibility(db, run_id: int) -> dict:
             "The Flow output storage mode changed after this run. Start a fresh Run instead of mixing storage layouts.",
             _source=source,
         )
+    if source_job.get('flow', {}).get('execution_method') == 'recorded':
+        if job.get('recording') != source_job.get('recording'):
+            return _recovery_result('blocked', 'recording_revision_changed',
+                'The recording revision changed. Start a new run.', _source=source)
+        from app.flow_recordings import config_hash
+        if config_hash(job) != config_hash(source_job):
+            return _recovery_result('blocked', 'recording_configuration_changed',
+                'The recorded pipeline configuration changed. Start a new run.', _source=source)
+        prior = _loads(source['artifact_json'], [])
+        defaults = [item.get('recording_defaults') for item in prior if item.get('recording_defaults') is not None]
+        if any(p['mode'] == 'portal_default' for p in source_job['recording']['definition'].get('parameters', {}).values()) and not defaults:
+            return _recovery_result('blocked', 'recording_defaults_unknown',
+                'The original portal defaults were not captured. Start a new run.', _source=source)
+        job['recording_parameters'] = source_job['recording_parameters']
+        job['resume'] = {'from_run_id': run_id, 'completed': [], 'recording_defaults': defaults[0] if defaults else {}}
+        try:
+            assert_flow_target_available(db, flow_target_resource_key_from_job(job))
+            assert_no_active_flow_publish_run(db, job)
+        except HTTPException as exc:
+            return _recovery_result('blocked', 'target_busy', str(exc.detail), _source=source)
+        return _recovery_result('eligible', 'recording_session_replay',
+            'Replay all recorded interactions with the original resolved dates; portal defaults must still match.',
+            _source=source, _job=job, _completed=[])
     carried = (source_job.get("resume") or {}).get("completed") or []
     saved = [
         {**item, "source_run_id": run_id}
@@ -2740,6 +2801,7 @@ def create_flow(body: FlowWrite, request: Request):
                  iso_utc(utc_now()) if body.enabled and body.schedule_type != "manual" else None),
             )
             flow_id = cursor.lastrowid
+            db.execute('UPDATE flows SET execution_method=? WHERE id=?', (body.execution_method or 'catalog', flow_id))
             db.execute("UPDATE flows SET download_parallelism=? WHERE id=?", (body.download_parallelism or 1, flow_id))
             if managed:
                 adapter = db.execute("SELECT adapter FROM flow_sites WHERE id=?", (body.site_id,)).fetchone()[0]
@@ -2846,6 +2908,9 @@ def _generate_saved_standalone(saved: dict) -> dict:
     from app import flow_standalone
     try:
         with get_db() as db:
+            flow = _flow_out(db, saved['id'])
+            if flow.get('execution_method') == 'recorded' and not flow.get('recording_revision_id'):
+                return {**saved, 'standalone': {'state': 'draft', 'message': 'Validate and activate a recording to generate its portable script.'}}
             job = _build_job(db, saved["id"], force_reprocess=True)
         result = flow_standalone.generate(job)
     except (OSError, ValueError, RuntimeError, HTTPException) as exc:
@@ -2961,12 +3026,18 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
                       schedule_day, freshness_effective_from_at,
                       sql_database, sql_schema, sql_table, sql_target_source_id,
                       target_folder, local_file_path, local_file_worksheet, flow_folder,
-                      local_file_last_identity, local_file_config_revision, download_parallelism
+                      local_file_last_identity, local_file_config_revision, download_parallelism, execution_method
                FROM flows WHERE id=?""",
             (flow_id,),
         ).fetchone()
         if not existing:
             raise HTTPException(404, "Flow not found.")
+        if body.execution_method is None:
+            body.execution_method = existing['execution_method']
+            if body.execution_method == 'recorded':
+                body = FlowWrite.model_validate(body.model_dump())
+        from app.flow_recordings import assert_flow_idle
+        assert_flow_idle(db, flow_id)
         if body.download_parallelism is None:
             body.download_parallelism = existing['download_parallelism']
         if body.download_parallelism > 1 and not existing['flow_folder']:
@@ -3065,6 +3136,9 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
         if not cursor.rowcount:
             raise HTTPException(404, "Flow not found.")
         db.execute("UPDATE flows SET download_parallelism=? WHERE id=?", (body.download_parallelism, flow_id))
+        db.execute('UPDATE flows SET execution_method=? WHERE id=?', (body.execution_method, flow_id))
+        if body.enabled and body.execution_method == 'recorded':
+            _build_job(db, flow_id)
         from app.freshness_inheritance import reconcile_file_binding, reconcile_source
         reconcile_file_binding(db, flow_id)
         for source_id in {existing["sql_target_source_id"], sql_target_source_id} - {None}:
@@ -3132,6 +3206,10 @@ def set_flow_enabled(flow_id: int, body: FlowEnabledWrite, request: Request):
             raise HTTPException(404, "Flow not found.")
         from app.routers.pipelines import assert_resource_unlocked
         assert_resource_unlocked(db, "flow", str(flow_id))
+        if body.enabled and flow['execution_method'] == 'recorded':
+            from app.flow_recordings import assert_flow_idle
+            assert_flow_idle(db, flow_id)
+            _build_job(db, flow_id)
         if body.enabled and flow["schedule_type"] == "manual":
             raise HTTPException(400, "Choose a daily, weekly, or monthly schedule before activating this flow.")
         next_run = (
@@ -3184,6 +3262,8 @@ def delete_flow(flow_id: int, body: FlowDeleteWrite, request: Request):
         ).fetchone()
         if not flow:
             raise HTTPException(404, "Flow not found.")
+        from app.flow_recordings import assert_flow_idle
+        assert_flow_idle(db, flow_id)
         if body.confirmation != flow["name"]:
             raise HTTPException(400, "Type the exact flow name to confirm deletion.")
         if flow["enabled"]:
@@ -3282,6 +3362,8 @@ def delete_flow(flow_id: int, body: FlowDeleteWrite, request: Request):
             (now, now, flow_id),
         ).rowcount
         db.execute("DELETE FROM flow_file_source_bindings WHERE flow_id=?", (flow_id,))
+        db.execute('DELETE FROM flow_recording_sessions WHERE flow_id=?', (flow_id,))
+        db.execute('DELETE FROM flow_recording_revisions WHERE flow_id=?', (flow_id,))
         db.execute("DELETE FROM flows WHERE id=?", (flow_id,))
         for source_id in linked_source_ids:
             reconcile_source(db, source_id)
@@ -3613,7 +3695,7 @@ def _queue_scan(db, site, trigger_type: str, requested_by: str | None, report=No
                 mode: str = "full") -> tuple[int, str]:
     """Queue one catalog scan; returns (scan id, its browser mode)."""
     active = db.execute(
-        "SELECT id, job_json FROM flow_catalog_scans WHERE site_id=? AND status IN ('queued','claimed','running') LIMIT 1",
+        "SELECT id, job_json FROM flow_catalog_scans WHERE site_id=? AND status IN ('queued','claimed','running') AND trigger_type NOT LIKE 'recording_%' LIMIT 1",
         (site["id"],),
     ).fetchone()
     if active:
@@ -3637,7 +3719,7 @@ def _queue_scan(db, site, trigger_type: str, requested_by: str | None, report=No
             "id": site["id"], "name": site["name"], "adapter": site["adapter"],
             "base_url": site["base_url"], "auth_url": site["auth_url"],
         },
-        "execution": {"browser_mode": browser_mode},
+        "execution": {"browser_mode": browser_mode, "browser_channel": flow_browser.configured(db)},
         "discovery": {
             "scope": ["*"], "delete_missing": False, "max_duration_minutes": 90,
             "mode": mode if mode in SCAN_MODES else "full",
@@ -3655,6 +3737,8 @@ def _queue_scan(db, site, trigger_type: str, requested_by: str | None, report=No
             if report else None
         ),
     }
+    if site['adapter'] == GSCM_PORTAL_ADAPTER:
+        job['discovery'].update(_loads(flow_paths.setting(db, f"gscm_discovery:{site['id']}", '{}'), {}))
     cursor = db.execute(
         """INSERT INTO flow_catalog_scans
            (site_id, trigger_type, status, requested_by, job_json, created_at)
@@ -3736,6 +3820,7 @@ def stop_scan(scan_id: int, request: Request):
                 "message": f"Scan already finished with status {row['status']}.",
                 "worker": {"status": "not_needed"},
             }
+        recording_session = bool(_loads(row['job_json'], {}).get('recording_operation'))
         scan_browser_mode = _loads(row["job_json"], {}).get("execution", {}).get(
             "browser_mode", "headless",
         )
@@ -3765,12 +3850,17 @@ def stop_scan(scan_id: int, request: Request):
                WHERE id=? AND status IN ('queued','claimed','running')""",
             (_json(progress), message, now, now, scan_id),
         )
-        next_scan = _iso(_next_weekly_scan(row["discovery_weekday"], row["discovery_time"]))
-        db.execute(
-            """UPDATE flow_sites SET last_scan_at=?, last_scan_status='cancelled',
-               last_scan_error=?, next_scan_at=?, updated_at=? WHERE id=?""",
-            (now, message, next_scan, now, site_id),
-        )
+        if not recording_session:
+            next_scan = _iso(_next_weekly_scan(row["discovery_weekday"], row["discovery_time"]))
+            db.execute(
+                """UPDATE flow_sites SET last_scan_at=?, last_scan_status='cancelled',
+                   last_scan_error=?, next_scan_at=?, updated_at=? WHERE id=?""",
+                (now, message, next_scan, now, site_id),
+            )
+        else:
+            db.execute("UPDATE flow_recording_revisions SET status='draft' WHERE id=(SELECT revision_id FROM flow_recording_sessions WHERE scan_id=?) AND status='validating'", (scan_id,))
+            if worker_id:
+                db.execute('UPDATE flow_workers SET stop_requested_pid=? WHERE worker_id=?', (process_id or -1, worker_id))
         if stop_assigned_worker:
             db.execute(
                 """UPDATE flow_workers SET status='offline', current_scan_id=NULL,
@@ -3802,10 +3892,11 @@ def stop_scan(scan_id: int, request: Request):
                WHERE id=? AND status='cancelled'""",
             (_json(progress), message, scan_id),
         )
-        db.execute(
-            """UPDATE flow_sites SET last_scan_error=?, updated_at=? WHERE id=?""",
-            (message, now, site_id),
-        )
+        if not recording_session:
+            db.execute(
+                """UPDATE flow_sites SET last_scan_error=?, updated_at=? WHERE id=?""",
+                (message, now, site_id),
+            )
         db.execute(
             """INSERT INTO flow_scan_events
                (scan_id, status, stage, message, details_json, created_at)
@@ -4760,6 +4851,9 @@ def register_worker(body: WorkerRegister):
         replacement_pid = body.capabilities.get("process_id")
         if existing_worker and existing_worker['stop_requested_pid'] is not None and previous_pid == replacement_pid:
             return {'worker_id': body.worker_id, 'status': 'stopping', 'flows_root': registration_root, 'artifact_store_roots': sorted(recovery_roots)}
+        if existing_worker and previous_pid is not None and replacement_pid is not None and str(previous_pid) != str(replacement_pid):
+            from app.flow_recordings import reap as reap_recordings
+            reap_recordings(db, restarted_worker=body.worker_id)
         recovered_parallel = flow_parallel.recover_worker(db, existing_worker, replacement_pid) if existing_worker else False
         process_restarted = (
             existing_worker is not None
@@ -4826,10 +4920,12 @@ def register_worker(body: WorkerRegister):
                  last_seen_at=excluded.last_seen_at, updated_at=excluded.updated_at""",
             (body.worker_id, body.display_name, _json(body.capabilities), now, now, now),
         )
+        configured_browser = flow_browser.configured(db)
         headed_work_pending = bool(body.capabilities.get('headed') and flow_capacity.pending_work(db, 'headed'))
     if interrupted_run_id is not None:
         notify_flow_owner_of_failure(interrupted_run_id)
     return {
+        'browser_channel': configured_browser,
         "worker_id": body.worker_id,
         "status": "idle",
         "interrupted_run_id": interrupted_run_id,
@@ -4932,12 +5028,15 @@ def claim_run(worker_id: str):
 
         def worker_can_claim(candidate) -> bool:
             job = _loads(candidate["job_json"], {})
+            if not flow_browser.can_claim(job, capabilities):
+                return False
             execution = job.get("execution", {})
             required_store = execution.get("required_artifact_store_id")
             required_adapter = execution.get("required_adapter")
             adapters = set(capabilities.get("adapters") or [])
             return (
                 execution.get("browser_mode", "headless") == worker_mode
+                and (job.get('flow', {}).get('execution_method') != 'recorded' or capabilities.get('recorded_flows_v1'))
                 and (not flow_tasks.enabled(job) or flow_tasks.supported(job, capabilities))
                 and flow_parallel.portal_available(db, job)
                 and (not required_adapter or required_adapter in adapters)
@@ -4961,6 +5060,8 @@ def claim_run(worker_id: str):
             scan = next((candidate for candidate in queued_scans if (
                 _loads(candidate["job_json"], {}).get("execution", {}).get("browser_mode", "headless")
                 == worker_mode
+                and flow_browser.can_claim(_loads(candidate['job_json'], {}), capabilities)
+                and (not _loads(candidate['job_json'], {}).get('recording_operation') or capabilities.get('flow_recorder_v1'))
                 and flow_parallel.portal_available(db, _loads(candidate['job_json'], {}))
             )), None)
             if scan:
@@ -5009,6 +5110,9 @@ def update_scan(worker_id: str, scan_id: int, body: ScanProgress):
             raise HTTPException(404, "Scan is not assigned to this worker.")
         if row["status"] in RUN_TERMINAL:
             return {"scan_id": scan_id, "status": row["status"], "ignored": True}
+        if _loads(row['job_json'], {}).get('recording_operation'):
+            from app.flow_recordings import update_operation
+            return update_operation(db, row, worker_id, body, now)
         site_adapter = db.execute(
             "SELECT adapter FROM flow_sites WHERE id=?", (row["site_id"],),
         ).fetchone()
@@ -5036,9 +5140,17 @@ def update_scan(worker_id: str, scan_id: int, body: ScanProgress):
                 "complete": False, "ignored_incomplete_snapshot": True,
             }
         else:
+            coverage = _loads(row['job_json'], {}).get('discovery') or {}
+            # A configured module/scope scan cannot retire bookmarks outside
+            # that area. Merge verified identities and preserve the rest.
+            limited_area = bool(site_adapter and site_adapter['adapter'] == GSCM_PORTAL_ADAPTER
+                and (coverage.get('modules') or coverage.get('scope_tabs') and
+                     set(coverage['scope_tabs']) != {'Private', 'Public', 'Custom'}))
             result = _apply_discovery(
-                db, row["site_id"], body.reports, now, complete=body.complete,
+                db, row["site_id"], body.reports, now, complete=body.complete and not limited_area,
             ) if body.status == "succeeded" else {}
+            if limited_area and body.status == 'succeeded':
+                result.update(coverage_complete=body.complete, coverage=coverage, preserved_other_areas=True)
         if body.skipped_reports:
             result = {**result, "skipped_reports": body.skipped_reports}
             db.execute(

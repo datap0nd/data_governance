@@ -7835,3 +7835,20 @@ body.remote-flow-control-enabled { padding-top: 32px; }
 .flow-step-next { margin-top: 16px; }
 .flow-step-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -4px; }
 .flow-step-body #flow-destination, .flow-summary dd { overflow-wrap: anywhere; }
+
+
+/* Portal recorder and global Flow settings. */
+.flow-recording-dialog { width:min(1060px,95vw); max-height:90vh; overflow:auto;
+    margin:auto; background:var(--bg-card,var(--bg)); color:var(--text);
+    border:1px solid var(--border); border-radius:12px; padding:24px; }
+.flow-recording-dialog::backdrop { background:rgba(0,0,0,.3); }
+.flow-recording-header { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:16px; }
+.flow-recording-header button { width:auto; flex:none; }
+.flow-recording-dialog ol { padding-left:24px; }
+.flow-recording-dialog p { margin:10px 0; }
+.flow-recording-dialog [data-step] > strong { display:block; margin-bottom:8px; }
+.flow-recording-dialog .flow-form-grid { margin:12px 0; }
+#flow-capacity-form > label { display:inline-grid; gap:6px; margin:8px 16px 8px 0; }
+#flow-capacity-form select, .flow-recording-dialog > [data-body] > label select {
+    padding:8px 12px; font:inherit; border:1px solid var(--border); border-radius:6px;
+    color:var(--text); background:var(--bg-card,var(--bg)); }

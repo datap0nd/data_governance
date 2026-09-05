@@ -949,6 +949,8 @@ app.include_router(email_schedules.router)
 app.include_router(usage.router)
 app.include_router(materialized_views.router)
 app.include_router(recurrences.router)
+from app.routers.flow_recordings import router as flow_recordings_router
+app.include_router(flow_recordings_router)
 app.include_router(flows.router)
 app.include_router(system_paths_router)
 app.include_router(system_flows_router)

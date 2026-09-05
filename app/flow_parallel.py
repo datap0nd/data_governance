@@ -163,6 +163,9 @@ def claim_task(db, worker_id, *, run_id=None):
           AND (? IS NULL OR t.run_id=?) ORDER BY t.run_id,t.ordinal""", (run_id, run_id)).fetchall()
     for task in candidates:
         job = _job(task)
+        from app import flow_browser
+        if not flow_browser.can_claim(job, caps):
+            continue
         if job.get('execution', {}).get('browser_mode', 'headless') != mode or not flow_tasks.supported(job, caps):
             continue
         owner = task['coordinator_id'] == worker_id and worker['current_run_id'] == task['run_id']
