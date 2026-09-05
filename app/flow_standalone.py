@@ -77,6 +77,9 @@ def _atomic_text(path: Path, content: str):
 
 
 def generate(job: dict, *, code_dir: Path | None = None) -> dict:
+    if job.get('flow', {}).get('execution_method') == 'recorded':
+        from app.flow_portable import generate as generate_portable
+        return generate_portable(job)
     from app import flow_layout, flow_paths
     flow_paths.assert_job_paths(job)
     folder = (job.get('paths') or {}).get('flow_folder')
@@ -117,6 +120,11 @@ def status(job: dict) -> dict:
         stored = read_manifest(folder, job['flow']['id']).get('standalone') or {}
         path = Path(folder) / 'Scripts' / 'run_flow.py'
         _regular(path)
+        if stored.get('kind') == 'portable_recorded':
+            from app.flow_portable import configuration_hash
+            valid = path.is_file() and hashlib.sha256(path.read_text(encoding='utf-8').encode()).hexdigest() == stored.get('launcher_hash')
+            current = valid and stored.get('config_hash') == configuration_hash(job)
+            return {'state': 'current' if current else 'modified' if not valid else 'stale', 'launcher': str(path), **stored}
         if not stored or not path.is_file():
             return {'state': 'missing'}
         content = path.read_text(encoding='utf-8')
@@ -169,8 +177,9 @@ def run(job: dict, *, sql: bool | None = None, headed: bool | None = None, no_tr
                     raise RuntimeError('The standalone browser profile is already in use.')
                 playwright = stack.enter_context(flow_worker.sync_playwright())
                 staging = profile / 'downloads'; staging.mkdir(exist_ok=True)
-                browser = playwright.chromium.launch_persistent_context(str(profile), channel='msedge' if os.name == 'nt' else None,
-                    headless=not headed, accept_downloads=True, downloads_path=str(staging))
+                from app import flow_browser
+                browser = flow_browser.launch(playwright, profile, flow_browser.channel_for(job),
+                    headed=headed, downloads=staging)
                 stack.callback(browser.close)
                 page = browser.pages[0] if browser.pages else browser.new_page()
             flow_worker.execute_flow(page, job, progress, profile, staging, run_id=run_id,

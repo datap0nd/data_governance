@@ -17,6 +17,13 @@ def task_key(export_view, period) -> str:
 
 
 def task_matrix(job: dict) -> list[dict]:
+    if job.get('flow', {}).get('execution_method') == 'recorded':
+        from app.flow_recording import walk_steps
+        outputs = [step for step in walk_steps(job.get('recording', {}).get('definition', {}).get('steps', []))
+                   if step['action'] == 'download']
+        return [{'ordinal': index + 1, 'key': task_key(step['id'], None),
+                 'period': None, 'export_view': step['id'], 'download_link': None}
+                for index, step in enumerate(outputs)]
     periods = job['downloads'].get('periods') or [None]
     report = job.get('report') or {}
     links = report.get('download_links') or []
@@ -32,7 +39,8 @@ def task_matrix(job: dict) -> list[dict]:
 
 def parallelism(job: dict) -> int:
     execution = job.get('execution') or {}
-    if job.get('job_type') == 'sql_retry' or job.get('flow', {}).get('source_type', 'portal') != 'portal':
+    if (job.get('job_type') == 'sql_retry' or job.get('flow', {}).get('source_type', 'portal') != 'portal'
+            or job.get('flow', {}).get('execution_method') == 'recorded'):
         return 1
     return max(1, min(5, int(execution.get('download_parallelism') or 1)))
 

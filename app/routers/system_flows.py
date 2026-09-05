@@ -2,8 +2,9 @@
 from fastapi import APIRouter, Request, HTTPException
 from typing import Literal
 from pydantic import BaseModel, Field
+import json
 
-from app import flow_capacity, flow_paths, flow_parallel
+from app import flow_capacity, flow_paths, flow_parallel, flow_browser
 from app.database import get_db
 from app.local_access import require_app_access
 from app.routers.eventlog import get_actor, log_event
@@ -13,17 +14,27 @@ router = APIRouter(prefix='/api/system/flows', tags=['flows'])
 
 class CapacityWrite(BaseModel):
     headless_capacity: int = Field(ge=1, le=5, strict=True)
+    browser_channel: Literal['chrome', 'msedge'] | None = None
     headed_capacity: int | None = Field(default=None, ge=1, le=5, strict=True)
+
+
+class GscmDiscovery(BaseModel):
+    modules: list[str] = Field(default_factory=list, max_length=50)
+    module_control_suffix: str | None = Field(default=None, max_length=200, pattern=r'^\.[A-Za-z0-9_.]+$')
+    scope_tabs: list[Literal['Private', 'Public', 'Custom']] = Field(default=['Private', 'Public', 'Custom'], min_length=1)
+    diagnostic_grid: bool = False
 
 
 class PortalCapacityWrite(BaseModel):
     capacity: int = Field(ge=1, le=5, strict=True)
+    gscm_discovery: GscmDiscovery | None = None
 
 
 def _state(db):
-    return {**flow_capacity.state(db), 'portals': [
-        {'id': row['id'], 'name': row['name'], 'capacity': flow_parallel.portal_limit(db, row['id'])}
-        for row in db.execute("SELECT id,name FROM flow_sites WHERE adapter IN ('asap_portal','gscm_portal','web_export') ORDER BY name")]}
+    return {**flow_capacity.state(db), 'browser_channel': flow_browser.configured(db), 'portals': [
+        {'id': row['id'], 'name': row['name'], 'adapter': row['adapter'], 'capacity': flow_parallel.portal_limit(db, row['id']),
+         'gscm_discovery': json.loads(flow_paths.setting(db, f"gscm_discovery:{row['id']}", '{}'))}
+        for row in db.execute("SELECT id,name,adapter FROM flow_sites WHERE adapter IN ('asap_portal','gscm_portal','web_export') ORDER BY name")]}
 
 
 @router.get('')
@@ -38,10 +49,12 @@ def save_capacity(body: CapacityWrite, request: Request):
     with get_db() as db:
         db.execute('BEGIN IMMEDIATE')
         flow_paths.save_setting(db, flow_capacity.CAPACITY_KEY, body.headless_capacity)
+        if body.browser_channel is not None:
+            flow_paths.save_setting(db, flow_browser.SETTING, body.browser_channel)
         if body.headed_capacity is not None:
             flow_paths.save_setting(db, flow_capacity.HEADED_CAPACITY_KEY, body.headed_capacity)
-        log_event(db, 'system', None, 'Flows', 'capacity_changed',
-                  f'headless_capacity={body.headless_capacity}, headed_capacity={flow_capacity.capacity(db, "headed")}', get_actor(request))
+        log_event(db, 'system', None, 'Flows', 'settings_changed',
+                  f'headless_capacity={body.headless_capacity}, headed_capacity={flow_capacity.capacity(db, "headed")}, browser={flow_browser.configured(db)}', get_actor(request))
         return _state(db)
 
 
@@ -53,6 +66,11 @@ def save_portal_capacity(site_id: int, body: PortalCapacityWrite, request: Reque
         if not db.execute("SELECT 1 FROM flow_sites WHERE id=? AND adapter IN ('asap_portal','gscm_portal','web_export')", (site_id,)).fetchone():
             raise HTTPException(404, 'Portal not found.')
         flow_paths.save_setting(db, f'flows_portal_capacity:{site_id}', body.capacity)
+        if body.gscm_discovery is not None:
+            site = db.execute('SELECT adapter FROM flow_sites WHERE id=?', (site_id,)).fetchone()
+            if site['adapter'] != 'gscm_portal':
+                raise HTTPException(422, 'Bookmark discovery settings apply only to GSCM.')
+            flow_paths.save_setting(db, f'gscm_discovery:{site_id}', body.gscm_discovery.model_dump_json())
         log_event(db, 'flow_site', site_id, 'Portal capacity', 'capacity_changed', f'capacity={body.capacity}', get_actor(request))
         return _state(db)
 

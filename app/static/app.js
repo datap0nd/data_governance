@@ -10740,6 +10740,7 @@ function _flowSourcePickerHtml(catalog) {
                 <button type="button" class="flow-source-card" id="flow-source-file">
                     <strong>From file</strong><span>Read one exact CSV or Excel path on the worker, keep private snapshots, and process it on a schedule.</span>
                 </button>
+                <button type="button" class="flow-source-card" id="flow-source-record"><strong>Record a portal flow</strong><span>Record a report in ASAP or GSCM, review its actions, then validate and schedule it.</span></button>
                 <button type="button" class="flow-source-card" id="flow-source-portal" ${portalReady ? "" : "disabled"}>
                     <strong>Website report</strong><span>${portalReady ? "Download a discovered ASAP report or GSCM bookmark." : "Add and scan a website before creating this category."}</span>
                 </button>
@@ -11381,6 +11382,7 @@ function _flowBuilderHtml(catalog, existing = null) {
                     <div class="flow-form-section">
                         <div class="flow-section-head"><h2>Source and report</h2><p>${isGscm ? "Choose a GSCM bookmark. It already holds the filters you saved in GSCM." : "Choose an enabled catalog report and its configured filters."}</p></div>
                         <div class="flow-form-grid">
+                            ${(isGscm || isAsap) ? `<label><span>Execution method</span><select id="flow-execution-method"><option value="catalog" ${existing?.execution_method !== 'recorded' ? 'selected' : ''}>${isGscm ? 'Download bookmark' : 'Catalog automation'}</option><option value="recorded" ${existing?.execution_method === 'recorded' ? 'selected' : ''}>Recorded flow</option></select></label><div>${existing?.id ? '<button type="button" class="btn-secondary" id="flow-record-review">Record / review flow</button>' : '<small>Save the draft to open the recorder.</small>'}</div>` : ''}
                             <label><span>Flow name</span><input id="flow-name" required maxlength="200" value="${esc(existing?.name || "")}" placeholder="Weekly report download"></label>
                             <label><span>Website</span><select id="flow-site" required>${sites.length ? sites.map(site => `<option value="${site.id}" ${String(site.id) === String(siteId) ? "selected" : ""}>${esc(site.name)}</option>`).join("") : '<option value="">Add a website first</option>'}</select></label>
                             <label class="flow-span-2"><span>${isGscm ? "Bookmark" : "Report"}</span><div class="flow-file-control"><select id="flow-report" required>${_flowReportOptions(catalog, siteId, reportId)}</select><button type="button" class="btn-secondary" id="flow-scan-report-now">${isGscm ? "Rescan bookmark" : "Scan report"}</button></div><small id="flow-report-scan-status">${isGscm ? "Rescan to confirm this bookmark is still on the GSCM home screen." : "Scan this report to discover its filters and options without running a full catalog scan."}</small></label>
@@ -11638,7 +11640,7 @@ async function renderFlows() {
     };
     return `
         <div class="page-header flow-page-header"><div><h1>Flows</h1><p class="subtitle">Acquire data from files, Outlook, or website reports on the authenticated BI desktop.</p></div><button class="btn-primary" id="flow-create">Create flow</button></div>
-        <div class="flow-tabs" role="tablist" aria-label="Flow views"><button id="flow-tab-list" class="active" role="tab" aria-selected="true" aria-controls="flow-workspace" data-flow-view="list">Flows</button><button id="flow-tab-catalog" role="tab" aria-selected="false" aria-controls="flow-workspace" data-flow-view="catalog">Catalog</button><button id="flow-tab-runs" role="tab" aria-selected="false" aria-controls="flow-workspace" data-flow-view="runs">Run history</button></div>
+        <div class="flow-tabs" role="tablist" aria-label="Flow views"><button id="flow-tab-list" class="active" role="tab" aria-selected="true" aria-controls="flow-workspace" data-flow-view="list">Flows</button><button id="flow-tab-catalog" role="tab" aria-selected="false" aria-controls="flow-workspace" data-flow-view="catalog">Catalog</button><button id="flow-tab-runs" role="tab" aria-selected="false" aria-controls="flow-workspace" data-flow-view="runs">Run history</button><button id="flow-tab-settings" role="tab" aria-selected="false" aria-controls="flow-workspace" data-flow-view="settings">Settings</button></div>
         <div id="flow-workspace" role="tabpanel" aria-labelledby="flow-tab-list">${_flowListHtml(flows, workers, catalog, runs)}</div>`;
 }
 
@@ -11657,6 +11659,14 @@ function _flowShowView(view, payload = null) {
     });
     const selectedTab = document.querySelector('.flow-tabs button[aria-selected="true"]');
     workspace.setAttribute("aria-labelledby", selectedTab?.id || "flow-tab-list");
+    if (view === "settings") {
+        workspace.innerHTML = '<p role="status">Loading Flows settings…</p>';
+        api('/api/system/flows').then(settings => {
+            if (state.view !== 'settings' || !workspace.isConnected) return;
+            workspace.innerHTML = _flowCapacityHtml(settings); bindFlowSettingsPage();
+        }).catch(error => { if (workspace.isConnected) workspace.textContent = error.message; });
+        return;
+    }
     if (view === "catalog") workspace.innerHTML = _flowCatalogHtml(state.catalog, state.scans, state.estimates, state.workers);
     else if (view === "runs") workspace.innerHTML = _flowRunsHtml(state.runs);
     else if (view === "source-picker") workspace.innerHTML = _flowSourcePickerHtml(state.catalog);
@@ -11984,7 +11994,7 @@ function _flowCollectBuilder() {
     const titleControl = $("#flow-export-report-title");
     const filterDetailsControl = $("#flow-export-filter-details");
     return {
-        ...shared, source_type: "portal", outlook_subject_contains: null,
+        ...shared, execution_method: $("#flow-execution-method")?.value || "catalog", source_type: "portal", outlook_subject_contains: null,
         local_file_path: null, local_file_worksheet: null,
         site_id: Number($("#flow-site").value), report_id: Number($("#flow-report").value),
         export_views: [...document.querySelectorAll("[data-flow-export-view]:checked")].map(input => input.value),
@@ -12283,6 +12293,8 @@ function _bindFlowWorkspace() {
     $("#flow-create-empty")?.addEventListener("click", () => _flowShowView("source-picker"));
     $("#flow-source-outlook")?.addEventListener("click", () => _flowShowView("builder", { _source_type: "outlook" }));
     $("#flow-source-file")?.addEventListener("click", () => _flowShowView("builder", { _source_type: "file" }));
+    $("#flow-source-record")?.addEventListener("click", () => FlowRecordings.create());
+    $("#flow-record-review")?.addEventListener("click", () => FlowRecordings.open(Number($("#flow-builder-form").dataset.id)));
     $("#flow-source-portal")?.addEventListener("click", () => _flowShowView("builder"));
     $("#flow-source-cancel")?.addEventListener("click", () => _flowShowView("list"));
     $("#flow-add-site")?.addEventListener("click", () => _flowSiteDialog());
@@ -12347,7 +12359,7 @@ function _bindFlowWorkspace() {
         if (flow) _flowDeleteDialog(flow);
     });
     document.querySelectorAll(".flow-enabled-switch").forEach(input => input.onchange = async () => { const enabled = input.checked; input.disabled = true; try { const updated = await apiPatch(`/api/flows/${input.dataset.id}/enabled`, { enabled }); const flow = state.flows.find(item => item.id === updated.id); Object.assign(flow, updated); input.disabled = false; toast(enabled ? "Flow activated" : "Flow paused"); } catch (err) { input.checked = !enabled; input.disabled = false; toast("Flow status not changed: " + err.message); } });
-    document.querySelectorAll(".flow-run").forEach(button => button.onclick = async () => { button.disabled = true; button.dataset.busy = "true"; const flow = state.flows.find(item => item.id === Number(button.dataset.id)); try { await apiPost(`/api/flows/${button.dataset.id}/run`); toast(flow?.source_type === "file" ? "Run queued. The worker will read the configured file and force a new snapshot." : flow?.source_type === "outlook" ? "Run queued. The worker will check the signed-in user's Outlook Inbox." : flow?.browser_mode === "headed" ? "Run queued. Edge is opening in the BI desktop." : "Run queued for the background worker"); } catch (err) { toast("Run not queued: " + err.message); button.disabled = false; } finally { delete button.dataset.busy; button.disabled = false; _flowRefreshActivity(); } });
+    document.querySelectorAll(".flow-run").forEach(button => button.onclick = async () => { button.disabled = true; button.dataset.busy = "true"; const flow = state.flows.find(item => item.id === Number(button.dataset.id)); try { await apiPost(`/api/flows/${button.dataset.id}/run`); toast(flow?.source_type === "file" ? "Run queued. The worker will read the configured file and force a new snapshot." : flow?.source_type === "outlook" ? "Run queued. The worker will check the signed-in user's Outlook Inbox." : flow?.browser_mode === "headed" ? "Run queued. The selected browser is opening in the BI desktop." : "Run queued for the background worker"); } catch (err) { toast("Run not queued: " + err.message); button.disabled = false; } finally { delete button.dataset.busy; button.disabled = false; _flowRefreshActivity(); } });
     document.querySelectorAll(".flow-stop").forEach(button => button.onclick = async () => { button.disabled = true; button.dataset.busy = "true"; try { const result = await apiPost(`/api/flows/${button.dataset.id}/stop`); toast(result.message || "Run stopped"); } catch (err) { toast("Run not stopped: " + err.message); button.disabled = false; } finally { delete button.dataset.busy; button.disabled = false; _flowRefreshActivity(); } });
     document.querySelectorAll(".flow-resume").forEach(button => button.onclick = async () => { button.disabled = true; try { const result = await apiPost(`/api/flows/runs/${button.dataset.id}/resume`); toast(`Resume queued - skipping ${result.skipped_files} saved file(s)`); await navigate("flows"); } catch (err) { toast("Resume not queued: " + err.message); button.disabled = false; } });
     document.querySelectorAll('.flow-row-actions a[href^="/flow-runs/"]').forEach(link => {
@@ -12481,7 +12493,7 @@ function _bindFlowWorkspace() {
         const headed = event.target.value === "headed";
         _flowSyncParallelism();
         $("#flow-browser-mode-help").textContent = headed
-            ? "Opens Edge in the signed-in BI desktop. Use it to build or debug a flow."
+            ? "Opens the selected browser in the signed-in BI desktop. Use it to build or debug a flow."
             : "Runs in the background. Best for routine and scheduled downloads.";
         $("#flow-browser-summary").textContent = headed ? "Headed · visible" : "Headless · background";
     });
@@ -12721,8 +12733,24 @@ function _bindFlowWorkspace() {
         $("#flow-schedule-day").required = monthly;
     });
     $("#flow-schedule-type")?.dispatchEvent(new Event("change"));
+    const methodControl = $('#flow-execution-method');
+    if (methodControl) {
+        const syncMethod = () => {
+            const recorded = methodControl.value === 'recorded';
+            for (const id of ['flow-report-filters', 'flow-export-views-section', 'flow-download-links-section']) {
+                const element = document.getElementById(id); if (element && recorded) element.hidden = true;
+            }
+            for (const id of ['flow-file-format', 'flow-period-strategy', 'flow-download-mode', 'flow-export-report-title', 'flow-export-filter-details', 'flow-download-parallelism']) {
+                const element = document.getElementById(id); if (element && recorded) element.closest('label').hidden = true;
+            }
+        };
+        methodControl.addEventListener('change', () => {
+            const body = _flowCollectBuilder();
+            _flowShowView('builder', {...body, id: Number($('#flow-builder-form').dataset.id) || undefined});
+        }); syncMethod();
+    }
     _flowBuildSteps($("#flow-builder-form"));
-    $("#flow-builder-form")?.addEventListener("submit", async event => { event.preventDefault(); const form = event.currentTarget; const button = form.querySelector('button[type="submit"]'); const error = form.querySelector(".flow-form-error"); button.disabled = true; error.textContent = ""; try { const body = _flowCollectBuilder(); const saved = await (form.dataset.id ? apiPut(`/api/flows/${form.dataset.id}`, body) : apiPostJson("/api/flows", body)); toast(saved.standalone?.state === "error" ? `Flow saved; standalone generation needs attention: ${saved.standalone.message}` : "Flow saved"); await navigate("flows"); } catch (err) { error.textContent = "Flow not saved: " + err.message; _flowRevealServerError(form, err); error.scrollIntoView({ behavior: "smooth", block: "nearest" }); button.disabled = false; } });
+    $("#flow-builder-form")?.addEventListener("submit", async event => { event.preventDefault(); const form = event.currentTarget; const button = form.querySelector('button[type="submit"]'); const error = form.querySelector(".flow-form-error"); button.disabled = true; error.textContent = ""; try { const body = _flowCollectBuilder(); const saved = await (form.dataset.id ? apiPut(`/api/flows/${form.dataset.id}`, body) : apiPostJson("/api/flows", body)); toast(saved.standalone?.state === "error" ? `Flow saved; standalone generation needs attention: ${saved.standalone.message}` : "Flow saved"); await navigate("flows"); if (body.execution_method === "recorded") await FlowRecordings.open(saved.id); } catch (err) { error.textContent = "Flow not saved: " + err.message; _flowRevealServerError(form, err); error.scrollIntoView({ behavior: "smooth", block: "nearest" }); button.disabled = false; } });
 }
 
 function bindFlowsPage() {
@@ -12771,14 +12799,16 @@ function bindPathsPage() {
 
 function _flowCapacityHtml(state) {
     const slotTable = slots => `<table><thead><tr><th>Slot</th><th>Configured</th><th>Worker status</th><th>Current work</th></tr></thead><tbody>${slots.map(slot => `<tr><td>${slot.slot}</td><td>${slot.configured ? 'Yes' : 'No'}</td><td>${esc(slot.status)}</td><td>${slot.current_task_id ? 'Export task ' + slot.current_task_id : slot.current_run_id ? 'Run ' + slot.current_run_id : slot.current_scan_id ? 'Scan ' + slot.current_scan_id : '—'}</td></tr>`).join('')}</tbody></table>`;
-    return `<div class="page-header"><div><h1>Flow workers</h1><p>Capacity for visible and background Flows and catalog scans.</p></div></div>
+    return `<div class="page-header"><div><h1>Flows settings</h1><p>Global browser and worker settings for all Flows and catalog scans.</p></div></div>
         <section class="settings-panel paths-panel"><form id="flow-capacity-form">
+        <h2>Browser</h2><label>Portal browser <select id="flow-browser-channel"><option value="chrome" ${state.browser_channel === 'chrome' ? 'selected' : ''}>Google Chrome</option><option value="msedge" ${state.browser_channel === 'msedge' ? 'selected' : ''}>Microsoft Edge</option></select></label>
+        <p>New runs, scans and recordings use this browser. Queued and running work keeps its original browser. Each browser has its own sign-in profile. The same Flow works with both; no duplicate configuration is needed.</p>
         <h2>Concurrent workers</h2><label>Headless capacity <select id="flow-headless-capacity">${[1,2,3,4,5].map(n => `<option value="${n}" ${n === state.headless_capacity ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
         <label>Headed capacity · visible windows <select id="flow-headed-capacity">${[1,2,3,4,5].map(n => `<option value="${n}" ${n === (state.headed_capacity || 1) ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
         <p>${state.online_capacity} of ${state.headless_capacity} configured background slots are online. ${state.active_headless} background operations are active.</p>
         <p>${state.online_headed_capacity || 0} of ${state.headed_capacity || 1} configured visible slots are online. ${state.active_headed || 0} visible operations are active.</p>
         <p>Downloads, scans and final processing all count toward their browser mode's capacity. Lowering capacity lets active work finish.</p>
-        <button class="btn-primary" type="submit">Save capacity</button> <button class="btn-secondary" type="button" id="flow-capacity-start">Start background workers</button> <button class="btn-secondary" type="button" id="flow-capacity-start-headed">Start visible workers</button>
+        <button class="btn-primary" type="submit">Save settings</button> <button class="btn-secondary" type="button" id="flow-capacity-start">Start background workers</button> <button class="btn-secondary" type="button" id="flow-capacity-start-headed">Start visible workers</button>
         <p id="flow-capacity-result" role="status"></p></form></section>
         <section class="settings-panel paths-panel"><h2>Background slots</h2><p>After adding capacity, run setup.ps1 on the BI desktop to install missing slots and sign in to each browser profile. Existing sessions stay separate.</p>
         ${slotTable(state.slots)}</section>
@@ -12787,7 +12817,7 @@ function _flowCapacityHtml(state) {
 
 function _flowPortalCapacityHtml(portals) {
     if (!portals.length) return '';
-    return `<section class="settings-panel paths-panel"><h2>Portal limits</h2><p>Each limit covers downloads and scans across flows using that portal. The global worker limit still applies.</p>${portals.map(portal => `<form class="flow-portal-capacity" data-id="${portal.id}"><label>${esc(portal.name)} <select aria-label="${esc(portal.name)} concurrent operations">${[1,2,3,4,5].map(n => `<option value="${n}" ${n === portal.capacity ? 'selected' : ''}>${n}</option>`).join('')}</select></label> <button type="submit" class="btn-secondary">Save portal limit</button></form>`).join('')}</section>`;
+    return `<section class="settings-panel paths-panel"><h2>Portal limits</h2><p>Each limit covers downloads and scans across flows using that portal. The global worker limit still applies.</p>${portals.map(portal => `<form class="flow-portal-capacity" data-id="${portal.id}"><label>${esc(portal.name)} <select aria-label="${esc(portal.name)} concurrent operations">${[1,2,3,4,5].map(n => `<option value="${n}" ${n === portal.capacity ? 'selected' : ''}>${n}</option>`).join('')}</select></label>${portal.adapter === 'gscm_portal' ? `<details><summary>Bookmark discovery coverage</summary><label>Module values, comma separated (empty = current module)<input data-gscm-modules value="${esc((portal.gscm_discovery?.modules || []).join(', '))}"></label><label>Favorite module control suffix<input data-gscm-module-control value="${esc(portal.gscm_discovery?.module_control_suffix || '')}" placeholder=".form.div_favorite.form.cbo_module"></label><label>Scope tabs<input data-gscm-tabs value="${esc((portal.gscm_discovery?.scope_tabs || ['Private','Public','Custom']).join(', '))}"></label><label><input data-gscm-diagnostic type="checkbox" ${portal.gscm_discovery?.diagnostic_grid ? 'checked' : ''}> Diagnostic rendered-grid sweep</label><small>Normal scans read loaded datasets. Configure module values and the actual Combo component suffix for this deployment; unavailable scopes preserve the previous catalog.</small></details>` : ''} <button type="submit" class="btn-secondary">Save portal settings</button></form>`).join('')}</section>`;
 }
 
 async function renderFlowSettings() {
@@ -12797,14 +12827,14 @@ async function renderFlowSettings() {
 function bindFlowSettingsPage() {
     document.querySelectorAll('.flow-portal-capacity').forEach(form => form.onsubmit = async event => {
         event.preventDefault(); const button = form.querySelector('button'); button.disabled = true;
-        try { await apiPut(`/api/system/flows/portals/${form.dataset.id}`, {capacity:Number(form.querySelector('select').value)}); toast('Portal limit saved'); }
+        try { await apiPut(`/api/system/flows/portals/${form.dataset.id}`, {capacity:Number(form.querySelector('select').value), ...(form.querySelector('[data-gscm-modules]') ? {gscm_discovery:{modules:form.querySelector('[data-gscm-modules]').value.split(',').map(s => s.trim()).filter(Boolean), module_control_suffix:form.querySelector('[data-gscm-module-control]').value.trim() || null, scope_tabs:form.querySelector('[data-gscm-tabs]').value.split(',').map(s => s.trim()).filter(Boolean), diagnostic_grid:form.querySelector('[data-gscm-diagnostic]').checked}} : {})}); toast('Portal limit saved'); }
         catch (error) { toast(error.message); }
         finally { button.disabled = false; }
     });
     $('#flow-capacity-form').onsubmit = async event => {
         event.preventDefault();
         const button = event.currentTarget.querySelector('[type="submit"]'); button.disabled = true;
-        try { await apiPut('/api/system/flows', {headless_capacity: Number($('#flow-headless-capacity').value), headed_capacity: Number($('#flow-headed-capacity').value)}); toast('Flow capacity saved'); await navigate('flow-settings'); }
+        try { await apiPut('/api/system/flows', {headless_capacity: Number($('#flow-headless-capacity').value), headed_capacity: Number($('#flow-headed-capacity').value), browser_channel: $('#flow-browser-channel').value}); toast('Flows settings saved'); if (currentPage === 'flows') _flowShowView('settings'); else await navigate('flow-settings'); }
         catch (error) { $('#flow-capacity-result').textContent = error.message; button.disabled = false; }
     };
     for (const [selector, mode] of [['#flow-capacity-start', 'headless'], ['#flow-capacity-start-headed', 'headed']]) $(selector).onclick = async event => {

@@ -702,13 +702,15 @@ class FakeGscmPage:
 
 
 def _scan_job():
+    # Legacy rendered-grid fixtures exercise the explicit diagnostic path.
+    # The normal dataset-only path is covered in test_gscm_dataset_inventory.
     return {
         "site": {
             "id": 2, "name": "GSCM", "adapter": "gscm_portal",
             "base_url": "https://mdscm.sec.samsung.net/",
             "auth_url": "https://mdscm.sec.samsung.net/nexa/index.html",
         },
-        "discovery": {"scope": ["*"], "report_paths": []},
+        "discovery": {"scope": ["*"], "report_paths": [], "diagnostic_grid": True},
     }
 
 
@@ -4020,11 +4022,11 @@ def test_favorite_grid_matching_never_depends_on_the_setting_frame_index():
 def _register_both_workers():
     flows.register_worker(flows.WorkerRegister(
         worker_id="bi-desktop-headless", display_name="BI desktop - headless",
-        capabilities={"headed": False},
+        capabilities={"browser_switch_v1": True, "headed": False},
     ))
     flows.register_worker(flows.WorkerRegister(
         worker_id="bi-desktop-headed", display_name="BI desktop - headed",
-        capabilities={"headed": True},
+        capabilities={"browser_switch_v1": True, "headed": True},
     ))
 
 
@@ -4058,7 +4060,7 @@ def test_gscm_scan_runs_on_the_same_worker_mode_as_the_sites_flows(flow_db, monk
     queued = flows.queue_catalog_scan(site["id"], _request(), mode="full")
 
     scan = flows.list_scans(site_id=site["id"], limit=50)[0]
-    assert scan["job"]["execution"] == {"browser_mode": "headed"}
+    assert scan["job"]["execution"] == {"browser_mode": "headed", "browser_channel": "chrome"}
     assert launched[-1] == "headed"
 
     _register_both_workers()
@@ -4116,7 +4118,7 @@ def test_asap_scans_and_legacy_scan_jobs_stay_on_the_headless_worker(flow_db, mo
     ), _request())
     queued = flows.queue_catalog_scan(asap["id"], _request(), mode="full")
     scan = flows.list_scans(site_id=asap["id"], limit=50)[0]
-    assert scan["job"]["execution"] == {"browser_mode": "headless"}
+    assert scan["job"]["execution"] == {"browser_mode": "headless", "browser_channel": "chrome"}
 
     # A scan queued before browser-mode routing carries no execution block.
     with database.get_db() as db:

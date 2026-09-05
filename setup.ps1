@@ -323,7 +323,7 @@ foreach ($PoolSlot in 2..5) {
     }
 }
 
-# Kill any orphaned worker or automation Edge still holding a flow profile.
+# Kill any orphaned worker or automation browser still holding a flow profile.
 # A leftover process keeps the profile's .worker.lock, so every new service
 # instance exits with "already running" and the worker never registers.
 $FlowProcs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
@@ -526,7 +526,7 @@ New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 & $NssmExe set $ServiceName AppRotateBytes 10485760
 
 # Headless flows use a background service. Headed flows use a separate,
-# on-demand interactive task so Edge appears in the signed-in BI desktop.
+# on-demand interactive task so the selected browser appears in the signed-in BI desktop.
 # Separate browser profiles prevent Chromium profile contention. Both workers
 # read the same account-scoped DPAPI credential stored outside source control.
 if (-not $existingFlowService) {
@@ -682,7 +682,7 @@ if ((Test-Path $DbPath) -and (Test-Path $FlowCredentialPath)) {
             ) + @($FlowSlots | Where-Object { $_.Slot -gt 1 } | ForEach-Object { @{ Path = $_.Profile; Label = "headless slot $($_.Slot)" } }) + @($HeadedSlots | Where-Object { $_.Slot -gt 1 } | ForEach-Object { @{ Path = $_.Profile; Label = "headed slot $($_.Slot)" } })
             foreach ($ProfileTarget in $AuthenticationProfiles) {
                 Write-Host "Authenticating the $($ProfileTarget.Label) Flows browser for $PortalLabel..." -ForegroundColor Yellow
-                Write-Host "  Complete $PortalLabel sign-in in the Edge window if prompted." -ForegroundColor DarkGray
+                Write-Host "  Complete $PortalLabel sign-in in the selected browser window if prompted." -ForegroundColor DarkGray
                 try {
                     # The embedded Python runtime runs in isolated mode and can
                     # ignore PYTHONPATH for ``-m app...``. The worker script

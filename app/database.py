@@ -845,9 +845,35 @@ SCHEDULED_TASK_REBUILD_MIGRATIONS = [
 
 MIGRATIONS = [
     "ALTER TABLE flows ADD COLUMN flow_folder TEXT",
+    "ALTER TABLE flows ADD COLUMN execution_method TEXT NOT NULL DEFAULT 'catalog'",
+    "ALTER TABLE flows ADD COLUMN recording_revision_id INTEGER",
+    """CREATE TABLE IF NOT EXISTS flow_recording_revisions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        flow_id INTEGER NOT NULL REFERENCES flows(id),
+        definition_json TEXT NOT NULL,
+        config_hash TEXT,
+        transformation_source TEXT,
+        status TEXT NOT NULL DEFAULT 'draft',
+        evidence_json TEXT,
+        created_at TEXT NOT NULL,
+        validated_at TEXT
+    )""",
+    """CREATE TABLE IF NOT EXISTS flow_recording_sessions (
+        scan_id INTEGER PRIMARY KEY REFERENCES flow_catalog_scans(id),
+        flow_id INTEGER NOT NULL REFERENCES flows(id),
+        operation TEXT NOT NULL,
+        revision_id INTEGER REFERENCES flow_recording_revisions(id)
+    )""",
     "ALTER TABLE flows ADD COLUMN folder_slug TEXT",
     "ALTER TABLE flows ADD COLUMN download_parallelism INTEGER NOT NULL DEFAULT 1",
     "ALTER TABLE flows ADD COLUMN sql_reconciliation_required INTEGER NOT NULL DEFAULT 0",
+    """CREATE TRIGGER IF NOT EXISTS recorded_flow_unknown_sql_commit
+        AFTER UPDATE OF status ON flow_runs
+        WHEN NEW.status IN ('failed','cancelled')
+          AND json_extract(NEW.job_json, '$.flow.execution_method') = 'recorded'
+          AND json_extract(NEW.job_json, '$.sql_handoff.enabled') = 1
+          AND EXISTS (SELECT 1 FROM flow_run_events WHERE run_id=NEW.id AND stage='sql_insertion')
+        BEGIN UPDATE flows SET sql_reconciliation_required=1 WHERE id=NEW.flow_id; END""",
     "ALTER TABLE flow_workers ADD COLUMN current_task_id INTEGER REFERENCES flow_download_tasks(id)",
     "ALTER TABLE flow_workers ADD COLUMN stop_requested_pid INTEGER",
     "ALTER TABLE flows ADD COLUMN folder_state TEXT NOT NULL DEFAULT 'unmanaged'",

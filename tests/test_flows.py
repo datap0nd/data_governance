@@ -18,6 +18,8 @@ def flow_db(tmp_path, monkeypatch):
     db_path = tmp_path / "flows.db"
     monkeypatch.setattr(database, "DB_PATH", str(db_path))
     database.init_db()
+    with database.get_db() as db:
+        db.execute("INSERT OR REPLACE INTO app_settings(key,value) VALUES ('flows_browser_channel','msedge')")
     return db_path
 
 
@@ -1262,7 +1264,7 @@ def test_one_per_period_job_is_expanded_without_delete_or_overwrite(flow_db):
     assert queued["job"]["downloads"]["overwrite_existing"] is False
     assert queued["job"]["execution"] == {
         "mode": "local", "host": "bi_desktop", "browser_mode": "headless",
-        "worker_id": "bi-desktop-headless", "download_parallelism": 1,
+        "worker_id": "bi-desktop-headless", "download_parallelism": 1, "browser_channel": "msedge",
     }
     assert queued["job"]["sql_handoff"] == {
         "enabled": False, "server": flows.normalize_server(flows.UPLOAD_PGHOST),
@@ -4518,7 +4520,7 @@ def test_asap_download_observes_every_open_portal_page_and_uses_staging_folder()
     assert "staged_file, export_pages = _asap_download" in source
     assert "export_page.close(" not in source
     assert "candidate for candidate in wizard_pages" in source
-    assert "downloads_path=str(download_staging_dir)" in source
+    assert "downloads=download_staging_dir" in source
     assert "downloads[0].path()" not in source
 
 

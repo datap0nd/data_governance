@@ -1,5 +1,7 @@
 # GSCM portal adapter
 
+For global Chrome/Edge selection and the new ASAP/GSCM recorded method, see [recorded Flows](recorded_flows.md). The existing behavior below applies to catalog/bookmark Flows.
+
 GSCM (Global Supply Chain Management, `mdscm.sec.samsung.net`) is a **separate
 website from ASAP** — different data, different backend, different frontend
 framework. It is registered in Metronome as its own `flow_sites` row with the

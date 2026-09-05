@@ -1594,7 +1594,7 @@ def _wait_for_staged_download(
         now = time.monotonic()
         if not observed and now - started >= start_timeout_seconds:
             raise RuntimeError(
-                "ASAP started an Edge download, but no new or updated file appeared "
+                "ASAP started an Browser download, but no new or updated file appeared "
                 f"in the local staging folder within {start_timeout_seconds} seconds: {staging_dir}"
             )
         if observed and now - last_activity >= stall_timeout_seconds:
@@ -1602,7 +1602,7 @@ def _wait_for_staged_download(
                 f"{path.name} ({state[1]} bytes)" for path, state in observed.items()
             )
             raise RuntimeError(
-                f"The Edge download stopped changing for {stall_timeout_seconds} seconds in "
+                f"The Browser download stopped changing for {stall_timeout_seconds} seconds in "
                 f"the local staging folder: {staging_dir}. Observed: {observed_summary}"
             )
         time.sleep(0.5)
@@ -1610,28 +1610,28 @@ def _wait_for_staged_download(
         f"{path.name} ({state[1]} bytes)" for path, state in observed.items()
     ) or "none"
     raise RuntimeError(
-        f"The Edge download did not produce a stable finished file within {timeout_seconds} "
+        f"The Browser download did not produce a stable finished file within {timeout_seconds} "
         f"seconds in the local staging folder: {staging_dir}. Observed: {observed_summary}"
     )
 
 
 def _completed_edge_download(download, description: str) -> Path:
-    """Validate one native Edge Download and return its completed local path."""
+    """Validate one native browser Download and return its completed local path."""
     # ``failure`` waits for Edge's terminal download state. ``path`` then
     # returns the browser-managed completed file, not a guessed directory
     # candidate based on timestamps.
     failure = download.failure()
     if failure:
-        raise RuntimeError(f"Edge reported that {description} failed: {failure}")
+        raise RuntimeError(f"Browser reported that {description} failed: {failure}")
     completed_path = download.path()
     if not completed_path:
         raise RuntimeError(
-            f"Edge reported that {description} completed but returned no local file path."
+            f"Browser reported that {description} completed but returned no local file path."
         )
     completed = Path(completed_path)
     if not completed.is_file() or completed.stat().st_size <= 0:
         raise RuntimeError(
-            f"Edge reported that {description} completed, but its local file is "
+            f"Browser reported that {description} completed, but its local file is "
             f"missing or empty: {completed}"
         )
     return completed
@@ -1661,10 +1661,10 @@ def _asap_dashboard_event_staged_download(
         if "no new or updated file appeared" not in str(exc):
             raise
         raise RuntimeError(
-            "Edge emitted a native download-start event for ASAP dashboard "
+            "Browser emitted a native download-start event for ASAP dashboard "
             f"link {label!r}, but no file reached the worker staging folder "
             f"within {DOWNLOAD_EVENT_STAGING_TIMEOUT_SECONDS} seconds: "
-            f"{staging_dir}. Check Edge's download-directory policy and the "
+            f"{staging_dir}. Check browser's download-directory policy and the "
             "worker staging-folder permissions."
         ) from exc
 
@@ -1679,7 +1679,7 @@ def _edge_completed_download(page: Page, trigger_download) -> Path:
         download = pending.value
     except PlaywrightTimeoutError as exc:
         raise RuntimeError(
-            "Edge did not emit its native download event after the GSCM Excel action."
+            "Browser did not emit its native download event after the GSCM Excel action."
         ) from exc
     return _completed_edge_download(download, "the GSCM Excel download")
 
@@ -2287,7 +2287,7 @@ def _asap_download(page: Page, frame: Frame, job: dict, staging_dir: Path):
         while not downloads and time.monotonic() < deadline:
             page.wait_for_timeout(100)
         if not downloads:
-            raise RuntimeError("ASAP export started, but Edge did not expose the completed download within 3 minutes.")
+            raise RuntimeError("ASAP export started, but Browser did not expose the completed download within 3 minutes.")
         staged_file = _wait_for_staged_download(staging_dir, files_before)
         export_pages = [
             candidate for candidate in wizard_pages
@@ -2487,12 +2487,12 @@ def _asap_download_dashboard_link(
             return _wait_for_staged_download(staging_dir, files_before)
         if signal == "timeout":
             raise RuntimeError(
-                "ASAP dashboard download did not emit an Edge download event, "
+                "ASAP dashboard download did not emit an Browser download event, "
                 "open an intermediate page, or create a local staging file within "
                 f"{DOWNLOAD_START_TIMEOUT_SECONDS} seconds: {label}."
             )
 
-        # No file or Edge download event followed the first click, but a popup
+        # No file or Browser download event followed the first click, but a popup
         # remained open for the grace period. Its own control is the trigger.
         popup_control = None
         for popup in opened:
@@ -2543,7 +2543,7 @@ def _asap_download_dashboard_link(
             return _wait_for_staged_download(staging_dir, files_before)
         if signal == "timeout":
             raise RuntimeError(
-                "ASAP dashboard intermediate page did not emit an Edge download "
+                "ASAP dashboard intermediate page did not emit an Browser download "
                 "event or create a local staging file within "
                 f"{DOWNLOAD_START_TIMEOUT_SECONDS} seconds: {label}."
             )
@@ -5805,7 +5805,7 @@ def _export_task_with_retry(
 
     A bundle of many files must never lose its finished downloads to one
     transient portal hiccup on a later file - a menu item that briefly fails
-    to render, or an Edge download that never stabilizes in staging. Each
+    to render, or an Browser download that never stabilizes in staging. Each
     attempt restarts the file at report navigation, so the portal is reopened
     in a known state. Files that were already saved are untouched, and a
     partially copied output is never overwritten: the retried download stores
@@ -5867,7 +5867,7 @@ def _gscm_call(page: Page, headed: bool, notify, operation, profile_dir: Path):
         if headed:
             notify(
                 "GSCM sign-in required. Complete Samsung SSO and the Knox MFA "
-                "prompt in the visible Edge window; the run resumes automatically."
+                "prompt in the visible browser window; the run resumes automatically."
             )
             flow_gscm.wait_for_manual_login(page, report_progress=notify)
             return operation()
@@ -6443,7 +6443,7 @@ def execute_job(
             if is_asap or is_gscm:
                 portal = "GSCM" if is_gscm else "ASAP"
                 raise _CompletedDownloadProcessingError(
-                    f"Edge completed the {portal} download, but preparing its target path "
+                    f"Browser completed the {portal} download, but preparing its target path "
                     f"failed. {portal} will not be reopened: {exc}"
                 ) from exc
             raise
@@ -6454,7 +6454,7 @@ def execute_job(
                     {
                         "stage": "file_transfer",
                         "message": (
-                            f"Edge finished download {index} of {len(tasks)}; saving it "
+                            f"Browser finished download {index} of {len(tasks)}; saving it "
                             "to the configured target folder."
                         ),
                         "period": period,
@@ -6467,7 +6467,7 @@ def execute_job(
             except Exception as exc:
                 portal = "GSCM" if is_gscm else "ASAP"
                 raise _CompletedDownloadProcessingError(
-                    f"Edge completed the {portal} download, but reporting the target-storage "
+                    f"Browser completed the {portal} download, but reporting the target-storage "
                     f"stage failed. {portal} will not be reopened: {exc}"
                 ) from exc
 
@@ -6508,12 +6508,12 @@ def execute_job(
                 except Exception as exc:
                     if is_gscm:
                         raise _CompletedDownloadProcessingError(
-                            "Edge completed the GSCM workbook download, but local processing "
+                            "Browser completed the GSCM workbook download, but local processing "
                             f"failed. GSCM will not be reopened: {exc}"
                         ) from exc
                     if is_asap:
                         raise _CompletedDownloadProcessingError(
-                            "Edge completed the ASAP download, but target storage or local "
+                            "Browser completed the ASAP download, but target storage or local "
                             f"processing failed. ASAP will not be reopened: {exc}"
                         ) from exc
                     raise
@@ -6899,6 +6899,11 @@ def execute_flow(page, job: dict, progress, profile_dir: Path, download_staging_
     Callers own process locks, browser lifetime, progress transport and retention
     registration. Failure state retains partial artifacts and phase timings.
     """
+    if job.get('flow', {}).get('execution_method') == 'recorded' and job.get('job_type') != 'sql_retry':
+        from app.flow_recording_runtime import execute_recorded_flow
+        return execute_recorded_flow(page, job, progress, profile_dir, download_staging_dir,
+            run_id=run_id, register_folder=register_folder, headed=headed, artifacts=artifacts,
+            state=state, run_started=run_started)
     state = state if state is not None else {}
     artifacts = artifacts if artifacts is not None else []
     timings = []
@@ -7112,6 +7117,7 @@ def execute_flow(page, job: dict, progress, profile_dir: Path, download_staging_
 
 def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path, headed: bool,
                once: bool, idle_exit_seconds: int = 0):
+    from app import flow_browser
     code_version = _code_version()
     print(f"Worker {worker_id} starting with code version {code_version}.", flush=True)
     with httpx.Client(base_url=server.rstrip("/"), headers={"User-Agent": "Metronome-Flow-Worker/1"}) as client:
@@ -7125,6 +7131,9 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
         registration['capabilities'].update(pool='headed' if headed else 'headless', slot=slot_number(worker_id, 'headed' if headed else 'headless'))
         registration['capabilities'][flow_tasks.CAPABILITY] = True
         registration['capabilities'][flow_tasks.HEADED_CAPABILITY] = True
+        registration['capabilities'][flow_browser.CAPABILITY] = True
+        registration['capabilities']['recorded_flows_v1'] = True
+        registration['capabilities']['flow_recorder_v1'] = headed
         # Metronome can take several minutes to boot after an update (service
         # reinstall, migrations, first-request warmup), and this worker now
         # starts first. Outlasting that boot beats dying at two minutes and
@@ -7150,14 +7159,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
         with sync_playwright() as playwright:
             download_staging_dir = profile_dir / "downloads"
             download_staging_dir.mkdir(parents=True, exist_ok=True)
-            context = playwright.chromium.launch_persistent_context(
-                str(profile_dir),
-                channel="msedge" if os.name == "nt" else None,
-                headless=not headed,
-                accept_downloads=True,
-                downloads_path=str(download_staging_dir),
-            )
-            page = context.pages[0] if context.pages else context.new_page()
+            context, page, current_channel = None, None, None
             idle_since = time.monotonic()
             while True:
                 # Refresh concrete shared roots before claims, including roots
@@ -7173,6 +7175,35 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                 claimed = _api(client, "POST", f"/api/flows/worker/{worker_id}/claim")
                 run = claimed.get("run")
                 scan = claimed.get("scan")
+                work = run or scan or claimed.get('task')
+                if work:
+                    browser_job = work['job']
+                    portal_work = browser_job.get('flow', {}).get('source_type') not in {'file', 'outlook'} and browser_job.get('job_type') != 'sql_retry'
+                    requested_channel = flow_browser.channel_for(browser_job)
+                    if portal_work and (context is None or requested_channel != current_channel):
+                        try:
+                            if context is not None:
+                                context.close()
+                            context = None
+                            context = flow_browser.launch(playwright, profile_dir, requested_channel,
+                                headed=headed, downloads=download_staging_dir)
+                            page = context.pages[0] if context.pages else context.new_page()
+                            current_channel = requested_channel
+                        except Exception as exc:
+                            message = f'Could not open {flow_browser.CHANNELS[requested_channel]}. Check its installation and browser policies. {exc}'
+                            detail = {'stage': 'browser_launch', 'message': message}
+                            if run:
+                                _api(client, 'POST', f'/api/flows/worker/{worker_id}/runs/{run["id"]}/progress',
+                                    {'status': 'failed', 'progress': detail, 'error': message})
+                            elif scan:
+                                _api(client, 'POST', f'/api/flows/worker/{worker_id}/scans/{scan["id"]}/progress',
+                                    {'status': 'failed', 'progress': detail, 'error': message, 'complete': False})
+                            else:
+                                _api(client, 'POST', f'/api/flows/worker/{worker_id}/tasks/{work["id"]}/progress',
+                                    {'status': 'failed', 'lease_token': work['lease_token'], 'progress': detail})
+                            if once:
+                                break
+                            continue
                 if claimed.get('task'):
                     from app.flow_parallel_worker import execute_task
                     idle_since = time.monotonic()
@@ -7194,6 +7225,37 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                 if scan:
                     scan_id = scan["id"]
                     scan_started = time.perf_counter()
+                    if scan['job'].get('recording_operation'):
+                        from app import flow_recorder_worker
+                        def recording_progress(status, detail, **extra):
+                            return _api(client, 'POST', f'/api/flows/worker/{worker_id}/scans/{scan_id}/progress',
+                                {'status': status, 'progress': detail, 'complete': False, **extra})
+                        try:
+                            if not headed:
+                                raise RuntimeError('Recording requires a visible worker.')
+                            context.close()
+                            definition = (scan['job'].get('validation_job') or {}).get('recording', {}).get('definition', {})
+                            with flow_recorder_worker.reservation_heartbeat(server, worker_id, scan_id), flow_recorder_worker.browser_session(
+                                    playwright, profile_dir, flow_browser.channel_for(scan['job']),
+                                    timezone=definition.get('timezone', 'UTC')) as (recording_context, recording_profile):
+                                recording_page = recording_context.pages[0] if recording_context.pages else recording_context.new_page()
+                                if scan['job']['recording_operation'] == 'record':
+                                    result = flow_recorder_worker.record(client, worker_id, scan, recording_page, recording_context, recording_profile, recording_progress)
+                                else:
+                                    result = flow_recorder_worker.validate(scan, recording_page, recording_profile, recording_progress)
+                            recording_progress('succeeded', {'stage': 'complete', 'message': 'Recording operation completed.'}, recording_result=result)
+                        except Exception as exc:
+                            recording_progress('failed', {'stage': 'failed', 'message': str(exc)}, error=str(exc)[:10000])
+                        finally:
+                            try:
+                                context.close()
+                            except Exception:
+                                pass
+                            context, page = None, None
+                        idle_since = time.monotonic()
+                        if once:
+                            break
+                        continue
 
                     def scan_progress(status: str, detail: dict, reports: list | None = None,
                                       timings: list | None = None, error: str | None = None,
@@ -7311,10 +7373,27 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                         from functools import partial
                         from app.flow_parallel_worker import acquire_bundle as parallel_bundle
                         acquire_bundle = partial(parallel_bundle, client, worker_id, transport_state)
-                    execute_flow(page, run["job"], progress, profile_dir, download_staging_dir,
-                                 run_id=run_id, register_folder=register_folder, headed=headed,
-                                 artifacts=artifacts, state=execution_state, run_started=run_started,
-                                 acquire_bundle=acquire_bundle)
+                    if run['job'].get('flow', {}).get('execution_method') == 'recorded' and run['job'].get('job_type') != 'sql_retry':
+                        from app import flow_recorder_worker, flow_portable
+                        if run['job'].get('recording', {}).get('engine_hash') != flow_portable.execution_hash():
+                            raise RuntimeError('This job is pinned to a different recorded execution core. Validate a new revision.')
+                        definition = run['job']['recording']['definition']
+                        context.close()
+                        try:
+                            with flow_recorder_worker.browser_session(playwright, profile_dir, flow_browser.channel_for(run['job']),
+                                    headed=headed, timezone=definition['timezone']) as (recording_context, recording_profile):
+                                recording_page = recording_context.pages[0] if recording_context.pages else recording_context.new_page()
+                                flow_recorder_worker.authenticate(recording_page, run['job'], recording_profile, progress, headed=headed)
+                                execute_flow(recording_page, run['job'], progress, recording_profile, recording_profile / 'downloads',
+                                    run_id=run_id, register_folder=register_folder, headed=headed,
+                                    artifacts=artifacts, state=execution_state, run_started=run_started)
+                        finally:
+                            context, page = None, None
+                    else:
+                        execute_flow(page, run["job"], progress, profile_dir, download_staging_dir,
+                                     run_id=run_id, register_folder=register_folder, headed=headed,
+                                     artifacts=artifacts, state=execution_state, run_started=run_started,
+                                     acquire_bundle=acquire_bundle)
                 except Exception as exc:
                     artifacts = execution_state.get("artifacts", artifacts)
                     timings = execution_state.get("timings", timings)
@@ -7370,7 +7449,8 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                 idle_since = time.monotonic()
                 if once:
                     break
-            context.close()
+            if context is not None:
+                context.close()
 
 
 def _adapter_for_auth_url(auth_url: str) -> str:
@@ -7382,8 +7462,8 @@ def _adapter_for_auth_url(auth_url: str) -> str:
 
 
 def authenticate_site(profile_dir: Path, auth_url: str, timeout_minutes: int = 10,
-                      adapter: str | None = None):
-    """Create the automation profile's SSO session in a visible Edge window.
+                      adapter: str | None = None, browser_channel: str = "chrome"):
+    """Create the automation profile's SSO session in a visible browser window.
 
     Both portals sit behind the same Samsung SSO, but they prove they are up in
     completely different ways: ASAP renders navigation anchors, GSCM compiles a
@@ -7395,12 +7475,8 @@ def authenticate_site(profile_dir: Path, auth_url: str, timeout_minutes: int = 1
         if not acquired:
             raise RuntimeError("The Flows worker is still using the automation browser profile.")
         with sync_playwright() as playwright:
-            context = playwright.chromium.launch_persistent_context(
-                str(profile_dir),
-                channel="msedge" if os.name == "nt" else None,
-                headless=False,
-                accept_downloads=True,
-            )
+            from app import flow_browser
+            context = flow_browser.launch(playwright, profile_dir, browser_channel, headed=True)
             page = context.pages[0] if context.pages else context.new_page()
             print(f"Complete {label} sign-in in the browser window if prompted.", flush=True)
             if adapter == GSCM_PORTAL_ADAPTER:
@@ -7457,9 +7533,12 @@ def main():
     args = parser.parse_args()
     profile_dir = Path(args.profile_dir)
     if args.authenticate_url:
+        from app import flow_browser
+        with httpx.Client(base_url=args.server.rstrip('/')) as settings_client:
+            browser_channel = _api(settings_client, 'GET', '/api/system/flows')['browser_channel']
         authenticate_site(
             profile_dir, args.authenticate_url, args.authentication_timeout_minutes,
-            args.authenticate_adapter,
+            args.authenticate_adapter, browser_channel,
         )
         return
     def _run():
@@ -7486,7 +7565,7 @@ def main():
     print(
         "Another Metronome flow worker is already running. It holds "
         f"{profile_dir / WORKER_LOCK_FILENAME}. Kill leftover flow_worker.py / "
-        "msedge processes for this profile, or re-run setup.ps1, which now "
+        "Chrome/Edge processes for this profile, or re-run setup.ps1, which now "
         "clears them.",
         file=sys.stderr, flush=True,
     )

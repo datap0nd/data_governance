@@ -1,5 +1,7 @@
 # Standalone Flows
 
+For global Chrome/Edge selection and the new ASAP/GSCM recorded method, see [recorded Flows](recorded_flows.md). The existing behavior below applies to catalog/bookmark Flows.
+
 Managed saves, adoption and layout repair generate `Scripts/run_flow.py` and a
 versioned `flow-config-<hash>.json`. The launcher imports the installed Metronome
 code. It is an offline entry point, not a self-contained executable or backup of

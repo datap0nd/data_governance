@@ -19,9 +19,11 @@ jobs:
           python-version: "3.13"
       - name: Install test dependencies
         run: >
-          pip install pytest fastapi uvicorn pydantic httpx playwright
+          pip install pytest fastapi uvicorn pydantic httpx playwright==1.62.0 tzdata
           openpyxl==3.1.5 xlrd==2.0.2 pyxlsb==1.0.10
-          python-multipart apscheduler sqlalchemy truststore ecdsa==0.19.1
+          python-multipart apscheduler sqlalchemy psycopg2-binary truststore ecdsa==0.19.1
+      - name: Install browsers for portal fixtures
+        run: python -m playwright install --with-deps chromium chrome msedge
       - name: Run Python test suite
         run: python -m pytest tests -q
       - name: Run catalog tree tests
@@ -72,3 +74,6 @@ jobs:
         run: node --check app/static/app.js
       - name: Check run log JavaScript syntax
         run: node --check app/static/flow_run_log.js
+
+      - name: Check recording editor syntax
+        run: node --check app/static/flow_recordings.js

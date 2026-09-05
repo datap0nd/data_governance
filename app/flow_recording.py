@@ -1,0 +1,374 @@
+"""Recorded browser actions: data-only import, validation and date resolution.
+
+This module has no database, web server or browser dependency. Codegen input
+is parsed, never imported or evaluated. The same definitions travel with the
+portable script and the worker's frozen job.
+"""
+from __future__ import annotations
+
+import ast
+import copy
+import hashlib
+import json
+import re
+from datetime import datetime, timedelta
+from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo
+
+VERSION = 1
+CAPABILITY = 'recorded_flows_v1'
+RECORD_CAPABILITY = 'flow_recorder_v1'
+LOCATORS = {'locator', 'get_by_role', 'get_by_label', 'get_by_text', 'get_by_placeholder',
+            'get_by_title', 'get_by_alt_text', 'get_by_test_id', 'frame_locator', 'filter', 'nth'}
+ACTIONS = {'click', 'dblclick', 'fill', 'press', 'select_option', 'check', 'uncheck',
+           'set_checked', 'hover', 'clear', 'press_sequentially'}
+ASSERTIONS = {'to_be_visible', 'to_be_hidden', 'to_have_text', 'to_contain_text',
+              'to_have_value', 'to_be_checked', 'to_have_url', 'to_have_title', 'to_have_count'}
+CALCULATIONS = {'today', 'yesterday', 'month_start', 'previous_month_start',
+                'previous_month_end', 'year_start', 'week_start'}
+SENSITIVE = re.compile(r'password|passwd|authorization|cookie|token|secret|otp|verification.?code', re.I)
+
+
+def canonical(value):
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(',', ':'))
+
+
+def digest(value):
+    return hashlib.sha256(canonical(value).encode()).hexdigest()
+
+
+def _literal(node):
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name) and node.func.value.id == 're' and node.func.attr == 'compile':
+        if len(node.args) != 1 or node.keywords:
+            raise ValueError('Use a plain regular expression without dynamic flags.')
+        return {'regex': ast.literal_eval(node.args[0])}
+    try:
+        return ast.literal_eval(node)
+    except (ValueError, TypeError):
+        raise ValueError('Recorded arguments must be literal values.') from None
+
+
+def _arguments(node):
+    if any(item.arg is None for item in node.keywords):
+        raise ValueError('Expanded keyword arguments are unsupported.')
+    return [_literal(item) for item in node.args], {item.arg: _literal(item.value) for item in node.keywords}
+
+
+def _target(node, pages):
+    if isinstance(node, ast.Name) and node.id in pages:
+        return {'page': pages[node.id], 'locator': []}
+    if isinstance(node, ast.Attribute) and node.attr in {'first', 'last', 'content_frame'}:
+        target = _target(node.value, pages)
+        target['locator'].append({'method': node.attr, 'args': [], 'kwargs': {}})
+        return target
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in LOCATORS:
+        target = _target(node.func.value, pages)
+        args, kwargs = _arguments(node)
+        target['locator'].append({'method': node.func.attr, 'args': args, 'kwargs': kwargs})
+        return target
+    raise ValueError('Unsupported page or locator expression.')
+
+
+def walk_steps(steps, _depth=0):
+    if not isinstance(steps, list) or _depth > 20:
+        raise ValueError('Recording steps must be a list with at most 20 nested events.')
+    for step in steps:
+        if not isinstance(step, dict):
+            raise ValueError('Every recorded step must be an action object.')
+        yield step
+        yield from walk_steps(step.get('steps', []), _depth + 1)
+
+
+def _validate_target(target, *, activation):
+    if not isinstance(target, dict) or not isinstance(target.get('locator', []), list):
+        raise ValueError('Invalid recorded locator.')
+    if target and (not isinstance(target.get('page'), str) or not target['page']):
+        raise ValueError('Every locator must identify its page.')
+    for part in target.get('locator', []):
+        if (not isinstance(part, dict) or part.get('method') not in LOCATORS | {'first', 'last', 'content_frame'}
+                or not isinstance(part.get('args', []), list) or not isinstance(part.get('kwargs', {}), dict)):
+            raise ValueError('Unsupported locator or arguments.')
+        if activation and (part['method'] in {'nth', 'first', 'last'} or
+                part['method'] == 'locator' and re.search(r':nth-(?:child|of-type)\(', canonical(part))):
+            raise ValueError('Positional locators must be repaired to identify a unique element before activation.')
+
+
+def _validate_pages(steps, pages=None):
+    pages = {'page'} if pages is None else pages
+    for step in steps:
+        name = step.get('page')
+        if not isinstance(name, str) or not name:
+            raise ValueError('Every action must identify its page.')
+        if step['action'] == 'new_page':
+            if name in pages and name != 'page':
+                raise ValueError('A page identity cannot be reused.')
+            pages.add(name)
+        elif name not in pages:
+            raise ValueError('An action references an unopened or closed page.')
+        if step['action'] in {'popup', 'download'}:
+            _validate_pages(step['steps'], pages)
+        elif step.get('steps'):
+            raise ValueError('Only popup and download events may contain nested actions.')
+        if step['action'] == 'popup':
+            result = step.get('result_page')
+            if not isinstance(result, str) or not result or result in pages:
+                raise ValueError('A popup requires a new page identity.')
+            pages.add(result)
+        if step['action'] == 'close':
+            pages.remove(name)
+
+
+def import_codegen(source, *, timezone='UTC'):
+    if len(source.encode()) > 1_000_000:
+        raise ValueError('Recording exceeds the one megabyte limit.')
+    tree = ast.parse(source)
+    functions = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'run']
+    if len(functions) != 1:
+        raise ValueError('Expected one Playwright Python run function.')
+    if functions[0].decorator_list or functions[0].args.defaults or functions[0].args.kw_defaults:
+        raise ValueError('Decorated or parameterized recording wrappers are unsupported.')
+    # Only the standard codegen scaffolding may exist outside the run function.
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            names = [node.module] if isinstance(node, ast.ImportFrom) else [item.name for item in node.names]
+            if not all(name in {'re', 'playwright.sync_api'} for name in names):
+                raise ValueError('Recording contains an unsupported import.')
+        elif node is functions[0]:
+            continue
+        elif isinstance(node, ast.With) and len(node.items) == 1 and ast.unparse(node.items[0].context_expr) == 'sync_playwright()':
+            if len(node.body) != 1 or not isinstance(node.body[0], ast.Expr) or ast.unparse(node.body[0].value) != 'run(playwright)':
+                raise ValueError('Unsupported code outside the recording.')
+        else:
+            raise ValueError('Unsupported code outside the recording.')
+    pages, pending = {}, {}
+    count = 0
+
+    def parse(nodes):
+        nonlocal count
+        steps = []
+        for node in nodes:
+            count += 1
+            identity = f'step-{count:03d}'
+            if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                name, value = node.targets[0].id, node.value
+                text = ast.unparse(value)
+                if name == 'browser' and isinstance(value, ast.Call) and ast.unparse(value.func) == 'playwright.chromium.launch':
+                    _arguments(value)
+                    continue
+                if name == 'context' and isinstance(value, ast.Call) and ast.unparse(value.func) == 'browser.new_context':
+                    _arguments(value)
+                    continue
+                if text == 'context.new_page()':
+                    pages[name] = name
+                    steps.append({'id': identity, 'action': 'new_page', 'page': name})
+                    continue
+                if isinstance(value, ast.Attribute) and value.attr == 'value' and isinstance(value.value, ast.Name) and value.value.id in pending:
+                    event = pending[value.value.id]
+                    if event['action'] == 'popup':
+                        event['result_page'] = name
+                        pages[name] = name
+                    else:
+                        pending[name] = event
+                    continue
+                raise ValueError(f'Unsupported assignment on line {node.lineno}.')
+            if isinstance(node, ast.With) and len(node.items) == 1:
+                item = node.items[0]
+                call = item.context_expr
+                if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Attribute) or call.func.attr not in {'expect_download', 'expect_popup'} or not isinstance(item.optional_vars, ast.Name):
+                    raise ValueError(f'Unsupported event on line {node.lineno}.')
+                args, kwargs = _arguments(call)
+                if args or set(kwargs) - {'timeout'}:
+                    raise ValueError('Unsupported event options.')
+                target = _target(call.func.value, pages)
+                event = {'id': identity, 'action': call.func.attr.removeprefix('expect_'), **target,
+                         'steps': parse(node.body)}
+                if event['action'] == 'download':
+                    event['output'] = {'format': 'xlsx', 'headers': [], 'allow_empty': False}
+                steps.append(event)
+                pending[item.optional_vars.id] = event
+                continue
+            if not isinstance(node, ast.Expr) or not isinstance(node.value, ast.Call):
+                raise ValueError(f'Unsupported statement on line {node.lineno}.')
+            call = node.value
+            if not isinstance(call.func, ast.Attribute):
+                raise ValueError('Only recorded browser interactions are supported.')
+            method, receiver = call.func.attr, call.func.value
+            if method == 'close' and isinstance(receiver, ast.Name) and receiver.id in {'browser', 'context'}:
+                if call.args or call.keywords:
+                    raise ValueError('Unsupported close arguments.')
+                continue
+            if method == 'save_as' and isinstance(receiver, ast.Name) and receiver.id in pending:
+                # The worker chooses staging/output paths. Ignore only the
+                # literal output path; never execute a recorded filesystem call.
+                args, kwargs = _arguments(call)
+                if len(args) != 1 or kwargs or not isinstance(args[0], str):
+                    raise ValueError('Unsupported download save path.')
+                continue
+            if method in ASSERTIONS and isinstance(receiver, ast.Call) and isinstance(receiver.func, ast.Name) and receiver.func.id == 'expect' and len(receiver.args) == 1:
+                target = _target(receiver.args[0], pages)
+                args, kwargs = _arguments(call)
+                steps.append({'id': identity, 'action': 'assert', 'assertion': method, **target, 'args': args, 'kwargs': kwargs})
+                continue
+            if method not in ACTIONS | {'goto', 'close'}:
+                raise ValueError(f'Unsupported action {method!r} on line {node.lineno}.')
+            target = _target(receiver, pages)
+            args, kwargs = _arguments(call)
+            if kwargs.get('position') or kwargs.get('force'):
+                raise ValueError('Coordinate and forced clicks must be re-recorded with a semantic locator.')
+            steps.append({'id': identity, 'action': method, **target, 'args': args, 'kwargs': kwargs})
+        return steps
+
+    steps = parse(functions[0].body)
+    definition = {'version': VERSION, 'timezone': timezone, 'steps': steps, 'parameters': {},
+                  'identity': {'target': {}, 'text': ''}}
+    validate_definition(definition, activation=False)
+    return definition
+
+
+def validate_definition(definition, *, activation=True):
+    if not isinstance(definition, dict) or definition.get('version') != VERSION:
+        raise ValueError('Unsupported recording version.')
+    if len(canonical(definition).encode()) > 1_000_000:
+        raise ValueError('Recording exceeds the one megabyte limit.')
+    ZoneInfo(definition.get('timezone', 'UTC'))
+    parameters = definition.get('parameters', {})
+    if not isinstance(parameters, dict) or any(not isinstance(p, dict) for p in parameters.values()):
+        raise ValueError('Recording parameters must be named date definitions.')
+    if definition.get('browser_channel', 'msedge') not in {'msedge', 'chrome', 'chromium'}:
+        raise ValueError('Choose Edge, Chrome or Chromium.')
+    steps = list(walk_steps(definition.get('steps', [])))
+    if not steps or len(steps) > 500:
+        raise ValueError('A recording needs between 1 and 500 steps.')
+    ids = [step.get('id') for step in steps]
+    if not all(isinstance(item, str) and item for item in ids) or len(set(ids)) != len(ids):
+        raise ValueError('Recording step identifiers must be unique.')
+    downloads = []
+    for step in steps:
+        if not isinstance(step, dict) or not isinstance(step.get('args', []), list) or not isinstance(step.get('kwargs', {}), dict):
+            raise ValueError('Invalid action arguments.')
+        action = step.get('action')
+        _validate_target(step, activation=activation)
+        if activation and step.get('repair_reason'):
+            raise ValueError(f"{step['id']}: {step['repair_reason']}")
+        if definition.get('adapter') == 'gscm_portal' and activation:
+            from app.flow_recording_nexacro import validate_target
+            validate_target(step)
+        if action not in ACTIONS | {'new_page', 'goto', 'close', 'download', 'popup', 'assert'}:
+            raise ValueError(f'Unsupported recorded action: {action}.')
+        if action == 'assert' and step.get('assertion') not in ASSERTIONS:
+            raise ValueError('Unsupported assertion.')
+        if step.get('kwargs', {}).get('force') or step.get('kwargs', {}).get('position') or step.get('kwargs', {}).get('trial'):
+            raise ValueError('Forced or coordinate actions are unsupported.')
+        timeout = step.get('kwargs', {}).get('timeout', 120_000)
+        if not isinstance(timeout, (int, float)) or not 0 < timeout <= 1_800_000:
+            raise ValueError('Action timeouts must be bounded between 1 and 1800000 milliseconds.')
+        if action == 'goto':
+            args = step.get('args', [])
+            if len(args) != 1 or not isinstance(args[0], str):
+                raise ValueError('Navigation requires one URL.')
+            url = urlsplit(args[0])
+            if url.scheme not in {'http', 'https'} or not url.hostname or url.username or url.password:
+                raise ValueError('Recording navigation requires an HTTP(S) URL without credentials.')
+            if re.search(r'(?:[?&])[^=&]*(?:token|password|secret|ticket|code)=', args[0], re.I):
+                raise ValueError('Record from a stable portal URL without authentication parameters.')
+        if action in {'fill', 'press_sequentially'} and SENSITIVE.search(canonical(step.get('locator', []))):
+            raise ValueError('Authentication inputs cannot be included in a recording. Sign in first.')
+        if action == 'popup' and not step.get('result_page'):
+            raise ValueError('Popup has no recorded page identity.')
+        if action in {'download', 'popup'} and not step.get('steps'):
+            raise ValueError('An event must contain its triggering action.')
+        if action == 'download':
+            downloads.append(step)
+            output = step.get('output', {})
+            if not isinstance(output, dict) or output.get('format') not in {'csv', 'xlsx', 'html', 'txt'}:
+                raise ValueError('Choose CSV, Excel, HTML or text for every download.')
+            if (not isinstance(output.get('headers', []), list) or
+                    any(not isinstance(h, str) or not h for h in output.get('headers', [])) or
+                    not isinstance(output.get('allow_empty', False), bool) or
+                    output.get('completion', 'native') not in {'native', 'staging'}):
+                raise ValueError('Invalid expected output schema or completion method.')
+            checks = output.get('period_checks', [])
+            if not isinstance(checks, list) or any(not isinstance(c, dict) or not isinstance(c.get('column'), str)
+                    or not c['column'] or c.get('parameter') not in parameters for c in checks):
+                raise ValueError('Period checks require a column and a known date parameter.')
+            if output['format'] in {'html', 'txt'} and (output.get('headers') or checks):
+                raise ValueError('Column and period checks require CSV or Excel output.')
+    _validate_pages(definition['steps'])
+    if activation and not downloads:
+        raise ValueError('The recording did not capture a download. Record through the download button.')
+    identity = definition.get('identity') or {}
+    if not isinstance(identity, dict) or not isinstance(identity.get('text', ''), str):
+        raise ValueError('Report identity must contain exact text and a locator.')
+    if activation and (not identity.get('text') or not identity.get('target', {}).get('locator')):
+        raise ValueError('Choose a report identity locator and its exact expected text before validation.')
+    readiness = definition.get('readiness') or {}
+    if not isinstance(readiness, dict):
+        raise ValueError('Invalid report readiness definition.')
+    if activation:
+        trigger = next((step for step in steps if step['id'] == readiness.get('trigger_step_id')), None)
+        if not trigger or readiness.get('mode') not in {'navigation', 'loading_cycle', 'changed_text'}:
+            raise ValueError('Choose the report generation action and its completion signal.')
+        if readiness['mode'] == 'navigation' and trigger['action'] != 'goto':
+            raise ValueError('Navigation completion must reference a navigation action.')
+        if readiness['mode'] != 'navigation' and not readiness.get('target', {}).get('locator'):
+            raise ValueError('Choose the loading indicator or result value used to confirm completion.')
+        if steps.index(trigger) >= min(steps.index(step) for step in downloads):
+            raise ValueError('Report generation must complete before the first download.')
+    # Identity and parameter locators use the same restricted resolver.
+    for target in [identity.get('target', {}), readiness.get('target', {}), *[p.get('target', {}) for p in definition.get('parameters', {}).values()]]:
+        _validate_target(target, activation=activation)
+        if definition.get('adapter') == 'gscm_portal' and activation:
+            from app.flow_recording_nexacro import validate_target
+            validate_target(target)
+        for part in target.get('locator', []):
+            if part.get('method') not in LOCATORS | {'first', 'last', 'content_frame'}:
+                raise ValueError('Unsupported identity or parameter locator.')
+    for name, parameter in definition.get('parameters', {}).items():
+        if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,63}', name):
+            raise ValueError('Use a simple parameter name.')
+        if parameter.get('mode') not in {'portal_default', 'fixed', 'calculated'}:
+            raise ValueError('Unsupported date parameter mode.')
+        if (parameter.get('step_id') and parameter['step_id'] not in ids) or (not parameter.get('step_id') and not parameter.get('target')):
+            raise ValueError('A parameter must identify a recorded step or input locator.')
+        if parameter.get('not_after') and parameter['not_after'] not in definition.get('parameters', {}):
+            raise ValueError('Date range references an unknown parameter.')
+        if parameter.get('step_id'):
+            action = next(step['action'] for step in steps if step['id'] == parameter['step_id'])
+            if action not in {'fill', 'select_option', 'press_sequentially'}:
+                raise ValueError('Date parameters must reference value-setting steps.')
+            if activation and parameter['mode'] != 'portal_default' and ids.index(parameter['step_id']) >= ids.index(readiness['trigger_step_id']):
+                raise ValueError('Dates must be applied before generating the report.')
+        elif parameter.get('mode') != 'portal_default':
+            raise ValueError('Fixed/calculated dates require a recorded value-setting step.')
+        if parameter.get('mode') == 'calculated' and parameter.get('expression') not in CALCULATIONS:
+            raise ValueError('Unsupported date calculation.')
+        fmt = parameter.get('format', '%Y-%m-%d')
+        if fmt not in {'%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y', '%Y%m%d'}:
+            raise ValueError('Unsupported date format.')
+        if parameter.get('mode') == 'fixed':
+            datetime.strptime(parameter.get('value', ''), fmt)
+    return definition
+
+
+def resolve_parameters(definition, overrides=None, *, now=None):
+    now = now or datetime.now(ZoneInfo(definition['timezone']))
+    day = now.astimezone(ZoneInfo(definition['timezone'])).date()
+    month_start = day.replace(day=1)
+    previous_end = month_start - timedelta(days=1)
+    values = {'today': day, 'yesterday': day - timedelta(days=1), 'month_start': month_start,
+              'previous_month_start': previous_end.replace(day=1), 'previous_month_end': previous_end,
+              'year_start': day.replace(month=1, day=1), 'week_start': day - timedelta(days=day.weekday())}
+    overrides = overrides or {}
+    unknown = set(overrides) - set(definition.get('parameters', {}))
+    if unknown:
+        raise ValueError('Unknown parameter: ' + sorted(unknown)[0])
+    result = {}
+    for name, parameter in definition.get('parameters', {}).items():
+        mode, fmt = parameter['mode'], parameter.get('format', '%Y-%m-%d')
+        value = overrides.get(name)
+        if value is None:
+            value = parameter.get('value') if mode == 'fixed' else values[parameter['expression']].strftime(fmt) if mode == 'calculated' else None
+        if value is not None:
+            datetime.strptime(value, fmt)
+        result[name] = value
+    return result

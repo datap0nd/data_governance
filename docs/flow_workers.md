@@ -1,5 +1,7 @@
 # Flow worker capacity
 
+For global Chrome/Edge selection and the new ASAP/GSCM recorded method, see [recorded Flows](recorded_flows.md). The existing behavior below applies to catalog/bookmark Flows.
+
 System > Flow workers configures 1–5 background slots and 1–5 visible (headed)
 slots independently; each mode defaults to 1. Claims are serialized in a
 SQLite write transaction, so downloads, catalog scans and final processing
