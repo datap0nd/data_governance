@@ -86,15 +86,18 @@ function apiHeaders(extra = {}) {
 
 async function apiError(res) {
     let detail = "";
+    let validation = [];
     try {
         const payload = await res.json();
         if (typeof payload.detail === "string") detail = payload.detail;
         else if (Array.isArray(payload.detail)) {
+            validation = payload.detail;
             detail = payload.detail.map(item => item.msg || item.message || "Invalid value").join("; ");
         }
     } catch (_) {}
     const error = new Error(detail || `API error: ${res.status}`);
     error.status = res.status;
+    error.validation = validation;
     return error;
 }
 
@@ -10866,7 +10869,7 @@ function _flowRowHtml(row) {
         <td>${esc(row.schedule)}${flow.next_run_at ? `<small>Next ${esc(formatDate(flow.next_run_at))}</small>` : ""}</td>
         <td>${_flowStatusBadge(flow.last_status)}${flow.last_run_at ? `<small>${esc(timeAgo(flow.last_run_at))}</small>` : '<small>Not run yet</small>'}</td>
         <td><label class="flow-switch"><input class="flow-enabled-switch" type="checkbox" data-id="${flow.id}" data-flow-focus="active-${flow.id}" aria-label="Active: ${esc(flow.name)}" ${flow.enabled ? "checked" : ""} ${flow.schedule_type === "manual" ? "disabled" : ""}><span aria-hidden="true"></span><strong>${flow.enabled ? "Active" : "Inactive"}</strong></label>${flow.schedule_type === "manual" ? '<small>Manual only</small>' : ""}</td>
-        <td class="flow-row-actions">${button("flow-run", activeRun?.status === "queued" ? "Start now" : activeRun ? "Running" : "Run", activeRun && activeRun.status !== "queued" ? "disabled" : "")}${activeRun ? button("flow-stop", "Stop") : ""}${button("flow-edit", "Edit")}<details class="flow-row-menu"><summary aria-label="More actions: ${esc(flow.name)}" data-flow-focus="more-${flow.id}">More</summary><div>${button("flow-open-folder", "Open folder")}${button("flow-delete", "Delete")}</div></details></td>
+        <td class="flow-row-actions">${button("flow-run", activeRun?.status === "queued" ? "Start now" : activeRun ? "Running" : "Run", activeRun && activeRun.status !== "queued" ? "disabled" : "")}${activeRun ? `<button class="btn-sm btn-outline btn-danger-outline flow-stop" type="button" data-id="${flow.id}" data-flow-focus="flow-stop-${flow.id}">Stop</button>` : ""}${button("flow-edit", "Edit")}<details class="flow-row-menu"><summary aria-label="More actions: ${esc(flow.name)}" data-flow-focus="more-${flow.id}">More</summary><div>${button("flow-open-folder", "Open folder")}<button class="btn-sm btn-outline btn-danger-outline flow-delete" type="button" data-id="${flow.id}" data-flow-focus="flow-delete-${flow.id}">Delete</button></div></details></td>
     </tr>`;
 }
 
@@ -11124,7 +11127,7 @@ function _flowDestinationHtml(existing) {
     if (existing?.id && !existing.flow_folder && existing.source_type !== "file") {
         return `<div id="flow-destination" class="flow-span-2"><label><span>Current target folder</span><input id="flow-target-folder" required value="${esc(existing.target_folder || "")}"></label><p>Historic files stay here after adoption.</p><button type="button" class="btn-secondary" id="flow-adopt-folder" data-id="${existing.id}">Adopt managed folder</button></div>`;
     }
-    return `<div id="flow-destination" class="flow-span-2 flow-dialog-help"><strong>Flow folder</strong><p>${existing?.id && existing.flow_folder ? esc(existing.flow_folder) : "Metronome creates a folder with this flow's name and ID when you save."}</p><small>${existing?.source_type === "file" || existing?._source_type === "file" ? "Source snapshots stay private; the source file is never moved." : "Downloads and Scripts have separate subfolders. Renaming the flow preserves this path."}</small>${existing?.flow_folder ? `<button type="button" class="btn-secondary" id="flow-repair-layout" data-id="${existing.id}">Repair folder layout</button>` : ""}${existing?.id && !existing.flow_folder ? `<button type="button" class="btn-secondary" id="flow-adopt-folder" data-id="${existing.id}">Adopt managed folder</button>` : ""}</div>`;
+    return `<div id="flow-destination" class="flow-span-2 flow-dialog-help"><strong>Flow folder</strong><p>${existing?.id && existing.flow_folder ? esc(existing.flow_folder) : "Metronome creates a folder with this flow's name and ID when you save."}</p><small>${existing?.source_type === "file" || existing?._source_type === "file" ? "Source snapshots stay private; the source file is never moved." : "Downloads and Scripts have separate subfolders. Renaming the flow preserves this path."}</small>${existing?.id && existing.flow_folder ? `<button type="button" class="btn-secondary" id="flow-repair-layout" data-id="${existing.id}">Repair folder layout</button>` : ""}${existing?.id && !existing.flow_folder ? `<button type="button" class="btn-secondary" id="flow-adopt-folder" data-id="${existing.id}">Adopt managed folder</button>` : ""}</div>`;
 }
 
 function _flowOutlookBuilderHtml(existing = null) {
@@ -11198,6 +11201,7 @@ function _flowOutlookBuilderHtml(existing = null) {
 }
 
 function _flowBuilderHtml(catalog, existing = null) {
+    if (existing?.id) existing = {...window._flowsState?.flows?.find(flow => flow.id === existing.id), ...existing};
     if (["outlook", "file"].includes(existing?.source_type || existing?._source_type)) {
         return _flowOutlookBuilderHtml(existing);
     }
@@ -11900,6 +11904,113 @@ function _pollPipelineRun(runId, expectedReportId) {
     poll();
 }
 
+function _flowStepSummary(form, key) {
+    const control = id => form.querySelector(`#${id}`);
+    const value = id => control(id)?.value || "";
+    const label = id => control(id)?.selectedOptions?.[0]?.textContent || value(id);
+    if (key === "source") return value("flow-name") || "Name this flow";
+    if (key === "download") return [label("flow-file-format"), label("flow-period-strategy")].filter(Boolean).join(" · ");
+    if (key === "destination") return form.dataset.sourceType === "file" ? "Private snapshots · source unchanged" : label("flow-output-mode") || "Managed Downloads folder";
+    if (key === "after") return `${control("flow-transform-enabled")?.checked ? "Transform enabled" : "No transformation"} · ${control("flow-sql-enabled")?.checked ? [value("flow-sql-database"), value("flow-sql-schema"), value("flow-sql-table")].filter(Boolean).join(".") : "No SQL handoff"}`;
+    return [label("flow-schedule-type"), value("flow-schedule-type") !== "manual" ? value("flow-schedule-time") : "", label("flow-owner")].filter(Boolean).join(" · ");
+}
+
+function _flowRevealStep(form, target) {
+    const selected = target?.closest(".flow-step");
+    if (!selected) return;
+    for (const step of form.querySelectorAll(".flow-step")) {
+        const open = step === selected;
+        step.querySelector(".flow-step-body").hidden = !open;
+        step.querySelector(".flow-step-toggle").setAttribute("aria-expanded", String(open));
+    }
+}
+
+function _flowRevealServerError(form, error) {
+    const ids = {name: "flow-name", local_file_path: "flow-local-file-path", local_file_worksheet: "flow-local-file-worksheet", outlook_subject_contains: "flow-outlook-subject", site_id: "flow-site", report_id: "flow-report", target_folder: "flow-target-folder", filename_template: "flow-filename", transform_script_path: "flow-transform-script", schedule_type: "flow-schedule-type", schedule_time: "flow-schedule-time", schedule_days: "flow-schedule-type", schedule_day: "flow-schedule-day", owner_person_id: "flow-owner", sql_table: "flow-sql-table", sql_schema: "flow-sql-schema", sql_database: "flow-sql-database", sql_mode: "flow-sql-mode", start_week: "flow-start-week", end_week: "flow-end-week", period_strategy: "flow-period-strategy", file_format: "flow-file-format"};
+    for (const item of error.validation || []) {
+        const field = item.loc?.find(part => ids[part]);
+        const input = field && form.querySelector(`#${ids[field]}`);
+        if (input) { _flowRevealStep(form, input); input.focus(); return; }
+    }
+}
+
+function _flowBuildSteps(form) {
+    if (!form || form.dataset.stepsReady) return;
+    form.dataset.stepsReady = "1";
+    const section = id => form.querySelector(`#${id}`)?.closest(".flow-form-section");
+    const source = section("flow-name"), transform = section("flow-transform-enabled"), schedule = section("flow-schedule-type"), owner = section("flow-owner");
+    const download = section("flow-file-format");
+    const destination = document.createElement("div"); destination.className = "flow-form-grid";
+    for (const id of ["flow-output-mode", "flow-destination", "flow-filename"]) {
+        const input = form.querySelector(`#${id}`);
+        if (input) destination.append(id === "flow-destination" ? input : input.closest("label"));
+    }
+    if (form.querySelector("#flow-filename")) {
+        const preview = document.createElement("p"); preview.className = "flow-filename-preview flow-span-2";
+        destination.append(preview);
+    }
+    const sql = document.createElement("div"); sql.className = "flow-form-grid";
+    const sqlTitle = document.createElement("h3"); sqlTitle.textContent = "SQL handoff";
+    for (const id of ["flow-sql-enabled", "flow-sql-fields"]) {
+        const input = form.querySelector(`#${id}`);
+        if (input) sql.append(id === "flow-sql-enabled" ? input.closest("label") : input);
+    }
+    // The portal catalog notice and refresh action move with SQL controls.
+    const refresh = form.querySelector("#flow-sql-refresh");
+    if (refresh && !sql.contains(refresh)) sql.append(refresh.closest(".flow-dialog-help") || refresh);
+    transform?.append(sqlTitle, sql);
+    const scheduleHeading = schedule?.querySelector("h2");
+    if (scheduleHeading) scheduleHeading.textContent = "Schedule";
+    const groups = [
+        ["source", "Source", [form.querySelector("#flow-replicate-section"), source]],
+        ...(download ? [["download", "What to download", [form.querySelector("#flow-report-filters"), form.querySelector("#flow-export-views-section"), form.querySelector("#flow-download-links-section"), download]]] : []),
+        ["destination", "Where it goes", [destination]],
+        ["after", "After download", [transform]],
+        ["schedule", "Schedule and owner", [schedule, owner]],
+    ];
+    const anchor = form.querySelector(".flow-form-error");
+    groups.forEach(([key, title, sections], index) => {
+        const step = document.createElement("section"); step.className = "flow-step"; step.dataset.step = key;
+        step.innerHTML = `<h2><button type="button" id="flow-step-toggle-${key}" class="flow-step-toggle" aria-controls="flow-step-body-${key}" aria-expanded="false"><span class="flow-step-number">${index + 1}</span><span>${title}<small class="flow-step-status"></small></span><span aria-hidden="true">⌄</span></button></h2><div class="flow-step-body" id="flow-step-body-${key}" hidden></div>`;
+        const body = step.querySelector(".flow-step-body");
+        for (const existing of sections.filter(Boolean)) body.append(existing);
+        if (index < groups.length - 1) {
+            const next = document.createElement("button"); next.type = "button"; next.className = "btn-secondary flow-step-next"; next.textContent = "Next";
+            next.addEventListener("click", () => { const target = form.querySelectorAll(".flow-step-toggle")[index + 1]; _flowRevealStep(form, target); target.focus(); });
+            body.append(next);
+        }
+        step.querySelector(".flow-step-toggle").addEventListener("click", event => {
+            if (!body.hidden) { body.hidden = true; event.currentTarget.setAttribute("aria-expanded", "false"); }
+            else _flowRevealStep(form, event.currentTarget);
+        });
+        form.insertBefore(step, anchor);
+    });
+    const shell = form.closest(".flow-builder-shell");
+    if (!shell.querySelector(".flow-summary")) {
+        const rail = document.createElement("aside"); rail.className = "flow-summary flow-step-overview";
+        rail.innerHTML = '<h2>Flow summary</h2><dl></dl>'; shell.append(rail);
+    }
+    const update = () => {
+        for (const step of form.querySelectorAll(".flow-step")) step.querySelector(".flow-step-status").textContent = _flowStepSummary(form, step.dataset.step);
+        const preview = form.querySelector(".flow-filename-preview");
+        if (preview) {
+            const values = {flow: form.querySelector("#flow-name")?.value || "Flow", report: "Report", export: "Export", date: "2026-09-05", week: "2026-W01", start_period: "2026-W01", end_period: "2026-W02", year: "2026", week_number: "01", index: "1"};
+            preview.textContent = "Example only: " + (form.querySelector("#flow-filename")?.value || "").replace(/\{([a-z_]+)\}/g, (token, key) => values[key] || token);
+        }
+        const overview = shell.querySelector(".flow-step-overview dl");
+        if (overview) overview.innerHTML = groups.map(([key, title]) => `<div><dt>${title}</dt><dd>${esc(_flowStepSummary(form, key))}</dd></div>`).join("");
+    };
+    form.addEventListener("input", update); form.addEventListener("change", update); update();
+    form.addEventListener("invalid", event => {
+        event.preventDefault();
+        if (form._invalidRevealPending) return;
+        form._invalidRevealPending = true;
+        const target = event.target;
+        queueMicrotask(() => { _flowRevealStep(form, target); target.focus(); form._invalidRevealPending = false; });
+    }, true);
+    if (!form.dataset.id) _flowRevealStep(form, form.querySelector(".flow-step-toggle"));
+}
+
 function _bindFlowWorkspace() {
     const state = window._flowsState;
     document.querySelectorAll(".flow-sort").forEach(button => button.addEventListener("click", () => {
@@ -12042,6 +12153,7 @@ function _bindFlowWorkspace() {
         const copy = {
             ...source,
             id: null, name: "", enabled: false, _replicated_from: sourceId,
+            flow_folder: null, folder_slug: null, folder_state: "unmanaged", target_folder: null,
             last_run_at: null, last_status: null, last_error: null, last_success_at: null,
         };
         _flowShowView("builder", copy);
@@ -12315,6 +12427,7 @@ function _bindFlowWorkspace() {
             body.append("file", file, file.name);
             const saved = await apiPostForm("/api/flows/transform-script", body);
             $("#flow-transform-script").value = saved.script_path;
+            $("#flow-transform-script").dispatchEvent(new Event("input", {bubbles: true}));
             toast(`Transformation script added: ${saved.filename}`);
         } catch (err) {
             toast("Script not added: " + err.message);
@@ -12368,7 +12481,7 @@ function _bindFlowWorkspace() {
     });
     $("#flow-sql-database")?.addEventListener("change", repopulateSql);
     $("#flow-sql-schema")?.addEventListener("change", repopulateSql);
-    $("#flow-sql-refresh")?.addEventListener("click", async event => { event.currentTarget.disabled = true; try { await apiPost("/api/flows/sql/catalog/refresh"); toast("SQL targets refreshed"); await navigate("flows"); } catch (err) { toast("SQL targets not refreshed: " + err.message); event.currentTarget.disabled = false; } });
+    $("#flow-sql-refresh")?.addEventListener("click", async event => { const button = event.currentTarget; button.disabled = true; try { await apiPost("/api/flows/sql/catalog/refresh"); state.sqlCatalog = await api("/api/flows/sql/catalog"); repopulateSql(); updateSqlFields(); toast("SQL targets refreshed; your draft is preserved."); } catch (err) { toast("SQL targets not refreshed: " + err.message); } finally { button.disabled = false; } });
     if ($("#flow-sql-fields")) updateSqlFields();
     $("#flow-schedule-type")?.addEventListener("change", event => {
         const manual = event.target.value === "manual";
@@ -12380,7 +12493,8 @@ function _bindFlowWorkspace() {
         $("#flow-schedule-day").required = monthly;
     });
     $("#flow-schedule-type")?.dispatchEvent(new Event("change"));
-    $("#flow-builder-form")?.addEventListener("submit", async event => { event.preventDefault(); const form = event.currentTarget; const button = form.querySelector('button[type="submit"]'); const error = form.querySelector(".flow-form-error"); button.disabled = true; error.textContent = ""; try { const body = _flowCollectBuilder(); await (form.dataset.id ? apiPut(`/api/flows/${form.dataset.id}`, body) : apiPostJson("/api/flows", body)); toast("Flow saved"); await navigate("flows"); } catch (err) { error.textContent = "Flow not saved: " + err.message; error.scrollIntoView({ behavior: "smooth", block: "nearest" }); button.disabled = false; } });
+    _flowBuildSteps($("#flow-builder-form"));
+    $("#flow-builder-form")?.addEventListener("submit", async event => { event.preventDefault(); const form = event.currentTarget; const button = form.querySelector('button[type="submit"]'); const error = form.querySelector(".flow-form-error"); button.disabled = true; error.textContent = ""; try { const body = _flowCollectBuilder(); await (form.dataset.id ? apiPut(`/api/flows/${form.dataset.id}`, body) : apiPostJson("/api/flows", body)); toast("Flow saved"); await navigate("flows"); } catch (err) { error.textContent = "Flow not saved: " + err.message; _flowRevealServerError(form, err); error.scrollIntoView({ behavior: "smooth", block: "nearest" }); button.disabled = false; } });
 }
 
 function bindFlowsPage() {
