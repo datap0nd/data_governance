@@ -96,6 +96,8 @@ context.document.querySelectorAll = selector => {
 context.document.activeElement = select;
 context._flowLastRunHtml = run => run?.status || "none";
 context._flowPatchRowProgress = () => {};
+context._flowSyncExecutionRows = () => {};
+context._flowWatchExecutionPane = () => {};
 vm.runInContext(source.slice(source.indexOf("function _flowPatchActivity(activity)"), source.indexOf("function _flowScheduleCatalogMonitor")), context);
 for (const status of ["queued", "claimed", "running", "succeeded", "failed", "cancelled"]) {
     const run = { id: 10, flow_id: 1, status };
