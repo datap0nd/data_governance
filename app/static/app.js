@@ -10928,7 +10928,7 @@ function _flowWorkerProgressHtml(runner, index) {
     const known = Number.isFinite(runner.total) && runner.total > 0;
     const done = known ? Math.max(0, Math.min(runner.total, runner.completed || 0)) : 0;
     const phases = (runner.phases || []).map(phase => `<span class="flow-progress-phase" style="flex:${phase.total}" title="${esc(phase.label)}: ${phase.completed} / ${phase.total}"><span style="width:${Math.max(0, Math.min(100, phase.completed / phase.total * 100))}%"></span></span>`).join("");
-    return `<div class="flow-worker-heading"><span class="flow-workers"><span class="flow-worker-emoji" role="img" aria-label="Worker" style="--worker-delay:${index * -0.17}s">👷</span><span title="${esc(runner.id)}">${esc(runner.id)}</span></span><span class="flow-worker-assignment">${esc(runner.label || "Run progress")}</span></div>
+    return `<div class="flow-worker-heading"><span class="flow-workers"><span class="flow-worker-emoji" role="img" aria-label="Automation worker running" style="--worker-delay:${index * -0.17}s">🤖</span><span title="${esc(runner.id)}">${esc(runner.id)}</span></span><span class="flow-worker-assignment">${esc(runner.label || "Run progress")}</span></div>
         <div class="flow-progress-track ${known ? "" : "flow-progress-unknown"}" role="progressbar" aria-label="${esc(runner.id)} progress" aria-valuemin="0" ${known ? `aria-valuemax="${runner.total}" aria-valuenow="${done}" aria-valuetext="${done} of ${runner.total} steps completed"` : 'aria-valuetext="Working"'}>${phases}</div>
         <div class="flow-progress-message" title="${esc(runner.message || "")}">${esc(runner.message || "Preparing work")}</div>`;
 }

@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -13,6 +14,38 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from app import flow_recording
+
+
+class RecordingCancelled(RuntimeError):
+    pass
+
+
+def _close_recorder(process):
+    """Close only this CLI's owned process tree, including its Inspector."""
+    if process.poll() is not None:
+        return
+    if os.name == 'nt':
+        subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'], capture_output=True,
+                       timeout=15, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    else:
+        os.killpg(process.pid, signal.SIGTERM)
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        if os.name != 'nt':
+            os.killpg(process.pid, signal.SIGKILL)
+        else:
+            process.kill()
+        process.wait(timeout=5)
+
+
+def _recorded_source(raw):
+    if not raw.is_file():
+        raise RuntimeError('No actions were recorded. Start a new recording and continue through a file download.')
+    source = raw.read_text(encoding='utf-8')
+    if len(source) > 1_000_000:
+        raise RuntimeError('Recording exceeds the supported size limit.')
+    return source
 
 
 @contextmanager
@@ -113,39 +146,62 @@ def record(client, worker_id, scan, page, context, profile, progress):
 
 def _run_recorder(command, client, worker_id, scan_id, raw, private, zone, job, profile, channel, storage, progress):
     from app import flow_worker, flow_browser_state
-    progress('running', {'stage': 'recording', 'message': 'Record the report and its downloads in Playwright. Close the recording browser when finished.'})
+    progress('running', {'stage': 'recording', 'message': 'Navigate and set filters, then download the required file(s). Wait for downloads to finish and click Finish recording in Metronome. Playwright’s red square only pauses recording.'})
     with (private / 'recorder.log').open('w', encoding='utf-8') as log:
         process = subprocess.Popen(command, stdout=log, stderr=log,
+            start_new_session=os.name != 'nt',
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         started = time.monotonic()
+        finished_by_user = False
         try:
             while process.poll() is None:
                 control = flow_worker._api(client, 'GET', f'/api/flows/worker/{worker_id}/recordings/{scan_id}/control')
-                if control['status'] in {'cancelled', 'failed'}:
-                    raise RuntimeError('Recording was cancelled or its worker reservation expired.')
+                if control.get('cancel_requested') or control['status'] == 'cancelled':
+                    raise RecordingCancelled('Recording cancelled. Unsaved actions were discarded.')
+                if control['status'] == 'failed':
+                    raise RuntimeError('The recording worker reservation expired.')
+                if control.get('finish_requested'):
+                    # Public codegen --output is updated as actions are recorded.
+                    # Check for a settled, parseable file before closing the CLI;
+                    # no private Inspector API or imported Python is executed.
+                    previous = None
+                    for _ in range(10):
+                        source = _recorded_source(raw)
+                        if source == previous:
+                            flow_recording.import_codegen(source, timezone=zone)
+                            break
+                        previous = source
+                        time.sleep(0.5)
+                    else:
+                        raise RuntimeError('The recording is still changing. Pause recording before finishing.')
+                    progress('running', {'stage': 'finishing', 'message': 'Closing the recording windows and importing the saved actions.'})
+                    _close_recorder(process)
+                    finished_by_user = True
+                    break
                 if time.monotonic() - started > 4 * 60 * 60:
                     raise RuntimeError('Recording exceeded four hours. Start a new recording.')
                 time.sleep(2)
-            if process.returncode != 0:
+            if process.returncode != 0 and not finished_by_user:
                 raise RuntimeError('Playwright recording ended unexpectedly. Check the local recorder log and record again.')
-            if not raw.is_file():
-                raise RuntimeError('Playwright produced no recording. Click Record in the Inspector and try again.')
-            definition = flow_recording.import_codegen(raw.read_text(encoding='utf-8'), timezone=zone)
+            # Read again after shutdown so the final completed action is kept.
+            definition = flow_recording.import_codegen(_recorded_source(raw), timezone=zone)
+            # Keep partial recordings as drafts so a native portal download
+            # can be attached to its observed trigger during review. Activation
+            # still requires a download and successful output validation.
             definition['adapter'] = job['site']['adapter']
             definition['browser_channel'] = channel
-            flow_browser_state.save(profile, channel, json.loads(storage.read_text(encoding='utf-8')))
+            if not finished_by_user:
+                # Only a graceful CLI exit guarantees --save-storage has
+                # finished writing. Forced Finish retains the protected state
+                # captured before recording; authentication is checked again
+                # on validation/execution.
+                flow_browser_state.save(profile, channel, json.loads(storage.read_text(encoding='utf-8')))
             if definition['adapter'] == 'gscm_portal':
                 from app.flow_recording_nexacro import adapt_recording
                 definition = adapt_recording(definition)
             return {'definition': definition}
         finally:
-            if process.poll() is None:
-                if os.name == 'nt':
-                    subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'], capture_output=True,
-                                   creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-                else:
-                    process.terminate()
-                process.wait(timeout=15)
+            _close_recorder(process)
 
 
 def validate(scan, page, profile, progress):
@@ -166,6 +222,7 @@ def validate(scan, page, profile, progress):
             progress('running', detail), profile, profile / 'downloads', run_id=scan['id'],
             register_folder=lambda _: {'ops': []}, headed=True, state=state)
         outputs = [{'step_id': item.get('export_view'), 'filename': item['filename'],
+                    'period_key': item.get('period_key'),
                     'checksum': item.get('checksum'), 'rows': item.get('row_count'),
                     'parameters': item.get('recording_parameters'), 'defaults': item.get('recording_defaults')}
                    for item in state['artifacts'] if item.get('status') == 'saved']

@@ -108,6 +108,7 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
     prior_defaults = (job.get('resume') or {}).get('recording_defaults', {})
     output_count = sum(step['action'] == 'download' for step in flow_recording.walk_steps(definition['steps']))
     output_index = 0
+    batch = job.get('_recording_batch') or {}
     captured = []
     readiness_confirmed = False
     staging.mkdir(parents=True, exist_ok=True)
@@ -115,7 +116,9 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
     def notify(step, message, **extra):
         progress('running', {'stage': 'recorded_action', 'message': message,
                  'step_id': step['id'], 'revision': job['recording']['revision'],
-                 'action': step['action'], 'attempt': 1, 'expected_outcome': 'action completed', **extra}, artifacts)
+                 'action': step['action'], 'attempt': 1, 'expected_outcome': 'action completed',
+                 'batch_index': batch.get('index', 1), 'batch_count': batch.get('count', 1),
+                 'period': batch.get('period'), **extra}, artifacts)
 
     def read_defaults():
         for name, parameter in definition.get('parameters', {}).items():
@@ -232,9 +235,15 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
     for step, staged, index in captured:
         specification = step['output']
         fmt = specification['format']
+        index += batch.get('offset', 0)
         filename = flow_worker._render_filename(job['downloads']['filename_template'], job, None, index, step.get('label') or step['id'])
         filename = str(Path(filename).with_suffix({'xlsx': '.xlsx', 'csv': '.csv', 'html': '.html', 'txt': '.txt'}[fmt]))
+        if batch.get('period'):
+            path = Path(filename)
+            filename = f'{path.stem}_part_{batch["index"]:03d}{path.suffix}'
         output = flow_worker._safe_output_path(target, filename)
+        if any(Path(item['file_path']).resolve() == output.resolve() for item in artifacts if item.get('file_path')):
+            raise RuntimeError('Recorded outputs have duplicate filenames. Include {index} in the filename template.')
         downstream = job.get('transformation', {}).get('enabled') or job.get('sql_handoff', {}).get('enabled')
         if downstream and fmt in {'html', 'txt'}:
             raise ValueError('HTML/text downloads cannot be transformed or loaded into SQL.')
@@ -263,8 +272,8 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
                     raise RuntimeError('The expected period column is absent from the report.')
                 if any(row[check['column']] != expected for row in rows):
                     raise RuntimeError('The downloaded report period does not match this run.')
-        artifact = {**metadata, 'bundle_index': index, 'bundle_count': output_count,
-                    'export_view': step['id'], 'period_key': None, 'status': 'saved',
+        artifact = {**metadata, 'bundle_index': index, 'bundle_count': batch.get('output_count', output_count),
+                    'export_view': step['id'], 'period_key': batch.get('period'), 'status': 'saved',
                     'export_transport': 'recorded_browser', 'recording_revision': job['recording']['revision'],
                     'recording_parameters': actual_parameters, 'recording_defaults': defaults}
         artifacts.append(flow_worker._decorate_artifact_storage(artifact, job, profile_dir))
@@ -294,8 +303,34 @@ def execute_recorded_flow(page, job, progress, profile_dir, download_staging_dir
     target = flow_worker._prepare_run_folder(job, profile_dir, run_id=run_id,
         register_folder=register_folder, report_progress=progress)
     try:
-        acquire(page, job, progress, profile_dir, download_staging_dir or profile_dir / 'downloads',
-                target=target, run_id=run_id, artifacts=artifacts)
+        definition = flow_recording.validate_definition(job['recording']['definition'])
+        parameters = job.get('recording_parameters') or flow_recording.resolve_parameters(definition)
+        batches = flow_recording.resolve_batches(definition, parameters)
+        per_batch = sum(step['action'] == 'download' for step in flow_recording.walk_steps(definition['steps']))
+        for index, batch in enumerate(batches, 1):
+            if not definition.get('date_batch'):
+                # Preserve the existing page/session lifecycle when the user
+                # has not enabled batching.
+                acquire(page, job, progress, profile_dir, download_staging_dir or profile_dir / 'downloads',
+                        target=target, run_id=run_id, artifacts=artifacts)
+                break
+            iteration = copy.deepcopy(job)
+            iteration['recording_parameters'] = batch['parameters']
+            iteration['_recording_batch'] = {**batch, 'index': index, 'count': len(batches),
+                'offset': (index - 1) * per_batch, 'output_count': len(batches) * per_batch}
+            if artifacts:
+                iteration.setdefault('resume', {})['recording_defaults'] = artifacts[0].get('recording_defaults', {})
+            original_pages = set(page.context.pages)
+            batch_page = page.context.new_page()
+            try:
+                acquire(batch_page, iteration, progress, profile_dir, download_staging_dir or profile_dir / 'downloads',
+                        target=target, run_id=run_id, artifacts=artifacts)
+            finally:
+                # Finish capture and validation before closing any popup or
+                # iframe host. The next range starts with fresh page state.
+                for owned in page.context.pages:
+                    if owned not in original_pages and not owned.is_closed():
+                        owned.close()
         artifacts = flow_worker._publish_direct_artifacts(job, artifacts, run_id=run_id, report_progress=progress)
         state['artifacts'] = artifacts
         sql_artifacts = artifacts
@@ -350,6 +385,7 @@ def standalone_main(job, argv=None):
         if args.dry_run:
             print(json.dumps({'flow': job['flow']['name'], 'revision': job['recording']['revision'],
                 'parameters': job['recording_parameters'], 'sql': job['sql_handoff']['enabled'],
+                'batches': [item['period'] for item in flow_recording.resolve_batches(job['recording']['definition'], job['recording_parameters'])],
                 'transformation': job['transformation']['enabled']}))
             return 0
         if args.output_root:

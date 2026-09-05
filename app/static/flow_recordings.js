@@ -29,7 +29,7 @@ window.FlowRecordings = (() => {
             const catalog = await api('/api/flows/catalog');
             const sites = catalog.sites.filter(site => site.enabled && ['asap_portal', 'gscm_portal'].includes(site.adapter));
             if (!sites.length) throw new Error('Add an ASAP or GSCM website in Catalog first. A catalog scan is not required.');
-            body.innerHTML = `<form class="flow-form-grid"><label>Name <input name="name" required maxlength="160"></label><label>Website <select name="site">${sites.map(site => option(String(site.id), site.name, '')).join('')}</select></label><label class="flow-span-2">Starting report URL (optional)<input name="route" type="url" placeholder="Leave empty to start at the portal"></label><p class="flow-span-2">A visible window opens on the worker PC after you start recording. Sign in, record one report and its downloads, then close the recording browser to review the steps here.</p><button class="btn-primary" type="submit">Create draft</button></form>`;
+            body.innerHTML = `<form class="flow-form-grid"><label>Name <input name="name" required maxlength="160"></label><label>Website <select name="site">${sites.map(site => option(String(site.id), site.name, '')).join('')}</select></label><label class="flow-span-2">Starting report URL (optional)<input name="route" type="url" placeholder="Leave empty to start at the portal"></label><p class="flow-span-2">Metronome opens the starting page on one worker. Complete sign-in if prompted, navigate to the report, set filters and download the required file(s). Wait for every download to complete, then click Finish recording here. To repeat the same report over date ranges, record one range and configure date batches during review.</p><button class="btn-primary" type="submit">Create draft</button></form>`;
             body.querySelector('form').onsubmit = async event => {
                 event.preventDefault(); const form = event.currentTarget, button = form.querySelector('button'); button.disabled = true;
                 try {
@@ -46,6 +46,7 @@ window.FlowRecordings = (() => {
         const navigation = steps.filter((step, i) => step.action === 'goto' && (firstDownload < 0 || i < firstDownload)).at(-1);
         const params = definition.parameters || {};
         return `<form data-review>
+            ${firstDownload < 0 ? '<p role="alert">No download was captured. Record through a completed download, or mark its recorded triggering action as a download below if the portal already delivered the file. This draft cannot be activated until its download passes validation.</p>' : ''}
             <div class="flow-form-grid">
                 <label>Timezone <input name="timezone" required value="${h(definition.timezone)}"></label>
                 <label>Report title (exact visible text) <input name="identity" required value="${h(definition.identity?.text)}"></label>
@@ -67,6 +68,12 @@ window.FlowRecordings = (() => {
                 </li>`;
             }).join('')}</ol>
             <p>To keep an end date at the portal default, select “Portal default” on its recorded input step. The replay omits that write and logs the value supplied by the portal.</p>
+            <fieldset><legend>Repeat this report over date ranges</legend>
+                <label><input type="checkbox" name="batchEnabled" ${definition.date_batch ? 'checked' : ''}> Download in date batches</label>
+                <p>Record one representative range, including both date fields and its download(s). Choose fixed or calculated dates above for the complete range. Each batch repeats all recorded steps and downloads, with an inclusive end date and no gaps. All files are collected before transformation or SQL.</p>
+                <div class="flow-form-grid"><label>Start parameter name <input name="batchStart" value="${h(definition.date_batch?.start_parameter || 'start')}"></label><label>End parameter name <input name="batchEnd" value="${h(definition.date_batch?.end_parameter || 'end')}"></label><label>Weeks per file batch <input name="batchWeeks" type="number" min="1" max="52" value="${h(definition.date_batch?.weeks || 10)}"></label></div>
+                <p>Example: 2025-01-01 through 2026-12-31 in 10-week batches. The final batch is shorter. Use calculated “today” for a moving end; a portal-default boundary cannot be split reliably. Batch files receive a part number.</p>
+            </fieldset>
             <button class="btn-primary" type="submit">Save reviewed revision</button>
         </form>`;
     }
@@ -116,24 +123,39 @@ window.FlowRecordings = (() => {
                 delete step.args; delete step.kwargs;
             }
         }
+        if (form.elements.batchEnabled.checked) {
+            definition.date_batch = {start_parameter:form.elements.batchStart.value.trim(),end_parameter:form.elements.batchEnd.value.trim(),weeks:Number(form.elements.batchWeeks.value)};
+        } else delete definition.date_batch;
         return definition;
     }
 
     async function open(flowId) {
         const element = dialog('Recorded flow'), body = element.querySelector('[data-body]'), errorBox = element.querySelector('[data-error]');
-        let selected, data, timer, dirty = false;
+        let selected, data, timer, dirty = false, pending = false, refreshVersion = 0, refreshError = false;
         element.addEventListener('close', () => clearTimeout(timer), {once:true});
         async function action(path, payload) {
+            if (pending) return;
+            pending = true; updateButtons();
+            refreshError = false;
             errorBox.textContent = '';
-            try { await (payload === undefined ? apiPost(path) : apiPostJson(path,payload)); dirty = false; await refresh(true); }
+            try {
+                const result = await (payload === undefined ? apiPost(path) : apiPostJson(path,payload));
+                if (result?.worker?.status === 'error') throw new Error(result.worker.message);
+                dirty = false; await refresh(true);
+            }
             catch (error) { errorBox.textContent = error.message; }
+            finally { pending = false; updateButtons(); if (element.isConnected && !timer) timer = setTimeout(() => refresh(),3000); }
         }
         async function refresh(render = false) {
-            clearTimeout(timer);
+            clearTimeout(timer); timer = null;
+            const version = ++refreshVersion;
             try {
                 const previousRevision = data?.revisions?.[0]?.id;
-                data = await api(`/api/flows/${flowId}/recordings`);
-                if (!element.isConnected) return;
+                const latestData = await api(`/api/flows/${flowId}/recordings`);
+                if (!element.isConnected || version !== refreshVersion) return;
+                data = latestData;
+                if (refreshError) { errorBox.textContent = ''; refreshError = false; }
+                render ||= !body.querySelector('[data-start]');
                 if (!dirty && previousRevision !== data.revisions[0]?.id) { selected = data.revisions[0]?.id; render = true; }
                 selected ||= data.revisions[0]?.id;
                 const revision = data.revisions.find(item => item.id === Number(selected));
@@ -157,23 +179,42 @@ window.FlowRecordings = (() => {
                 const status = body.querySelector('[data-session]');
                 if (status) status.textContent = latest ? `${latest.operation}: ${latest.status} — ${latest.error || JSON.parse(latest.progress_json || '{}').message || ''}` : 'Ready to record.';
                 const sessionActions = body.querySelector('[data-session-actions]');
-                if (sessionActions) {
-                    sessionActions.innerHTML = active ? `<button class="btn-secondary" data-cancel type="button">Cancel ${h(active.operation)}</button>${active.operation === 'record' ? '<p>When finished, close the Playwright recording browser. Your actions will be imported automatically.</p>' : ''}` : '';
+                if (sessionActions && sessionActions.dataset.session !== String(active?.scan_id || '')) {
+                    sessionActions.dataset.session = String(active?.scan_id || '');
+                    sessionActions.innerHTML = active ? `${active.operation === 'record' ? '<button class="btn-primary" data-finish type="button">Finish recording</button> ' : ''}<button class="btn-secondary" data-cancel type="button">Cancel ${h(active.operation)}</button>${active.operation === 'record' ? '<ol><li>Use the report page Metronome opened. Navigate and set its filters.</li><li>Download the required file or files. Wait until every download completes.</li><li>Click <strong>Finish recording</strong> here to close the recording windows and review your steps.</li></ol><p>Playwright’s red square pauses recording; it does not finish this session. Closing Chrome may leave its Inspector open. Use Finish recording here, or Cancel to discard the unsaved recording.</p>' : ''}` : '';
                     sessionActions.querySelector('[data-cancel]')?.addEventListener('click', () => action(`/api/flows/${flowId}/recordings/${active.scan_id}/cancel`));
+                    sessionActions.querySelector('[data-finish]')?.addEventListener('click', () => action(`/api/flows/${flowId}/recordings/${active.scan_id}/finish`));
                 }
                 const revisionStatus = body.querySelector('[data-revision-status]');
                 if (revisionStatus && revision) revisionStatus.textContent = `Revision ${revision.id}: ${revision.status}${dirty ? ' · unsaved changes' : ''}`;
                 updateButtons();
                 if (active) timer = setTimeout(() => refresh(),3000);
-            } catch (error) { errorBox.textContent = error.message; }
+            } catch (error) {
+                if (version !== refreshVersion || !element.isConnected) return;
+                errorBox.textContent = `Could not refresh recording status: ${error.message}. Retrying…`;
+                refreshError = true;
+                timer = setTimeout(() => refresh(),3000);
+            }
         }
         function updateButtons() {
-            const active = data?.sessions.some(item => ['queued','claimed','running'].includes(item.status));
+            const active = data?.sessions.find(item => ['queued','claimed','running'].includes(item.status));
             const revision = data?.revisions.find(item => item.id === Number(selected));
-            const start = body.querySelector('[data-start]'); if (start) start.disabled = active;
-            const validate = body.querySelector('[data-validate]'); if (validate) validate.disabled = active || dirty;
-            const activate = body.querySelector('[data-activate]'); if (activate) activate.disabled = active || dirty || revision?.status !== 'validated';
-            const save = body.querySelector('[data-review] button[type=submit]'); if (save) save.disabled = active;
+            const start = body.querySelector('[data-start]'); if (start) start.disabled = pending || Boolean(active);
+            const config = body.querySelector('[data-config]'); if (config) config.disabled = pending || Boolean(active);
+            const validate = body.querySelector('[data-validate]'); if (validate) validate.disabled = pending || active || dirty;
+            const activate = body.querySelector('[data-activate]'); if (activate) activate.disabled = pending || active || dirty || revision?.status !== 'validated';
+            const save = body.querySelector('[data-review] button[type=submit]'); if (save) save.disabled = pending || Boolean(active);
+            const finish = body.querySelector('[data-finish]');
+            if (finish) {
+                finish.disabled = pending || !active || active.finish_requested || active.cancel_requested || JSON.parse(active.progress_json || '{}').stage !== 'recording';
+                finish.textContent = active?.finish_requested ? 'Finishing recording…' : 'Finish recording';
+            }
+            const cancel = body.querySelector('[data-cancel]');
+            if (cancel) {
+                const force = active?.cancel_requested && Date.now() - Date.parse(active.cancel_requested) >= 10000;
+                cancel.disabled = pending || Boolean(active?.cancel_requested && !force);
+                cancel.textContent = force ? 'Force close recording' : active?.cancel_requested ? 'Cancelling…' : `Cancel ${active?.operation || 'recording'}`;
+            }
         }
         await refresh(true);
     }
