@@ -621,9 +621,9 @@ def test_recovery_defers_owner_alert_until_commit_and_dispatches_once(bundle,mon
 @pytest.mark.parametrize("offset", [-12, 0, 9])
 def test_watchdog_reads_aware_parallel_heartbeats_as_instants(bundle, monkeypatch, offset):
     from datetime import datetime, timedelta, timezone
-    now = datetime.now().replace(microsecond=0)
+    now = datetime.now(timezone.utc).replace(tzinfo=None, microsecond=0)
     monkeypatch.setattr(flows, '_now', lambda: now)
-    contact = now.astimezone(timezone(timedelta(hours=offset))).isoformat()
+    contact = now.replace(tzinfo=timezone.utc).astimezone(timezone(timedelta(hours=offset))).isoformat()
     with database.get_db() as db:
         db.execute("UPDATE flow_workers SET last_seen_at=? WHERE worker_id='worker-1'", (contact,))
         db.execute("UPDATE flow_runs SET heartbeat_at=? WHERE id=?", (contact, bundle['run']['id']))

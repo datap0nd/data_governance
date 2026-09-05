@@ -10,7 +10,7 @@ working tree on 2026-09-05. The delivery PR records the final tested commit and 
 | All 21 frontend test files | PASS |
 | Python compileall and three frontend syntax checks | PASS |
 | Initial affected Python run | 276 passed, 4 failed: assertions expected the old local-clock storage contract. Expectations/UTC lease fixture updated to the new contract; final full run pending. |
-| Full Python regression run and final Windows/Linux CI | Pending at document cutoff; final outcome must be recorded in the delivery PR before merge. |
+| Full local Python regression | 1,524 passed; 3 heartbeat fixture failures still supplied the old local `_now` contract. Updated those fixtures to UTC; the final affected suite passed: 80 passed, 12 warnings, 43.53 s. Final Windows/Linux CI is recorded in the delivery PR before merge. |
 | TIME-01 through TIME-05 on work PC | NOT RUN: requires updated work-PC app/workers and live portal/recipient test resources. |
 
 Local commands used `pytest.main` with an external temporary directory and the
