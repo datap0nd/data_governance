@@ -41,6 +41,8 @@ _CODE_DIR = Path(__file__).resolve().parent.parent
 if str(_CODE_DIR) not in sys.path:
     sys.path.insert(0, str(_CODE_DIR))
 
+from app.flow_paths import assert_job_paths
+
 try:
     from app import flow_gscm, flow_outlook, flow_publish, flow_replay, flow_retention
     from app.flow_asap_exports import (
@@ -5904,6 +5906,7 @@ def _prepare_run_folder(
     job: dict, profile_dir: Path, *, run_id: int, register_folder, report_progress,
 ) -> Path:
     """Create/register a producing run folder and execute assigned retention."""
+    assert_job_paths(job)
     output_mode = job.get("downloads", {}).get("output_mode", "run_folders")
     direct = output_mode == "direct_replace"
     private_snapshot = output_mode == "private_snapshot"
@@ -5958,6 +5961,7 @@ def execute_outlook_job(
     job: dict, report_progress, profile_dir: Path, *, run_id: int, register_folder,
 ) -> tuple[list[dict], list[dict], dict]:
     """Acquire, validate, and store one Outlook Inbox attachment."""
+    assert_job_paths(job)
     timings = _Timings()
     source = job.get("outlook_source") or {}
     report_progress("running", {
@@ -6035,6 +6039,7 @@ def execute_local_file_job(
     job: dict, report_progress, profile_dir: Path, *, run_id: int, register_folder,
 ) -> tuple[list[dict], list[dict], dict]:
     """Snapshot one configured file without ever modifying the source path."""
+    assert_job_paths(job)
     source = job.get("local_file") or {}
     source_path = Path(str(source.get("path") or ""))
     if not source_path.is_file():
@@ -6179,6 +6184,7 @@ def execute_job(
     # The caller may own the artifact list. Files are appended in place, so
     # everything saved before a mid-bundle failure stays visible to the
     # caller's failure report - the record Resume later relies on.
+    assert_job_paths(job)
     timings = _Timings()
     job["_runtime_artifact_store_id"] = flow_publish.artifact_store_id(profile_dir)
     report_progress("running", {"stage": "opening_report", "message": "Opening the configured report."})
@@ -6764,6 +6770,7 @@ def _publish_direct_artifacts(
     job: dict, artifacts: list[dict], *, run_id: int, report_progress,
 ) -> list[dict]:
     """Publish a complete validated bundle, including Resume-carried tasks."""
+    assert_job_paths(job)
     if job.get("downloads", {}).get("output_mode", "run_folders") != "direct_replace":
         return artifacts
     run_folder = Path(str(job.get("_runtime_run_folder") or ""))
@@ -7017,6 +7024,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
 
                 try:
                     sql_only = run["job"].get("job_type") == "sql_retry"
+                    assert_job_paths(run["job"])
                     if sql_only:
                         if not run["job"].get("sql_handoff", {}).get("enabled"):
                             raise RuntimeError("SQL-only retry has no enabled SQL target.")

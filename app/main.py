@@ -27,6 +27,7 @@ from starlette.requests import Request as StarletteRequest
 from app.config import DB_PATH, UPLOAD_PGHOST, UPLOAD_PGPORT
 from app.database import get_db, init_db
 from app import remote_flow_control
+from app.routers.system_paths import router as system_paths_router
 from app.local_access import is_server_machine, require_app_access
 from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, data_quality, tasks, eventlog, people, archive, documentation, email, email_schedules, usage, materialized_views, recurrences, flows, query_history, pipelines, pipeline_insights
 from app.settings import (
@@ -947,6 +948,7 @@ app.include_router(usage.router)
 app.include_router(materialized_views.router)
 app.include_router(recurrences.router)
 app.include_router(flows.router)
+app.include_router(system_paths_router)
 app.include_router(pipelines.router)
 app.include_router(pipeline_insights.router)
 
