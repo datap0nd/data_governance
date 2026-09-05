@@ -10753,7 +10753,15 @@ function _flowListHtml(flows, workers, catalog, runs = []) {
     const opened = _flowOpenGroups();
     const rows = flows.map(flow => _flowRowModel(flow, runs, catalog));
     const online = workers.filter(worker => worker.status !== "offline").length;
-    return `<div class="flow-status-strip"><span><strong>${flows.length}</strong> configured flows</span><span id="flow-worker-count"><strong>${online}</strong> online workers</span><span>Newest 3 producing runs retained; active recovery files stay protected.</span><span id="flow-activity-connection" role="status"></span></div>
+    const executing = rows.filter(row => row.activeRun);
+    return `<section id="flow-execution-pane" class="flow-execution-pane" aria-labelledby="flow-execution-heading" ${executing.length ? "" : "hidden"}>
+            <div class="flow-execution-heading"><h2 id="flow-execution-heading">Flows in execution</h2><span id="flow-execution-count">${executing.length} active</span></div>
+            <div id="flow-execution-scroll" class="flow-table-wrap flow-execution-scroll" role="region" aria-label="Flows in execution" tabindex="0">
+                <table class="flow-table flow-execution-table"><thead><tr>${_flowSortColumns().map(([,label]) => `<th scope="col">${label}</th>`).join("")}<th scope="col">Actions</th></tr></thead>
+                <tbody id="flow-execution-rows">${executing.map(_flowRowHtml).join("")}</tbody></table>
+            </div>
+        </section>
+        <div class="flow-status-strip"><span><strong>${flows.length}</strong> configured flows</span><span id="flow-worker-count"><strong>${online}</strong> online workers</span><span>Newest 3 producing runs retained; active recovery files stay protected.</span><span id="flow-activity-connection" role="status"></span></div>
         <div class="flow-table-wrap"><table class="flow-table flow-grouped-table">
         <thead><tr>${_flowSortHeaders()}</tr></thead>
         ${_flowGroups().map(group => {
@@ -10762,8 +10770,58 @@ function _flowListHtml(flows, workers, catalog, runs = []) {
             const active = items.filter(row => row.activeRun).length;
             const failed = items.filter(row => row.flow.last_status === "failed").length;
             return `<tbody class="flow-group-heading"><tr><th colspan="9" scope="rowgroup"><button type="button" class="flow-group-toggle" id="flow-group-${group}" data-group="${group}" aria-expanded="${opened.has(group)}" aria-controls="flow-group-rows-${group}"><span aria-hidden="true">${opened.has(group) ? "▾" : "▸"}</span> ${group} <span class="flow-group-count">${items.length}</span><small class="flow-group-active" ${active ? "" : "hidden"}>${active} active runs</small><small class="flow-group-failed" ${failed ? "" : "hidden"}>${failed} failed</small></button></th></tr></tbody>
-            <tbody id="flow-group-rows-${group}" ${opened.has(group) ? "" : "hidden"}>${items.map(_flowRowHtml).join("")}</tbody>`;
+            <tbody id="flow-group-rows-${group}" ${opened.has(group) ? "" : "hidden"}>${items.filter(row => !row.activeRun).map(_flowRowHtml).join("")}</tbody>`;
         }).join("")}</table></div>`;
+}
+
+function _flowSizeExecutionPane() {
+    const pane = document.getElementById("flow-execution-pane");
+    if (!pane || pane.hidden) return;
+    const scroller = document.getElementById("flow-execution-scroll");
+    const rows = Array.from(document.getElementById("flow-execution-rows").children).slice(0, 3);
+    const height = rows.reduce((sum, row) => sum + row.getBoundingClientRect().height, 0)
+        + scroller.querySelector("thead").getBoundingClientRect().height + 2;
+    scroller.style.setProperty("--flow-execution-height", `${Math.ceil(height)}px`);
+}
+
+function _flowWatchExecutionPane() {
+    const pane = document.getElementById("flow-execution-pane");
+    if (!pane) return;
+    _flowSizeExecutionPane();
+    if (!window._flowExecutionObserver && typeof ResizeObserver !== "undefined") {
+        const observer = new ResizeObserver(_flowSizeExecutionPane);
+        observer.observe(pane.querySelector("table"));
+        window._flowExecutionObserver = observer;
+    }
+}
+
+function _flowSyncExecutionRows(active) {
+    const target = document.getElementById("flow-execution-rows");
+    if (!target) return;
+    const state = window._flowsState;
+    const allRows = Array.from(document.querySelectorAll("tr[data-flow-id]"));
+    const byId = new Map(allRows.map(row => [Number(row.dataset.flowId), row]));
+    const focused = document.activeElement;
+    let movedFocus = false;
+    for (const row of allRows) {
+        const id = Number(row.dataset.flowId);
+        const destination = active.has(id) ? target : document.getElementById(`flow-group-rows-${row.dataset.flowGroup}`);
+        if (!destination || row.parentElement === destination) continue;
+        movedFocus ||= row.contains(focused);
+        if (destination === target) target.appendChild(row);
+        else {
+            const ordered = _flowSortRows(state.flows.map(flow => _flowRowModel(flow, [], state.catalog))
+                .filter(model => model.group === row.dataset.flowGroup), _flowSortState());
+            const after = ordered.slice(ordered.findIndex(model => model.flow.id === id) + 1);
+            const next = after.map(model => byId.get(model.flow.id)).find(node => node?.parentElement === destination);
+            destination.insertBefore(row, next || null);
+        }
+    }
+    const pane = document.getElementById("flow-execution-pane");
+    pane.hidden = target.children.length === 0;
+    document.getElementById("flow-execution-count").textContent = `${target.children.length} active`;
+    if (movedFocus && focused?.isConnected) focused.focus({preventScroll: true});
+    _flowWatchExecutionPane();
 }
 
 function _flowGroups() { return ["ASAP", "GSCM", "Outlook", "Local", "Web"]; }
@@ -10789,7 +10847,7 @@ function _flowRowModel(flow, runs = [], catalog = {}) {
 function _flowRowHtml(row) {
     const {flow, activeRun} = row;
     const button = (cls, label, extra = "") => `<button type="button" class="btn-sm ${cls}" data-id="${flow.id}" data-flow-focus="${cls}-${flow.id}" ${extra}>${label}</button>`;
-    return `<tr data-flow-id="${flow.id}">
+    return `<tr data-flow-id="${flow.id}" data-flow-group="${row.group}">
         <td class="flow-name-cell"><strong>${esc(flow.name)}</strong>${window._remoteFlowControlStatus?.enabled && flow.enabled ? `<small class="remote-control-code">Remote target: ${esc(window._remoteFlowControlStatus.installation_id)}:${esc(flow.id)}</small>` : ""}<div class="flow-row-progress" ${activeRun ? "" : "hidden"}>${_flowRowProgressHtml(activeRun)}</div></td>
         <td><label class="flow-switch" title="${flow.schedule_type === "manual" ? "Choose a schedule to activate this flow" : "Activate or pause this flow"}"><input class="flow-enabled-switch" data-flow-focus="active-${flow.id}" type="checkbox" aria-label="Active: ${esc(flow.name)}" data-id="${flow.id}" ${flow.enabled ? "checked" : ""} ${flow.schedule_type === "manual" ? "disabled" : ""}><span aria-hidden="true"></span></label></td>
         <td><select class="flow-inline-edit" data-id="${flow.id}" data-field="owner_person_id" data-flow-focus="owner-${flow.id}" aria-label="Owner: ${esc(flow.name)}"><option value="">Unassigned</option>${(window._flowsState?.people || []).map(person => `<option value="${person.id}" ${person.id === flow.owner_person_id ? "selected" : ""}>${esc(person.name)}</option>`).join("")}</select></td>
@@ -11625,6 +11683,8 @@ function _flowActivityVisible() {
 }
 
 function _flowStopActivityMonitor() {
+    window._flowExecutionObserver?.disconnect();
+    window._flowExecutionObserver = null;
     _flowActivityPoll.generation++;
     clearTimeout(_flowActivityPoll.timer);
     _flowActivityPoll.pending = false;
@@ -11706,6 +11766,7 @@ function _flowPatchActivity(activity) {
         stop.hidden = !run;
         if (!stop.dataset.busy) stop.disabled = false;
     });
+    _flowSyncExecutionRows(active);
     const workers = document.getElementById("flow-worker-count");
     if (workers) workers.textContent = `${activity.workers.online} online worker${activity.workers.online === 1 ? "" : "s"}`;
 }
@@ -12162,6 +12223,7 @@ function _flowBuildSteps(form) {
 
 function _bindFlowWorkspace() {
     const state = window._flowsState;
+    _flowWatchExecutionPane();
     document.querySelectorAll(".flow-inline-edit").forEach(select => select.onchange = async () => {
         const flow = state.flows.find(item => item.id === Number(select.dataset.id));
         const field = select.dataset.field;
