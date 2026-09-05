@@ -10,7 +10,7 @@ This is a standing instruction from the repository owner, recorded in
 | Release | What to test | Results |
 | --- | --- | --- |
 | 2026-09-05: Flows, PRs #67–#69 | [Work-PC test plan](releases/2026-09-05-flows/test-plan.md): recording controls, dates, GSCM, browser settings, workers and portability | [Verified automated report](releases/2026-09-05-flows/test-report.md); [live results worksheet](releases/2026-09-05-flows/manual-results.csv), initially NOT RUN |
-| 2026-09-05: testing documentation process | [Documentation checks](releases/2026-09-05-testing-process/test-plan.md) | [Documentation report](releases/2026-09-05-testing-process/test-report.md) |
+| 2026-09-05: testing documentation process, PR #70 | [Documentation checks](releases/2026-09-05-testing-process/test-plan.md) | [Documentation report](releases/2026-09-05-testing-process/test-report.md) |
 
 For the first work-PC session, follow setup in the Flows plan, then run
 ENV-01, REC-01 through REC-05, REV-01 and DATE-01. Continue with the complete

@@ -5,6 +5,7 @@ an index and the first cumulative Flows instructions/report/worksheet. It does
 not change application, worker, installer or CI execution code.
 
 - Source baseline: `bfff7bd0aa3af4a21f02706db65bc3b3e0524694`.
+- Change: [PR #70](https://github.com/datap0nd/data_governance/pull/70).
 - Results: [test-report.md](test-report.md).
 
 | ID | Actions | Expected result |

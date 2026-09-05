@@ -1,6 +1,7 @@
 # Testing documentation process: test report
 
 - Plan: [test-plan.md](test-plan.md).
+- Change and final merge evidence: [PR #70](https://github.com/datap0nd/data_governance/pull/70).
 - Evidence date: 2026-09-05 UTC.
 - Application/source baseline: `bfff7bd0aa3af4a21f02706db65bc3b3e0524694`.
 - Scope: documentation changes in the working tree based on that commit; no
