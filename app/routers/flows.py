@@ -2327,6 +2327,20 @@ def inspect_resume_eligibility(db, run_id: int) -> dict:
         )
     try:
         job["resume"] = {"from_run_id": run_id, "completed": completed}
+        if current_output_mode == "direct_replace":
+            stores = sorted({item["artifact_store_id"] for item in completed if item.get("artifact_store_id")})
+            if stores:
+                job["execution"]["required_artifact_store_ids"] = stores
+            roots = set()
+            for source_id in {item.get("source_run_id") for item in completed if item.get("source_run_id")}:
+                stored = db.execute("SELECT job_json FROM flow_runs WHERE id=?", (source_id,)).fetchone()
+                if stored:
+                    prior = _loads(stored[0], {})
+                    root = (prior.get("paths") or {}).get("artifact_store_root")
+                    if root:
+                        roots.add(root)
+                    roots.update((prior.get("resume") or {}).get("artifact_store_roots") or [])
+            job["resume"]["artifact_store_roots"] = sorted(roots)
         assert_flow_target_available(db, flow_target_resource_key_from_job(job))
         assert_no_active_flow_publish_run(db, job)
     except HTTPException as exc:
@@ -2643,6 +2657,9 @@ def create_flow(body: FlowWrite, request: Request):
                 db.execute("""UPDATE flows SET flow_folder=?, folder_slug=?, folder_state='managed',
                     target_folder=? WHERE id=?""", (str(allocated), allocated.name,
                     body.target_folder if body.source_type == "file" else str(allocated / "Downloads"), flow_id))
+                if body.transform_enabled:
+                    script = flow_layout.import_script(str(allocated), flow_id, body.transform_script_path)
+                    db.execute("UPDATE flows SET transform_script_path=? WHERE id=?", (script, flow_id))
             from app.freshness_inheritance import reconcile_file_binding, reconcile_source
             reconcile_file_binding(db, flow_id, reconcile_sources=False)
             if sql_target_source_id is not None:
@@ -2675,16 +2692,20 @@ def adopt_flow_folder(flow_id: int, request: Request):
             root = flow_paths.get_flows_root(db)
             if flow.get("flow_folder") and flow_paths.is_inside(flow["flow_folder"], root):
                 flow_layout.read_manifest(flow["flow_folder"], flow_id)
-                return flow
+                return _flow_out(db, flow_id)
             previous = flow["target_folder"] if flow["source_type"] != "file" else None
             allocated = flow_layout.create_flow_folder(root, flow["source_adapter"], flow["name"], flow_id)
             flow["flow_folder"] = str(allocated)
             if flow["source_type"] != "file":
                 flow["target_folder"] = str(allocated / "Downloads")
+            if flow["transform_enabled"]:
+                if flow_paths.setting(db, "flows_paths_enforced", "0") == "1":
+                    flow_paths.assert_inside(flow["transform_script_path"], root, label="Transformation script")
+                flow["transform_script_path"] = flow_layout.import_script(str(allocated), flow_id, flow["transform_script_path"])
             flow_paths.validate_flow(flow, flow_paths.policy(db, flow))
             db.execute("""UPDATE flows SET flow_folder=?, folder_slug=?, folder_state='managed',
-                target_folder=?, updated_at=? WHERE id=?""", (str(allocated), allocated.name,
-                flow["target_folder"], _iso(_now()), flow_id))
+                target_folder=?, transform_script_path=?, updated_at=? WHERE id=?""", (str(allocated), allocated.name,
+                flow["target_folder"], flow["transform_script_path"], _iso(_now()), flow_id))
             from app.freshness_inheritance import reconcile_file_binding
             reconcile_file_binding(db, flow_id)
             log_event(db, "flow", flow_id, flow["name"], "folder_adopted", "Historical files preserved", get_actor(request))
@@ -2695,6 +2716,41 @@ def adopt_flow_folder(flow_id: int, request: Request):
         if isinstance(exc, (OSError, ValueError)):
             raise HTTPException(409, f"Flow folder could not be adopted: {exc}") from exc
         raise
+
+
+@router.post("/{flow_id}/repair-layout")
+def repair_flow_layout(flow_id: int, request: Request):
+    with get_db() as db:
+        db.execute("BEGIN IMMEDIATE")
+        flow = _flow_out(db, flow_id, include_private_storage=True)
+        from app.routers.pipelines import assert_resource_unlocked
+        assert_resource_unlocked(db, "flow", str(flow_id))
+        if db.execute("SELECT 1 FROM flow_runs WHERE flow_id=? AND status IN ('queued','claimed','running')", (flow_id,)).fetchone():
+            raise HTTPException(409, "Wait for this flow's active run before repairing its folder.")
+        if not flow.get("flow_folder"):
+            raise HTTPException(409, "Adopt a managed folder first.")
+        try:
+            flow_paths.validate_flow(flow, flow_paths.policy(db, flow))
+            folder = Path(flow["flow_folder"])
+            # Missing whole folders may be recreated only at their stored path.
+            # An existing folder without our exact marker is never adopted.
+            if not folder.exists() and not folder.is_symlink():
+                expected = Path(flow_paths.get_flows_root(db)) / flow_paths.source_folder_name(flow["source_adapter"]) / flow["folder_slug"]
+                if expected != folder:
+                    raise ValueError("Stored folder path does not match this flow's layout.")
+                folder.mkdir()
+                now = _iso(_now())
+                flow_layout.write_manifest(folder, {"schema": "metronome-flow-folder", "layout_version": 1,
+                    "flow_id": flow_id, "flow_name": flow["name"], "source_adapter": flow["source_adapter"],
+                    "created_at": now, "updated_at": now, "deleted_at": None})
+            result = flow_layout.ensure_layout(folder, flow_id)
+            if flow["transform_enabled"]:
+                script = flow_layout.import_script(str(folder), flow_id, flow["transform_script_path"])
+                db.execute("UPDATE flows SET transform_script_path=? WHERE id=?", (script, flow_id))
+            log_event(db, "flow", flow_id, flow["name"], "layout_repaired", actor=get_actor(request))
+            return {**_flow_out(db, flow_id), "layout": result}
+        except (OSError, ValueError) as exc:
+            raise HTTPException(409, f"Layout could not be repaired: {exc}") from exc
 
 
 @router.post("/transform-script")
@@ -2763,6 +2819,13 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
         if existing["flow_folder"] or not body.target_folder:
             body.target_folder = existing["target_folder"]
         if existing["flow_folder"]:
+            if body.transform_enabled:
+                try:
+                    if flow_paths.setting(db, "flows_paths_enforced", "0") == "1":
+                        flow_paths.assert_inside(body.transform_script_path, flow_paths.get_flows_root(db), label="Transformation script")
+                    body.transform_script_path = flow_layout.import_script(existing["flow_folder"], flow_id, body.transform_script_path)
+                except (OSError, ValueError) as exc:
+                    raise HTTPException(409, f"Transformation script could not be placed: {exc}") from exc
             adapter = db.execute("SELECT adapter FROM flow_sites WHERE id=?", (body.site_id,)).fetchone()
             if adapter:
                 candidate = {**body.model_dump(), "flow_folder": existing["flow_folder"], "source_adapter": adapter[0]}
@@ -4457,6 +4520,14 @@ def register_worker(body: WorkerRegister):
     now = _iso(_now())
     interrupted_run_id = None
     with get_db() as db:
+        registration_root = flow_paths.get_flows_root(db)
+        recovery_roots = {str(Path(registration_root) / ".metronome" / "artifacts")}
+        for queued in db.execute("SELECT job_json FROM flow_runs WHERE status='queued'"):
+            queued_job = _loads(queued[0], {})
+            root = (queued_job.get("paths") or {}).get("artifact_store_root")
+            if root:
+                recovery_roots.add(root)
+            recovery_roots.update((queued_job.get("resume") or {}).get("artifact_store_roots") or [])
         existing_worker = db.execute(
             "SELECT * FROM flow_workers WHERE worker_id=?", (body.worker_id,)
         ).fetchone()
@@ -4535,7 +4606,15 @@ def register_worker(body: WorkerRegister):
         "worker_id": body.worker_id,
         "status": "idle",
         "interrupted_run_id": interrupted_run_id,
+        "flows_root": registration_root,
+        "artifact_store_roots": sorted(recovery_roots),
     }
+
+
+def _worker_artifact_stores(capabilities: dict) -> set[str]:
+    extra = capabilities.get("artifact_store_ids")
+    values = extra if isinstance(extra, list) else []
+    return {value for value in [capabilities.get("artifact_store_id"), *values] if isinstance(value, str) and value}
 
 
 @router.post("/worker/{worker_id}/claim")
@@ -4546,6 +4625,7 @@ def claim_run(worker_id: str):
         if not worker:
             raise HTTPException(404, "Register this worker before claiming work.")
         capabilities = _loads(worker["capabilities_json"], {})
+        artifact_stores = _worker_artifact_stores(capabilities)
         worker_mode = "headed" if capabilities.get("headed") else "headless"
         if worker["current_scan_id"]:
             scan = db.execute("SELECT * FROM flow_catalog_scans WHERE id=?", (worker["current_scan_id"],)).fetchone()
@@ -4568,7 +4648,7 @@ def claim_run(worker_id: str):
             if (
                 required_store
                 and execution.get("worker_id") == worker_id
-                and required_store != capabilities.get("artifact_store_id")
+                and required_store not in artifact_stores
             ):
                 message = (
                     "SQL Retry cannot use its private artifacts because this worker's "
@@ -4613,9 +4693,11 @@ def claim_run(worker_id: str):
             return (
                 execution.get("browser_mode", "headless") == worker_mode
                 and (not required_adapter or required_adapter in adapters)
+                and (not (job.get("paths") or {}).get("artifact_store_root") or capabilities.get("shared_flow_artifacts"))
+                and set(execution.get("required_artifact_store_ids") or []).issubset(artifact_stores)
                 and (
                     not required_store
-                    or required_store == capabilities.get("artifact_store_id")
+                    or required_store in artifact_stores
                 )
             )
 
@@ -5238,4 +5320,5 @@ def heartbeat_run(worker_id: str, run_id: int):
 @router.get("/{flow_id}")
 def get_flow(flow_id: int):
     with get_db() as db:
-        return _flow_out(db, flow_id)
+        flow = _flow_out(db, flow_id)
+        return {**flow, "layout": flow_layout.layout_status(flow.get("flow_folder"), flow_id)}

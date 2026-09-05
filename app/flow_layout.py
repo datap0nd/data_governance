@@ -5,6 +5,7 @@ import json
 import os
 import re
 import uuid
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -106,3 +107,59 @@ def create_flow_folder(root: str, adapter: str, name: str, flow_id: int) -> Path
             pass
         raise
     return folder
+
+
+def ensure_layout(folder: str | Path, flow_id: int) -> dict:
+    read_manifest(folder, flow_id)
+    created = []
+    for name in ("Downloads", "Scripts"):
+        child = Path(folder) / name
+        _regular(child)
+        if not child.exists():
+            child.mkdir()
+            created.append(name)
+        elif not child.is_dir():
+            raise ValueError(f"{name} is not a directory.")
+    return {"created": created, "ok": True}
+
+
+def layout_status(folder: str | None, flow_id: int) -> dict:
+    if not folder:
+        return {"ok": False, "state": "unmanaged"}
+    try:
+        read_manifest(folder, flow_id)
+        missing = []
+        for name in ("Downloads", "Scripts"):
+            child = Path(folder) / name
+            _regular(child)
+            if not child.is_dir():
+                missing.append(name)
+        return {"ok": not missing, "state": "incomplete" if missing else "managed", "missing": missing}
+    except (OSError, ValueError) as exc:
+        return {"ok": False, "state": "missing_or_invalid", "reason": str(exc)}
+
+
+def import_script(folder: str, flow_id: int, source: str) -> str:
+    """Copy into a new owned file; never overwrite a queued job's script."""
+    ensure_layout(folder, flow_id)
+    scripts = Path(folder) / "Scripts"
+    source_path = Path(source)
+    _regular(source_path)
+    if flow_paths.is_inside(str(source_path), str(scripts)):
+        if not source_path.is_file():
+            raise ValueError("The saved transformation script is missing.")
+        return str(source_path)
+    target = scripts / f"{source_path.stem[:60]}-{uuid.uuid4().hex[:12]}{source_path.suffix.lower()}"
+    flow_paths.assert_inside(str(target), str(scripts), label="Transformation script")
+    created = False
+    try:
+        with source_path.open("rb") as src, target.open("xb") as dest:
+            created = True
+            shutil.copyfileobj(src, dest)
+        if not target.stat().st_size:
+            raise ValueError("Transformation script is empty.")
+    except Exception:
+        if created:
+            target.unlink(missing_ok=True)
+        raise
+    return str(target)

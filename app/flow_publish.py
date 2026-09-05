@@ -37,18 +37,18 @@ def normalize_target_path(value: str | Path) -> str:
     return ntpath.normcase(ntpath.normpath(raw)).rstrip("\\")
 
 
-def artifact_store_id(profile_dir: Path) -> str:
+def artifact_store_id(profile_dir: Path, *, store_root: Path | None = None) -> str:
     """Opaque identity shared by workers using one machine/profile store."""
-    profile = os.path.normcase(os.path.abspath(str(profile_dir)))
+    profile = os.path.normcase(os.path.realpath(store_root) if store_root is not None else os.path.abspath(profile_dir))
     identity = f"{socket.gethostname().casefold()}|{profile}"
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
 
 
-def private_target_root(profile_dir: Path, target: Path) -> Path:
+def private_target_root(profile_dir: Path, target: Path, *, store_root: Path | None = None) -> Path:
     """Return and ownership-check the private retention parent for a target."""
     target_key = normalize_target_path(target)
     target_hash = hashlib.sha256(target_key.encode("utf-8")).hexdigest()[:24]
-    root = Path(profile_dir) / "run_artifacts" / target_hash
+    root = (Path(store_root) if store_root is not None else Path(profile_dir) / "run_artifacts") / target_hash
     root.mkdir(parents=True, exist_ok=True)
     if root.is_symlink() or _is_junction(root) or not root.is_dir():
         raise RuntimeError(f"Private Flow artifact storage is not a regular folder: {root}")
@@ -86,7 +86,7 @@ def new_local_file_storage_key() -> str:
     return f"{LOCAL_FILE_STORAGE_PREFIX}{uuid.uuid4()}"
 
 
-def private_local_file_root(profile_dir: Path, storage_key: str) -> Path:
+def private_local_file_root(profile_dir: Path, storage_key: str, *, store_root: Path | None = None) -> Path:
     """Validate a file Flow's opaque key and reuse the owned target store."""
     raw = str(storage_key or "")
     if not raw.startswith(LOCAL_FILE_STORAGE_PREFIX):
@@ -98,7 +98,7 @@ def private_local_file_root(profile_dir: Path, storage_key: str) -> Path:
         raise RuntimeError("The local-file Flow private storage key is invalid.") from exc
     if value != str(parsed) or parsed.version != 4:
         raise RuntimeError("The local-file Flow private storage key is invalid.")
-    return private_target_root(profile_dir, Path(raw))
+    return private_target_root(profile_dir, Path(raw), store_root=store_root)
 
 
 def read_size_checksum(path: Path) -> dict:
