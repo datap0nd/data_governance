@@ -77,3 +77,10 @@ jobs:
 
       - name: Check recording editor syntax
         run: node --check app/static/flow_recordings.js
+
+      - name: Test visual recording model
+        run: node tests/test_recording_visual_model.mjs
+      - name: Check visual recording editor syntax
+        run: node --check app/static/flow_recording_editor.js
+      - name: Check visual recording model syntax
+        run: node --check app/static/flow_recording_model.js

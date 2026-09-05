@@ -218,7 +218,7 @@ def test_recording_uses_capacity_and_requires_capable_visible_worker(flow_db,mon
     started=routes.start_recording(saved['id'],_request())
     def register(identity,recorder=False):
         flows.register_worker(flows.WorkerRegister(worker_id=identity,display_name=identity,
-            capabilities={'headed':True,'browser_switch_v1':True,'flow_recorder_v1':recorder,'recorded_flows_v2':recorder,'flow_recorder_controls_v1':recorder,'process_id':123}))
+            capabilities={'headed':True,'browser_switch_v1':True,'flow_recorder_v1':recorder,'recorded_flows_v2':recorder,'recorded_validation_engine_v1':recorder,'flow_recorder_controls_v1':recorder,'process_id':123}))
     register('old')
     assert flows.claim_run('old')['scan'] is None
     register('new',True)
@@ -234,7 +234,7 @@ def test_cancellation_preserves_catalog_status_and_fences_late_worker(flow_db,mo
     saved,job=draft_job()
     started=routes.start_recording(saved['id'],_request())
     flows.register_worker(flows.WorkerRegister(worker_id='new',display_name='new',capabilities={
-        'headed':True,'browser_switch_v1':True,'flow_recorder_v1':True,'recorded_flows_v2':True,'flow_recorder_controls_v1':True,'process_id':123}))
+        'headed':True,'browser_switch_v1':True,'flow_recorder_v1':True,'recorded_flows_v2':True,'recorded_validation_engine_v1':True,'flow_recorder_controls_v1':True,'process_id':123}))
     flows.claim_run('new')
     with database.get_db() as db:
         before=dict(db.execute('SELECT * FROM flow_sites WHERE id=?',(job['site']['id'],)).fetchone())
@@ -267,12 +267,15 @@ def test_ui_can_review_gscm_without_code_and_keeps_portal_default_date():
         page=browser.new_page(viewport={'width':1440,'height':1100})
         page.set_content('<main>Fixture</main>')
         page.evaluate('''data => { window.saved=[]; window.api=async()=>data;
-            window.apiPostJson=async(url,body)=>window.saved.push({url,body}); window.apiPost=async()=>({}); }''',data)
+            window.apiPostJson=async(url,body)=>{window.saved.push({url,body});return {revision_id:1};}; window.apiPost=async()=>({}); }''',data)
+        for script in ('flow_recording_model.js','flow_recording_editor.js'):
+            page.add_script_tag(path=str(root / 'app/static' / script))
         page.add_script_tag(path=str(root/'app/static/flow_recordings.js'))
         page.evaluate('() => FlowRecordings.open(1)')
         assert page.get_by_role('dialog').is_visible()
-        page.locator('[data-date-mode]').nth(1).select_option('portal_default')
-        page.get_by_role('button',name='Save reviewed revision').click()
+        page.get_by_role('button',name='Enter value in “End”',exact=True).click()
+        page.locator('[data-date-mode]').select_option('portal_default')
+        page.get_by_role('button',name='Save',exact=True).click()
         value=page.evaluate('() => saved[0].body.definition')
         assert value['parameters']['end']['mode']=='portal_default'
         flow_recording.validate_definition(value)
@@ -296,7 +299,7 @@ def test_worker_restart_expires_recording_and_late_results_cannot_activate(flow_
     saved,job=draft_job()
     started=routes.start_recording(saved['id'],_request())
     flows.register_worker(flows.WorkerRegister(worker_id='new',display_name='new',capabilities={
-        'headed':True,'browser_switch_v1':True,'flow_recorder_v1':True,'recorded_flows_v2':True,'flow_recorder_controls_v1':True,'process_id':123}))
+        'headed':True,'browser_switch_v1':True,'flow_recorder_v1':True,'recorded_flows_v2':True,'recorded_validation_engine_v1':True,'flow_recorder_controls_v1':True,'process_id':123}))
     flows.claim_run('new')
     with database.get_db() as db:
         flow_recordings.reap(db,restarted_worker='new')
@@ -363,7 +366,7 @@ def test_recording_lease_expiry_accepts_utc_and_offset_timestamps(flow_db,monkey
     saved,job=draft_job()
     started=routes.start_recording(saved['id'],_request())
     flows.register_worker(flows.WorkerRegister(worker_id='lease',display_name='lease',capabilities={
-        'headed':True,'browser_switch_v1':True,'flow_recorder_v1':True,'recorded_flows_v2':True,'flow_recorder_controls_v1':True,'process_id':123}))
+        'headed':True,'browser_switch_v1':True,'flow_recorder_v1':True,'recorded_flows_v2':True,'recorded_validation_engine_v1':True,'flow_recorder_controls_v1':True,'process_id':123}))
     flows.claim_run('lease')
     stamp=(datetime.now(timezone(timedelta(hours=5))) if aware else datetime.now(timezone.utc).replace(tzinfo=None))-timedelta(minutes=4)
     with database.get_db() as db:

@@ -1,0 +1,175 @@
+import copy
+import json
+from pathlib import Path
+import pytest
+from playwright.sync_api import sync_playwright
+from test_flow_recordings import definition
+from app.flow_recording import validate_definition
+
+
+@pytest.fixture
+def editor_page():
+    root=Path(__file__).resolve().parents[1]
+    value=definition()
+    download=next(s for s in value['steps'] if s['action']=='download')
+    download['steps'][0]['locator'][-1]['kwargs']['name']='Excel down'
+    data={'flow':{'id':1,'name':'Sales report','source_adapter':'gscm_portal','schedule_type':'daily','enabled':False},'sessions':[],
+          'revisions':[{'id':1,'status':'draft','definition':value}]}
+    with sync_playwright() as pw:
+        browser=pw.chromium.launch(channel='chrome',headless=True)
+        page=browser.new_page(viewport={'width':1400,'height':1000})
+        page.set_content('<main>Visual recording fixture</main>')
+        page.add_style_tag(path=str(root/'app/static/style.css'))
+        page.evaluate('''data=>{window.data=data;window.calls=[];
+            window.api=async()=>structuredClone(data);
+            window.apiPostJson=async(path,body)=>{calls.push({path,body});const id=data.revisions.length+1;data.revisions.unshift({id,status:'draft',definition:structuredClone(body.definition)});return {revision_id:id};};
+            window.apiPost=async path=>{calls.push({path});if(path.endsWith('/validate'))data.revisions[0].status='validated';if(path.endsWith('/activate'))data.flow.recording_revision_id=data.revisions[0].id;return {};};
+            window.apiPatch=async(path,body)=>{calls.push({path,body});data.flow.enabled=body.enabled;return data.flow;};
+        }''',data)
+        for script in ('flow_recording_model.js','flow_recording_editor.js','flow_recordings.js'):
+            page.add_script_tag(path=str(root/'app/static'/script))
+        page.evaluate('()=>FlowRecordings.open(1)')
+        yield page,value
+        browser.close()
+
+
+def test_one_download_card_and_consistent_options(editor_page):
+    page,value=editor_page
+    assert page.locator('[data-card]').count()==len(value['steps'])
+    page.get_by_role('button',name='Click “Excel down”',exact=True).click()
+    assert page.locator('.recording-badge').count()==1
+    assert page.get_by_label('This action produces a download').is_checked()
+    assert page.get_by_label('Output format').is_visible()
+    assert not page.locator('[data-headers]').is_visible()
+    assert page.locator('.recording-details').count()==1
+    page.get_by_role('button',name='Save',exact=True).click()
+    saved=page.evaluate('()=>calls[0].body.definition')
+    validate_definition(saved)
+    assert saved['steps'][-1]['steps'][0]['id']==value['steps'][-1]['steps'][0]['id']
+    assert not page.get_by_text('Revision 1',exact=False).count()
+
+
+def test_wait_undo_move_and_remove_preserve_ids(editor_page):
+    page,value=editor_page
+    page.locator('[data-insert="1"]').click()
+    page.get_by_label('Wait in seconds').fill('8');page.get_by_label('Wait in seconds').press('Tab')
+    wait_id=page.locator('[data-card].selected').get_attribute('data-card')
+    page.get_by_role('button',name='Move down',exact=True).click()
+    assert page.locator('[data-card]').nth(2).get_attribute('data-card')==wait_id
+    page.get_by_role('button',name='Undo',exact=True).click()
+    assert page.locator('[data-card]').nth(1).get_attribute('data-card')==wait_id
+    page.get_by_role('button',name='Remove',exact=True).click()
+    assert page.locator('[data-card]').count()==len(value['steps'])
+    page.get_by_role('button',name='Undo',exact=True).click()
+    page.get_by_role('button',name='Save',exact=True).click()
+    saved=page.evaluate('()=>calls[0].body.definition')
+    assert saved['steps'][1]['id']==wait_id and saved['steps'][1]['seconds']==8
+    assert [s['id'] for s in saved['steps'] if s['action']!='wait']==[s['id'] for s in value['steps']]
+
+
+def test_polling_preserves_selection_dirty_fields_and_collapsed_details(editor_page):
+    page,value=editor_page
+    page.get_by_role('button',name='Click “Excel down”',exact=True).click()
+    page.get_by_label('Step name',exact=True).fill('Download sales workbook')
+    page.evaluate('()=>window.selectedPanel=document.querySelector(".recording-details")')
+    page.wait_for_timeout(3300)
+    assert page.get_by_label('Step name',exact=True).input_value()=='Download sales workbook'
+    assert page.evaluate('()=>selectedPanel===document.querySelector(".recording-details")')
+    assert not page.locator('[data-headers]').is_visible()
+    assert page.get_by_role('button',name='Enable schedule',exact=True).is_disabled()
+    page.get_by_role('button',name='Test flow',exact=True).click()
+    page.wait_for_function('()=>calls.length>=2')
+    assert page.evaluate('()=>calls.map(c=>c.path)')==['/api/flows/1/recordings/revisions','/api/flows/1/recordings/revisions/2/validate']
+    assert page.get_by_role('button',name='Enable schedule',exact=True).is_enabled()
+    page.get_by_label('Step name',exact=True).fill('Changed after testing')
+    assert page.get_by_role('button',name='Enable schedule',exact=True).is_disabled()
+
+
+def test_enable_uses_tested_revision_and_existing_schedule(editor_page):
+    page,_=editor_page
+    page.get_by_role('button',name='Test flow',exact=True).click()
+    page.get_by_role('button',name='Enable schedule',exact=True).click()
+    page.wait_for_function('()=>data.flow.enabled')
+    assert page.evaluate('()=>calls.slice(-2).map(c=>c.path)')==['/api/flows/1/recordings/revisions/2/activate','/api/flows/1/enabled']
+
+
+def test_nested_progress_maps_to_single_card_and_failure_explanation(editor_page):
+    page,value=editor_page
+    event=next(s for s in value['steps'] if s['action']=='download');trigger=event['steps'][0]
+    progress={'step_id':trigger['id'],'step_outcomes':{event['id']:{'outcome':'started'},trigger['id']:{'outcome':'completed'}}}
+    page.evaluate('p=>data.sessions=[{revision_id:1,scan_id:3,operation:"validate",status:"running",progress_json:JSON.stringify(p)}]',progress)
+    page.wait_for_function('()=>document.querySelector("[data-outcome=running]")')
+    assert page.locator('[data-outcome=completed]').count()==0
+    page.get_by_role('button',name='Click “Excel down”',exact=True).click()
+    progress['step_outcomes'][event['id']]={'outcome':'failed','message':'Download did not complete'}
+    page.evaluate('p=>{data.sessions[0].status="failed";data.sessions[0].progress_json=JSON.stringify(p);}',progress)
+    page.wait_for_function('()=>document.querySelector("[data-outcome=failed]")')
+    assert page.locator('[data-step-failure]').inner_text()=='Download did not complete'
+
+
+def test_mobile_details_follow_selected_card_and_keyboard_selection(editor_page):
+    page,_=editor_page
+    page.set_viewport_size({'width':600,'height':900})
+    page.wait_for_function('()=>document.querySelector("[data-card].selected + .recording-details")')
+    button=page.get_by_role('button',name='Click “Excel down”',exact=True)
+    button.focus();page.keyboard.press('Enter')
+    assert page.locator('[data-card].selected + .recording-details').count()==1
+    page.get_by_role('button',name='Move up',exact=True).focus()
+    # Moving download above its readiness assertion is safe, but not above generation.
+    page.keyboard.press('Enter')
+    assert page.locator('.recording-details').count()==1
+
+
+def test_compound_download_stays_grouped_and_roundtrips(editor_page):
+    page,value=editor_page
+    event=next(s for s in value['steps'] if s['action']=='download')
+    extra=copy.deepcopy(event['steps'][0]);extra['id']='prepare-export';extra['locator'][-1]['kwargs']['name']='Prepare Excel'
+    event['steps'].insert(0,extra)
+    page.locator('[data-close]').click()
+    page.evaluate('value=>{data.revisions[0].definition=value;}',value)
+    page.evaluate('()=>FlowRecordings.open(1)')
+    page.get_by_role('button',name='Download files',exact=True).click()
+    page.get_by_text('2 actions in this event group',exact=True).click()
+    page.get_by_role('button',name='Click “Excel down”',exact=True).click()
+    assert page.get_by_label('This action produces a download').is_checked()
+    assert page.get_by_label('This action produces a download').is_disabled()
+    page.get_by_role('button',name='Edit download group',exact=True).click()
+    page.get_by_role('button',name='Move up',exact=True).click()
+    page.get_by_role('button',name='Save',exact=True).click()
+    saved=page.evaluate('()=>calls[0].body.definition')
+    validate_definition(saved)
+    assert next(s for s in saved['steps'] if s['id']==event['id'])==event
+
+
+def test_identity_candidate_keeps_iframe_and_manual_download_is_not_label_inferred(editor_page):
+    page,value=editor_page
+    event=value['steps'][-1];value['steps'][-1]=event['steps'][0]
+    value['identity']={}
+    target={'page':'page','locator':[{'method':'frame_locator','args':['iframe'],'kwargs':{}},{'method':'get_by_text','args':['Sales Report'],'kwargs':{'exact':True}}]}
+    value['identity_candidates']=[{'text':'Sales Report','kind':'element','target':target,'step_id':'title'}]
+    page.locator('[data-close]').click();page.evaluate('v=>data.revisions[0].definition=v',value);page.evaluate('()=>FlowRecordings.open(1)')
+    page.get_by_role('button',name='Click “Excel down”',exact=True).click()
+    assert not page.get_by_label('This action produces a download').is_checked()
+    page.get_by_label('This action produces a download').check()
+    page.get_by_role('button',name='Change',exact=True).click()
+    page.get_by_label('Suggested report title').select_option('0')
+    page.get_by_role('button',name='Use report title',exact=True).click()
+    page.get_by_role('button',name='Save',exact=True).click()
+    saved=page.evaluate('()=>calls[0].body.definition')
+    assert saved['identity']['target']==target
+    assert saved['steps'][-1]['steps'][0]['id']==event['steps'][0]['id']
+
+
+def test_drag_and_invalid_page_move(editor_page):
+    page,value=editor_page
+    page.locator('[data-insert="1"]').click()
+    wait_id=page.locator('[data-card].selected').get_attribute('data-card')
+    page.locator(f'[data-drag="{wait_id}"]').drag_to(page.locator('[data-card]').nth(3))
+    assert page.locator('[data-card]').nth(3).get_attribute('data-card')==wait_id
+    popup={'id':'popup','action':'popup','page':'page','result_page':'page1','steps':[{'id':'popup-click','action':'click','page':'page','locator':[{'method':'get_by_text','args':['Open export'],'kwargs':{'exact':True}}]}]}
+    use={'id':'popup-use','action':'goto','page':'page1','args':['https://example.test/export']}
+    value['steps'].extend([popup,use])
+    page.locator('[data-close]').click();page.evaluate('v=>data.revisions[0].definition=v',value);page.evaluate('()=>FlowRecordings.open(1)')
+    page.locator('[data-select="popup-use"]').click();page.get_by_role('button',name='Move up',exact=True).click()
+    assert 'before it opens' in page.locator('[data-error]').inner_text()
+    assert page.locator('[data-card]').last.get_attribute('data-card')=='popup-use'

@@ -207,6 +207,10 @@ def _run_recorder(command, client, worker_id, scan_id, raw, private, zone, job, 
 def validate(scan, page, profile, progress):
     from app.flow_recording_runtime import execute_recorded_flow
     job = copy.deepcopy(scan['job']['validation_job'])
+    from app.flow_portable import execution_hash
+    actual_engine = execution_hash()
+    if job.get('recording', {}).get('engine_hash') != actual_engine:
+        raise RuntimeError('Update this worker to the same execution version as Metronome before testing the recording.')
     authenticate(page, job, profile, progress)
     # Validation uses private output but keeps the path contract under this
     # source's own folder. It never publishes production downloads or SQL.
@@ -228,6 +232,6 @@ def validate(scan, page, profile, progress):
                    for item in state['artifacts'] if item.get('status') == 'saved']
         return {'configuration_hash': scan['job']['configuration_hash'], 'outputs': outputs,
                 'trace_path': str(private / 'trace.zip'), 'sql_executed': False,
-                'engine_hash': job['recording']['engine_hash']}
+                'engine_hash': actual_engine}
     finally:
         page.context.tracing.stop(path=str(private / 'trace.zip'))

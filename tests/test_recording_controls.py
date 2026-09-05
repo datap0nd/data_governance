@@ -19,7 +19,7 @@ from test_flows import flow_db, _request
 
 def register(identity, *, controls=True):
     flows.register_worker(flows.WorkerRegister(worker_id=identity, display_name=identity, capabilities={
-        'headed': True, 'browser_switch_v1': True, 'flow_recorder_v1': True, 'recorded_flows_v2': True,
+        'headed': True, 'browser_switch_v1': True, 'flow_recorder_v1': True, 'recorded_flows_v2': True, 'recorded_validation_engine_v1': True,
         'flow_recorder_controls_v1': controls, 'process_id': 123}))
 
 
@@ -230,10 +230,13 @@ def test_review_controls_survive_polling_errors_and_finish_without_closing_chrom
             window.apiPost=async path=>{calls.push(path);if(path.endsWith('/finish')){
                 data.sessions[0].finish_requested=true;data.sessions[0].progress_json='{"stage":"finishing"}';
             } else {data.sessions[0].cancel_requested=new Date().toISOString();} return {};};}''', data)
+        for script in ('flow_recording_model.js','flow_recording_editor.js'):
+            page.add_script_tag(path=str(root / 'app/static' / script))
         page.add_script_tag(path=str(root / 'app/static/flow_recordings.js'))
         page.evaluate('() => FlowRecordings.open(1)')
         page.evaluate('() => window.originalButton=document.querySelector("[data-finish]")')
         page.wait_for_function('() => window.polls>=3')
+        assert page.locator('[data-error]').inner_text() == ''
         assert page.evaluate('() => originalButton===document.querySelector("[data-finish]")')
         page.get_by_role('button', name='Finish recording', exact=True).click()
         assert page.locator('[data-finish]').is_disabled()

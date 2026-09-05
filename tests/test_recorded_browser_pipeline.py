@@ -115,12 +115,19 @@ def test_acquisition_checks_fail_before_publication_and_sql(flow_db, tmp_path, r
     else:
         job['recording_parameters']['start'] = '2027-01-01'
     monkeypatch.setattr(flow_sql, 'load_artifacts', lambda *a, **k: pytest.fail('Invalid acquisition reached SQL'))
+    events = []
     profile = tmp_path / 'profile'
     with sync_playwright() as playwright:
         context = flow_browser.launch(playwright, profile, 'chrome', headed=False, downloads=profile / 'downloads')
         try:
             with pytest.raises(RuntimeError):
-                runtime.execute_recorded_flow(context.pages[0], job, lambda *a, **k: None, profile,
+                runtime.execute_recorded_flow(context.pages[0], job, lambda status, detail, *args: events.append(detail), profile,
                     run_id=11, register_folder=lambda _: {'ops': []})
         finally:
             context.close()
+
+    failures = [e for e in events if e.get('outcome') == 'failed']
+    assert failures
+    if failure in {'schema', 'period'}:
+        assert failures[-1]['step_id'] == download['id']
+        assert failures[-1]['failure_reason'] == 'output_validation_failed'

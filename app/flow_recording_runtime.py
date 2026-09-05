@@ -49,6 +49,8 @@ def _identity(pages, definition):
     expect(target).to_have_count(1)
     expect(target).to_be_visible(timeout=120_000)
     expect(target).to_have_text(identity['text'], timeout=120_000)
+    if target.evaluate("el => Boolean(el.closest('button,input,select,[role=button]'))"):
+        raise RuntimeError('A button or input label cannot establish the report identity. Choose the report title.')
 
 
 def _begin_completion(pages, definition, step):
@@ -256,46 +258,52 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
     # All files are captured before publication, so a later failed interaction
     # cannot leave a partially published direct-output bundle.
     for step, staged, index in captured:
-        specification = step['output']
-        fmt = specification['format']
-        filename = flow_worker._render_filename(job['downloads']['filename_template'], job, None, index, step.get('label') or step['id'])
-        filename = str(Path(filename).with_suffix({'xlsx': '.xlsx', 'csv': '.csv', 'html': '.html', 'txt': '.txt'}[fmt]))
-        output = flow_worker._safe_output_path(target, filename)
-        if any(Path(item['file_path']).resolve() == output.resolve() for item in artifacts if item.get('file_path')):
-            raise RuntimeError('Recorded outputs have duplicate filenames. Include {index} in the filename template.')
-        downstream = job.get('transformation', {}).get('enabled') or job.get('sql_handoff', {}).get('enabled')
-        if downstream and fmt in {'html', 'txt'}:
-            raise ValueError('HTML/text downloads cannot be transformed or loaded into SQL.')
-        metadata = flow_worker._store_completed_download(staged, output,
-            file_format=fmt, asap_download_type={'html': 'html', 'txt': 'plain_text', 'csv': 'csv_file_format', 'xlsx': 'excel_plain_text'}[fmt],
-            require_normalized_csv=fmt in {'csv', 'xlsx'},
-            allow_raw_xlsx_fallback=False, excel_trim=job['downloads'].get('excel_trim', 'none'), csv_preamble='none')
-        if fmt in {'csv', 'xlsx'} and not specification.get('allow_empty') and not metadata.get('row_count'):
-            raise RuntimeError(f"{step['id']}: the output contains no data rows.")
-        if specification.get('headers'):
-            csv_path = metadata.get('normalized_file_path') or metadata.get('file_path')
-            if not csv_path or Path(csv_path).suffix.lower() != '.csv':
-                raise RuntimeError('Schema validation requires a normalized CSV output.')
-            with open(csv_path, encoding='utf-8-sig', newline='') as stream:
-                header = next(csv.reader(stream), [])
-            if header != specification['headers']:
-                raise RuntimeError(f"{step['id']}: output columns do not match the expected report schema.")
-        for check in specification.get('period_checks', []):
-            csv_path = metadata.get('normalized_file_path') or metadata['file_path']
-            expected = actual_parameters.get(check['parameter'])
-            if expected is None:
-                raise RuntimeError('The report period cannot be verified without a resolved parameter.')
-            with open(csv_path, encoding='utf-8-sig', newline='') as stream:
-                rows = csv.DictReader(stream)
-                if check['column'] not in (rows.fieldnames or []):
-                    raise RuntimeError('The expected period column is absent from the report.')
-                if any(row[check['column']] != expected for row in rows):
-                    raise RuntimeError('The downloaded report period does not match this run.')
-        artifact = {**metadata, 'bundle_index': index, 'bundle_count': output_count,
-                    'export_view': step['id'], 'period_key': None, 'status': 'saved',
-                    'export_transport': 'recorded_browser', 'recording_revision': job['recording']['revision'],
-                    'recording_parameters': actual_parameters, 'recording_defaults': defaults}
-        artifacts.append(flow_worker._decorate_artifact_storage(artifact, job, profile_dir))
+        try:
+            notify(step, 'Validating downloaded output.', outcome='running')
+            specification = step['output']
+            fmt = specification['format']
+            filename = flow_worker._render_filename(job['downloads']['filename_template'], job, None, index, step.get('label') or step['id'])
+            filename = str(Path(filename).with_suffix({'xlsx': '.xlsx', 'csv': '.csv', 'html': '.html', 'txt': '.txt'}[fmt]))
+            output = flow_worker._safe_output_path(target, filename)
+            if any(Path(item['file_path']).resolve() == output.resolve() for item in artifacts if item.get('file_path')):
+                raise RuntimeError('Recorded outputs have duplicate filenames. Include {index} in the filename template.')
+            downstream = job.get('transformation', {}).get('enabled') or job.get('sql_handoff', {}).get('enabled')
+            if downstream and fmt in {'html', 'txt'}:
+                raise ValueError('HTML/text downloads cannot be transformed or loaded into SQL.')
+            metadata = flow_worker._store_completed_download(staged, output,
+                file_format=fmt, asap_download_type={'html': 'html', 'txt': 'plain_text', 'csv': 'csv_file_format', 'xlsx': 'excel_plain_text'}[fmt],
+                require_normalized_csv=fmt in {'csv', 'xlsx'},
+                allow_raw_xlsx_fallback=False, excel_trim=job['downloads'].get('excel_trim', 'none'), csv_preamble='none')
+            if fmt in {'csv', 'xlsx'} and not specification.get('allow_empty') and not metadata.get('row_count'):
+                raise RuntimeError(f"{step['id']}: the output contains no data rows.")
+            if specification.get('headers'):
+                csv_path = metadata.get('normalized_file_path') or metadata.get('file_path')
+                if not csv_path or Path(csv_path).suffix.lower() != '.csv':
+                    raise RuntimeError('Schema validation requires a normalized CSV output.')
+                with open(csv_path, encoding='utf-8-sig', newline='') as stream:
+                    header = next(csv.reader(stream), [])
+                if header != specification['headers']:
+                    raise RuntimeError(f"{step['id']}: output columns do not match the expected report schema.")
+            for check in specification.get('period_checks', []):
+                csv_path = metadata.get('normalized_file_path') or metadata['file_path']
+                expected = actual_parameters.get(check['parameter'])
+                if expected is None:
+                    raise RuntimeError('The report period cannot be verified without a resolved parameter.')
+                with open(csv_path, encoding='utf-8-sig', newline='') as stream:
+                    rows = csv.DictReader(stream)
+                    if check['column'] not in (rows.fieldnames or []):
+                        raise RuntimeError('The expected period column is absent from the report.')
+                    if any(row[check['column']] != expected for row in rows):
+                        raise RuntimeError('The downloaded report period does not match this run.')
+            artifact = {**metadata, 'bundle_index': index, 'bundle_count': output_count,
+                        'export_view': step['id'], 'period_key': None, 'status': 'saved',
+                        'export_transport': 'recorded_browser', 'recording_revision': job['recording']['revision'],
+                        'recording_parameters': actual_parameters, 'recording_defaults': defaults}
+            artifacts.append(flow_worker._decorate_artifact_storage(artifact, job, profile_dir))
+            notify(step, 'Downloaded output validated.', outcome='completed')
+        except Exception as exc:
+            notify(step, str(exc), outcome='failed', failure_reason='output_validation_failed')
+            raise
     return artifacts
 
 

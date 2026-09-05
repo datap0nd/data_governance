@@ -381,6 +381,8 @@ def validate_definition(definition, *, activation=True):
         raise ValueError('Page-title checks require version 2 and a page target.')
     if activation and (not identity.get('text') or (identity.get('kind') != 'page_title' and not identity.get('target', {}).get('locator'))):
         raise ValueError('Choose a report identity locator and its exact expected text before validation.')
+    if activation and identity.get('text', '').strip().casefold() in {'gscm', 'asap', 'microstrategy', 'home', 'excel down', 'download'}:
+        raise ValueError('Choose a report-specific title, not a portal name or download button.')
     if activation and any(identity.get('target', {}).get('page') not in page_states[step['id']] for step in downloads):
         raise ValueError('The report title page must be open before each download.')
     readiness = definition.get('readiness') or {}

@@ -36,16 +36,27 @@ existing Flows retain catalog/bookmark execution.
    closes Chrome/Edge and the Inspector and imports the saved steps.
    Playwright's red square only pauses recording. Closing just Chrome may
    leave the Inspector open; Finish recording still closes that session.
-4. Review the actions, page/frame identities, report title, generation action,
-   completion signal, expected formats, columns and optional period checks.
-   An unobserved download can be attached to its recorded trigger in the editor.
-   Finish preserves partial recordings as drafts with a warning; they cannot
-   activate until a configured download passes validation.
-5. Configure dates if needed. Fixed start + portal-default end omits the end
-   field write and logs the portal's value. Calculated dates resolve once per
-   run in Dubai time. Date ranges are checked before accepting output.
-6. Save the reviewed revision, validate it on the worker, then activate it.
-   Configure/enable the existing schedule through Pipeline and schedule settings.
+4. Review the numbered cards. Select a card to see **Action** and **Options**;
+   selectors, frame details, completion signals and schema checks are under
+   **Advanced**. One captured download appears on its triggering action, with
+   a Download badge. Compound event groups expand without separating listeners.
+5. Rename a step, remove it, move it with its drag handle or Move up/Move down,
+   or use **+** between cards to insert a Wait (default five seconds, 1–600).
+   **Undo** restores the previous edit. Invalid page dependencies block movement.
+6. For dates, select the input card and choose recorded value, fixed date,
+   portal default or a calculated date. Portal default omits the write and logs
+   the value. All calendar calculations use the application time policy.
+7. Confirm the report title. A unique recorded assertion can suggest it; ambiguous
+   evidence needs **Choose report title**. The test verifies the chosen identity.
+   If the completion check is unresolved, choose its generation action and signal.
+   A wait or clickable button does not establish report freshness.
+8. **Save** keeps a draft. **Test flow** saves pending edits and tests that exact
+   saved version. Running/completed/failed cards show test progress. Editing after
+   a successful test requires another test. Polling preserves selection and edits.
+9. **Enable schedule** selects the tested version and enables the existing saved
+   schedule. For a manual-only flow, choose its schedule in **Pipeline and schedule**.
+   The existing active version stays selected until explicitly replaced. Saved
+   immutable versions remain available under **History**, not in the main editor.
 
 Validation runs the downloads and configured Python transformation in a private
 folder. It does not publish production files or execute SQL. Trace evidence is
