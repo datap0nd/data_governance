@@ -390,7 +390,8 @@ def test_incomplete_direct_bundle_publishes_nothing(tmp_path):
 
 def test_direct_publish_occurs_before_transformation_and_sql_in_worker_contract():
     source = Path(flow_worker.__file__).read_text(encoding="utf-8")
-    run_loop = source[source.index("def run_worker("):]
+    assert 'execute_flow(page, run["job"]' in source[source.index("def run_worker("):]
+    run_loop = source[source.index("def execute_flow("):source.index("def run_worker(")]
     publish = run_loop.index("artifacts = _publish_direct_artifacts(")
     transform = run_loop.index("sql_artifacts = _run_transformations(")
     sql = run_loop.index("sql_result = load_artifacts(")

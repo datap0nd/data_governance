@@ -4951,7 +4951,18 @@ def test_failed_report_without_artifacts_keeps_previously_saved_files(flow_db):
 
 def test_worker_shares_the_artifact_list_with_its_failure_report():
     source = Path(__file__).parents[1].joinpath("app", "flow_worker.py").read_text()
-    assert "artifacts=artifacts,\n                            run_id=run_id, register_folder=register_folder,\n                            headed=headed,\n                        )\n                        sql_artifacts = artifacts" in source
+    # The shared runner owns acquisition now; failures return the same partial
+    # list through state to the worker's existing rich failure report.
+    import ast
+    tree = ast.parse(source)
+    shared = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'execute_flow')
+    acquire = next(node for node in ast.walk(shared) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'execute_job')
+    assert any(keyword.arg == 'artifacts' and isinstance(keyword.value, ast.Name) and keyword.value.id == 'artifacts' for keyword in acquire.keywords)
+    assert 'state.update(artifacts=artifacts' in ast.get_source_segment(source, shared)
+    worker = source[source.index('def run_worker('):]
+    assert 'artifacts=artifacts, state=execution_state' in worker
+    assert 'artifacts = execution_state.get("artifacts", artifacts)' in worker
+    assert 'artifacts=artifacts, timings=timings' in worker
 
 
 def test_scan_progress_posts_build_a_live_event_log(flow_db):

@@ -12,8 +12,9 @@ transforms and loads SQL. _build_job depends on router source/SQL helpers.
 ## Design
 - Tiny launcher uses safely encoded constants, installed Python and an atomic
   versioned bundle. Freeze config, never cookies/credentials/service environment.
-- Reuse real source execution signatures and publication-before-transform order,
-  artifact roles, no-op handling and SQL loader. Keep extraction bounded.
+- Extract one execute_flow orchestration path used by both the Metronome worker
+  and launcher: same acquisition, publication, transformation, SQL, artifact roles
+  and no-op handling. Metronome wraps it with scheduling and server history.
 - Explicit local DB refresh may adapt _build_job; do not claim router isolation
   by merely moving week helpers. Explain frozen latest-period windows.
 - Dedicated locked standalone browser profile; no live-profile copying/lock theft.
@@ -21,9 +22,11 @@ transforms and loads SQL. _build_job depends on router source/SQL helpers.
   no server history/receipt mutations and no API calls.
 - Revalidate current root/layout. Both workers and launcher need shared OS locks
   for flow/output/SQL resources, because API reservations cannot guard offline work.
-- SQL defaults off; --sql explicitly uses the caller's DG_UPLOAD_PG environment.
-  Never read registry secrets or generate plaintext secret files.
-- Support --headed, --no-transform and no-I/O --dry-run with redacted summary.
+- User clarification: all saved stages, including SQL, run by default. Use the
+  same installed credential configuration as Metronome; --no-sql/--no-transform
+  are explicit overrides. Never embed credentials or generate secret files.
+- Honor saved browser mode; support --headed/--headless and a dry-run that
+  reads only the bundle, creates nothing and prints a redacted summary.
 - Regenerate on managed save/adopt/repair or explicit request; deterministic
   config hashes and current/stale/missing status. Avoid startup network sweeps.
 

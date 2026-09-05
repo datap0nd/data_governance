@@ -68,6 +68,8 @@
   three-click cycle, retained expansion/focus and wrapped paths/actions.
 
 ## Plan 7 — Stepped builder
+- PR #58: https://github.com/datap0nd/data_governance/pull/58
+- Merged as 8a2f37b8; Ubuntu CI passed.
 - Numbered Source, What to download (portal), Where it goes, After download,
   Schedule/owner steps; native controls move existing DOM, preserving payloads.
 - Create opens Source; edit collapses steps. Required-field errors reveal/focus
@@ -81,8 +83,23 @@
   this merge restores their original classes/markup. Those tests now pass in
   the full suite without weakening their assertions.
 
+## Plan 4 — Standalone and shared execution
+- Workers and generated launchers call the same execute_flow function for
+  acquisition, publication, transformation, SQL and no-op handling.
+- User clarification applied: all saved stages run by default, including SQL;
+  --no-sql and --no-transform are explicit skips. Saved browser mode also applies.
+- Versioned immutable bundles, safe generated source, read-only optional refresh,
+  no-write redacted dry-run, explicit status/regeneration and managed-save generation.
+- Shared process locks protect flow/output/SQL resources; offline execution uses
+  a separate browser profile and local logs, without server history or retention.
+- Full regression: 1,354 passed, one old indentation-sensitive source assertion
+  failed after extraction. Replaced it with an AST/shared-state contract check;
+  all 10 final standalone/failure-propagation tests pass. A runtime partial-download
+  failure test checks that saved artifacts and failed timings survive in the log.
+- All 18 frontend suites and syntax pass. Browser generated a launcher for the
+  paused verification flow and confirmed current status and saved-stage defaults.
+
 ## Remaining sequence
-4 Standalone →
 8A Capacity → 8B Fan-out. Each has its own tested PR and merge boundary.
 
 ## Operational verification
