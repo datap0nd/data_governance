@@ -33,6 +33,8 @@
   failure compensation after allocation. No existing tests were weakened.
 
 ## Plan 3 — Layout and shared storage
+- PR #55: https://github.com/datap0nd/data_governance/pull/55
+- Merged as 61beffdc; Ubuntu CI passed.
 - Ownership-checked explicit repair, immutable script copies on managed saves,
   shared storage for new managed jobs and legacy recovery identities preserved.
 - New coverage executes a real Local acquisition into the shared store, checks
@@ -44,8 +46,17 @@
 - Local browser repair succeeded on a paused managed Local flow.
 - All 15 frontend suites and JavaScript syntax pass.
 
+## Plan 5 — Grouped list and folder access
+- Fixed source groups, persisted expansion, active/failure counts, shared row
+  semantics, preserved Run/Stop/Active controls and accessible overflow actions.
+- Folder action opens only a saved, checked path in a verified local interactive
+  session; remote, proxied and session-0 requests return a copyable path.
+- 32 affected Python tests and all 16 frontend suites pass; syntax passes.
+- Browser verified collapsed defaults, expansion/focus and persistence on reload.
+  Local private output and exact SQL identifier case have regression coverage.
+
 ## Remaining sequence
-5 List → 6 Sorting → 7 Builder → 4 Standalone →
+6 Sorting → 7 Builder → 4 Standalone →
 8A Capacity → 8B Fan-out. Each has its own tested PR and merge boundary.
 
 ## Operational verification

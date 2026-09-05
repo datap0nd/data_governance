@@ -48,5 +48,9 @@ jobs:
         run: node tests/test_paths_display.mjs
       - name: Run Flow destination display tests
         run: node tests/test_flow_destination_display.mjs
+      - name: Run grouped Flow list tests
+        run: node tests/test_flow_groups.mjs
+      - name: Run Flow list display tests
+        run: node tests/test_flows_display.mjs
       - name: Check frontend JavaScript syntax
         run: node --check app/static/app.js

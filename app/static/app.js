@@ -10818,33 +10818,56 @@ function _flowSourcePickerHtml(catalog) {
 
 function _flowListHtml(flows, workers, catalog, runs = []) {
     if (!flows.length) return _flowEmptyState(catalog);
+    const opened = _flowOpenGroups();
+    const rows = flows.map(flow => _flowRowModel(flow, runs, catalog));
     const online = workers.filter(worker => worker.status !== "offline").length;
-    return `
-        <div class="flow-status-strip">
-            <span><strong>${flows.length}</strong> configured flow${flows.length === 1 ? "" : "s"}</span>
-            <span><strong>${online}</strong> online worker${online === 1 ? "" : "s"}</span>
-            <span>Run-folder flows keep 3 visible runs. Direct and file-source flows keep 3 private recovery snapshots.</span>
-        </div>
-        <div class="flow-table-wrap">
-            <table class="flow-table">
-                <thead><tr><th>Flow</th><th>Active</th><th>Source</th><th>Download</th><th>Schedule</th><th>Last run</th><th></th></tr></thead>
-                <tbody>${flows.map(flow => { const activeRun = runs.find(run => run.flow_id === flow.id && ["queued", "claimed", "running"].includes(run.status)); return `
-                    <tr>
-                        <td><strong>${esc(flow.name)}</strong>${flow.owner_name ? `<small>Owner: ${esc(flow.owner_name)}${flow.owner_email ? "" : " · no email mapped"}</small>` : "<small>No owner · failure alerts disabled</small>"}${window._remoteFlowControlStatus?.enabled && flow.enabled ? `<small class="remote-control-code">Remote target: ${esc(window._remoteFlowControlStatus.installation_id)}:${esc(flow.id)}</small>` : ""}</td>
-                        <td><label class="flow-switch"><input class="flow-enabled-switch" type="checkbox" data-id="${flow.id}" ${flow.enabled ? "checked" : ""} ${flow.schedule_type === "manual" ? "disabled" : ""}><span aria-hidden="true"></span><strong>${flow.enabled ? "Active" : "Inactive"}</strong></label>${flow.schedule_type === "manual" ? '<small>Choose a schedule to activate</small>' : ""}</td>
-                        <td>${flow.source_type === "outlook" ? `Outlook<small>Subject contains: ${esc(flow.outlook_subject_contains)}</small>` : flow.source_type === "file" ? `From file<small>${esc(flow.local_file_path)}</small>` : `${esc(flow.site_name)}<small>${esc(flow.report_name)}</small>`}</td>
-                        <td>${flow.source_type === "outlook" ? `CSV or Excel attachment<small>Original filename · default Inbox</small>` : flow.source_type === "file" ? `CSV or Excel file<small>${flow.local_file_worksheet ? `Worksheet: ${esc(flow.local_file_worksheet)} · ` : ""}Private snapshots · latest 3</small>` : `${esc(flow.download_mode === "one_per_period" || flow.download_mode === "one_per_week" ? `One ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} every ${flow.window_weeks || 1} week(s)` : `${flow.export_views?.length || 1} ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} export(s)`)}<small>${flow.period_strategy === "none" ? "No period prompt" : flow.period_strategy === "latest" ? "Start to latest available" : flow.period_strategy === "rolling" ? "Rolling window" : "Fixed start + end"} · ${flow.browser_mode === "headed" ? "Headed browser" : "Headless browser"}</small>`}<small>${flow.output_mode === "direct_replace" ? "Direct files · exact-name replacement" : "Run folders · newest 3"}</small></td>
-                        <td>${esc(flow.schedule_type)}${flow.schedule_type === "monthly" ? `<small>Day ${esc(flow.schedule_day)}</small>` : ""}${flow.next_run_at ? `<small>Next ${esc(formatDate(flow.next_run_at))}</small>` : ""}</td>
-                        <td>${_flowStatusBadge(flow.last_status)}${flow.last_run_at ? `<small>${esc(timeAgo(flow.last_run_at))}</small>` : '<small>Not run yet</small>'}</td>
-                        <td class="flow-row-actions">
-                            <button class="btn-sm flow-run" data-id="${flow.id}" ${activeRun && activeRun.status !== "queued" ? "disabled" : ""}>${activeRun?.status === "queued" ? "Start now" : activeRun ? "Running" : "Run"}</button>
-                            ${activeRun ? `<button class="btn-sm btn-outline btn-danger-outline flow-stop" data-id="${flow.id}">Stop</button>` : ""}
-                            <button class="btn-sm flow-edit" data-id="${flow.id}">Edit</button>
-                            <button class="btn-sm btn-outline btn-danger-outline flow-delete" data-id="${flow.id}">Delete</button>
-                        </td>
-                    </tr>`; }).join("")}</tbody>
-            </table>
-        </div>`;
+    return `<div class="flow-status-strip"><span><strong>${flows.length}</strong> configured flows</span><span><strong>${online}</strong> online workers</span><span>Newest 3 producing runs retained; active recovery files stay protected.</span></div>
+        <div class="flow-table-wrap"><table class="flow-table flow-grouped-table">
+        <thead><tr>${["Flow", "Source", "Owner", "Type", "To", "Schedule", "Last run", "Active", "Actions"].map(label => `<th scope="col">${label}</th>`).join("")}</tr></thead>
+        ${_flowGroups().map(group => {
+            const items = rows.filter(row => row.group === group);
+            if (!items.length) return "";
+            const active = items.filter(row => row.activeRun).length;
+            const failed = items.filter(row => row.flow.last_status === "failed").length;
+            return `<tbody class="flow-group-heading"><tr><th colspan="9" scope="rowgroup"><button type="button" class="flow-group-toggle" id="flow-group-${group}" data-group="${group}" aria-expanded="${opened.has(group)}" aria-controls="flow-group-rows-${group}"><span aria-hidden="true">${opened.has(group) ? "▾" : "▸"}</span> ${group} <span class="flow-group-count">${items.length}</span>${active ? `<small>${active} active runs</small>` : ""}${failed ? `<small class="flow-group-failed">${failed} failed</small>` : ""}</button></th></tr></tbody>
+            <tbody id="flow-group-rows-${group}" ${opened.has(group) ? "" : "hidden"}>${items.map(_flowRowHtml).join("")}</tbody>`;
+        }).join("")}</table></div>`;
+}
+
+function _flowGroups() { return ["ASAP", "GSCM", "Outlook", "Local", "Web"]; }
+
+function _flowOpenGroups() {
+    if (window._flowOpenGroupMemory) return window._flowOpenGroupMemory;
+    let value = [];
+    try { value = JSON.parse(sessionStorage.getItem("metronome.flowGroups") || "[]"); } catch (_) {}
+    return window._flowOpenGroupMemory = new Set(Array.isArray(value) ? value.filter(item => _flowGroups().includes(item)) : []);
+}
+
+function _flowRowModel(flow, runs = [], catalog = {}) {
+    const group = flow.source_type === "file" ? "Local" : flow.source_type === "outlook" ? "Outlook" : ({asap_portal: "ASAP", gscm_portal: "GSCM"}[flow.source_adapter] || "Web");
+    const source = group === "Local" ? flow.local_file_path : group === "Outlook" ? flow.outlook_subject_contains : (flow.category_path?.length ? flow.category_path.join(" › ") : flow.report_name || flow.site_name);
+    const type = ["Local", "Outlook"].includes(group) ? "CSV / Excel" : ((catalog.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase());
+    const destination = group === "Local" ? "Private snapshots" : flow.folder_relative ? `${flow.folder_relative} / Downloads` : flow.target_folder;
+    const to = flow.sql_handoff_enabled ? [flow.sql_database, flow.sql_schema, flow.sql_table].filter(Boolean).join(".") : destination;
+    const schedule = `${flow.schedule_type || "manual"}${flow.schedule_type !== "manual" && flow.schedule_time ? ` ${flow.schedule_time}` : ""}`;
+    const activeRun = runs.find(run => run.flow_id === flow.id && ["queued", "claimed", "running"].includes(run.status));
+    return {flow, group, name: flow.name, source, owner: flow.owner_name, type, to, destination, schedule, lastRun: flow.last_run_at, active: !!flow.enabled, activeRun};
+}
+
+function _flowRowHtml(row) {
+    const {flow, activeRun} = row;
+    const button = (cls, label, extra = "") => `<button type="button" class="btn-sm ${cls}" data-id="${flow.id}" data-flow-focus="${cls}-${flow.id}" ${extra}>${label}</button>`;
+    return `<tr>
+        <td><strong>${esc(flow.name)}</strong>${window._remoteFlowControlStatus?.enabled && flow.enabled ? `<small class="remote-control-code">Remote target: ${esc(window._remoteFlowControlStatus.installation_id)}:${esc(flow.id)}</small>` : ""}</td>
+        <td class="flow-path-cell">${esc(row.source || "—")}</td>
+        <td>${esc(row.owner || "No owner")}${!row.owner ? '<small>Failure alerts disabled</small>' : !flow.owner_email ? '<small>No email mapped</small>' : ""}</td>
+        <td>${esc(row.type)}${flow.local_file_worksheet ? `<small>Worksheet: ${esc(flow.local_file_worksheet)}</small>` : ""}<small>${row.group === "Local" ? "Private snapshots · latest 3" : flow.output_mode === "direct_replace" ? "Exact-name replacement" : "Run folders"}</small></td>
+        <td class="flow-path-cell">${esc(row.to || "—")}${flow.sql_handoff_enabled ? `<small>SQL ${esc(flow.sql_mode)} · ${esc(row.destination || "")}</small>` : ""}</td>
+        <td>${esc(row.schedule)}${flow.next_run_at ? `<small>Next ${esc(formatDate(flow.next_run_at))}</small>` : ""}</td>
+        <td>${_flowStatusBadge(flow.last_status)}${flow.last_run_at ? `<small>${esc(timeAgo(flow.last_run_at))}</small>` : '<small>Not run yet</small>'}</td>
+        <td><label class="flow-switch"><input class="flow-enabled-switch" type="checkbox" data-id="${flow.id}" data-flow-focus="active-${flow.id}" aria-label="Active: ${esc(flow.name)}" ${flow.enabled ? "checked" : ""} ${flow.schedule_type === "manual" ? "disabled" : ""}><span aria-hidden="true"></span><strong>${flow.enabled ? "Active" : "Inactive"}</strong></label>${flow.schedule_type === "manual" ? '<small>Manual only</small>' : ""}</td>
+        <td class="flow-row-actions">${button("flow-run", activeRun?.status === "queued" ? "Start now" : activeRun ? "Running" : "Run", activeRun && activeRun.status !== "queued" ? "disabled" : "")}${activeRun ? button("flow-stop", "Stop") : ""}${button("flow-edit", "Edit")}<details class="flow-row-menu"><summary aria-label="More actions: ${esc(flow.name)}" data-flow-focus="more-${flow.id}">More</summary><div>${button("flow-open-folder", "Open folder")}${button("flow-delete", "Delete")}</div></details></td>
+    </tr>`;
 }
 
 /** The folder a report sits in, and its own name, from the discovery path.
@@ -11463,6 +11486,9 @@ function _flowShowView(view, payload = null) {
     const state = window._flowsState;
     state.view = view;
     const workspace = document.getElementById("flow-workspace");
+    const focused = workspace.contains(document.activeElement) ? document.activeElement : null;
+    const focusId = focused?.id;
+    const focusKey = focused?.dataset.flowFocus;
     document.querySelectorAll(".flow-tabs button").forEach(button => {
         const active = button.dataset.flowView === view || (["builder", "source-picker"].includes(view) && button.dataset.flowView === "list");
         button.classList.toggle("active", active);
@@ -11476,6 +11502,10 @@ function _flowShowView(view, payload = null) {
     else if (view === "builder") workspace.innerHTML = _flowBuilderHtml(state.catalog, payload);
     else workspace.innerHTML = _flowListHtml(state.flows, state.workers, state.catalog, state.runs);
     _bindFlowWorkspace();
+    if (view === "list") {
+        const next = focusId ? document.getElementById(focusId) : focusKey ? [...workspace.querySelectorAll("[data-flow-focus]")].find(item => item.dataset.flowFocus === focusKey) : null;
+        if (next) { const menu = next.closest("details"); if (menu) menu.open = true; next.focus(); }
+    }
     _flowScheduleCatalogMonitor();
 }
 
@@ -11823,6 +11853,20 @@ function _pollPipelineRun(runId, expectedReportId) {
 
 function _bindFlowWorkspace() {
     const state = window._flowsState;
+    document.querySelectorAll(".flow-group-toggle").forEach(button => button.addEventListener("click", () => {
+        const opened = _flowOpenGroups();
+        if (opened.has(button.dataset.group)) opened.delete(button.dataset.group); else opened.add(button.dataset.group);
+        try { sessionStorage.setItem("metronome.flowGroups", JSON.stringify([...opened])); } catch (_) {}
+        _flowShowView("list");
+    }));
+    document.querySelectorAll(".flow-open-folder").forEach(button => button.addEventListener("click", async () => {
+        try {
+            const result = await apiPost(`/api/flows/${button.dataset.id}/open-folder`);
+            if (result.opened) { toast("Folder opened on this PC."); return; }
+            try { await navigator.clipboard.writeText(result.path); toast("Path copied. Open it on the worker PC."); }
+            catch (_) { window.prompt("Copy this path and open it on the worker PC:", result.path); }
+        } catch (err) { toast(err.message); }
+    }));
     $("#flow-repair-layout")?.addEventListener("click", async event => {
         const button = event.currentTarget;
         button.disabled = true;
