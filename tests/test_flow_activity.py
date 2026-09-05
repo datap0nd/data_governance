@@ -226,3 +226,32 @@ def test_parallel_row_counts_real_workers_and_heartbeats_preserve_actions(bundle
     assert len(progress["runners"]) == 2
     assert progress["completed"] == 2
     assert "1 of 3" in progress["message"]
+
+
+@pytest.mark.parametrize("bundle", [{"flow": {"download_parallelism": 5,
+    "start_week": "2026-W01", "end_week": "2026-W15", "window_weeks": 3}}], indirect=True)
+def test_five_parallel_exports_have_independent_worker_progress(bundle):
+    from app.routers import flow_tasks as routes
+    tasks = [claim('worker-1', bundle['run']['id'])] + [claim(f'worker-{i}') for i in range(2, 6)]
+    assert all(tasks)
+    for task, stage in zip(tasks, ['authentication', 'file_export', 'file_normalization', 'file_transfer', 'configuring']):
+        routes.task_progress(task['worker_id'], task['id'], routes.TaskReport(
+            lease_token=task['lease_token'], status='running', progress={'stage':stage, 'message':stage}))
+    progress = flows.flow_activity()['active_runs'][0]['progress']
+    runners = progress['runners']
+    assert len(runners) == 5  # Coordinator's download is not a sixth worker.
+    assert [r['completed'] for r in runners] == [0, 1, 2, 1, 0]
+    assert [r['total'] for r in runners] == [3] * 5
+    assert [r['task_id'] for r in runners] == [t['id'] for t in tasks]
+    assert [r['label'] for r in runners] == [f'Export {i} of 5' for i in range(1, 6)]
+    task = tasks[2]
+    routes.task_progress(task['worker_id'], task['id'], routes.TaskReport(
+        lease_token=task['lease_token'], status='running', progress={'stage':'task_heartbeat'}))
+    assert flows.flow_activity()['active_runs'][0]['progress']['runners'][2]['completed'] == 2
+    routes.task_progress(task['worker_id'], task['id'], routes.TaskReport(
+        lease_token=task['lease_token'], status='running', progress={'stage':'file_export', 'message':'Recorded export recipe'}))
+    assert flows.flow_activity()['active_runs'][0]['progress']['runners'][2]['completed'] == 2
+    complete(tasks[1])
+    remaining = flows.flow_activity()['active_runs'][0]['progress']['runners']
+    assert len(remaining) == 4
+    assert 'worker-2' not in [r['id'] for r in remaining]

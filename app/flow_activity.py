@@ -31,7 +31,7 @@ def row_progress(db, run):
     # Old/malformed snapshots cannot support a trustworthy denominator.
     known = bool(job.get("flow") and (sql_only or job.get("downloads") or source in {"file", "outlook"}))
     tasks = [dict(row) for row in db.execute(
-        """SELECT ordinal,state,worker_id,progress_json FROM flow_download_tasks
+        """SELECT id,ordinal,state,worker_id,progress_json FROM flow_download_tasks
            WHERE run_id=? ORDER BY ordinal""", (run["id"],),
     )]
     if tasks:
@@ -77,14 +77,35 @@ def row_progress(db, run):
     runners = {}
     active = status in {"claimed", "running"}
     if active and run["worker_id"]:
-        runners[run["worker_id"]] = {"id": run["worker_id"], "message": _text(detail.get("message"), "Preparing run"), "stage": _text(stage)}
+        coordinating = bool(tasks and not after_download)
+        runners[run["worker_id"]] = {
+            "id": run["worker_id"], "message": _text(detail.get("message"), "Preparing run"),
+            "stage": _text(stage), "label": "Coordinating downloads" if coordinating else "Run progress",
+            "completed": None if coordinating or not known else completed,
+            "total": None if coordinating or not known else total,
+            "phases": [] if coordinating or not known else phases,
+        }
     if active:
         for task in tasks:
             if task["state"] not in {"claimed", "cancelling"} or not task["worker_id"]:
                 continue
             progress = _load(task["progress_json"], {})
+            task_stage = _text(progress.get("stage"), "download")
+            # Discrete, observed milestones only; do not invent byte progress
+            # while the portal is generating or transferring a file.
+            observed = set(progress.get('_download_milestones') or []) | {task_stage}
+            downloaded = bool(observed & {"file_normalization", "file_validation"})
+            prepared = downloaded or bool(observed & {"file_export", "file_transfer"})
+            task_phases = [
+                {"label": "Prepare export", "completed": int(prepared), "total": 1},
+                {"label": "Download", "completed": int(downloaded), "total": 1},
+                {"label": "Prepare file", "completed": 0, "total": 1},
+            ]
             runners[task["worker_id"]] = {
-                "id": task["worker_id"], "stage": _text(progress.get("stage"), "download"),
+                "id": task["worker_id"], "stage": task_stage,
+                "task_id": task["id"], "label": f"Export {task['ordinal']} of {count}",
+                "completed": sum(phase["completed"] for phase in task_phases),
+                "total": 3, "phases": task_phases,
                 "message": _text(progress.get("message"), f"Downloading export {task['ordinal']} of {count}"),
             }
     message = _text(detail.get("message"))
