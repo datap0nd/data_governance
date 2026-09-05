@@ -362,29 +362,44 @@ def notify_flow_owner_of_failure(run_id: int) -> dict:
     return outcome
 
 
+def _contact_time(value: str | None) -> datetime | None:
+    """Read legacy local timestamps and parallel workers' aware UTC stamps."""
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
 def fail_stale_runs(
     timeout_seconds: int = RUN_STALE_TIMEOUT_SECONDS,
 ) -> dict:
     """Fail runs whose assigned worker has stopped responding."""
     now = _now()
     now_text = _iso(now)
-    cutoff = _iso(now - timedelta(seconds=timeout_seconds))
+    cutoff = now.astimezone(timezone.utc) - timedelta(seconds=timeout_seconds)
     failed = []
     with get_db() as db:
         db.execute('BEGIN IMMEDIATE')
         flow_parallel.reap(db)
         rows = db.execute(
-            """SELECT r.id, r.flow_id, r.worker_id
+            """SELECT r.id, r.flow_id, r.worker_id, r.heartbeat_at, r.claimed_at,
+                      w.last_seen_at
                FROM flow_runs r
                LEFT JOIN flow_workers w ON w.worker_id=r.worker_id
-               WHERE r.status IN ('claimed','running')
-                 AND COALESCE(w.last_seen_at, r.heartbeat_at, r.claimed_at) < ?""",
-            (cutoff,),
+               WHERE r.status IN ('claimed','running')""",
         ).fetchall()
         for row in rows:
+            contacts = [contact for contact in (
+                _contact_time(row['last_seen_at']),
+                _contact_time(row['heartbeat_at']) or _contact_time(row['claimed_at']),
+            ) if contact is not None]
+            if not contacts or max(contacts) >= cutoff:
+                continue
             message = "The assigned browser worker stopped responding before the run finished."
             if flow_parallel._fanout(db, row['id']):
-                flow_parallel.abort(db, row['id'], message + ' Finalization was not replayed; reconcile any uncertain SQL commit.', coordinator_stopped=True)
+                flow_parallel.abort(db, row['id'], message + ' Finalization was not replayed.', coordinator_stopped=True)
                 flow_parallel.finish_aborted(db, row['id'])
                 continue
             db.execute(

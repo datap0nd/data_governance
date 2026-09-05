@@ -67,7 +67,7 @@ const css = fs.readFileSync(new URL("../app/static/style.css", import.meta.url),
 assert.match(css, /main:has\(\.flow-page-header\) \{ max-width: none;/);
 assert.match(css, /\.flow-run-status \.badge \{ white-space: nowrap; overflow-wrap: normal;/);
 
-const running = { id: 10, flow_id: 2, status: "running", progress: { completed: 3, total: 50, message: "Inserting into SQL", runners: [{id:"one",message:"Download"},{id:"two",message:"Download"},{id:"three",message:"Prepare"}], phases: [{label:"Download",completed:3,total:50}] } };
+const running = { id: 10, flow_id: 2, status: "running", progress: { completed: 3, total: 50, message: "Inserting into SQL", runners: [{id:"one",message:"Download",completed:3,total:50},{id:"two",message:"Download",completed:1,total:3},{id:"three",message:"Prepare",completed:0,total:3}], phases: [{label:"Download",completed:3,total:50}] } };
 const live = context.renderFlowList([{ id: 2, name: "Export" }], [], {}, [running]);
 assert.equal((live.match(/class="flow-worker-emoji"/g) || []).length, 3);
 assert.match(live, /3 workers/);
@@ -78,3 +78,13 @@ assert.match(live, /class="flow-name-cell"[\s\S]*class="flow-row-progress"/);
 assert.match(css, /@keyframes flow-worker-working/);
 assert.match(css, /prefers-reduced-motion: reduce/);
 assert.equal(context._flowRowProgressHtml({...running, status: "succeeded"}), "");
+
+const five = context._flowRowProgressHtml({...running, progress: {...running.progress,
+    runners: Array.from({length:5}, (_, i) => ({id:`worker-${i+1}`, task_id:i+1,
+        label:`Export ${i+1} of 5`, message:`Downloading file ${i+1}`, completed:i % 3, total:3,
+        phases:[{label:"Download",completed:i%3,total:3}]}))}});
+assert.equal((five.match(/role="progressbar"/g) || []).length, 5);
+assert.equal((five.match(/class="flow-worker-emoji"/g) || []).length, 5);
+assert.match(five, /5 workers/);
+for (let i=1;i<=5;i++) assert.match(five, new RegExp(`data-worker-id="worker-${i}"`));
+assert.equal((context._flowRowProgressHtml({...running, status:"queued",progress:{}}).match(/role="progressbar"/g) || []).length,0);

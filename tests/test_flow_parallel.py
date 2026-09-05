@@ -16,15 +16,19 @@ from test_flows import flow_db, _request, _seed_catalog, _mark_discovered, _flow
 
 @pytest.fixture
 def bundle(flow_db, tmp_path, monkeypatch, request):
-    mode = getattr(request, 'param', 'headless')
+    config = getattr(request, 'param', 'headless')
+    mode = config if isinstance(config, str) else config.get('mode', 'headless')
+    options = {} if isinstance(config, str) else config.get('flow', {})
+    slots = options.get('download_parallelism', 3)
     monkeypatch.setattr(flows, 'launch_local_worker', lambda *a, **k: {'status':'test'})
     site, report = _seed_catalog(); _mark_discovered(report['id'])
     saved = flows.create_flow(_flow(site['id'], report['id'], target_folder=None,
-        download_parallelism=3, browser_mode=mode, filename_template='export_{index}_{week}.csv'), _request())
+        browser_mode=mode, filename_template='export_{index}_{week}.csv',
+        **{'download_parallelism': 3, **options}), _request())
     queued = flows.queue_run(saved['id'], _request())
     with database.get_db() as db:
-        flow_paths.save_setting(db, flow_capacity.CAPACITY_KEY, 3)
-        flow_paths.save_setting(db, flow_capacity.HEADED_CAPACITY_KEY, 3)
+        flow_paths.save_setting(db, flow_capacity.CAPACITY_KEY, slots)
+        flow_paths.save_setting(db, flow_capacity.HEADED_CAPACITY_KEY, slots)
         job = flows._build_job(db, saved['id'])
     profile = tmp_path / 'coordinator'
     store = flow_publish.artifact_store_id(profile, store_root=Path(job['paths']['artifact_store_root']))
@@ -577,3 +581,51 @@ def test_recovery_defers_owner_alert_until_commit_and_dispatches_once(bundle,mon
     monkeypatch.setattr(flows,'notify_flow_owner_of_failure',notify)
     flows.fail_stale_runs(); flows.fail_stale_runs()
     assert notified==[bundle['run']['id']]
+
+
+@pytest.mark.parametrize("offset", [-12, 0, 9])
+def test_watchdog_reads_aware_parallel_heartbeats_as_instants(bundle, monkeypatch, offset):
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now().replace(microsecond=0)
+    monkeypatch.setattr(flows, '_now', lambda: now)
+    contact = now.astimezone(timezone(timedelta(hours=offset))).isoformat()
+    with database.get_db() as db:
+        db.execute("UPDATE flow_workers SET last_seen_at=? WHERE worker_id='worker-1'", (contact,))
+        db.execute("UPDATE flow_runs SET heartbeat_at=? WHERE id=?", (contact, bundle['run']['id']))
+    assert flows.fail_stale_runs()['count'] == 0
+    assert routes.status('worker-1', bundle['run']['id'])['state'] == 'downloading'
+
+
+def test_parallel_task_heartbeat_uses_local_worker_time_and_keeps_coordinator_alive(bundle, monkeypatch):
+    from datetime import datetime, timedelta
+    local_now = datetime.now().replace(microsecond=0) + timedelta(hours=2)
+    monkeypatch.setattr(flows, '_now', lambda: local_now)
+    tasks = [claim('worker-1', bundle['run']['id']), claim('worker-2'), claim('worker-3')]
+    for task in tasks:
+        routes.task_progress(task['worker_id'], task['id'], routes.TaskReport(
+            lease_token=task['lease_token'], status='running', progress={'stage':'task_heartbeat'}))
+    with database.get_db() as db:
+        for task in tasks:
+            contact = db.execute('SELECT last_seen_at FROM flow_workers WHERE worker_id=?', (task['worker_id'],)).fetchone()[0]
+            assert contact == flows._iso(local_now)
+        assert db.execute('SELECT heartbeat_at FROM flow_runs WHERE id=?', (bundle['run']['id'],)).fetchone()[0] == flows._iso(local_now)
+    monkeypatch.setattr(flows, '_now', lambda: local_now + timedelta(seconds=60))
+    assert flows.fail_stale_runs()['count'] == 0
+    assert routes.status('worker-1', bundle['run']['id'])['state'] == 'downloading'
+
+
+def test_helpers_cannot_keep_a_dead_coordinator_alive(bundle):
+    from datetime import timedelta
+    task = claim('worker-2')
+    old = flows._iso(flows._now() - timedelta(hours=1))
+    with database.get_db() as db:
+        db.execute("UPDATE flow_workers SET last_seen_at=? WHERE worker_id='worker-1'", (old,))
+        db.execute('UPDATE flow_runs SET heartbeat_at=? WHERE id=?', (old, bundle['run']['id']))
+    routes.task_progress('worker-2', task['id'], routes.TaskReport(
+        lease_token=task['lease_token'], status='running', progress={'stage':'task_heartbeat'}))
+    flows.fail_stale_runs()
+    with database.get_db() as db:
+        state = parallel.snapshot(db, bundle['run']['id'])
+        assert state['state'] == 'aborting'
+        assert 'Finalization was not replayed' in state['error']
+        assert 'SQL' not in state['error']  # No SQL work had started.

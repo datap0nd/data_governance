@@ -25,6 +25,12 @@ def timestamp() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def local_timestamp() -> str:
+    """Shared Flow tables use local wall time; lease tables use aware UTC."""
+    from app.routers import flows
+    return flows._iso(flows._now())
+
+
 def _json(value):
     return json.dumps(value, ensure_ascii=False)
 
@@ -45,7 +51,7 @@ def _owner(db, worker_id, run_id):
 
 
 def _event(db, run_id, stage, message, details=None):
-    db.execute("INSERT INTO flow_run_events(run_id,status,stage,message,details_json,created_at) VALUES (?,?,?,?,?,?)", (run_id, stage if stage in TASK_TERMINAL else 'running', stage, message, _json(details or {}), timestamp()))
+    db.execute("INSERT INTO flow_run_events(run_id,status,stage,message,details_json,created_at) VALUES (?,?,?,?,?,?)", (run_id, stage if stage in TASK_TERMINAL else 'running', stage, message, _json(details or {}), local_timestamp()))
 
 
 def portal_limit(db, site_id) -> int:
@@ -99,7 +105,8 @@ def initialize(db, worker_id, run_id, run_date, completed_keys):
         if artifact:
             artifact = {**artifact, 'bundle_index': task['ordinal'], 'bundle_count': len(matrix), 'status': 'saved'}
         db.execute("INSERT INTO flow_download_tasks(run_id,task_key,ordinal,state,artifact_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?)", (run_id, task['key'], task['ordinal'], 'succeeded' if artifact else 'queued', _json([artifact] if artifact else []), now, now))
-    db.execute("UPDATE flow_runs SET status='running',started_at=COALESCE(started_at,?),heartbeat_at=? WHERE id=?", (now, now, run_id))
+    local_now = local_timestamp()
+    db.execute("UPDATE flow_runs SET status='running',started_at=COALESCE(started_at,?),heartbeat_at=? WHERE id=?", (local_now, local_now, run_id))
     _event(db, run_id, 'parallel_downloads', f'Prepared {len(matrix)} ordered export tasks; up to {flow_tasks.parallelism(job)} download slots.', {'total': len(matrix), 'parallelism': flow_tasks.parallelism(job)})
     return snapshot(db, run_id)
 
@@ -183,7 +190,8 @@ def claim_task(db, worker_id, *, run_id=None):
         changed = db.execute("UPDATE flow_download_tasks SET state='claimed',attempt=attempt+1,lease_token=?,worker_id=?,lease_expires_at=?,output_folder=?,updated_at=? WHERE id=? AND state='queued'", (token, worker_id, expiry, output, now, task['id'])).rowcount
         if not changed:
             continue
-        db.execute("UPDATE flow_workers SET current_task_id=?,status='busy',last_seen_at=?,updated_at=? WHERE worker_id=?", (task['id'], now, now, worker_id))
+        local_now = local_timestamp()
+        db.execute("UPDATE flow_workers SET current_task_id=?,status='busy',last_seen_at=?,updated_at=? WHERE worker_id=?", (task['id'], local_now, local_now, worker_id))
         return _payload(db, db.execute('SELECT * FROM flow_download_tasks WHERE id=?', (task['id'],)).fetchone(), job)
     return None
 
@@ -226,10 +234,23 @@ def report_task(db, worker_id, task_id, token, status, progress, artifacts):
     # Lease heartbeats must not erase the worker's current visible action.
     if status == 'running' and progress.get('stage') == 'task_heartbeat':
         progress = json.loads(task['progress_json'] or '{}')
+    else:
+        # Later bookkeeping messages can return to file_export after file
+        # normalization. Preserve completed milestones for this exact lease.
+        prior = json.loads(task['progress_json'] or '{}')
+        milestones = set(prior.get('_download_milestones') or [])
+        stage = progress.get('stage')
+        if stage in {'file_export', 'file_transfer', 'file_normalization', 'file_validation'}:
+            milestones.add(stage)
+        progress = {**progress, '_download_milestones': sorted(milestones)}
     db.execute('UPDATE flow_download_tasks SET state=?,progress_json=?,artifact_json=?,lease_expires_at=?,error=?,updated_at=? WHERE id=? AND lease_token=?',
                ('claimed' if status == 'running' else status, _json(progress), _json(artifacts if status == 'succeeded' else []), expiry,
                 progress.get('message') if status == 'failed' else None, now, task_id, token))
-    db.execute('UPDATE flow_workers SET last_seen_at=?,updated_at=? WHERE worker_id=?', (now, now, worker_id))
+    local_now = local_timestamp()
+    db.execute('UPDATE flow_workers SET last_seen_at=?,updated_at=? WHERE worker_id=?', (local_now, local_now, worker_id))
+    # The coordinator can also execute an export. Its task progress is proof
+    # of life for its parent run; helpers must never mask a lost coordinator.
+    db.execute("UPDATE flow_runs SET heartbeat_at=? WHERE id=? AND worker_id=? AND status IN ('claimed','running')", (local_now, task['run_id'], worker_id))
     if status != 'running':
         db.execute("UPDATE flow_workers SET current_task_id=NULL,status=CASE WHEN current_run_id IS NULL THEN 'idle' ELSE 'busy' END WHERE worker_id=? AND current_task_id=?", (worker_id, task_id))
         _event(db, task['run_id'], 'download_task_' + status, f"Export {task['ordinal']} {status}.", {'ordinal': task['ordinal'], 'worker_id': worker_id})
@@ -272,7 +293,7 @@ def finish_aborted(db, run_id):
     if not state or state['state'] != 'aborting' or not state['drained']:
         return False
     from app.routers import flows
-    now = timestamp()
+    now = local_timestamp()
     terminal = state['terminal_status'] or 'failed'
     run = db.execute('SELECT * FROM flow_runs WHERE id=?', (run_id,)).fetchone()
     message = state['error'] or 'Parallel run stopped.'
@@ -282,7 +303,7 @@ def finish_aborted(db, run_id):
     db.execute('UPDATE flow_runs SET status=?,error=?,finished_at=?,heartbeat_at=?,progress_json=?,artifact_json=? WHERE id=?', (terminal, message, now, now, _json({'stage': terminal, 'message': message}), _json(artifacts), run_id))
     db.execute('UPDATE flows SET last_status=?,last_error=?,last_run_at=?,updated_at=? WHERE id=?', (terminal, message, now, now, run['flow_id']))
     db.execute("UPDATE flow_workers SET current_run_id=NULL,current_task_id=NULL,status='offline',updated_at=? WHERE current_run_id=?", (now, run_id))
-    db.execute("UPDATE flow_run_fanout SET state='complete',updated_at=? WHERE run_id=?", (now, run_id))
+    db.execute("UPDATE flow_run_fanout SET state='complete',updated_at=? WHERE run_id=?", (timestamp(), run_id))
     flows._release_retention_ops(db, run_id, now)
     db.executemany("""INSERT INTO flow_run_files
         (run_id,period_key,file_path,filename,storage_scope,artifact_store_id,file_size,checksum,row_count,status,created_at)

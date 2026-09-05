@@ -10865,18 +10865,25 @@ function _flowLastRunHtml(run) {
     return `<span class="flow-run-status">${_flowStatusBadge(run?.status)}${run?.status === "queued" ? " · Waiting" : ""}</span><small>${run?.created_at ? esc(timeAgo(run.created_at)) : "Not run yet"}</small>`;
 }
 
+function _flowWorkerProgressHtml(runner, index) {
+    const known = Number.isFinite(runner.total) && runner.total > 0;
+    const done = known ? Math.max(0, Math.min(runner.total, runner.completed || 0)) : 0;
+    const phases = (runner.phases || []).map(phase => `<span class="flow-progress-phase" style="flex:${phase.total}" title="${esc(phase.label)}: ${phase.completed} / ${phase.total}"><span style="width:${Math.max(0, Math.min(100, phase.completed / phase.total * 100))}%"></span></span>`).join("");
+    return `<div class="flow-worker-heading"><span class="flow-workers"><span class="flow-worker-emoji" role="img" aria-label="Worker" style="--worker-delay:${index * -0.17}s">👷</span><span title="${esc(runner.id)}">${esc(runner.id)}</span></span><span class="flow-worker-assignment">${esc(runner.label || "Run progress")}</span></div>
+        <div class="flow-progress-track ${known ? "" : "flow-progress-unknown"}" role="progressbar" aria-label="${esc(runner.id)} progress" aria-valuemin="0" ${known ? `aria-valuemax="${runner.total}" aria-valuenow="${done}" aria-valuetext="${done} of ${runner.total} steps completed"` : 'aria-valuetext="Working"'}>${phases}</div>
+        <div class="flow-progress-message" title="${esc(runner.message || "")}">${esc(runner.message || "Preparing work")}</div>`;
+}
+
 function _flowRowProgressHtml(run) {
     if (!run || !["queued", "claimed", "running"].includes(run.status)) return "";
     const progress = run.progress || {};
     const runners = progress.runners || [];
     const known = Number.isFinite(progress.total) && progress.total > 0;
     const done = known ? Math.max(0, Math.min(progress.total, progress.completed || 0)) : 0;
-    const working = run.status !== "queued";
-    const workers = runners.map((runner, index) => `<span class="flow-worker-emoji" data-worker-id="${esc(runner.id)}" role="img" aria-label="${esc(runner.id)}: ${esc(runner.message)}" title="${esc(runner.id)} · ${esc(runner.message)}" style="--worker-delay:${index * -0.17}s">👷</span>`).join("");
-    const phases = (progress.phases || []).map(phase => `<span class="flow-progress-phase" style="flex:${phase.total}" title="${esc(phase.label)}: ${phase.completed} / ${phase.total}"><span style="width:${Math.max(0, Math.min(100, phase.completed / phase.total * 100))}%"></span></span>`).join("");
-    return `<div class="flow-progress-heading"><span class="flow-workers">${workers}<span>${runners.length ? `${runners.length} worker${runners.length === 1 ? "" : "s"}` : working ? "Starting worker" : "Queued"}</span></span><span class="flow-progress-count">${known ? `${done} / ${progress.total} steps` : "Preparing steps"}</span></div>
-        <div class="flow-progress-track ${known ? "" : "flow-progress-unknown"}" role="progressbar" aria-label="Flow work completed" aria-valuemin="0" ${known ? `aria-valuemax="${progress.total}" aria-valuenow="${done}" aria-valuetext="${done} of ${progress.total} steps completed"` : 'aria-valuetext="Preparing steps"'}>${phases}</div>
-        <div class="flow-progress-message" title="${esc(progress.message || "")}">${esc(progress.message || (working ? "Preparing run" : "Waiting for a worker"))}</div>`;
+    const workers = runners.map((runner, index) => `<div class="flow-worker-progress" data-worker-id="${esc(runner.id)}" data-task-id="${esc(runner.task_id || "")}">${_flowWorkerProgressHtml(runner, index)}</div>`).join("");
+    return `<div class="flow-progress-heading"><span class="flow-worker-count">${runners.length ? `${runners.length} worker${runners.length === 1 ? "" : "s"}` : run.status === "queued" ? "Queued" : "Starting worker"}</span><span class="flow-progress-count">${known ? `${done} / ${progress.total} steps` : "Preparing steps"}</span></div>
+        <div class="flow-worker-list">${workers}</div>
+        <div class="flow-progress-summary">${esc(progress.message || "Waiting for a worker")}</div>`;
 }
 
 function _flowPatchRowProgress(container, run) {
@@ -10884,36 +10891,38 @@ function _flowPatchRowProgress(container, run) {
     if (!html) { container.hidden = true; return; }
     container.hidden = false;
     if (!container.firstElementChild) { container.innerHTML = html; return; }
-    // Keep the animated workers and progress segments mounted between polls.
     const next = document.createElement("div");
     next.innerHTML = html;
-    const workers = container.querySelector(".flow-workers");
-    const newWorkers = next.querySelector(".flow-workers");
-    const ids = node => Array.from(node.querySelectorAll("[data-worker-id]"), worker => worker.dataset.workerId).join("\n");
-    if (ids(workers) !== ids(newWorkers)) workers.innerHTML = newWorkers.innerHTML;
-    else {
-        Array.from(workers.children).forEach((worker, index) => {
-            const updated = newWorkers.children[index];
-            worker.title = updated.title;
-            if (updated.hasAttribute("aria-label")) worker.setAttribute("aria-label", updated.getAttribute("aria-label"));
-            if (!worker.dataset.workerId) worker.textContent = updated.textContent;
+    for (const selector of [".flow-worker-count", ".flow-progress-count", ".flow-progress-summary"]) {
+        container.querySelector(selector).textContent = next.querySelector(selector).textContent;
+    }
+    // Key bars by worker identity. Keep their DOM and animation while their
+    // own progress changes, even when another worker finishes or joins.
+    const list = container.querySelector(".flow-worker-list");
+    const existing = new Map(Array.from(list.children, node => [node.dataset.workerId, node]));
+    const wanted = Array.from(next.querySelector(".flow-worker-list").children);
+    for (const [index, updated] of wanted.entries()) {
+        const old = existing.get(updated.dataset.workerId);
+        if (!old) { list.insertBefore(updated, list.children[index] || null); continue; }
+        existing.delete(updated.dataset.workerId);
+        if (list.children[index] !== old) list.insertBefore(old, list.children[index] || null);
+        old.dataset.taskId = updated.dataset.taskId;
+        for (const selector of [".flow-worker-assignment", ".flow-progress-message"]) {
+            old.querySelector(selector).textContent = updated.querySelector(selector).textContent;
+            old.querySelector(selector).title = updated.querySelector(selector).title;
+        }
+        const track = old.querySelector(".flow-progress-track"), fresh = updated.querySelector(".flow-progress-track");
+        for (const attr of ["class", "aria-valuemax", "aria-valuenow", "aria-valuetext"]) {
+            if (fresh.hasAttribute(attr)) track.setAttribute(attr, fresh.getAttribute(attr)); else track.removeAttribute(attr);
+        }
+        if (track.children.length !== fresh.children.length) track.innerHTML = fresh.innerHTML;
+        else Array.from(track.children).forEach((phase, i) => {
+            phase.style.flex = fresh.children[i].style.flex;
+            phase.title = fresh.children[i].title;
+            phase.firstElementChild.style.width = fresh.children[i].firstElementChild.style.width;
         });
     }
-    for (const selector of [".flow-progress-count", ".flow-progress-message"]) {
-        const old = container.querySelector(selector), updated = next.querySelector(selector);
-        old.textContent = updated.textContent;
-        old.title = updated.title;
-    }
-    const track = container.querySelector(".flow-progress-track"), updated = next.querySelector(".flow-progress-track");
-    for (const attr of ["class", "aria-valuemax", "aria-valuenow", "aria-valuetext"]) {
-        if (updated.hasAttribute(attr)) track.setAttribute(attr, updated.getAttribute(attr)); else track.removeAttribute(attr);
-    }
-    if (track.children.length !== updated.children.length) { track.innerHTML = updated.innerHTML; return; }
-    Array.from(track.children).forEach((phase, index) => {
-        phase.style.flex = updated.children[index].style.flex;
-        phase.title = updated.children[index].title;
-        phase.firstElementChild.style.width = updated.children[index].firstElementChild.style.width;
-    });
+    for (const node of existing.values()) node.remove();
 }
 
 /** The folder a report sits in, and its own name, from the discovery path.
