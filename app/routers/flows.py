@@ -2180,6 +2180,9 @@ def inspect_sql_retry_eligibility(
         return _recovery_result('blocked', 'download_bundle_incomplete',
             'Resume the missing exports before retrying SQL; the complete bundle is required.', _source=source)
     source_job = _loads(source["job_json"], {})
+    if 'date_batch' in source_job.get('recording', {}).get('definition', {}):
+        return _recovery_result('blocked', 'date_batch_removed',
+            'Date batching was removed. Review and test a single-range recording before a new run.', _source=source)
     sql_target = source_job.get("sql_handoff", {})
     if not sql_target.get("enabled"):
         return _recovery_result(
@@ -5046,8 +5049,8 @@ def claim_run(worker_id: str):
             return (
                 execution.get("browser_mode", "headless") == worker_mode
                 and (job.get('flow', {}).get('execution_method') != 'recorded' or capabilities.get('recorded_flows_v1'))
-                and (not job.get('recording', {}).get('definition', {}).get('date_batch')
-                     or job.get('job_type') == 'sql_retry' or capabilities.get('recorded_date_batches_v1'))
+                and 'date_batch' not in job.get('recording', {}).get('definition', {})
+                and (job.get('recording', {}).get('definition', {}).get('version', 1) < 2 or capabilities.get('recorded_flows_v2'))
                 and (not flow_tasks.enabled(job) or flow_tasks.supported(job, capabilities))
                 and flow_parallel.portal_available(db, job)
                 and (not required_adapter or required_adapter in adapters)
@@ -5080,6 +5083,7 @@ def claim_run(worker_id: str):
                 and (not recording_reserved or _loads(candidate['job_json'], {}).get('execution', {}).get('worker_id') == worker_id)
                 and (not _loads(candidate['job_json'], {}).get('recording_operation') or capabilities.get('flow_recorder_v1'))
                 and (not _loads(candidate['job_json'], {}).get('recorder_controls') or capabilities.get('flow_recorder_controls_v1'))
+                and (_loads(candidate['job_json'], {}).get('recording_version', 1) < 2 or capabilities.get('recorded_flows_v2'))
                 and flow_parallel.portal_available(db, _loads(candidate['job_json'], {}))
             )), None)
             if scan:

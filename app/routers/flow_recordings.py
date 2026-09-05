@@ -40,6 +40,11 @@ class RevisionWrite(BaseModel):
     definition: dict
 
 
+class SingleRangeWrite(BaseModel):
+    start: str = Field(min_length=1, max_length=32)
+    end: str = Field(min_length=1, max_length=32)
+
+
 def _launch(scan_id):
     from app.flow_local_runner import launch_local_worker
     from app import flow_capacity
@@ -97,7 +102,7 @@ def list_recordings(flow_id: int):
         revisions = []
         for row in db.execute('SELECT * FROM flow_recording_revisions WHERE flow_id=? ORDER BY id DESC', (flow_id,)):
             item = dict(row)
-            item['definition'] = json.loads(item.pop('definition_json'))
+            item['definition'] = flow_recording.suggest_review(json.loads(item.pop('definition_json')))
             item['evidence'] = json.loads(item.pop('evidence_json') or '{}')
             item.pop('transformation_source', None)
             revisions.append(item)
@@ -164,7 +169,7 @@ def finish_recording(flow_id: int, scan_id: int):
 @router.post('/{flow_id}/recordings/revisions')
 def save_revision(flow_id: int, body: RevisionWrite):
     try:
-        definition = flow_recording.validate_definition({**body.definition, 'timezone': 'Asia/Dubai'}, activation=False)
+        definition = flow_recording.validate_definition({**body.definition, 'version': 2, 'timezone': 'Asia/Dubai'}, activation=False)
     except (ValueError, KeyError, TypeError) as exc:
         raise HTTPException(422, str(exc)) from exc
     if len(flow_recording.canonical(definition)) > 1_000_000:
@@ -173,6 +178,38 @@ def save_revision(flow_id: int, body: RevisionWrite):
         db.execute('BEGIN IMMEDIATE')
         flows._flow_out(db, flow_id)
         flow_recordings.assert_flow_idle(db, flow_id)
+        cursor = db.execute('''INSERT INTO flow_recording_revisions(flow_id,definition_json,status,created_at)
+            VALUES (?,?,'draft',?)''', (flow_id, flow_recording.canonical(definition), datetime.now(timezone.utc).isoformat()))
+    return {'revision_id': cursor.lastrowid}
+
+
+@router.post('/{flow_id}/recordings/revisions/{revision_id}/convert-single-range')
+def convert_single_range(flow_id: int, revision_id: int, body: SingleRangeWrite):
+    with get_db() as db:
+        db.execute('BEGIN IMMEDIATE')
+        flow_recordings.assert_flow_idle(db, flow_id)
+        row = db.execute('SELECT * FROM flow_recording_revisions WHERE flow_id=? AND id=?', (flow_id, revision_id)).fetchone()
+        if not row:
+            raise HTTPException(404, 'Recording not found.')
+        definition = json.loads(row['definition_json'])
+        batch = definition.pop('date_batch', None)
+        if not isinstance(batch, dict):
+            raise HTTPException(409, 'This recording does not need single-range conversion.')
+        try:
+            parameters = definition['parameters']
+            start, end = parameters[batch['start_parameter']], parameters[batch['end_parameter']]
+            if batch['start_parameter'] == batch['end_parameter'] or start.get('step_id') == end.get('step_id'):
+                raise ValueError('Choose distinct start and end input steps.')
+            first = datetime.strptime(body.start, start.get('format', '%Y-%m-%d'))
+            last = datetime.strptime(body.end, end.get('format', '%Y-%m-%d'))
+            if first > last:
+                raise ValueError('Start date must not be after end date.')
+            start.update(mode='fixed', value=body.start, not_after=batch['end_parameter'])
+            end.update(mode='fixed', value=body.end)
+            definition.update(version=2, timezone='Asia/Dubai')
+            flow_recording.validate_definition(definition, activation=False)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(422, str(exc)) from exc
         cursor = db.execute('''INSERT INTO flow_recording_revisions(flow_id,definition_json,status,created_at)
             VALUES (?,?,'draft',?)''', (flow_id, flow_recording.canonical(definition), datetime.now(timezone.utc).isoformat()))
     return {'revision_id': cursor.lastrowid}
@@ -199,7 +236,7 @@ def activate_revision(flow_id: int, revision_id: int):
         row = db.execute("SELECT * FROM flow_recording_revisions WHERE flow_id=? AND id=? AND status='validated'", (flow_id, revision_id)).fetchone()
         if not row:
             raise HTTPException(409, 'Validate this revision successfully before activation.')
-        db.execute("UPDATE flows SET execution_method='recorded',recording_revision_id=? WHERE id=?", (revision_id, flow_id))
+        db.execute("UPDATE flows SET execution_method='recorded',recording_revision_id=?,recording_review_reason=NULL WHERE id=?", (revision_id, flow_id))
         job = flows._build_job(db, flow_id)
         try:
             from app.flow_portable import generate

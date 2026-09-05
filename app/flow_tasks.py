@@ -19,15 +19,14 @@ def task_key(export_view, period) -> str:
 
 def task_matrix(job: dict) -> list[dict]:
     if job.get('flow', {}).get('execution_method') == 'recorded':
-        from app.flow_recording import walk_steps, resolve_batches, resolve_parameters
+        from app.flow_recording import walk_steps
         definition = job.get('recording', {}).get('definition', {})
-        outputs = [step for step in walk_steps(definition.get('steps', []))
-                   if step['action'] == 'download']
-        parameters = job.get('recording_parameters') or (resolve_parameters(definition) if definition.get('date_batch') else {})
-        pairs = [(step, batch['period']) for batch in resolve_batches(definition, parameters) for step in outputs]
-        return [{'ordinal': index + 1, 'key': task_key(step['id'], period),
-                 'period': period, 'export_view': step['id'], 'download_link': None}
-                for index, (step, period) in enumerate(pairs)]
+        if 'date_batch' in definition:
+            raise ValueError('Date batching has been removed; convert and test the recording.')
+        outputs = [step for step in walk_steps(definition.get('steps', [])) if step['action'] == 'download']
+        return [{'ordinal': index + 1, 'key': task_key(step['id'], None),
+                 'period': None, 'export_view': step['id'], 'download_link': None}
+                for index, step in enumerate(outputs)]
     periods = job['downloads'].get('periods') or [None]
     report = job.get('report') or {}
     links = report.get('download_links') or []

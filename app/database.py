@@ -847,6 +847,7 @@ MIGRATIONS = [
     "ALTER TABLE flows ADD COLUMN flow_folder TEXT",
     "ALTER TABLE flows ADD COLUMN execution_method TEXT NOT NULL DEFAULT 'catalog'",
     "ALTER TABLE flows ADD COLUMN recording_revision_id INTEGER",
+    "ALTER TABLE flows ADD COLUMN recording_review_reason TEXT",
     """CREATE TABLE IF NOT EXISTS flow_recording_revisions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         flow_id INTEGER NOT NULL REFERENCES flows(id),
@@ -1949,6 +1950,8 @@ def init_db():
     initialize_freshness_data(conn)
     from app.time_policy_migration import initialize_time_policy
     initialize_time_policy(conn)
+    from app.recording_v2_migration import initialize_recording_v2
+    initialize_recording_v2(conn)
     # Old query-change actions were attached only to a deduplicated source and
     # cannot be mapped reliably to the report table whose M expression changed.
     # Any v2 action has at least one query_versions row, so this cleanup is safe

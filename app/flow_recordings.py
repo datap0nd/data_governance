@@ -95,7 +95,7 @@ def queue_operation(db, flow_id, operation, actor, *, revision_id=None):
     assert_resource_unlocked(db, 'flow', str(flow_id))
     site = dict(db.execute('SELECT * FROM flow_sites WHERE id=?', (flow['site_id'],)).fetchone())
     job = {'schema_version': 1, 'job_type': 'catalog_scan', 'recording_operation': operation,
-           'recording_flow_id': flow_id, 'recorder_controls': 1, 'execution': {'browser_mode': 'headed', 'browser_channel': flow_browser.configured(db)}, 'browser_channel': flow_browser.configured(db),
+           'recording_flow_id': flow_id, 'recording_version': 2, 'recorder_controls': 1, 'execution': {'browser_mode': 'headed', 'browser_channel': flow_browser.configured(db)}, 'browser_channel': flow_browser.configured(db),
            'site': {'id': site['id'], 'name': site['name'], 'adapter': site['adapter'],
                     'auth_url': site['auth_url'], 'base_url': site['base_url']},
            'flow_folder': flow['flow_folder'], 'report_url': flows._report_out(db, flow['report_id'])['report_url']}
