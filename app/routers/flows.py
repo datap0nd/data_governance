@@ -690,7 +690,7 @@ class FlowWrite(BaseModel):
     export_filter_details: bool | None = None
     excel_trim: str = "none"
     browser_mode: str = "headless"
-    download_parallelism: int | None = Field(default=None, ge=1, le=5, strict=True)
+    download_parallelism: int | None = Field(default=None, ge=1, le=flow_capacity.MAX_SLOTS, strict=True)
     start_week: str | None = None
     end_week: str | None = None
     target_folder: str | None = Field(default=None, max_length=2000)

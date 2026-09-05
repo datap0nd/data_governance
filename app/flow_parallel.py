@@ -15,6 +15,7 @@ from pathlib import Path
 from fastapi import HTTPException
 
 from app import flow_capacity, flow_paths, flow_tasks
+from app.flow_limits import MAX_SLOTS, DEFAULT_PORTAL_CAPACITY
 
 LEASE_SECONDS = 90
 TASK_ACTIVE = ('claimed', 'cancelling')
@@ -56,9 +57,9 @@ def _event(db, run_id, stage, message, details=None):
 
 def portal_limit(db, site_id) -> int:
     try:
-        return max(1, min(5, int(flow_paths.setting(db, f'flows_portal_capacity:{site_id}', '5'))))
+        return max(1, min(MAX_SLOTS, int(flow_paths.setting(db, f'flows_portal_capacity:{site_id}', str(DEFAULT_PORTAL_CAPACITY)))))
     except (ValueError, TypeError):
-        return 5
+        return DEFAULT_PORTAL_CAPACITY
 
 
 def portal_available(db, job, *, existing_worker=None) -> bool:
