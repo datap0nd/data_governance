@@ -1,6 +1,6 @@
 # Automatic Flow files: test report
 
-[Plan](test-plan.md). Evidence cutoff: 2026-09-06 16:20 UTC, before GitHub CI. Runtime/UI code revision: `3d20e74b312f9b2ccdc4d93dc42efc046a1f75a0`. Updated regression assertions: `dea773e66ff12d0744dbd6be582b00789620838f` (tests only). The subsequent documentation commit changes no execution code.
+[Plan](test-plan.md) · [PR #80 and subsequent CI evidence](https://github.com/datap0nd/data_governance/pull/80). Evidence cutoff: 2026-09-06 UTC, before completed GitHub CI results. Runtime/UI code revision: `3d20e74b312f9b2ccdc4d93dc42efc046a1f75a0`. Updated regression assertions: `dea773e66ff12d0744dbd6be582b00789620838f` (tests only). The subsequent documentation commit changes no execution code.
 
 Environment: Windows 11 ARM64, Python 3.13.15, pytest 8.3.5, Node 24.19.0, Playwright 1.62.0. All 22 Node suites and `node --check app/static/app.js` passed. Targeted handover tests: 11 passed in 5.57s. Auto-update lifecycle plus earlier 9 handover tests: 72 passed, 1 pre-existing Starlette/httpx deprecation warning, 60.82s.
 
