@@ -36,6 +36,7 @@ SUPPORTED_ATTACHMENT_EXTENSIONS = (
 )
 SUPPORTED_ATTACHMENT_EXTENSION_SET = frozenset(SUPPORTED_ATTACHMENT_EXTENSIONS)
 _SCRIPT = Path(__file__).resolve().parent.parent / "tools" / "outlook_flow_attachment.ps1"
+_EMBEDDED_SCRIPT = None  # Filled by the portable source builder, never from user input.
 _IDENTITY_PART_SEPARATOR = "\x1f"
 _TASK_SAFE = re.compile(r"[^A-Za-z0-9_.-]+")
 
@@ -80,7 +81,7 @@ def acquire_attachment(
     """
     if platform.system() != "Windows":
         raise OutlookAcquisitionError("Outlook attachment acquisition is only available on Windows.")
-    if not _SCRIPT.is_file():
+    if _EMBEDDED_SCRIPT is None and not _SCRIPT.is_file():
         raise OutlookAcquisitionError(f"Outlook acquisition helper is missing: {_SCRIPT}")
     needle = str(subject_contains or "").strip()
     if not needle:
@@ -89,6 +90,11 @@ def acquire_attachment(
     exchange_dir = Path(profile_dir).resolve() / "outlook_downloads" / f"run-{int(run_id)}"
     staging_dir = exchange_dir / "staging"
     staging_dir.mkdir(parents=True, exist_ok=True)
+    helper = _SCRIPT
+    if _EMBEDDED_SCRIPT is not None:
+        helper = exchange_dir / 'outlook_flow_attachment.ps1'
+        with helper.open('x', encoding='utf-8-sig') as handle:
+            handle.write(_EMBEDDED_SCRIPT)
     request_path = exchange_dir / "request.json"
     result_path = exchange_dir / "result.json"
     launcher_path = exchange_dir / "launch.ps1"
@@ -110,7 +116,7 @@ def acquire_attachment(
     # put the longer repository/request/result paths into a per-run launcher.
     ps_literal = lambda value: str(value).replace("'", "''")
     launcher_path.write_text(
-        "& '" + ps_literal(_SCRIPT) + "' "
+        "& '" + ps_literal(helper) + "' "
         "-RequestPath '" + ps_literal(request_path) + "' "
         "-ResultPath '" + ps_literal(result_path) + "'\n"
         "exit $LASTEXITCODE\n",

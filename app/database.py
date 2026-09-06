@@ -1979,11 +1979,24 @@ def get_db():
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
     conn.execute("PRAGMA foreign_keys = ON")
+    # Observe table names only, never SQL text/values. Mirrors run after a
+    # successful commit and cannot change the database transaction outcome.
+    from app.flow_handover import TABLES, after_commit
+    changed = set()
+    def observe(action, table, column, database, trigger):
+        if action in (sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE) and table in TABLES:
+            changed.add(table)
+        return sqlite3.SQLITE_OK
+    conn.set_authorizer(observe)
+    committed = False
     try:
         yield conn
         conn.commit()
+        committed = True
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
+    if committed and changed:
+        after_commit(DB_PATH)

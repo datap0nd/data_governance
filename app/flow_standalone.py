@@ -35,7 +35,7 @@ def freeze(job: dict) -> dict:
     frozen.get('outlook_source', {})['force_reprocess'] = True
     frozen.get('local_file', {}).pop('previous_identity', None)
     frozen.get('outlook_source', {}).pop('last_processed_identity', None)
-    forbidden = {'password', 'passwd', 'cookie', 'cookies', 'authorization', 'credentials', 'access_token', 'refresh_token', 'client_secret', 'api_key'}
+    forbidden = {'password', 'passwd', 'cookie', 'cookies', 'authorization', 'credentials', 'access_token', 'refresh_token', 'client_secret', 'api_key', 'token'}
     def check(value):
         if isinstance(value, dict):
             for key, item in value.items():
@@ -77,9 +77,12 @@ def _atomic_text(path: Path, content: str):
 
 
 def generate(job: dict, *, code_dir: Path | None = None) -> dict:
-    if job.get('flow', {}).get('execution_method') == 'recorded':
-        from app.flow_portable import generate as generate_portable
-        return generate_portable(job)
+    from app.flow_portable import generate as generate_portable
+    return generate_portable(job)
+
+
+def generate_installed_launcher(job: dict, *, code_dir: Path | None = None) -> dict:
+    """Compatibility helper for old installed-code bundles."""
     from app import flow_layout, flow_paths
     flow_paths.assert_job_paths(job)
     folder = (job.get('paths') or {}).get('flow_folder')
@@ -120,7 +123,7 @@ def status(job: dict) -> dict:
         stored = read_manifest(folder, job['flow']['id']).get('standalone') or {}
         path = Path(folder) / 'Scripts' / 'run_flow.py'
         _regular(path)
-        if stored.get('kind') == 'portable_recorded':
+        if str(stored.get('kind', '')).startswith('portable_'):
             from app.flow_portable import configuration_hash
             valid = path.is_file() and hashlib.sha256(path.read_text(encoding='utf-8').encode()).hexdigest() == stored.get('launcher_hash')
             current = valid and stored.get('config_hash') == configuration_hash(job)
@@ -188,6 +191,30 @@ def run(job: dict, *, sql: bool | None = None, headed: bool | None = None, no_tr
         except Exception as exc:
             progress('failed', {'stage': 'failed', 'message': str(exc)}, state.get('artifacts'), state.get('timings'))
             raise
+
+
+def offline_main(job: dict, argv=None) -> int:
+    """Entry point embedded in catalog/file/Outlook scripts; never opens a DB."""
+    parser = argparse.ArgumentParser(description='Run the saved Flow without Metronome; see README.md beside this script.')
+    parser.add_argument('--dry-run', action='store_true')
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument('--headed', dest='headed', action='store_true', default=None)
+    modes.add_argument('--headless', dest='headed', action='store_false')
+    parser.add_argument('--no-transform', action='store_true')
+    parser.add_argument('--no-sql', action='store_true')
+    args = parser.parse_args(argv)
+    if args.dry_run:
+        print(json.dumps({'flow_id': job['flow']['id'], 'source': job['flow'].get('source_type'),
+                         'sql': bool(job['sql_handoff']['enabled'] and not args.no_sql),
+                         'transform': bool(job['transformation']['enabled'] and not args.no_transform)}))
+        return 0
+    try:
+        result = run(job, sql=False if args.no_sql else None, headed=args.headed, no_transform=args.no_transform)
+        print(json.dumps({key: value for key, value in result.items() if key != 'artifacts'}))
+        return 0
+    except Exception as exc:
+        print(f'Standalone Flow failed: {exc}', file=sys.stderr)
+        return 1
 
 
 def main(argv=None, *, bundle: Path | None = None) -> int:

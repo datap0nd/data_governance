@@ -777,6 +777,9 @@ def _run_optional_startup_step(name: str, function, *, default=None):
 async def lifespan(app):
     logging.getLogger(__name__).info("Database path: %s", DB_PATH)
     init_db()
+    import asyncio
+    from app.flow_handover import after_commit as refresh_flow_files
+    await asyncio.to_thread(refresh_flow_files, DB_PATH)
     from app.pipeline_insights_db import init_pipeline_insights_db
     init_pipeline_insights_db()
     startup_update_attempt = _run_optional_startup_step(

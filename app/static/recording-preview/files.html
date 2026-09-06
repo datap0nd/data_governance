@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Automatic Flow files preview</title><link rel="stylesheet" href="/static/style.css?v=57">
+<style>body{padding:24px}main{max-width:760px;margin:auto}header,nav{display:flex;gap:12px;align-items:center;flex-wrap:wrap}header h1{margin-right:auto}.settings-panel{margin-top:20px}label{display:block;margin:16px 0}input{display:block;width:100%}pre{white-space:pre-wrap;overflow-wrap:anywhere}#feedback{min-height:3em}summary{cursor:pointer}button{min-height:40px}</style>
+<main><p>Fictional preview · no files are written</p><header><h1>Regional orders</h1><details><summary>More</summary><nav><button class="btn-secondary" id="files">Flow files</button><button class="btn-secondary" id="folder">Open folder</button></nav></details></header>
+<section class="settings-panel"><label>Flow name<input id="name" value="Regional orders"></label><label>Owner<input id="owner" value="Alex · Reporting team"></label><button class="btn-primary" id="save">Save Flow</button><p id="feedback" role="status"></p></section>
+<section id="explorer" class="settings-panel" hidden><h2>Regional orders folder</h2><pre>flow.json
+Downloads/
+Scripts/
+  run_flow.py
+  README.md
+  requirements.txt
+  versions/</pre><p id="snapshot"></p><button class="btn-secondary" id="close">Close folder preview</button></section>
+<details><summary>Preview scenarios</summary><label><input type="checkbox" id="offline"> Shared folder unavailable</label></details></main>
+<script>
+const byId=id=>document.getElementById(id);let current=true;
+byId('save').onclick=()=>{current=!byId('offline').checked;byId('feedback').textContent=current?'Flow saved':'Flow saved; its files could not be updated: shared folder unavailable. Restore access and save again.';if(current)byId('snapshot').textContent=`Saved JSON: ${byId('name').value} · ${byId('owner').value}. Python and documentation updated automatically.`;};
+byId('files').onclick=()=>byId('feedback').textContent=current?'Flow files are up to date: flow.json, Scripts/run_flow.py and Scripts/README.md. Use Open folder to find them.':'Flow files: error. Restore access to the shared folder and save again.';
+byId('folder').onclick=()=>{if(byId('offline').checked){byId('feedback').textContent='Shared folder unavailable. Restore access and try again.';return;}byId('explorer').hidden=false;};
+byId('close').onclick=()=>byId('explorer').hidden=true;
+</script></html>
