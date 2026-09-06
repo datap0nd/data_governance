@@ -7,7 +7,7 @@ from datetime import datetime, timezone, timedelta
 
 from fastapi import HTTPException
 
-from app import flow_recording, flow_browser
+from app import flow_recording, flow_browser, flow_recording_timing, flow_recording_diagnostics
 
 
 STARTUP_TIMEOUT_SECONDS = 120
@@ -28,6 +28,8 @@ def fail_queued_operation(db, scan_id, message, now):
         SET status='failed',error=?,progress_json=?,finished_at=? WHERE id=? AND status='queued'""",
         (message, json.dumps(progress), now.isoformat(), scan_id))
     if changed.rowcount:
+        db.execute('''INSERT INTO flow_scan_events(scan_id,status,stage,message,details_json,created_at)
+            VALUES (?,'failed',?,?,?,?)''', (scan_id, progress['stage'], message, json.dumps(progress), now.isoformat()))
         db.execute("""UPDATE flow_recording_revisions SET status='draft'
             WHERE id=(SELECT revision_id FROM flow_recording_sessions WHERE scan_id=?) AND status='validating'""", (scan_id,))
     return bool(changed.rowcount)
@@ -97,6 +99,9 @@ def reap(db, *, restarted_worker=None, timeout_seconds=180):
             continue
         message = 'The recording worker restarted or its reservation expired. Start a new session.'
         db.execute("UPDATE flow_catalog_scans SET status='failed',error=?,finished_at=? WHERE id=?", (message,now.isoformat(),row['id']))
+        db.execute('''INSERT INTO flow_scan_events(scan_id,status,stage,message,details_json,created_at)
+            VALUES (?,'failed','worker_lost',?,?,?)''', (row['id'], message,
+                json.dumps({'stage': 'worker_lost', 'message': message}), now.isoformat()))
         db.execute("UPDATE flow_recording_revisions SET status='draft' WHERE id=(SELECT revision_id FROM flow_recording_sessions WHERE scan_id=?) AND status='validating'", (row['id'],))
         # Fence the old process until a new PID registers. A late result cannot
         # resurrect this terminal session or claim another profile operation.
@@ -128,6 +133,7 @@ def config_hash(job, *, legacy=False):
     # compatibility attribute tested independently when changing it.
     clean.get('execution', {}).pop('worker_id', None)
     clean.get('execution', {}).pop('browser_channel', None)
+    clean.get('execution', {}).pop('recording_wait_seconds', None)
     clean.get('downloads', {}).pop('network_replay', None)
     # Source bytes are checked separately; importing a script changes its path.
     if not legacy:
@@ -142,6 +148,7 @@ def config_hash(job, *, legacy=False):
 
 def attach_job(db, flow, job, *, allow_draft=False):
     job['execution']['download_parallelism'] = 1
+    job['execution']['recording_wait_seconds'] = flow_recording_timing.configured(db)
     job['downloads']['network_replay'] = False
     for key in ('asap_download_type', 'export_report_title', 'export_filter_details'):
         job['downloads'].pop(key, None)
@@ -200,6 +207,7 @@ def queue_operation(db, flow_id, operation, actor, *, revision_id=None, pending_
         from app.flow_portable import freeze_transformation, execution_hash
         snapshot['flow']['execution_method'] = 'recorded'
         snapshot['execution']['download_parallelism'] = 1
+        snapshot['execution']['recording_wait_seconds'] = flow_recording_timing.configured(db)
         snapshot['downloads']['network_replay'] = False
         for key in ('asap_download_type', 'export_report_title', 'export_filter_details'):
             snapshot['downloads'].pop(key, None)
@@ -266,6 +274,10 @@ def update_operation(db, row, worker_id, body, now):
     # Completion/heartbeat messages omit per-step detail. Retain the last
     # accumulated outcomes so the visual review remains useful after testing.
     progress = dict(body.progress)
+    if 'diagnostic' in progress:
+        frozen = json.loads(row['job_json'])
+        definition = ((frozen.get('validation_job') or {}).get('recording') or {}).get('definition')
+        progress['diagnostic'] = flow_recording_diagnostics.sanitize_diagnostic(progress['diagnostic'], definition)
     outcomes = dict(json.loads(row['progress_json'] or '{}').get('step_outcomes') or {})
     outcomes.update(progress.get('step_outcomes') or {})
     if body.status == 'cancelled':

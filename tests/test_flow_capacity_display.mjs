@@ -20,7 +20,7 @@ assert.match(html, /Start visible workers/);
 const controls = {
     '#flow-capacity-form':{}, '#flow-capacity-start':{}, '#flow-capacity-start-headed':{},
     '#flow-headless-capacity':{value:'2'}, '#flow-headed-capacity':{value:'3'}, '#flow-capacity-result':{},
-    '#flow-browser-channel':{value:'chrome'}, '#flow-total-capacity':{value:'16'},
+    '#flow-browser-channel':{value:'chrome'}, '#flow-recording-wait':{value:'20'}, '#flow-total-capacity':{value:'16'},
 };
 const calls=[];
 Object.assign(context, {$:id=>controls[id], document:{querySelectorAll:()=>[]}, toast:()=>{}, navigate:async()=>{}, currentPage:'flow-settings',
@@ -29,6 +29,9 @@ context.bindFlowSettingsPage();
 await controls['#flow-capacity-form'].onsubmit({preventDefault(){}, currentTarget:{querySelector:()=>({})}});
 assert.equal(calls[0][1].total_capacity,16); assert.equal(calls[0][1].headless_capacity,2); assert.equal(calls[0][1].headed_capacity,3);
 assert.equal(calls[0][1].browser_channel,'chrome');
+assert.equal(calls[0][1].recording_wait_seconds,20);
+assert.match(html, /Default wait before each action/);
+assert.match(html, /id="flow-recording-wait"[^>]*min="1"[^>]*max="600"[^>]*value="10"/);
 assert.match(html, /Google Chrome/); assert.match(html, /Microsoft Edge/);
 await controls['#flow-capacity-start-headed'].onclick({currentTarget:{}});
 assert.equal(calls[1][0],'/api/system/flows/start?mode=headed');

@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app import flow_recording
+from app import flow_recording_diagnostics as diagnostics
+from app import flow_recording_pacing
 
 
 def _value(value):
@@ -39,6 +41,32 @@ def locate(pages, target):
     return node
 
 
+def observe_target(node, step):
+    """Best-effort structural evidence; never collect values or page contents."""
+    result = {'page': step['page'], 'recorded_locator': step.get('locator', []),
+              'frame_locator': [part for part in step.get('locator', [])
+                                if part['method'] in {'frame_locator', 'content_frame'}]}
+    if not step.get('locator'):
+        return result
+    try:
+        count = node.count()
+        result['match_count'] = count
+        if count == 1:
+            observed = node.evaluate('''el => {
+                const box = el.getBoundingClientRect(), style = getComputedStyle(el);
+                const visible = box.width > 0 && box.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+                const enabled = !el.disabled && el.getAttribute('aria-disabled') !== 'true';
+                return {element_id: el.id, visible_count: Number(visible), enabled_count: Number(enabled),
+                    candidates: [{tag: el.tagName.toLowerCase(), role: el.getAttribute('role'), visible, enabled,
+                        selected: el.getAttribute('aria-selected'), checked: el.getAttribute('aria-checked')}]};
+            }''', timeout=1000)
+            result.update(observed)
+    except Exception:
+        # A detached frame or unavailable diagnostic must not change execution.
+        pass
+    return result
+
+
 def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifacts):
     from playwright.sync_api import expect
     from app import flow_worker
@@ -54,15 +82,38 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
     staging.mkdir(parents=True, exist_ok=True)
 
     outcomes = {}
+    pacing = flow_recording_pacing.Pacing(job)
+    previous_step = None
+    step_started = {}
 
     def notify(step, message, **extra):
         outcomes[step['id']] = {'outcome': extra.get('outcome'), 'message': message,
-                                'failure_reason': extra.get('failure_reason')}
+                                'failure_reason': extra.get('failure_reason'),
+                                'confirmation': extra.get('confirmation'),
+                                **{key: extra[key] for key in ('remaining_seconds', 'effective_wait_seconds') if key in extra}}
+        detail = {'version': 1, 'action_label': diagnostics.action_label(step),
+                  'phase': extra.get('outcome', 'running'),
+                  'duration_ms': round((time.monotonic() - step_started.get(step['id'], time.monotonic())) * 1000),
+                  **extra.pop('diagnostic', {})}
+        if previous_step:
+            detail.update(prior_step_id=previous_step['id'], prior_action_label=diagnostics.action_label(previous_step))
+        extra['diagnostic'] = diagnostics.sanitize_diagnostic(detail, definition)
         progress('running', {'stage': 'recorded_action', 'message': message,
                  'step_id': step['id'], 'revision': job['recording']['revision'],
-                 'action': step['action'], 'attempt': 1, 'expected_outcome': 'action completed',
+                 'action': step['action'], 'attempt': 1,
                  'step_outcomes': copy.deepcopy(outcomes),
                  **extra}, artifacts)
+
+    def buffer(step, timing):
+        seconds = timing['waited_seconds']
+        if not seconds:
+            return
+        label = diagnostics.action_label(step)
+        flow_recording_pacing.wait(seconds, lambda remaining: notify(step,
+            f'Waiting {remaining} seconds before {label}.' if remaining else f'{label}: wait finished.',
+            outcome='running', remaining_seconds=remaining,
+            effective_wait_seconds=timing['effective_seconds'],
+            diagnostic={'phase': 'wait', 'timing': timing}))
 
     def read_defaults(*, final=False):
         for name, parameter in definition.get('parameters', {}).items():
@@ -92,19 +143,18 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
     active_step = None
 
     def execute(steps):
-        nonlocal output_index, active_step
+        nonlocal output_index, active_step, previous_step
         for step in steps:
             active_step = step
             action = step['action']
-            notify(step, f"{step['id']}: {action}", outcome='started')
+            step_started[step['id']] = time.monotonic()
+            label = diagnostics.action_label(step)
+            notify(step, f'{label}: starting.', outcome='started')
             if action == 'wait':
-                deadline = time.monotonic() + step['seconds']
-                heartbeat = 0
-                while time.monotonic() < deadline:
-                    if time.monotonic() >= heartbeat:
-                        notify(step, 'Waiting between actions.', outcome='running')
-                        heartbeat = time.monotonic() + 1
-                    time.sleep(min(0.25, max(0, deadline - time.monotonic())))
+                flow_recording_pacing.wait(step['seconds'], lambda remaining: notify(step,
+                    f'Waiting {remaining} seconds.', outcome='running', remaining_seconds=remaining,
+                    diagnostic={'phase': 'wait', 'timing': {'explicit_wait_seconds': step['seconds']}}))
+                pacing.credit += step['seconds']
                 notify(step, 'Wait completed.', outcome='completed')
                 continue
             if action == 'new_page':
@@ -112,7 +162,18 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
                 pages[step['page']] = page if len(pages) == 1 and step['page'] == 'page' else page.context.new_page()
                 notify(step, 'Page opened.', outcome='completed')
                 continue
+            retain_default = any(parameter.get('step_id') == step['id'] and parameters.get(name) is None
+                                 for name, parameter in definition.get('parameters', {}).items())
+            timing = {}
+            if action in flow_recording.ACTIONS and not retain_default:
+                timing = pacing.interaction(step)
+                # Buffer before any target-dependent read, not just dispatch:
+                # an input may itself be created during the requested pause.
+                buffer(step, timing)
             node = locate(pages, step)
+            if timing:
+                notify(step, f'{label}: sending action.', outcome='running', diagnostic={
+                    'phase': 'action_target', 'target': observe_target(node, step), 'timing': timing})
             if action in {'fill', 'press_sequentially'} and node.get_attribute('type') == 'password':
                 raise RuntimeError('Authentication values cannot be replayed or exported in a recorded Flow.')
             args, kwargs = copy.deepcopy(step.get('args', [])), _value(step.get('kwargs', {}))
@@ -144,7 +205,10 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
                     if parameter.get('target') and not parameter.get('step_id') and parameters.get(name) is not None:
                         raise ValueError('Fixed/calculated parameters require a recorded step before report generation.')
                 files_before = flow_worker._download_staging_snapshot(staging)
-                with pages[step['page']].expect_download(timeout=1_800_000) as pending:
+                event_timeout = 1_800_000 + pacing.event_budget_ms(step['steps'])
+                notify(step, 'Waiting for download.', outcome='running', diagnostic={
+                    'phase': 'event_listener', 'timing': {'event_timeout_ms': event_timeout}})
+                with pages[step['page']].expect_download(timeout=event_timeout) as pending:
                     execute(step['steps'])
                     active_step = step
                 download = pending.value
@@ -160,7 +224,10 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
                 notify(step, 'Download completed.', outcome='completed')
                 continue
             if action == 'popup':
-                with pages[step['page']].expect_popup(timeout=120_000) as pending:
+                event_timeout = 120_000 + pacing.event_budget_ms(step['steps'])
+                notify(step, 'Waiting for popup.', outcome='running', diagnostic={
+                    'phase': 'event_listener', 'timing': {'event_timeout_ms': event_timeout}})
+                with pages[step['page']].expect_popup(timeout=event_timeout) as pending:
                     execute(step['steps'])
                     active_step = step
                 pages[step['result_page']] = pending.value
@@ -174,15 +241,36 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
             elif action == 'goto':
                 node.goto(*args, **{**kwargs, 'wait_until': 'domcontentloaded'})
             elif action in flow_recording.ACTIONS:
+                if action == 'click' and definition.get('adapter', job.get('site', {}).get('adapter')) == 'gscm_portal':
+                    from app.flow_recording_clicks import click_recorded
+                    result = click_recorded(node, step, args, kwargs, lambda detail: notify(step,
+                        f'{label}: checking result.', outcome='running', diagnostic=detail))
+                    if result is not None:
+                        notify(step, result['message'], outcome='completed', confirmation='confirmed',
+                               diagnostic={'phase': 'action_finished', 'timing': timing,
+                                           'click': {'confirmation': 'confirmed', 'dispatched': True}})
+                        previous_step = step
+                        continue
                 getattr(node, action)(*[_value(item) for item in args], **kwargs)
             else:
                 raise ValueError(f'Unsupported action {action}.')
-            notify(step, 'Action completed.', outcome='completed')
+            is_click = action in {'click', 'dblclick'}
+            notify(step, 'Click sent.' if is_click else 'Action completed.', outcome='completed',
+                   confirmation='unconfirmed' if is_click else None,
+                   diagnostic={'phase': 'action_finished', 'timing': timing,
+                               'click': {'method': 'playwright', 'dispatched': True, 'confirmation': 'unconfirmed'} if is_click else {}})
+            if action in flow_recording.ACTIONS:
+                previous_step = step
     try:
         execute(definition['steps'])
     except Exception as exc:
         if active_step:
-            notify(active_step, str(exc), outcome='failed', failure_reason='recorded_action_failed')
+            try:
+                notify(active_step, diagnostics.safe_error(exc, definition), outcome='failed', failure_reason='recorded_action_failed',
+                       diagnostic={'phase': 'action_failed', 'error_type': type(exc).__name__,
+                                   'failure_reason': 'recorded_action_failed', **getattr(exc, 'diagnostic', {})})
+            except Exception:
+                pass  # Preserve the original failure, including cancellation.
         raise
     if len(captured) != output_count:
         raise RuntimeError('The recording did not produce its complete expected output bundle.')
@@ -246,7 +334,11 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
             artifacts.append(flow_worker._decorate_artifact_storage(artifact, job, profile_dir))
             notify(step, 'Downloaded output validated.', outcome='completed')
         except Exception as exc:
-            notify(step, str(exc), outcome='failed', failure_reason='output_validation_failed')
+            try:
+                notify(step, diagnostics.safe_error(exc, definition), outcome='failed', failure_reason='output_validation_failed',
+                       diagnostic={'phase': 'output_failed', 'error_type': type(exc).__name__})
+            except Exception:
+                pass
             raise
     return artifacts
 

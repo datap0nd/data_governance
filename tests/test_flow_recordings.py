@@ -55,13 +55,16 @@ def definition(url='http://localhost/report'):
     return value
 
 
-def draft_job(url='http://localhost/report', adapter='asap_portal'):
+def draft_job(url='http://localhost/report', adapter='asap_portal', *, wait_seconds=1):
     with database.get_db() as db:
         db.execute("DELETE FROM app_settings WHERE key='flows_browser_channel'")
     site = flows.create_site(flows.SiteWrite(name='Recorded Portal', adapter=adapter, base_url=url, auth_url=url),_request())
     saved = routes.create_draft(routes.RecordingDraft(name='Portable sales',site_id=site['id'],report_url=url),_request())
     with database.get_db() as db:
         job = flows._build_job(db,saved['id'],recording_draft=True)
+    # Unrelated download/portable scenarios use the shortest supported pacing.
+    # Default-ten and elapsed-time behavior have dedicated runtime coverage.
+    job['execution']['recording_wait_seconds'] = wait_seconds
     job['recording'] = {'revision':1,'definition':definition(url),'transformation_source':None,
         'definition_hash':flow_recording.digest(definition(url)), 'engine_hash':flow_portable.execution_hash()}
     job['recording_parameters'] = flow_recording.resolve_parameters(job['recording']['definition'])

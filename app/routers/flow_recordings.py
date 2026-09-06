@@ -5,10 +5,11 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 from app.database import get_db
-from app import flow_recording, flow_recordings
+from app import flow_recording, flow_recordings, flow_recording_timing, flow_recording_diagnostics
 from app.routers import flows
 
 router = APIRouter(prefix='/api/flows', tags=['Flow recordings'])
@@ -115,7 +116,15 @@ def list_recordings(flow_id: int):
             json_extract(c.job_json,'$.cancel_requested') AS cancel_requested
             FROM flow_recording_sessions s JOIN flow_catalog_scans c ON c.id=s.scan_id
             WHERE s.flow_id=? ORDER BY c.id DESC LIMIT 10''', (flow_id,))]
-        return {'flow': flow, 'revisions': revisions, 'sessions': sessions}
+        return {'flow': flow, 'revisions': revisions, 'sessions': sessions,
+                'recording_wait_seconds': flow_recording_timing.configured(db)}
+
+
+@router.get('/{flow_id}/recordings/{scan_id}/debug', response_class=PlainTextResponse)
+def recording_debug(flow_id: int, scan_id: int):
+    with get_db() as db:
+        content = flow_recording_diagnostics.render_debug(db, flow_id, scan_id)
+    return PlainTextResponse(content, headers={'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff'})
 
 
 @router.post('/{flow_id}/recordings/start')

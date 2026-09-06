@@ -206,9 +206,31 @@ def _run_recorder(command, client, worker_id, scan_id, raw, private, zone, job, 
 
 def validate(scan, page, profile, progress):
     from app.flow_recording_runtime import execute_recorded_flow
+    from app.flow_recording_diagnostics import sanitize_diagnostic
+    from app.flow_recording_timing import for_job
+    from app import flow_worker
+    import importlib.metadata
+    import platform
     job = copy.deepcopy(scan['job']['validation_job'])
     from app.flow_portable import execution_hash
     actual_engine = execution_hash()
+    environment = {'browser_channel': job.get('execution', {}).get('browser_channel', 'not recorded'),
+        'python_version': platform.python_version(), 'engine_hash': actual_engine,
+        'revision': job.get('recording', {}).get('revision'), 'run_id': scan.get('id'),
+        'recording_wait_seconds': for_job(job)}
+    for key, read in (
+        ('browser_version', lambda: page.context.browser.version),
+        ('playwright_version', lambda: importlib.metadata.version('playwright')),
+        ('worker_version', flow_worker._code_version),
+    ):
+        try:
+            environment[key] = read()
+        except Exception:
+            environment[key] = 'not recorded'
+    # Progress is outside the optional metadata probes: cancellation or a
+    # lost reservation must still stop execution before authentication.
+    progress('running', {'stage': 'test_environment', 'message': 'Preparing recorded test.',
+        'diagnostic': sanitize_diagnostic({'version': 1, 'phase': 'environment', 'environment': environment})})
     if job.get('recording', {}).get('engine_hash') != actual_engine:
         raise RuntimeError('Update this worker to the same execution version as Metronome before testing the recording.')
     authenticate(page, job, profile, progress)
@@ -220,8 +242,16 @@ def validate(scan, page, profile, progress):
     job['downloads'].update(target_folder=str(private), output_mode='run_folders')
     job['sql_handoff']['enabled'] = False
     state = {}
+    tracing_started = False
+    execution_error = None
+    result = None
     try:
-        page.context.tracing.start(screenshots=True, snapshots=True, sources=False)
+        try:
+            page.context.tracing.start(screenshots=True, snapshots=True, sources=False)
+            tracing_started = True
+        except Exception:
+            # Optional trace capture cannot block replay or its text log.
+            pass
         execute_recorded_flow(page, job, lambda status, detail, artifacts=None, timings=None, **extra:
             progress('running', detail), profile, profile / 'downloads', run_id=scan['id'],
             register_folder=lambda _: {'ops': []}, headed=True, state=state)
@@ -230,8 +260,24 @@ def validate(scan, page, profile, progress):
                     'checksum': item.get('checksum'), 'rows': item.get('row_count'),
                     'parameters': item.get('recording_parameters'), 'defaults': item.get('recording_defaults')}
                    for item in state['artifacts'] if item.get('status') == 'saved']
-        return {'configuration_hash': scan['job']['configuration_hash'], 'outputs': outputs,
-                'trace_path': str(private / 'trace.zip'), 'sql_executed': False,
+        result = {'configuration_hash': scan['job']['configuration_hash'], 'outputs': outputs,
+                'sql_executed': False,
                 'engine_hash': actual_engine}
+        if tracing_started:
+            result['trace_path'] = str(private / 'trace.zip')
+        return result
+    except BaseException as exc:
+        execution_error = exc
+        raise
     finally:
-        page.context.tracing.stop(path=str(private / 'trace.zip'))
+        if tracing_started:
+            try:
+                page.context.tracing.stop(path=str(private / 'trace.zip'))
+            except Exception:
+                if result is not None:
+                    result.pop('trace_path', None)
+                # In particular, a browser crash may make tracing.stop fail.
+                # Never replace the recorded action's original exception.
+                if execution_error is None:
+                    progress('running', {'stage': 'diagnostics', 'message': 'Private trace was unavailable; the text log is retained.',
+                        'diagnostic': {'version': 1, 'phase': 'diagnostics', 'failure_reason': 'trace_unavailable'}})

@@ -1,0 +1,70 @@
+{
+  "captured_at": "2026-09-06T13:05:14.822513+00:00",
+  "scope": "Fictional local production-component preview; no portal, worker or screenshots.",
+  "base_revision": "51946f922a849ed3fc462e4c6f30f927703be51f",
+  "revision_note": "Working-tree UI changes; exact tested content identified by SHA-256 below.",
+  "source_sha256": {
+    "app/static/app.js": "438dc760c0de09e2b24582f5501eec4010094e30db195f0c51fcdc47b510324d",
+    "app/static/flow_recording_editor.js": "9224d24157098dc702a404d721b75502e31f5c75a554f01698fd8f400220812f",
+    "app/static/flow_recording_model.js": "3df7937d654569d7b5bf9aac0202a520b6cda4e29a4946511f8dfdf732a552fc",
+    "app/static/style.css": "94ae760e7915048e742e805a07b5e143ab5efc4fb886a471b07abe3160ad0827",
+    "app/static/recording-preview/playback.html": "395939aa90a680162bf2e9f2448d3b4daf6d00a17bf310cf5a657480226478b8",
+    "app/static/recording-preview/playback.js": "1048446261b08101059336c7acc53f8bd4d152175bd902d0668f72aa0705e7f5"
+  },
+  "browser": "152.0.7977.76",
+  "viewport_wide": {
+    "width": 1400,
+    "height": 1000
+  },
+  "recorded_labels": [
+    "Open reports.example.test",
+    "Click Setting",
+    "Click Public",
+    "Click “Run report”",
+    "Click “Download Excel”"
+  ],
+  "global_wait": {
+    "value": "10",
+    "min": "1",
+    "max": "600"
+  },
+  "default_choice": "Use default · 10 seconds",
+  "saved_setting_action": {
+    "id": "setting",
+    "action": "click",
+    "page": "page",
+    "label": "Click Setting",
+    "locator": [
+      {
+        "method": "get_by_role",
+        "args": [
+          "button"
+        ],
+        "kwargs": {
+          "name": "Setting"
+        }
+      }
+    ],
+    "args": [],
+    "kwargs": {},
+    "delay_before_seconds": 60
+  },
+  "outcome_labels": {
+    "setting": "Setting opened.",
+    "public": "Public selected.",
+    "run": "Click sent.",
+    "download": "Completed"
+  },
+  "advanced_closed": true,
+  "debug": {
+    "title": "Debug log · 2",
+    "copy_enabled": true,
+    "text_readonly": true,
+    "fake_log": "Recording test 2\nDefault wait: 10 seconds\n1. Open report page — completed\n2. Click Setting — confirmed: Setting opened.\n3. Click Public — confirmed: Public selected.\n4. Click Run report — click sent; transition unconfirmed\n5. Download Excel — completed\n"
+  },
+  "viewport_narrow": {
+    "width": 390,
+    "height": 844,
+    "no_horizontal_overflow": true
+  }
+}
