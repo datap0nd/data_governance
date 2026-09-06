@@ -7897,3 +7897,33 @@ body.remote-flow-control-enabled { padding-top: 32px; }
 }
 
 .flow-visual-dialog input:not([type=checkbox]), .flow-visual-dialog select { padding:9px 11px; border:1px solid var(--border,#d4dae2); border-radius:6px; background:var(--surface); color:inherit; font:inherit; box-sizing:border-box; }
+
+/* Recording review: one action area and a compact sequence with inline editing. */
+.flow-recording-page { max-width: 900px; margin: 0 auto; }
+.flow-recording-page h1 { font-size: 1.85rem; font-weight: 800; }
+.flow-recording-page .recording-toolbar { margin: 24px 0 16px; }
+.flow-recording-page .recording-actions { padding: 8px 0 16px; border-bottom: 1px solid var(--border); margin-bottom: 8px; }
+.flow-recording-page [data-error]:empty, .flow-recording-page [data-session]:empty { display: none; }
+.flow-recording-page [data-error] { color: var(--red); font-size: .88rem; }
+.flow-recording-page [data-save-state] { margin-left: 12px; color: var(--accent); }
+.flow-recording-page .recording-workspace { display: block; }
+.flow-recording-page .recording-sequence { width: 100%; }
+.flow-recording-page .recording-card { margin: 0; border-radius: 0; min-height: 48px; }
+.flow-recording-page .recording-gap { height: 8px; opacity: 0; }
+.flow-recording-page .recording-gap:focus-within, .flow-recording-page .recording-gap:hover { opacity: 1; }
+.flow-recording-page .recording-drag { display: none; }
+.flow-recording-page .recording-details { position: static; width: auto; margin: 0; border-radius: 0; }
+.flow-recording-page .recording-details[hidden] { display: none; }
+.flow-recording-page [data-check]:not(:empty) { padding: 16px; margin-top: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
+.flow-recording-page [data-check] label { display: block; margin: 8px 0; }
+.flow-recording-page [data-check] input,.flow-recording-page [data-check] select { width: 100%; }
+.flow-recording-page [data-state] { display: block; margin: 4px 0 0; }
+@media(max-width:760px) { .flow-recording-page .recording-actions>button { margin-bottom: 8px; } }
+.flow-recording-page [hidden] { display: none !important; }
+.flow-recording-page { padding: 16px; }
+.flow-recording-page .btn-secondary { background: var(--surface); border: 1px solid var(--border); color: var(--text-secondary); }
+.flow-recording-page .btn-secondary:hover { background: var(--surface-hover); }
+.flow-recording-page [data-state] { background: none; padding: 0; font-size: .88rem; }
+.flow-recording-page .recording-card { padding: 6px 12px; gap: 12px; }
+.flow-recording-page .recording-card-title { padding: 8px 0; min-height: 0; }
+.flow-recording-page .recording-gap { height: 4px; }

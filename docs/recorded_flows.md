@@ -20,43 +20,35 @@ work PC before comparing success rates.
 ## Authoring
 
 Choose **Create flow → Record a portal flow**, select ASAP or GSCM and optionally
-supply a known report URL. A successful catalog scan is not required. Existing
-ASAP/GSCM Flows also have an execution method and **Record / review flow**.
-GSCM offers **Download bookmark** or **Recorded flow**. Migration is explicit;
-existing Flows retain catalog/bookmark execution.
+supply a known report URL. A successful catalog scan is not required. In Edit
+Flow, **Record my actions** is the default for new ASAP/GSCM flows; **Use detected
+controls** remains available. Existing flows retain their method.
 
-1. Create the disabled draft in its normal managed source folder.
-2. Select **Record flow**. Metronome starts one capable visible worker, signs
-   into the portal and opens the configured starting page in Playwright.
-   It does not start the whole headed pool. Worker consoles stay hidden;
-   diagnostics go to `worker-console.log` in that worker's profile folder.
-3. Interact with one report and its downloads. Record assertions on the report
-   title and its loading/result indicator where useful. Wait for every required
-   download to complete, then click **Finish recording in Metronome**. This
-   closes Chrome/Edge and the Inspector and imports the saved steps.
-   Playwright's red square only pauses recording. Closing just Chrome may
-   leave the Inspector open; Finish recording still closes that session.
-4. Review the numbered cards. Select a card to see **Action** and **Options**;
-   selectors, frame details, completion signals and schema checks are under
-   **Advanced**. One captured download appears on its triggering action, with
-   a Download badge. Compound event groups expand without separating listeners.
-5. Rename a step, remove it, move it with its drag handle or Move up/Move down,
-   or use **+** between cards to insert a Wait (default five seconds, 1–600).
-   **Undo** restores the previous edit. Invalid page dependencies block movement.
-6. For dates, select the input card and choose recorded value, fixed date,
-   portal default or a calculated date. Portal default omits the write and logs
-   the value. All calendar calculations use the application time policy.
-7. Confirm the report title. A unique recorded assertion can suggest it; ambiguous
-   evidence needs **Choose report title**. The test verifies the chosen identity.
-   If the completion check is unresolved, choose its generation action and signal.
-   A wait or clickable button does not establish report freshness.
-8. **Save** keeps a draft. **Test flow** saves pending edits and tests that exact
-   saved version. Running/completed/failed cards show test progress. Editing after
-   a successful test requires another test. Polling preserves selection and edits.
-9. **Enable schedule** selects the tested version and enables the existing saved
-   schedule. For a manual-only flow, choose its schedule in **Pipeline and schedule**.
-   The existing active version stays selected until explicitly replaced. Saved
-   immutable versions remain available under **History**, not in the main editor.
+1. Open **Review recording** from Edit Flow. It opens a full-page view and keeps
+   your pending setup intact. **Back to Edit Flow** returns to those values.
+2. **Start recording** opens the existing Playwright recorder on one capable
+   visible worker. Complete sign-in, open the report, run it and download the
+   required files. **Finish recording** imports the actions. Playwright's red
+   square only pauses capture.
+3. Review the short step list. Click a step to edit it inline. Undo and movement
+   controls stay with the selected step; selectors and frame diagnostics remain
+   under Advanced. Date and download options use the existing execution engine.
+4. **Save draft** preserves incomplete recordings. **Test recording** asks only
+   for missing essential report/ready information, then saves and tests the exact
+   recording with the pending Edit Flow settings. Progress and errors appear
+   beside the actions. Polling preserves edits and selection.
+5. After success, choose **Back to Edit Flow → Save**. Settings and the selected
+   tested revision apply atomically. Testing alone neither activates the recording
+   nor enables scheduling. Output or execution edits require retesting;
+   scheduling-only changes do not.
+6. **More → Saved versions** opens preserved revisions; **Record again** creates
+   a replacement draft. Failed tests and abandoned edits keep the active version.
+   An identical draft save preserves existing evidence. Retesting a validated
+   version uses a new revision so failure cannot invalidate its active evidence.
+
+Use the [release test plan](testing/releases/2026-09-06-intuitive-recording/test-plan.md)
+and [report](testing/releases/2026-09-06-intuitive-recording/test-report.md) for
+verification and the explicit remaining live checks.
 
 Validation runs the downloads and configured Python transformation in a private
 folder. It does not publish production files or execute SQL. Trace evidence is

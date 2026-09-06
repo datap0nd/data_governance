@@ -45,7 +45,7 @@ def assert_flow_idle(db, flow_id):
         raise HTTPException(409, 'Finish or cancel the active recording/validation before changing this Flow.')
 
 
-def config_hash(job):
+def config_hash(job, *, legacy=False):
     clean = copy.deepcopy(job)
     for key in ('recording', 'recording_parameters', 'resume', 'sql_retry', 'job_type'):
         clean.pop(key, None)
@@ -54,6 +54,10 @@ def config_hash(job):
     clean.get('execution', {}).pop('worker_id', None)
     clean.get('execution', {}).pop('browser_channel', None)
     clean.get('downloads', {}).pop('network_replay', None)
+    # Source bytes are checked separately; importing a script changes its path.
+    if not legacy:
+        clean.get('transformation', {}).pop('script_path', None)
+        clean.get('paths', {}).pop('scripts_folder', None)
     clean.pop('outlook_source', None)
     clean.pop('local_file', None)
     clean.get('report', {}).pop('automation', None)
@@ -66,12 +70,20 @@ def attach_job(db, flow, job, *, allow_draft=False):
     job['downloads']['network_replay'] = False
     for key in ('asap_download_type', 'export_report_title', 'export_filter_details'):
         job['downloads'].pop(key, None)
+    if allow_draft:
+        # A validation snapshot must not consult the active version's evidence.
+        return
     revision = db.execute('SELECT * FROM flow_recording_revisions WHERE id=? AND flow_id=?',
                           (flow.get('recording_revision_id'), flow['id'])).fetchone()
-    if not revision or revision['status'] != 'validated' or revision['config_hash'] != config_hash(job):
-        if allow_draft:
-            return
+    if not revision or revision['status'] != 'validated' or revision['config_hash'] not in {config_hash(job), config_hash(job, legacy=True)}:
         raise HTTPException(409, 'Record and validate this Flow configuration before running or enabling it.')
+    from app.flow_portable import freeze_transformation
+    try:
+        source = freeze_transformation(job)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+    if revision['transformation_source'] != source:
+        raise HTTPException(409, 'The transformation changed. Test this recording again before saving.')
     definition = flow_recording.validate_definition(json.loads(revision['definition_json']))
     from app.flow_portable import execution_hash
     engine_hash = json.loads(revision['evidence_json'] or '{}').get('engine_hash')
@@ -83,7 +95,7 @@ def attach_job(db, flow, job, *, allow_draft=False):
     job['recording_parameters'] = flow_recording.resolve_parameters(definition)
 
 
-def queue_operation(db, flow_id, operation, actor, *, revision_id=None):
+def queue_operation(db, flow_id, operation, actor, *, revision_id=None, pending_settings=None):
     from app.routers import flows
     assert_flow_idle(db, flow_id)
     flow = flows._flow_out(db, flow_id)
@@ -104,7 +116,7 @@ def queue_operation(db, flow_id, operation, actor, *, revision_id=None):
         if not row:
             raise HTTPException(404, 'Recording revision not found.')
         definition = flow_recording.validate_definition(json.loads(row['definition_json']))
-        snapshot = flows._build_job(db, flow_id, recording_draft=True)
+        snapshot = flows._build_job(db, flow_id, recording_draft=True, pending_settings=pending_settings)
         from app.flow_portable import freeze_transformation, execution_hash
         snapshot['flow']['execution_method'] = 'recorded'
         snapshot['execution']['download_parallelism'] = 1
@@ -112,10 +124,12 @@ def queue_operation(db, flow_id, operation, actor, *, revision_id=None):
         for key in ('asap_download_type', 'export_report_title', 'export_filter_details'):
             snapshot['downloads'].pop(key, None)
         transform = freeze_transformation(snapshot)
-        if row['status'] == 'validated' and (row['config_hash'] != config_hash(snapshot)
-                or row['transformation_source'] != transform
-                or json.loads(row['evidence_json'] or '{}').get('engine_hash') != execution_hash()):
-            raise HTTPException(409, 'The configuration or execution core changed. Save a new reviewed revision before validation.')
+        if row['status'] == 'validated':
+            # Never invalidate evidence held by an active/running version.
+            cursor = db.execute("""INSERT INTO flow_recording_revisions
+                (flow_id,definition_json,status,created_at) VALUES (?,?,'draft',?)""",
+                (flow_id, row['definition_json'], datetime.now(timezone.utc).isoformat()))
+            revision_id = cursor.lastrowid
         snapshot['recording'] = {'revision': revision_id, 'definition': definition,
                                   'definition_hash': flow_recording.digest(definition), 'transformation_source': transform, 'engine_hash': execution_hash()}
         snapshot['recording_parameters'] = flow_recording.resolve_parameters(definition)

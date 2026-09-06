@@ -11388,7 +11388,7 @@ function _flowBuilderHtml(catalog, existing = null) {
                     <div class="flow-form-section">
                         <div class="flow-section-head"><h2>Source and report</h2><p>${isGscm ? "Choose a GSCM bookmark. It already holds the filters you saved in GSCM." : "Choose an enabled catalog report and its configured filters."}</p></div>
                         <div class="flow-form-grid">
-                            ${(isGscm || isAsap) ? `<label><span>Execution method</span><select id="flow-execution-method"><option value="catalog" ${existing?.execution_method !== 'recorded' ? 'selected' : ''}>${isGscm ? 'Download bookmark' : 'Catalog automation'}</option><option value="recorded" ${existing?.execution_method === 'recorded' ? 'selected' : ''}>Recorded flow</option></select></label><div>${existing?.id ? '<button type="button" class="btn-secondary" id="flow-record-review">Record / review flow</button>' : '<small>Save the draft to open the recorder.</small>'}</div>` : ''}
+                            ${(isGscm || isAsap) ? `<label><span>Execution method</span><select id="flow-execution-method"><option value="catalog" ${existing?.execution_method === 'catalog' ? 'selected' : ''}>Use detected controls</option><option value="recorded" ${existing?.execution_method !== 'catalog' ? 'selected' : ''}>Record my actions</option></select></label><div>${existing?.id ? '<button type="button" class="btn-secondary" id="flow-record-review">Review recording</button>' : '<small>Save the draft to open the recorder.</small>'}</div>` : ''}
                             <label><span>Flow name</span><input id="flow-name" required maxlength="200" value="${esc(existing?.name || "")}" placeholder="Weekly report download"></label>
                             <label><span>Website</span><select id="flow-site" required>${sites.length ? sites.map(site => `<option value="${site.id}" ${String(site.id) === String(siteId) ? "selected" : ""}>${esc(site.name)}</option>`).join("") : '<option value="">Add a website first</option>'}</select></label>
                             <label class="flow-span-2"><span>${isGscm ? "Bookmark" : "Report"}</span><div class="flow-file-control"><select id="flow-report" required>${_flowReportOptions(catalog, siteId, reportId)}</select><button type="button" class="btn-secondary" id="flow-scan-report-now">${isGscm ? "Rescan bookmark" : "Scan report"}</button></div><small id="flow-report-scan-status">${isGscm ? "Rescan to confirm this bookmark is still on the GSCM home screen." : "Scan this report to discover its filters and options without running a full catalog scan."}</small></label>
@@ -11650,7 +11650,11 @@ async function renderFlows() {
         <div id="flow-workspace" role="tabpanel" aria-labelledby="flow-tab-list">${_flowListHtml(flows, workers, catalog, runs)}</div>`;
 }
 
+window._flowBuilderDrafts = new Map();
 function _flowShowView(view, payload = null) {
+    const outgoing=document.getElementById('flow-builder-form');
+    if(outgoing){try{const values=_flowCollectBuilder();window._flowBuilderDrafts.set(Number(outgoing.dataset.id)||'new',values);}catch(_){}}
+    if(view==='builder'&&payload?.id&&payload===window._flowsState?.flows?.find(f=>f.id===payload.id)&&window._flowBuilderDrafts.has(payload.id))payload={...payload,...window._flowBuilderDrafts.get(payload.id)};
     _flowStopActivityMonitor();
     const state = window._flowsState;
     state.view = view;
@@ -11924,6 +11928,8 @@ function _flowSiteDialog(site = null) {
     };
 }
 
+window._flowRecordingSelections = new Map();
+window._flowAcceptRecording = (id, revision) => window._flowRecordingSelections.set(id, revision);
 function _flowCollectBuilder() {
     const form = $("#flow-builder-form");
     const scheduleType = $("#flow-schedule-type").value;
@@ -12000,7 +12006,7 @@ function _flowCollectBuilder() {
     const titleControl = $("#flow-export-report-title");
     const filterDetailsControl = $("#flow-export-filter-details");
     return {
-        ...shared, execution_method: $("#flow-execution-method")?.value || "catalog", source_type: "portal", outlook_subject_contains: null,
+        ...shared, recording_revision_id: $('#flow-execution-method')?.value === 'recorded' ? window._flowRecordingSelections?.get(Number(form.dataset.id)) || undefined : undefined, execution_method: $("#flow-execution-method")?.value || "catalog", source_type: "portal", outlook_subject_contains: null,
         local_file_path: null, local_file_worksheet: null,
         site_id: Number($("#flow-site").value), report_id: Number($("#flow-report").value),
         export_views: [...document.querySelectorAll("[data-flow-export-view]:checked")].map(input => input.value),
@@ -12300,7 +12306,7 @@ function _bindFlowWorkspace() {
     $("#flow-source-outlook")?.addEventListener("click", () => _flowShowView("builder", { _source_type: "outlook" }));
     $("#flow-source-file")?.addEventListener("click", () => _flowShowView("builder", { _source_type: "file" }));
     $("#flow-source-record")?.addEventListener("click", () => FlowRecordings.create());
-    $("#flow-record-review")?.addEventListener("click", () => FlowRecordings.open(Number($("#flow-builder-form").dataset.id)));
+    $("#flow-record-review")?.addEventListener("click", () => FlowRecordings.open(Number($("#flow-builder-form").dataset.id), _flowCollectBuilder()));
     $("#flow-source-portal")?.addEventListener("click", () => _flowShowView("builder"));
     $("#flow-source-cancel")?.addEventListener("click", () => _flowShowView("list"));
     $("#flow-add-site")?.addEventListener("click", () => _flowSiteDialog());
@@ -12481,6 +12487,7 @@ function _bindFlowWorkspace() {
             const draft = _flowCollectBuilder();
             _flowShowView("builder", {
                 ...draft,
+                execution_method: !form?.dataset.id && !$('#flow-execution-method') && (next || nextAsap) ? 'recorded' : draft.execution_method,
                 id: Number(form?.dataset.id) || null,
                 site_id: Number(event.target.value),
                 report_id: null,
@@ -12756,7 +12763,7 @@ function _bindFlowWorkspace() {
         }); syncMethod();
     }
     _flowBuildSteps($("#flow-builder-form"));
-    $("#flow-builder-form")?.addEventListener("submit", async event => { event.preventDefault(); const form = event.currentTarget; const button = form.querySelector('button[type="submit"]'); const error = form.querySelector(".flow-form-error"); button.disabled = true; error.textContent = ""; try { const body = _flowCollectBuilder(); const saved = await (form.dataset.id ? apiPut(`/api/flows/${form.dataset.id}`, body) : apiPostJson("/api/flows", body)); toast(saved.standalone?.state === "error" ? `Flow saved; standalone generation needs attention: ${saved.standalone.message}` : "Flow saved"); await navigate("flows"); if (body.execution_method === "recorded") await FlowRecordings.open(saved.id); } catch (err) { error.textContent = "Flow not saved: " + err.message; _flowRevealServerError(form, err); error.scrollIntoView({ behavior: "smooth", block: "nearest" }); button.disabled = false; } });
+    $("#flow-builder-form")?.addEventListener("submit", async event => { event.preventDefault(); const form = event.currentTarget; const button = form.querySelector('button[type="submit"]'); const error = form.querySelector(".flow-form-error"); button.disabled = true; error.textContent = ""; try { const body = _flowCollectBuilder(); if(body.execution_method==='recorded' && window._flowRecordingSelections?.has(Number(form.dataset.id)) && window._flowRecordingSelections.get(Number(form.dataset.id))===null) throw Error('Test the recording changes before saving this Flow.'); const saved = await (form.dataset.id ? apiPut(`/api/flows/${form.dataset.id}`, body) : apiPostJson("/api/flows", body)); toast(saved.standalone?.state === "error" ? `Flow saved; standalone generation needs attention: ${saved.standalone.message}` : "Flow saved"); window._flowRecordingSelections?.delete(saved.id); window._flowBuilderDrafts?.delete(saved.id); window._flowBuilderDrafts?.delete('new'); await navigate("flows"); if (!form.dataset.id && body.execution_method === "recorded") { _flowShowView("builder", saved); await FlowRecordings.open(saved.id, _flowCollectBuilder()); } } catch (err) { error.textContent = "Flow not saved: " + err.message; _flowRevealServerError(form, err); error.scrollIntoView({ behavior: "smooth", block: "nearest" }); button.disabled = false; } });
 }
 
 function bindFlowsPage() {

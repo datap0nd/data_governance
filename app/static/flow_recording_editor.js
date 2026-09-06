@@ -7,98 +7,116 @@ window.RecordedFlowEditor = (() => {
     const downloadActions=['click','dblclick','press','select_option'];
     const uid=()=>`step-${Array.from(crypto.getRandomValues(new Uint8Array(16)),b=>b.toString(16).padStart(2,'0')).join('')}`;
     const select=(steps,current,predicate=()=>true)=>'<option value="">Choose…</option>'+steps.filter(predicate).map(s=>option(s.id,M.describe(s),current)).join('');
-    function openDialog(title) {
-        const el=document.createElement('dialog'); el.className='flow-recording-dialog flow-visual-dialog';
-        el.innerHTML=`<header class="flow-recording-header"><h2>${h(title)}</h2><button type="button" class="btn-secondary" data-close>Close</button></header><div data-body></div><p data-error role="alert"></p>`;
-        document.body.append(el); el.showModal(); el.querySelector('[data-close]').onclick=()=>el.close();
-        el.addEventListener('close',()=>el.remove(),{once:true}); return el;
+    const drafts=new Map();
+    function openPage(flowId) {
+        const workspace=document.getElementById('flow-workspace');
+        const el=document.createElement('section'); el.className='flow-recording-page';
+        el.innerHTML='<button type="button" class="btn-secondary" data-close>Back to Edit Flow</button><div data-body></div>';
+        const previous=document.createDocumentFragment();
+        if(workspace){while(workspace.firstChild)previous.append(workspace.firstChild);workspace.append(el);if(window._flowsState)window._flowsState.view='recording';}
+        else document.body.append(el);
+        el.close=()=>{el.dispatchEvent(new Event('close'));el.remove();if(workspace){workspace.replaceChildren(previous);if(window._flowsState)window._flowsState.view='builder';if(!workspace.querySelector('#flow-builder-form')&&typeof _flowShowView==='function')_flowShowView('builder',window._flowsState.flows.find(f=>f.id===flowId));}};
+        el.querySelector('[data-close]').onclick=()=>el.close();
+        return el;
     }
-    async function open(flowId) {
-        const el=openDialog('Recorded flow'),body=el.querySelector('[data-body]'),error=el.querySelector('[data-error]');
-        let data,revisionId,draft,baseline,selected,undo=[],dirty=false,pending=false,timer,serial=0,expanded=new Set(),dragged,refreshError=false;
+    async function open(flowId, settings=null) {
+        const el=openPage(flowId),body=el.querySelector('[data-body]');
+        let error;
+        let data,revisionId,draft,baseline,selected,undo=[],dirty=false,pending=false,operation=null,timer,serial=0,expanded=new Set(),dragged,refreshError=false;
         const prefix=`/api/flows/${flowId}/recordings`;
         const revision=()=>data?.revisions.find(r=>r.id===revisionId);
         const active=()=>data?.sessions.find(s=>['queued','claimed','running'].includes(s.status));
         const latest=()=>data?.sessions.find(s=>s.revision_id===revisionId && s.operation==='validate');
         const parse=value=>{try{return JSON.parse(value||'{}');}catch{return {};}};
-        const status=()=>dirty?'Draft':active()?.operation==='validate'?'Testing':revision()?.status==='validated'?'Ready to run':revision()?.status==='failed'||latest()?.status==='failed'?'Needs attention':'Draft';
+        const status=()=>active()?.operation==='record'?'Recording…':draft?`${draft.steps.length} steps recorded`:'Ready to record';
         const narrow=window.matchMedia('(max-width: 760px)');
         function placeDetails() {
             const panel=body.querySelector('.recording-details');if(!panel||!draft)return;
             const root=M.owner(draft,selected);
-            if(narrow.matches&&root)body.querySelector(`[data-card="${CSS.escape(root.id)}"]`)?.after(panel);
-            else body.querySelector('.recording-workspace')?.append(panel);
+            if(root)body.querySelector(`[data-card="${CSS.escape(root.id)}"]`)?.after(panel);
+            else {panel.hidden=true;body.querySelector('.recording-workspace')?.append(panel);} if(root)panel.hidden=false;
         }
         narrow.addEventListener('change',placeDetails);
         el.addEventListener('close',()=>{clearTimeout(timer);serial++;narrow.removeEventListener('change',placeDetails);},{once:true});
         function load(r) {
             revisionId=r?.id; draft=r?M.clone(r.definition):null; baseline=JSON.stringify(draft);
-            selected=draft?.steps[0]?.id;dirty=false;undo=[];expanded=new Set();
+            selected=null;dirty=false;undo=[];expanded=new Set();
         }
         function edit(next,selection=selected,render=true) {
             undo.push({draft:M.clone(draft),selected}); if(undo.length>100)undo.shift();
             draft=next;draft.version=2;draft.timezone='Asia/Dubai';selected=selection;
             dirty=JSON.stringify(draft)!==baseline;
+            if(settings)delete settings.recording_revision_id;window._flowRecordingSelections?.set(flowId,null);
+            remember();
             if(render)renderEditor();else {updateCards();updateButtons();}
         }
         function change(fn,render=false) {const next=M.clone(draft);fn(next);edit(next,selected,render);}
-        function guarded(fn) {try{error.textContent='';fn();}catch(e){error.textContent=e.message;}}
+        function remember(){if(draft)drafts.set(flowId,{draft:M.clone(draft),revisionId,baseline,selected,undo:M.clone(undo),dirty});}
+        el.addEventListener('close',()=>{remember();if(settings?.recording_revision_id&&typeof window._flowAcceptRecording==='function')window._flowAcceptRecording(flowId,settings.recording_revision_id);});
+        function showError(message){error.textContent=message;error.scrollIntoView({block:'nearest'});}
+        function guarded(fn) {try{error.textContent='';fn();}catch(e){showError(e.message);}}
         async function request(fn) {
-            if(pending)return;pending=true;refreshError=false;error.textContent='';updateButtons();
-            try {await fn();await refresh();}catch(e){error.textContent=e.message;}
-            finally{pending=false;updateButtons();}
+            if(pending)return;const invalid=body.querySelector('input:invalid');if(invalid){invalid.reportValidity();return;}pending=true;refreshError=false;error.textContent='';updateButtons();
+            try {await fn();if(el.isConnected)await refresh();}catch(e){showError(e.message);}
+            finally{pending=false;operation=null;updateButtons();}
         }
         async function save() {
+            operation='saving';updateButtons();
             const invalid=body.querySelector('[data-editor] input:invalid');
             if(invalid){invalid.reportValidity();throw Error('Correct the selected step before saving.');}
             M.validatePages(draft);
             const result=await apiPostJson(`${prefix}/revisions`,{definition:draft});
-            revisionId=result.revision_id;baseline=JSON.stringify(draft);dirty=false;
+            if(!el.isConnected)return null;
+            revisionId=result.revision_id;baseline=JSON.stringify(draft);dirty=false;remember();body.querySelector('[data-save-state]').textContent='Draft saved';
             // Keep selected card and history of local edits; a save never replaces the editor DOM.
             return revisionId;
         }
         function shell() {
-            body.innerHTML=`<div class="recording-toolbar"><div><strong>${h(data.flow.name)}</strong><span data-state role="status"></span></div><div><button class="btn-secondary" data-start>Record flow</button> <button class="btn-secondary" data-config>Pipeline and schedule</button> <button class="btn-secondary" data-history>History</button></div></div>
-                <div data-history-panel hidden></div><p data-session role="status"></p><div data-session-actions></div><div data-editor></div>
-                <footer class="recording-toolbar recording-footer"><span data-save-state></span><div><button class="btn-secondary" data-undo>Undo</button> <button class="btn-secondary" data-save>Save</button> <button class="btn-primary" data-test>Test flow</button> <button class="btn-primary" data-enable>Enable schedule</button></div></footer>`;
-            body.querySelector('[data-start]').onclick=()=>request(async()=>{const r=await apiPost(`${prefix}/start`);if(r.worker?.status==='error')throw Error(r.worker.message);});
-            body.querySelector('[data-config]').onclick=()=>{el.close();navigate('flows').then(()=>_flowShowView('builder',data.flow));};
+            body.innerHTML=`<div class="recording-toolbar"><div><h1>${h(settings?.name||data.flow.name)}</h1><span data-state role="status"></span></div><details><summary>More</summary><button class="btn-secondary" data-start>Record again</button> <button class="btn-secondary" data-history>Saved versions</button></details></div>
+                <div data-history-panel hidden></div><div class="recording-actions"><button class="btn-primary" data-test>Test recording</button> <button class="btn-secondary" data-save>Save draft</button><span data-save-state role="status"></span><p data-error role="alert"></p><p data-session role="status"></p><div data-session-actions></div><div data-check></div></div><div data-editor></div>`;
+            error=body.querySelector('[data-error]');
+            body.querySelector('[data-start]').onclick=()=>request(async()=>{remember();if(draft&&dirty){await save();if(!el.isConnected)return;}const r=await apiPost(`${prefix}/start`);if(r.worker?.status==='error')throw Error(r.worker.message);});
             body.querySelector('[data-history]').onclick=()=>{const panel=body.querySelector('[data-history-panel]');panel.hidden=!panel.hidden;renderHistory();};
-            body.querySelector('[data-undo]').onclick=()=>{const previous=undo.pop();if(previous){draft=previous.draft;selected=previous.selected;dirty=JSON.stringify(draft)!==baseline;renderEditor();}};
             body.querySelector('[data-save]').onclick=()=>request(save);
-            body.querySelector('[data-test]').onclick=()=>request(async()=>{
-                // Suggestions returned by the API may not yet exist in immutable storage.
-                const id=await save();const result=await apiPost(`${prefix}/revisions/${id}/validate`);
-                if(result.worker?.status==='error')throw Error(result.worker.message);
-            });
-            body.querySelector('[data-enable]').onclick=()=>request(async()=>{
-                if(dirty || revision()?.status!=='validated')throw Error('Test these changes before enabling the schedule.');
-                await apiPost(`${prefix}/revisions/${revisionId}/activate`);
-                if(data.flow.schedule_type==='manual') {
-                    error.textContent='Flow tested and selected. Choose a schedule in Pipeline and schedule, then enable it.';
-                    return;
-                }
-                await apiPatch(`/api/flows/${flowId}/enabled`,{enabled:true});
-            });
+            body.querySelector('[data-test]').onclick=()=>{
+                if(!checkBeforeTest())return;
+                request(async()=>{
+                    const id=await save();if(!id||!el.isConnected)return;operation='testing';updateButtons();const result=await apiPostJson(`${prefix}/revisions/${id}/validate`,{settings});
+                    if(!el.isConnected)return;
+                    if(result.revision_id)revisionId=result.revision_id;
+                    remember();
+                    if(result.worker?.status==='error')throw Error(result.worker.message);
+                });
+            };
+        }
+        function checkBeforeTest(){
+            const host=body.querySelector('[data-check]');host.innerHTML='';
+            if(!draft)return false;
+            if(!draft.identity?.text || (draft.identity.kind!=='page_title'&&!draft.identity.target?.locator?.length)){host.innerHTML='<h3>Which report should open?</h3>';renderTitle(host);host.querySelector('input')?.focus();return false;}
+            if(!draft.readiness?.trigger_step_id || !draft.readiness?.mode || (draft.readiness.mode!=='navigation'&&!draft.readiness.target?.locator?.length)){
+                const steps=M.all(draft.steps),ready=draft.readiness||{};
+                host.innerHTML=`<h3>How do we know the report is ready?</h3><label>Run report action<select data-check-trigger>${select(steps,ready.trigger_step_id,s=>['goto','click','press','select_option'].includes(s.action))}</select></label><label>Wait until<select data-check-mode>${option('','Choose…',ready.mode||'')}${option('navigation','The report page opens',ready.mode)}${option('loading_cycle','Loading appears, then disappears',ready.mode)}${option('changed_text','A result value changes',ready.mode)}</select></label><label data-check-target-label>Watch this recorded element<select data-check-target>${select(steps,'',s=>s.locator?.length)}</select></label><button class="btn-primary" data-check-apply>Continue</button>`;
+                const mode=host.querySelector('[data-check-mode]');mode.onchange=()=>host.querySelector('[data-check-target-label]').hidden=mode.value==='navigation';mode.onchange();
+                host.querySelector('[data-check-apply]').onclick=()=>guarded(()=>{const id=host.querySelector('[data-check-trigger]').value,target=steps.find(s=>s.id===host.querySelector('[data-check-target]').value),trigger=steps.find(s=>s.id===id);if(!id||!mode.value||(mode.value!=='navigation'&&!target))throw Error('Choose the action and what to wait for.');if(mode.value==='navigation'&&trigger.action!=='goto')throw Error('Choose an Open page action, or use a loading/result check.');change(d=>d.readiness={trigger_step_id:id,mode:mode.value,...(target?{target:M.target(target)}:{})});host.innerHTML='';body.querySelector('[data-test]').click();});
+                host.querySelector('select').focus();return false;
+            }
+            return true;
         }
         function renderHistory() {
             const panel=body.querySelector('[data-history-panel]');
             if(!panel || panel.hidden)return;
-            panel.innerHTML=`<p>Saved versions are immutable. Viewing history does not change the running version.</p>${data.revisions.map(r=>`<button class="btn-secondary" data-version="${r.id}">${h(typeof formatDate==='function'?formatDate(r.created_at):r.created_at)} · ${h(r.status)}${r.id===data.flow.recording_revision_id?' · active':''}</button>`).join(' ')}`;
-            panel.querySelectorAll('[data-version]').forEach(button=>{button.disabled=dirty||Boolean(active())||pending;button.onclick=()=>{load(data.revisions.find(r=>r.id===Number(button.dataset.version)));renderEditor();};});
+            panel.innerHTML=`<p>${dirty?'Save your draft before opening another version.':'Opening a saved version keeps the active recording unchanged.'}</p>${data.revisions.map(r=>`<button class="btn-secondary" data-version="${r.id}">${h(typeof formatDate==='function'?formatDate(r.created_at):r.created_at)} · ${h(r.status)}${r.id===data.flow.recording_revision_id?' · active':''}</button>`).join(' ')}`;
+            panel.querySelectorAll('[data-version]').forEach(button=>{button.disabled=dirty||Boolean(active())||pending;button.onclick=()=>{load(data.revisions.find(r=>r.id===Number(button.dataset.version)));if(settings)delete settings.recording_revision_id;window._flowRecordingSelections?.set(flowId,null);renderEditor();};});
         }
         function renderEditor() {
             const host=body.querySelector('[data-editor]');
-            if(!draft){host.innerHTML='<p>Record through your completed downloads, then choose Finish recording to review the flow.</p>';updateButtons();return;}
+            if(!draft){host.innerHTML='<p>Open your report, run it, then download the files.</p><button class="btn-primary" data-begin>Start recording</button>';host.querySelector('[data-begin]').onclick=()=>body.querySelector('[data-start]').click();updateButtons();return;}
             if('date_batch' in draft){
                 host.innerHTML='<form data-convert><p role="alert">Date batching has been removed. This schedule is paused. Enter one explicit range to create an ordinary recording, then test it.</p><label>Start date <input name="start" required placeholder="Recorded date format"></label><label>End date <input name="end" required placeholder="Recorded date format"></label><button class="btn-primary">Convert to one range</button></form>';
                 host.querySelector('form').onsubmit=e=>{e.preventDefault();request(async()=>{const r=await apiPostJson(`${prefix}/revisions/${revisionId}/convert-single-range`,{start:e.target.elements.start.value,end:e.target.elements.end.value});revisionId=r.revision_id;draft=null;});};updateButtons();return;
             }
-            if(!M.all(draft.steps).some(s=>s.id===selected))selected=draft.steps[0]?.id;
-            host.innerHTML=`<div class="recording-report"><span data-report-title>${h(draft.identity?.text || 'Choose report title')}</span> <button class="btn-secondary" data-title>Change</button>${!draft.readiness?.trigger_step_id?'<button class="btn-secondary" data-readiness>Choose report completion check</button>':''}</div><div data-title-panel hidden></div>
-                <div class="recording-workspace"><div class="recording-sequence" aria-label="Recorded steps">${cards()}</div><aside class="recording-details" aria-label="Selected step details"></aside></div>`;
-            host.querySelector('[data-title]').onclick=()=>{const panel=host.querySelector('[data-title-panel]');panel.hidden=!panel.hidden;if(!panel.hidden)renderTitle(panel);};
-            host.querySelector('[data-readiness]')?.addEventListener('click',()=>{selected=draft.readiness?.trigger_step_id || draft.steps.find(s=>['click','goto'].includes(s.action))?.id;expanded.add('readiness');renderDetails();updateCards();});
+            if(selected&&!M.all(draft.steps).some(s=>s.id===selected))selected=undo.length?draft.steps[0]?.id:null;
+            host.innerHTML=`<div class="recording-workspace"><div class="recording-sequence" aria-label="Recorded steps">${cards()}</div><aside class="recording-details" aria-label="Selected step details" hidden></aside></div>`;
             bindCards();renderDetails();updateButtons();
         }
         function cards() {
@@ -106,7 +124,7 @@ window.RecordedFlowEditor = (() => {
                 <article class="recording-card" data-card="${h(step.id)}"><span class="recording-number">${i+1}</span><button type="button" class="recording-card-title" data-select="${h(step.id)}">${h(M.describe(step))}</button>${step.action==='download'?'<span class="recording-badge">Download</span>':''}<span class="recording-outcome" role="status"></span><button type="button" class="recording-drag" draggable="true" data-drag="${h(step.id)}" aria-label="Drag step ${i+1}">⠿</button></article>`).join('')+`<div class="recording-gap"><span aria-hidden="true">↓</span><button type="button" data-insert="${draft.steps.length}" aria-label="Insert wait at end">+</button></div>`;
         }
         function bindCards() {
-            body.querySelectorAll('[data-select]').forEach(b=>b.onclick=()=>{selected=b.dataset.select;renderDetails();updateCards();});
+            body.querySelectorAll('[data-select]').forEach(b=>b.onclick=()=>{selected=selected===b.dataset.select?null:b.dataset.select;renderDetails();updateCards();});
             body.querySelectorAll('[data-insert]').forEach(b=>b.onclick=()=>guarded(()=>{const next=M.clone(draft),step={id:uid(),page:'page',action:'wait',seconds:5};next.steps.splice(Number(b.dataset.insert),0,step);edit(next,step.id);}));
             body.querySelectorAll('[data-drag]').forEach(b=>{
                 b.ondragstart=e=>{if(pending||active()){e.preventDefault();return;}dragged=b.dataset.drag;e.dataTransfer.setData('text/plain',dragged);};
@@ -134,27 +152,28 @@ window.RecordedFlowEditor = (() => {
         }
         function renderTitle(panel) {
             const candidates=draft.identity_candidates || [],steps=M.all(draft.steps);
-            panel.innerHTML=`<label>Suggested report title <select data-title-candidate><option value="">Choose or enter manually</option>${candidates.map((c,i)=>option(i,c.text,'')).join('')}</select></label><label>Exact report title <input data-title-text value="${h(draft.identity?.text)}"></label><details><summary>Advanced</summary><label>Page/frame from step <select data-title-frame>${select(steps,steps.find(s=>JSON.stringify(M.frame(s))===JSON.stringify(M.frame(draft.identity?.target)))?.id)}</select></label></details><button class="btn-secondary" data-apply-title>Use report title</button><p>The next test verifies this exact title. Choose the report name, not a portal name or download button.</p>`;
+            const frames=[...new Map(steps.map(step=>[JSON.stringify(M.frame(step)),step])).values()];
+            panel.innerHTML=`<h3>Which report should open?</h3><label>Suggested report title <select data-title-candidate><option value="">Choose or enter manually</option>${candidates.map((c,i)=>option(i,c.text,'')).join('')}</select></label><label>Exact report title <input data-title-text value="${h(draft.identity?.text)}"></label><label ${frames.length===1?'hidden':''}>Where is the title? Use the page from <select data-title-frame>${select(steps,steps.find(s=>JSON.stringify(M.frame(s))===JSON.stringify(M.frame(draft.identity?.target)))?.id)}</select></label><button class="btn-secondary" data-apply-title>Use report title</button><p>The next test verifies this exact title. Choose the report name, not a portal name or download button.</p>`;
             panel.querySelector('[data-title-candidate]').onchange=e=>{if(e.target.value!=='')panel.querySelector('[data-title-text]').value=candidates[Number(e.target.value)].text;};
             panel.querySelector('[data-apply-title]').onclick=()=>guarded(()=>{
                 const text=panel.querySelector('[data-title-text]').value.trim();if(!text)throw Error('Enter the report title.');
                 const chosen=panel.querySelector('[data-title-candidate]').value,candidate=chosen!==''?candidates[Number(chosen)]:null;
                 let identity;
                 if(candidate?.text===text)identity={text,kind:candidate.kind,target:M.clone(candidate.target)};
-                else {const source=steps.find(s=>s.id===panel.querySelector('[data-title-frame]').value);if(!source)throw Error('Choose the page/frame containing this title.');const target=M.frame(source);target.locator.push({method:'get_by_text',args:[text],kwargs:{exact:true}});identity={text,target};}
-                change(d=>{d.identity=identity;},true);
+                else {const source=frames.length===1?frames[0]:steps.find(s=>s.id===panel.querySelector('[data-title-frame]').value);if(!source)throw Error('Choose the page/frame containing this title.');const target=M.frame(source);target.locator.push({method:'get_by_text',args:[text],kwargs:{exact:true}});identity={text,target};}
+                change(d=>{d.identity=identity;},true);panel.innerHTML='';body.querySelector('[data-test]').click();
             });
         }
         function renderDetails() {
             const panel=body.querySelector('.recording-details');if(!panel)return;
-            const step=M.all(draft.steps).find(s=>s.id===selected),root=M.owner(draft,selected);if(!step){panel.innerHTML='Select a step.';return;}
+            const step=M.all(draft.steps).find(s=>s.id===selected),root=M.owner(draft,selected);if(!step){panel.hidden=true;return;}panel.hidden=false;
             const action=M.triggering(step),index=draft.steps.indexOf(root),steps=M.all(draft.steps);
             const [parameterName,parameter]=Object.entries(draft.parameters || {}).find(([,p])=>p.step_id===action.id) || ['',{}];
             const output=step.action==='download'?step.output:null,ready=draft.readiness || {};
             const associated=steps.find(s=>s.action==='download'&&s.id!==step.id&&M.all(s.steps||[]).some(child=>child.id===step.id));
             const outcomes=parse(latest()?.progress_json).step_outcomes || {};
             const outcome=M.all([step]).map(s=>outcomes[s.id]).find(o=>o?.outcome==='failed') || outcomes[step.id] || outcomes[action.id];
-            panel.innerHTML=`<div class="recording-detail-heading"><h3>Step ${index+1}</h3>${step===root?`<button class="btn-secondary" data-up aria-label="Move up" ${index===0?'disabled':''}>↑</button><button class="btn-secondary" data-down aria-label="Move down" ${index===draft.steps.length-1?'disabled':''}>↓</button><button class="btn-secondary" data-remove>Remove</button>`:'<button class="btn-secondary" data-parent>Back to group</button>'}</div>
+            panel.innerHTML=`<div class="recording-detail-heading"><h3>Step ${index+1}</h3>${undo.length?'<button class="btn-secondary" data-undo>Undo</button>':''}<button class="btn-secondary" data-done>Done</button>${step===root?`<button class="btn-secondary" data-up aria-label="Move up" ${index===0?'disabled':''}>↑</button><button class="btn-secondary" data-down aria-label="Move down" ${index===draft.steps.length-1?'disabled':''}>↓</button><button class="btn-secondary" data-remove>Remove</button>`:'<button class="btn-secondary" data-parent>Back to group</button>'}</div>
                 <p data-step-failure role="alert">${outcome?.outcome==='failed'?h(outcome.message):''}</p>
                 ${action.repair_reason?`<p role="alert">${h(action.repair_reason)}</p>`:''}
                 <section><h4>Action</h4><label>Step name <input data-label maxlength="160" value="${h(step.label || '')}" placeholder="${h(M.describe(step))}"></label><p>${h(M.describe(action))}</p>
@@ -171,6 +190,8 @@ window.RecordedFlowEditor = (() => {
                 ${output?`<label>Expected columns, in order <input data-headers value="${h((output.headers||[]).join(', '))}"></label><label>Download completion <select data-completion>${option('native','Browser download',output.completion||'native')}${option('staging','Verified staging fallback',output.completion)}</select></label><label>Period column <input data-period-column value="${h(output.period_checks?.[0]?.column)}"></label><label>Period parameter <input data-period-parameter value="${h(output.period_checks?.[0]?.parameter)}"></label>`:''}
                 ${valueActions.includes(action.action)?`<label>Date must not be after parameter <input data-not-after value="${h(parameter.not_after)}"></label>`:''}
                 <details data-section="readiness" ${expanded.has('readiness')?'open':''}><summary>Report completion check</summary><label>Generate report using <select data-ready-trigger>${select(steps,ready.trigger_step_id,s=>['goto','click','press','select_option'].includes(s.action))}</select></label><label>Completion signal <select data-ready-mode>${option('','Choose…',ready.mode||'')}${option('navigation','Report document navigation',ready.mode)}${option('loading_cycle','Loading appears, then disappears',ready.mode)}${option('changed_text','Result text changes',ready.mode)}</select></label><label>Signal element from step <select data-ready-target>${select(steps,steps.find(s=>JSON.stringify(M.target(s))===JSON.stringify(ready.target))?.id,s=>s.locator?.length)}</select></label><p>A clickable button or a fixed wait does not prove that results are current.</p></details></details>`;
+            panel.querySelector('[data-undo]')?.addEventListener('click',()=>{const previous=undo.pop();if(previous){draft=previous.draft;selected=previous.selected;dirty=JSON.stringify(draft)!==baseline;remember();renderEditor();}});
+            panel.querySelector('[data-done]').onclick=()=>{selected=null;renderDetails();updateCards();};
             placeDetails();
             bindDetails(panel,step,action,root,parameterName);
         }
@@ -212,10 +233,13 @@ window.RecordedFlowEditor = (() => {
         }
         function updateButtons() {
             if(!data)return;const busy=pending||Boolean(active()),batch=draft&&'date_batch' in draft;
-            for(const [selector,disabled] of [['start',busy],['config',busy],['save',busy||!draft||batch],['test',busy||!draft||batch],['enable',busy||dirty||revision()?.status!=='validated'||batch],['undo',busy||!undo.length]]) {const button=body.querySelector(`[data-${selector}]`);if(button)button.disabled=Boolean(disabled);}
+            for(const [selector,disabled] of [['start',busy],['begin',busy],['save',busy||!draft||batch],['test',busy||!draft||batch],['enable',busy||dirty||revision()?.status!=='validated'||batch],['undo',busy||!undo.length]]) {const button=body.querySelector(`[data-${selector}]`);if(button)button.disabled=Boolean(disabled);}
             body.querySelector('[data-state]').textContent=status();
-            body.querySelector('[data-save-state]').textContent=dirty?'Unsaved changes':data.flow.enabled?'Schedule enabled':'Schedule paused';
-            body.querySelector('[data-test]').textContent=active()?.operation==='validate'?'Testing…':'Test flow';
+            if(dirty)body.querySelector('[data-save-state]').textContent='Unsaved changes';
+            body.querySelector('[data-save]').textContent=operation==='saving'?'Saving…':'Save draft';
+            body.querySelector('[data-save]').hidden=!draft;body.querySelector('[data-test]').hidden=!draft;
+            body.querySelector('[data-start]').textContent=draft?'Record again':'Start recording';
+            body.querySelector('[data-test]').textContent=active()?.operation==='validate'?'Testing…':'Test recording';
             body.querySelectorAll('[data-editor] input,[data-editor] select,[data-editor] button:not([data-select]):not([data-child]):not([data-parent])').forEach(n=>{if(busy){if(!n.disabled)n.dataset.busyDisabled='1';n.disabled=true;}else if(n.dataset.busyDisabled){n.disabled=false;delete n.dataset.busyDisabled;}});
             updateCards();renderHistory();
             const failure=body.querySelector('[data-step-failure]');
@@ -228,13 +252,21 @@ window.RecordedFlowEditor = (() => {
             clearTimeout(timer);const requestId=++serial;
             try {
                 const incoming=await api(prefix);if(!el.isConnected||requestId!==serial)return;
-                const previous=data?.revisions[0]?.id;data=incoming;
+                const previous=data?.revisions[0]?.id,wasRecording=active()?.operation==='record';data=incoming;
                 if(refreshError){error.textContent='';refreshError=false;}
                 const arrived=data.revisions[0]?.id;
-                if(!body.querySelector('[data-start]')){load(data.revisions[0]);shell();renderEditor();}
-                else if(!draft || (!dirty && previous!==arrived && revisionId!==arrived)) {load(data.revisions.find(r=>r.id===revisionId)||data.revisions[0]);if(previous!==arrived)load(data.revisions[0]);renderEditor();}
+                if(!body.querySelector('[data-start]')){load(data.revisions[0]);const kept=drafts.get(flowId);if(kept?.dirty){({draft,revisionId,baseline,selected,undo,dirty}=kept);}shell();renderEditor();}
+                else if(!draft || (wasRecording && previous!==arrived) || (!dirty && previous!==arrived && revisionId!==arrived)) {load(data.revisions.find(r=>r.id===revisionId)||data.revisions[0]);if(previous!==arrived)load(data.revisions[0]);if(wasRecording){if(settings)delete settings.recording_revision_id;window._flowRecordingSelections?.set(flowId,null);}renderEditor();}
                 const session=active()||data.sessions[0],progress=parse(session?.progress_json);
-                body.querySelector('[data-session]').textContent=session?`${session.operation==='record'?'Recording':'Test'}: ${session.status} ${session.error||progress.message||''}`:'';
+                body.querySelector('[data-session]').textContent=session?(session.status==='succeeded'?(session.operation==='validate'?'Test passed. Back to Edit Flow, then Save.':''):(session.error||progress.message||'Starting worker…')):'';
+                if(session?.operation==='validate'&&session.status==='succeeded'&&session.revision_id===revisionId&&!dirty){
+                    const form=document.getElementById('flow-builder-form');
+                    // The builder DOM is detached while recording is open; the callback
+                    // applies only a revision, never settings or schedule state.
+                    if(settings)settings.recording_revision_id=revisionId;
+                    el.dataset.testedRevision=revisionId;
+                }
+
                 const controls=body.querySelector('[data-session-actions]'),current=active();
                 if(controls.dataset.session!==String(current?.scan_id||'')){
                 controls.dataset.session=String(current?.scan_id||'');
@@ -243,7 +275,7 @@ window.RecordedFlowEditor = (() => {
                 const finish=controls.querySelector('[data-finish]');if(finish){finish.textContent=current.finish_requested?'Finishing recording…':'Finish recording';finish.disabled=pending||current.finish_requested||current.cancel_requested||progress.stage!=='recording';finish.onclick=()=>request(()=>apiPost(`${prefix}/${current.scan_id}/finish`));}
                 const cancel=controls.querySelector('[data-cancel]');if(cancel){cancel.textContent=current.cancel_requested?(Date.now()-Date.parse(current.cancel_requested)>=10000?'Force close recording':'Cancelling…'):'Cancel '+(current.operation==='record'?'recording':'test');cancel.disabled=pending||Boolean(current.cancel_requested&&Date.now()-Date.parse(current.cancel_requested)<10000);cancel.onclick=()=>request(()=>apiPost(`${prefix}/${current.scan_id}/cancel`));}
                 updateButtons();
-            }catch(e){refreshError=true;if(el.isConnected)error.textContent=`Could not refresh status: ${e.message}. Retrying…`;}
+            }catch(e){refreshError=true;if(el.isConnected){if(!error){body.innerHTML='<p data-error role="alert"></p>';error=body.querySelector('[data-error]');}error.textContent=`Connection lost. Your edits are kept. Retrying…`;}}
             if(el.isConnected)timer=setTimeout(refresh,3000);
         }
         await refresh();

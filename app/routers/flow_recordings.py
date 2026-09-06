@@ -40,6 +40,10 @@ class RevisionWrite(BaseModel):
     definition: dict
 
 
+class ValidationWrite(BaseModel):
+    settings: flows.FlowWrite | None = None
+
+
 class SingleRangeWrite(BaseModel):
     start: str = Field(min_length=1, max_length=32)
     end: str = Field(min_length=1, max_length=32)
@@ -178,6 +182,10 @@ def save_revision(flow_id: int, body: RevisionWrite):
         db.execute('BEGIN IMMEDIATE')
         flows._flow_out(db, flow_id)
         flow_recordings.assert_flow_idle(db, flow_id)
+        stored = flow_recording.canonical(definition)
+        last = db.execute('SELECT id,definition_json FROM flow_recording_revisions WHERE flow_id=? ORDER BY id DESC LIMIT 1', (flow_id,)).fetchone()
+        if last and last['definition_json'] == stored:
+            return {'revision_id': last['id']}
         cursor = db.execute('''INSERT INTO flow_recording_revisions(flow_id,definition_json,status,created_at)
             VALUES (?,?,'draft',?)''', (flow_id, flow_recording.canonical(definition), datetime.now(timezone.utc).isoformat()))
     return {'revision_id': cursor.lastrowid}
@@ -216,12 +224,13 @@ def convert_single_range(flow_id: int, revision_id: int, body: SingleRangeWrite)
 
 
 @router.post('/{flow_id}/recordings/revisions/{revision_id}/validate')
-def validate_revision(flow_id: int, revision_id: int, request: Request):
+def validate_revision(flow_id: int, revision_id: int, request: Request, body: ValidationWrite | None = None):
     try:
         with get_db() as db:
             db.execute('BEGIN IMMEDIATE')
-            scan_id = flow_recordings.queue_operation(db, flow_id, 'validate', flows.get_actor(request), revision_id=revision_id)
-        return _launch(scan_id)
+            scan_id = flow_recordings.queue_operation(db, flow_id, 'validate', flows.get_actor(request), revision_id=revision_id, pending_settings=body.settings if body else None)
+            tested_id = db.execute('SELECT revision_id FROM flow_recording_sessions WHERE scan_id=?', (scan_id,)).fetchone()[0]
+        return {**_launch(scan_id), 'revision_id': tested_id}
     except (ValueError, OSError) as exc:
         raise HTTPException(422, str(exc)) from exc
 
