@@ -4046,6 +4046,7 @@ def _asap_csv_header_index(rows: list[list[str]]) -> int:
 def _normalize_csv(
     path: Path, *, output: Path | None = None,
     preamble: str = "asap", strict_headers: bool = False,
+    allow_empty_data: bool = False,
 ) -> dict:
     """Normalize a delimited file with source-specific header resolution."""
     if preamble not in {"asap", "none"}:
@@ -4080,7 +4081,7 @@ def _normalize_csv(
     if strict_headers:
         _validate_strict_headers(header, source_label="Downloaded CSV")
         data_rows = rows[header_index + 1:]
-        if not any(any(str(value).strip() for value in row) for row in data_rows):
+        if not allow_empty_data and not any(any(str(value).strip() for value in row) for row in data_rows):
             raise RuntimeError("Downloaded CSV contains a header but no data rows.")
         for row_index, row in enumerate(data_rows, start=header_index + 2):
             overflow = row[len(header):]
@@ -4093,7 +4094,7 @@ def _normalize_csv(
                     "Refusing to discard "
                     f"{populated_overflow} populated extra cell(s)."
                 )
-    elif len(header) < 2:
+    elif len(header) < (1 if allow_empty_data else 2):
         raise RuntimeError("Downloaded CSV did not contain a usable delimited header.")
     destination = Path(output) if output is not None else path
     mode = "x" if output is not None else "w"
@@ -4685,6 +4686,7 @@ def _xlsx_header_index(preview: list[list[Any]]) -> int | None:
 def _xlsx_sheet_plan(
     worksheet, requested_weeks: list[str], *,
     header_mode: str = "auto", strict_headers: bool = False,
+    allow_empty_data: bool = False,
 ) -> dict | None:
     """Resolve one sheet's header and row transform in two streaming passes.
 
@@ -4721,6 +4723,8 @@ def _xlsx_sheet_plan(
         preview[0] = physical_header
     else:
         header_index = _xlsx_header_index(preview)
+        if header_index is None and allow_empty_data and all(len(row) <= 1 for row in preview):
+            header_index = 0
     if header_index is None:
         return None
     header = [str(value).strip() for value in preview[header_index]]
@@ -4728,7 +4732,7 @@ def _xlsx_sheet_plan(
         _validate_strict_headers(
             header, source_label=f"Downloaded Excel sheet {worksheet.title!r}",
         )
-    elif len(header) < 2:
+    elif len(header) < (1 if allow_empty_data else 2):
         return None
 
     descriptor_indexes = _xlsx_descriptor_indexes(header)
@@ -4904,6 +4908,7 @@ def _normalize_xlsx(
     header_mode: str = "auto", strict_headers: bool = False,
     workbook_format: str | None = None, excel_trim: str = "none",
     worksheet_name: str | None = None,
+    allow_empty_data: bool = False,
 ) -> dict:
     """Convert populated Excel-family sheets into one normalized UTF-8 CSV.
 
@@ -4954,6 +4959,7 @@ def _normalize_xlsx(
             plan = _xlsx_sheet_plan(
                 worksheet, requested_weeks,
                 header_mode=header_mode, strict_headers=strict_headers,
+                allow_empty_data=allow_empty_data,
             )
             if plan is None:
                 skipped_sheets.append(
@@ -5014,7 +5020,7 @@ def _normalize_xlsx(
         workbook.close()
         if not handle.closed:
             handle.close()
-    if common_header is None or not rows_written:
+    if common_header is None or (not rows_written and not allow_empty_data):
         detail = " | ".join(skipped_sheets) or "no populated sheets"
         raise RuntimeError(
             "Downloaded Excel workbook did not contain a usable table with "
@@ -5370,6 +5376,7 @@ def _store_completed_download(
     xlsx_header_mode: str = "auto",
     excel_trim: str = "none",
     processing_progress: Callable[[str, str], None] | None = None,
+    recorded_output: bool = False,
 ) -> dict:
     """Normalize the browser-local file, then copy it to the final target.
 
@@ -5389,6 +5396,33 @@ def _store_completed_download(
     # final bytes, not a mid-flush view of a share-backed staging folder.
     snapshot = _stable_source_snapshot(local_path)
     detected = _detect_download_format(local_path)
+    if recorded_output and not require_normalized_csv:
+        # Recording-only downloads keep their bytes. Table shape and row
+        # counts become requirements only when a data check or processing
+        # step explicitly needs them.
+        if detected in EXCEL_DOWNLOAD_FORMATS:
+            _validate_excel_container(local_path, detected)
+            suffix = _excel_output_suffix(local_path, output, detected)
+            metadata = {'row_count': None, 'columns': []}
+        elif detected in {'csv', 'html'}:
+            with local_path.open('rb') as source:
+                prefix = source.read(128 * 1024)
+            if looks_like_sign_in(prefix):
+                raise RuntimeError('The download contains a sign-in or expired-session page.')
+            suffix = '.html' if detected == 'html' else '.txt' if file_format == 'txt' else '.csv'
+            if detected == 'html' and local_path.suffix.casefold() in LEGACY_EXCEL_EXTENSIONS:
+                suffix = local_path.suffix.casefold()
+            metadata = {'row_count': None, 'columns': []}
+        else:
+            raise RuntimeError(f'The recorded download has an unsupported file format: {detected}.')
+        output = _safe_output_path(output.parent, output.stem + suffix)
+        copied = _copy_with_checksum(local_path, output)
+        if copied != snapshot:
+            raise RuntimeError('The recorded download changed while being copied.')
+        _verify_copied_file(output, snapshot['file_size'], snapshot['checksum'], label='Recorded download')
+        return {**metadata, **copied, 'file_path': str(output), 'filename': output.name,
+                'original_file_path': str(output), 'original_filename': output.name,
+                'original_file_size': copied['file_size'], 'detected_format': suffix.lstrip('.')}
     declared_suffixes = {local_path.suffix.casefold(), output.suffix.casefold()}
     html_excel = (
         detected == "html"
@@ -5584,6 +5618,7 @@ def _store_completed_download(
                 output, normalized_output, requested_weeks=requested_weeks,
                 header_mode=xlsx_header_mode, strict_headers=strict_headers,
                 workbook_format=detected, excel_trim=excel_trim,
+                allow_empty_data=recorded_output,
             )
         except Exception as exc:
             if not allow_raw_xlsx_fallback:
@@ -5635,6 +5670,7 @@ def _store_completed_download(
         normalization = _normalize_csv(
             local_path, output=output, preamble=csv_preamble,
             strict_headers=strict_headers,
+            allow_empty_data=recorded_output,
         )
         metadata = {**_csv_metadata(output), **normalization}
         return {
@@ -5646,6 +5682,7 @@ def _store_completed_download(
         }
     normalization = _normalize_csv(
         local_path, preamble=csv_preamble, strict_headers=strict_headers,
+        allow_empty_data=recorded_output,
     )
     metadata = {**_csv_metadata(local_path), **normalization}
     copied = _copy_with_checksum(local_path, output)

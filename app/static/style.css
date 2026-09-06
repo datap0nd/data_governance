@@ -7875,7 +7875,7 @@ body.remote-flow-control-enabled { padding-top: 32px; }
 .recording-gap { display:flex; align-items:center; justify-content:center; gap:8px; height:32px; color:var(--text-muted,#737d8c); }
 .recording-gap button { border:1px solid var(--border,#d4dae2); background:var(--surface); border-radius:50%; width:24px; height:24px; line-height:18px; cursor:pointer; color:inherit; }
 .recording-details { position:sticky; top:0; border:1px solid var(--border,#d4dae2); border-radius:12px; padding:20px; background:var(--surface); min-width:0; }
-.recording-detail-heading { display:flex; align-items:center; gap:8px; }
+.recording-detail-heading { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
 .recording-detail-heading h3 { margin:0 auto 0 0; }
 .recording-details section { border-bottom:1px solid var(--border,#ddd); padding:12px 0; }
 .recording-details h4 { margin:0 0 10px; }
@@ -7914,9 +7914,6 @@ body.remote-flow-control-enabled { padding-top: 32px; }
 .flow-recording-page .recording-drag { display: none; }
 .flow-recording-page .recording-details { position: static; width: auto; margin: 0; border-radius: 0; }
 .flow-recording-page .recording-details[hidden] { display: none; }
-.flow-recording-page [data-check]:not(:empty) { padding: 16px; margin-top: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
-.flow-recording-page [data-check] label { display: block; margin: 8px 0; }
-.flow-recording-page [data-check] input,.flow-recording-page [data-check] select { width: 100%; }
 .flow-recording-page [data-state] { display: block; margin: 4px 0 0; }
 @media(max-width:760px) { .flow-recording-page .recording-actions>button { margin-bottom: 8px; } }
 .flow-recording-page [hidden] { display: none !important; }
@@ -7935,3 +7932,5 @@ body.remote-flow-control-enabled { padding-top: 32px; }
 .flow-builder-minimal [hidden] { display: none !important; }
 .flow-builder-minimal #flow-destination { overflow-wrap: anywhere; }
 .flow-builder-minimal #flow-destination > div { margin-top: 8px; color: var(--text-muted); }
+
+.flow-recording-page .recording-add-wait { margin-top: 12px; }

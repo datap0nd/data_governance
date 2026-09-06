@@ -82,11 +82,12 @@ def test_unsafe_or_unsupported_recording_is_never_imported(statement):
         flow_recording.import_codegen(CODEGEN.replace('    context.close()', '    '+statement+'\n    context.close()'))
 
 
-def test_activation_requires_identity_readiness_and_download():
+def test_activation_needs_a_download_but_no_page_checks():
     value = flow_recording.import_codegen(CODEGEN)
-    with pytest.raises(ValueError,match='identity'): flow_recording.validate_definition(value)
-    value = definition(); value.pop('readiness')
-    with pytest.raises(ValueError,match='completion'): flow_recording.validate_definition(value)
+    flow_recording.validate_definition(value)
+    assert 'identity' not in value and 'readiness' not in value
+    value = definition(); value.pop('readiness'); value.pop('identity')
+    flow_recording.validate_definition(value)
     value = definition(); value['steps'] = [s for s in value['steps'] if s['action'] != 'download']
     flow_recording.validate_definition(value,activation=False)
     with pytest.raises(ValueError,match='download'): flow_recording.validate_definition(value)
@@ -153,6 +154,8 @@ def report_server():
 def test_same_portable_pipeline_runs_real_download_on_both_browsers(flow_db,tmp_path,report_server,channel):
     _,job = draft_job(report_server)
     job['execution']['browser_channel']=channel
+    job['recording']['definition'].pop('identity')
+    job['recording']['definition'].pop('readiness')
     # A real embedded Python transformation has no adjacent dependency.
     job['transformation']['enabled']=True
     job['recording']['transformation_source']='''import argparse, pathlib

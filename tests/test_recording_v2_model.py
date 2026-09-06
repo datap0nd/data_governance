@@ -1,4 +1,3 @@
-import copy
 import pytest
 from app import flow_recording as model
 from app import flow_recording_runtime as runtime
@@ -34,19 +33,15 @@ def test_page_dependency_rejects_use_before_popup_or_after_close():
     with pytest.raises(ValueError,match='page'): model.validate_definition(value,activation=False)
 
 
-def test_identity_candidates_keep_frame_and_avoid_generic_status():
-    value=definition(); value['identity']={}
-    assert model.suggest_review(value)['identity']=={}  # Ready is a status, not a report title.
+def test_review_preserves_explicit_assertions_without_inventing_page_checks():
+    value=definition()
     locator=[dict(method='frame_locator',args=['iframe'],kwargs={}),dict(method='get_by_role',args=['heading'],kwargs={'name':'Sales Report','exact':True})]
     assertion=dict(id='title',action='assert',assertion='to_be_visible',page='page',locator=locator,args=[])
     value['steps'].insert(2,assertion)
     proposed=model.suggest_review(value)
-    assert proposed['identity']['text']=='Sales Report'
-    assert proposed['identity']['target']=={'page':'page','locator':locator}
-    assert value['identity']=={}
-    second=copy.deepcopy(assertion); second['id']='title2'; second['locator'][-1]['kwargs']['name']='Another Report'
-    value['steps'].insert(3,second)
-    assert not model.suggest_review(value)['identity']
+    assert proposed['steps']==value['steps']
+    assert not {'identity', 'identity_candidates', 'readiness'} & proposed.keys()
+    assert value['identity']['text']=='Sales Report'
 
 
 def test_wait_cancellation_stops_before_browser_interaction(tmp_path):

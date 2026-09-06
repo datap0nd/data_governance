@@ -31,16 +31,19 @@ def complete(scan_id, result=None, status='succeeded'):
         flow_recordings.update_operation(db,row,'synthetic-worker',flows.ScanProgress(status=status,progress={},recording_result=result),datetime.now(timezone.utc).isoformat())
 
 
-def test_raw_import_preserved_rejection_and_identical_save(flow_db,monkeypatch):
+def test_raw_import_tests_directly_and_identical_save_is_preserved(flow_db,monkeypatch):
     saved,_=draft_job();client=client_for(monkeypatch);base=f"/api/flows/{saved['id']}/recordings"
     raw=flow_recording.import_codegen(CODEGEN)
     r=client.post(base+'/revisions',json={'definition':raw});assert r.status_code==200,r.text
     revision=r.json()['revision_id']
     assert client.post(base+'/revisions',json={'definition':raw}).json()['revision_id']==revision
-    rejected=client.post(f'{base}/revisions/{revision}/validate')
-    assert rejected.status_code==422 and 'identity' in rejected.json()['detail']
+    queued=client.post(f'{base}/revisions/{revision}/validate')
+    assert queued.status_code==200,queued.text
     reopened=client.get(base).json();assert len(reopened['revisions'])==1
     assert reopened['revisions'][0]['definition']['steps']==raw['steps']
+    assert not reopened['revisions'][0]['definition'].get('identity')
+    assert not reopened['revisions'][0]['definition'].get('readiness')
+    assert reopened['sessions'][0]['status']=='queued'
 
 
 def test_pending_snapshot_atomic_apply_and_active_evidence(flow_db,monkeypatch):
@@ -82,6 +85,7 @@ def test_browser_real_api_save_test_return_apply(flow_db,monkeypatch,tmp_path,re
     monkeypatch.setattr(flow_recorder_worker,'authenticate',lambda *a,**k:None)
     saved,_=draft_job(report_server);client=client_for(monkeypatch);fid=saved['id'];base=f'/api/flows/{fid}'
     raw=flow_recording.import_codegen(CODEGEN.replace('http://localhost/report',report_server).replace('    page.get_by_label("Start")', '    page.get_by_label("Start").click()\n    page.get_by_label("Start")',1))
+    next(s for s in flow_recording.walk_steps(raw['steps']) if s['action']=='download')['output']['format']='csv'
     revision=client.post(base+'/recordings/revisions',json={'definition':raw}).json()['revision_id']
     root=Path(__file__).resolve().parents[1]
     with sync_playwright() as pw:
@@ -111,34 +115,14 @@ def test_browser_real_api_save_test_return_apply(flow_db,monkeypatch,tmp_path,re
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
                 page.screenshot(path=str(evidence/f'{name}.png'),full_page=True)
             page.set_viewport_size({'width':1280,'height':900})
-        page.get_by_role('button',name='Save draft',exact=True).click()
-        page.get_by_text('Draft saved',exact=True).wait_for()
-        page.get_by_role('button',name='Test recording',exact=True).click()
-        page.get_by_text('Check the recorded page',exact=True).wait_for()
-        page.get_by_label('Text to check').fill('Sales Report')
-        # The page containing the title must be chosen explicitly.
-        assert page.locator('[data-title-frame]').is_hidden()
-        page.get_by_role('button',name='Use this check').click()
-        page.get_by_text('How do we know the report is ready?',exact=True).wait_for()
-        steps=list(flow_recording.walk_steps(raw['steps']))
-        page.locator('[data-check-trigger]').select_option(next(s['id'] for s in steps if s['action']=='click' and s.get('locator',[{}])[-1].get('kwargs',{}).get('name')=='Generate'))
-        page.locator('[data-check-mode]').select_option('changed_text')
-        page.locator('[data-check-target]').select_option(next(s['id'] for s in steps if s['action']=='assert'))
-        # Native recorder downloads default to xlsx; select the synthetic portal's CSV.
-        page.locator('[data-check]').get_by_role('button',name='Continue',exact=True).click()
-        page.wait_for_function("()=>document.querySelector('[data-test]').textContent==='Testing…'")
-        # First test queues before output format repair; cancel without changing the active Flow.
-        with database.get_db() as db:
-            scan=db.execute('SELECT id FROM flow_catalog_scans ORDER BY id DESC LIMIT 1').fetchone()[0]
-        complete(scan,status='failed')
-        page.wait_for_function("()=>!document.querySelector('[data-test]').disabled")
-        download=next(s for s in raw['steps'] if s['action']=='download')
-        page.locator(f'[data-select="{download["id"]}"]').click()
-        page.get_by_label('Output format').select_option('csv')
         page.get_by_role('button',name='Test recording',exact=True).click()
         page.wait_for_function("()=>document.querySelector('[data-test]').textContent==='Testing…'")
+        assert not page.get_by_text('How do we know the report is ready?',exact=True).count()
+        assert not page.get_by_text('Check the recorded page',exact=True).count()
         with database.get_db() as db:
             row=db.execute('SELECT * FROM flow_catalog_scans ORDER BY id DESC LIMIT 1').fetchone();scan_id=row['id'];job=json.loads(row['job_json'])
+        assert not job['validation_job']['recording']['definition'].get('identity')
+        assert not job['validation_job']['recording']['definition'].get('readiness')
         portal=browser.new_page()
         result=flow_recorder_worker.validate({'id':scan_id,'job':job},portal,tmp_path/'profile',lambda *args:None)
         complete(scan_id,result)

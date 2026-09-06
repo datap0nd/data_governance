@@ -25,11 +25,11 @@ window.RecordedFlowModel = (() => {
         return `${verbs[action.action] || action.action}${text ? ` “${typeof text === 'string' ? text : JSON.stringify(text)}”` : ''}`;
     }
     function validatePages(definition) {
-        const pages = new Set(['page']), created = new Set(), ids = new Set(), states = new Map();
+        const pages = new Set(['page']), created = new Set(), ids = new Set();
         function walk(steps) {
             for (const step of steps) {
                 if (!step.id || ids.has(step.id)) throw Error('Step identities must remain unique.');
-                ids.add(step.id); states.set(step.id,new Set(pages));
+                ids.add(step.id);
                 if (step.action === 'wait') continue;
                 if (step.action === 'new_page') {
                     if (created.has(step.page) || (pages.has(step.page) && step.page !== 'page')) throw Error('A page cannot be opened twice.');
@@ -47,16 +47,8 @@ window.RecordedFlowModel = (() => {
             }
         }
         walk(definition.steps);
-        const steps=all(definition.steps), ready=definition.readiness || {}, trigger=steps.findIndex(s=>s.id===ready.trigger_step_id);
-        const download=steps.findIndex(s=>s.action==='download');
-        if(trigger>=0&&ready.mode&&ready.mode!=='navigation'&&!states.get(ready.trigger_step_id).has(ready.target?.page)) throw Error('Keep the completion signal page open before generation.');
-        if (trigger >= 0 && download >= 0 && trigger >= download) throw Error('Generate the report before downloading it.');
         for (const p of Object.values(definition.parameters || {})) {
             if (p.step_id && !ids.has(p.step_id)) throw Error('A date parameter refers to a removed input.');
-            if (p.mode !== 'portal_default' && trigger >= 0 && steps.findIndex(s=>s.id===p.step_id) >= trigger) throw Error('Set dates before generating the report.');
-        }
-        for (const s of steps.filter(s=>s.action==='download')) {
-            if (definition.identity?.text && !states.get(s.id).has(definition.identity.target?.page)) throw Error('Keep the report title page open until its downloads finish.');
         }
         return definition;
     }

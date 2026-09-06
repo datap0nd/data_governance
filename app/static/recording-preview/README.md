@@ -1,4 +1,16 @@
-# Recording journey preview — feedback checkpoint
+# Recording journey previews
+
+The current preview is [optional.html](optional.html): recording tests start
+directly, waits can be inserted, and downloaded-data checks are optional. It
+uses the production recording editor/model with fictional API responses.
+Select a download to add/remove a minimum-row check; the fixture has three
+data rows, so the default four-row check fails until removed or adjusted.
+See the [current test report](../../../docs/testing/releases/2026-09-06-optional-recording-checks/test-report.md).
+
+## Historical feedback checkpoints (superseded)
+
+The remaining previews below preserve earlier design iterations. Their report
+title/readiness questions no longer describe supported recording behavior.
 
 Local, fictional-data prototype based on repository revision `da4e4511`.
 Reuses Metronome's stylesheet, button classes, colors and bundled Outfit font.
