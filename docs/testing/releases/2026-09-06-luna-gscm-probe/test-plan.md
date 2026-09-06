@@ -19,6 +19,33 @@ checkout and inspect only the four changed Markdown files.
 | DOC-03 | Inspect `git diff --stat` and changed content for application edits or sensitive evidence. | Only handoff, plan/report and index change; no private portal URLs, credentials or report data. | Diff and changed-file list. |
 | LIVE-01 | Luna follows the linked prompt on the owner's work PC. | Actual attempt table establishes success, failure, blocked or inconclusive status without overstating reliability. | Sanitized Luna report; NOT RUN until executed. |
 
+## Repeatable documentation checks
+
+Run `git diff origin/main HEAD --check`, then run this Python snippet from the
+repository root (`python -` with a PowerShell here-string is sufficient):
+
+```python
+import pathlib, re, subprocess
+root = pathlib.Path.cwd()
+names = subprocess.check_output(['git', 'diff', '--name-only', 'origin/main', 'HEAD'], text=True).splitlines()
+assert len(names) == 4 and all(n.startswith('docs/') and n.endswith('.md') for n in names)
+count = 0
+for name in names:
+    path = root / name
+    content = path.read_text(encoding='utf-8')
+    if name == 'docs/testing/README.md':
+        content = '\n'.join(line for line in content.splitlines() if '2026-09-06-luna-gscm-probe' in line)
+        assert content
+    for target in re.findall(r'\]\(([^)]+)\)', content):
+        if '://' not in target:
+            assert (path.parent / target.split('#')[0]).resolve().exists(), (name, target)
+            count += 1
+prompt = (root / 'docs/luna_gscm_bookmark_probe.md').read_text(encoding='utf-8')
+for phrase in ['0:00-2:00', '2:00-4:00', '4:00-7:00', '7:00-9:00', '9:00-10:00', 'NOT RUN/BLOCKED', 'at most three opening', 'Do not wheel-scroll', 'not production reliability', 'Remove your breakpoints']:
+    assert phrase in prompt, phrase
+print(f'PASS: {count} local links; 10 required markers; 4 Markdown files')
+```
+
 ## Acceptance and cleanup
 
 DOC-01 through DOC-03 pass and final PR checks pass before merge. LIVE-01 is an
