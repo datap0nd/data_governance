@@ -274,19 +274,25 @@ def update_operation(db, row, worker_id, body, now):
     # Completion/heartbeat messages omit per-step detail. Retain the last
     # accumulated outcomes so the visual review remains useful after testing.
     progress = dict(body.progress)
+    frozen = json.loads(row['job_json'])
+    definition = ((frozen.get('validation_job') or {}).get('recording') or {}).get('definition')
+    error = flow_recording_diagnostics.safe_error(body.error, definition) if body.error is not None else None
+    if progress.get('message') is not None:
+        progress['message'] = flow_recording_diagnostics.safe_error(progress['message'], definition)
     if 'diagnostic' in progress:
-        frozen = json.loads(row['job_json'])
-        definition = ((frozen.get('validation_job') or {}).get('recording') or {}).get('definition')
         progress['diagnostic'] = flow_recording_diagnostics.sanitize_diagnostic(progress['diagnostic'], definition)
     outcomes = dict(json.loads(row['progress_json'] or '{}').get('step_outcomes') or {})
     outcomes.update(progress.get('step_outcomes') or {})
+    outcomes = {key: ({**value, 'message': flow_recording_diagnostics.safe_error(value['message'], definition)}
+                     if isinstance(value, dict) and value.get('message') is not None else value)
+                for key, value in outcomes.items()}
     if body.status == 'cancelled':
         outcomes = {key: ({**value, 'outcome': 'cancelled', 'message': 'Test cancelled.'}
                          if value.get('outcome') in {'started', 'running', 'ready'} else value)
                     for key, value in outcomes.items()}
     if outcomes:
         progress['step_outcomes'] = outcomes
-    body = body.model_copy(update={'progress': progress})
+    body = body.model_copy(update={'progress': progress, 'error': error})
     db.execute('''INSERT INTO flow_scan_events(scan_id,status,stage,message,details_json,created_at)
         VALUES (?,?,?,?,?,?)''', (row['id'], body.status, body.progress.get('stage'), body.progress.get('message'), json.dumps(body.progress), now))
     db.execute('''UPDATE flow_catalog_scans SET status=?,progress_json=?,result_json=?,error=?,
@@ -298,4 +304,5 @@ def update_operation(db, row, worker_id, body, now):
         db.execute("UPDATE flow_workers SET status='scanning',last_seen_at=?,updated_at=? WHERE worker_id=?", (now, now, worker_id))
     # Recording and validation never publish catalog snapshots or alter the
     # site's last successful discovery timestamp.
-    return {'scan_id': row['id'], 'status': body.status, 'result': result}
+    return {'scan_id': row['id'], 'status': body.status, 'result': result,
+            'cancel_requested': bool(frozen.get('cancel_requested'))}

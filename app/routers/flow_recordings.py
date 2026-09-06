@@ -144,18 +144,21 @@ def cancel_recording(flow_id: int, scan_id: int, request: Request):
         if not row:
             raise HTTPException(404, 'Recording session not found.')
         job = json.loads(row['job_json'])
-        stage = json.loads(row['progress_json'] or '{}').get('stage')
+        previous_progress = json.loads(row['progress_json'] or '{}')
+        stage = previous_progress.get('stage')
         now = datetime.now(timezone.utc)
         requested = job.get('cancel_requested')
-        if row['status'] == 'running' and stage in {'recording', 'finishing', 'cancelling'}:
+        validating = job.get('recording_operation') == 'validate'
+        if row['status'] == 'running' and (validating or stage in {'recording', 'finishing', 'cancelling'}):
             if not requested or (now - datetime.fromisoformat(requested)).total_seconds() < 10:
                 job['cancel_requested'] = requested or now.isoformat()
-                progress = {'stage': 'cancelling', 'message': 'Closing this recording and discarding its unsaved actions.'}
+                progress = {**previous_progress, 'stage': 'cancelling',
+                    'message': 'Stopping this test.' if validating else 'Closing this recording and discarding its unsaved actions.'}
                 db.execute('UPDATE flow_catalog_scans SET job_json=?,progress_json=? WHERE id=?',
                            (json.dumps(job), json.dumps(progress), scan_id))
                 return {'scan_id': scan_id, 'status': 'cancelling', 'message': progress['message']}
-    # Authentication/validation may be blocked inside a portal call. The
-    # existing exact-worker stop is also the fallback for an unresponsive CLI.
+    # A second request after ten seconds closes the exact assigned worker if
+    # a portal call or the recording CLI cannot acknowledge cancellation.
     return flows.stop_scan(scan_id, request)
 
 

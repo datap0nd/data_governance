@@ -1,10 +1,10 @@
 # Recording playback, timing and text diagnostics: test report
 
 - Plan: [test-plan.md](test-plan.md).
-- Evidence cutoff: 2026-09-06 13:09 UTC for the focused checks below; full-suite and final-head CI results are pending at this initial cutoff.
-- Tested code: working-tree implementation on baseline `51946f922a849ed3fc462e4c6f30f927703be51f`; exact UI source hashes are in [browser observations](evidence/ui-observations.json). The final tested head is recorded in the implementation PR before merge.
+- Evidence cutoff: 2026-09-06 13:20 UTC. Final-head GitHub CI completes after this report's commit and is recorded in the PR before merge.
+- Tested code: the full local run started on the working tree committed as `1bf79d94eda34fd5f719a3cf64174978f4fdf843`. Terminal-message and worker-cancellation follow-ups were added while it ran and tested separately below. Final-head CI retests the integrated changes. Exact UI source hashes are in [browser observations](evidence/ui-observations.json).
 - Environment: Windows 11 build 26200, Python 3.13 ARM64, pytest 8.3.5, Playwright 1.62.0, Chrome 152.0.7977.76. Browser fixtures use fictional local HTTP data.
-- Finding: focused automated checks pass. The full regression is in progress. Live GSCM/work-PC execution is **NOT RUN**.
+- Finding: full local regression and focused follow-ups pass. Live GSCM/work-PC execution is **NOT RUN**.
 
 ## Executed checks
 
@@ -19,10 +19,13 @@
 | New editor journey | `pytest tests/test_recording_playback_ui.py -q` | 6 passed, 19.48 s. | [Text/DOM observations](evidence/ui-observations.json), wide and narrow layouts; no screenshots. |
 | Existing editor journeys | `pytest tests/test_optional_recording_editor.py tests/test_recording_visual_editor.py -q` | 19 passed, 46.99 s. | Existing optional checks and visual editing preserved. |
 | Frontend models / syntax | All 22 `tests/test_*.mjs` suites; `node --check` for app, editor, model and playback preview | PASS; Node suite loop 3.29 s. Added unlabeled `get_by_title('Setting')` / `get_by_text('Public')` regression also passed. | UI source hashes in the observation artifact. |
+| Full local Python suite | Full-suite wrapper below; output `test_reports/recording-playback-full.log` and XML | **1,683 passed, 10 warnings, 571.69 s**. | No skips/failures. Existing Starlette/httpx/TestClient deprecations. |
+| Final error/cancel API integration | `pytest tests/test_recording_timing_settings.py tests/test_recording_diagnostics.py -q --tb=short`, then `pytest tests/test_recording_controls.py tests/test_recording_diagnostics.py -q --tb=short` | **26 passed**, 1 warning, 5.01 s; **30 passed**, 1 warning, 17.68 s. | Concise terminal errors; real Cancel route requests cooperative stop, progress acknowledgement carries cancellation, reservation retained until acknowledgement. |
+| Actual worker cancellation acknowledgement | `pytest tests/test_recording_cancel_buffer.py -q` | **3 passed**, 0.91 s. | Worker receives Cancel during a 600-second buffer, acknowledges cancellation and dispatches no click; ended reservations also stop execution. |
 
 ## Full regression and CI
 
-The local full Python suite was started after production changes were frozen. Its actual result will be appended before delivery. Required Windows/Linux CI must pass on the final PR head; its run URL and tested SHA will be recorded in the PR before merge. No passing CI result is claimed at this cutoff.
+The full local suite passed. The final terminal-message and cancellation follow-ups have separate focused evidence above. Required Windows/Linux CI must pass on the final PR head; its run URL, tested SHA, counts and result will be recorded in the PR before merge. No passing CI result is claimed at this cutoff.
 
 ## Host-specific test setup and early failures
 

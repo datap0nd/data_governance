@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -36,7 +36,7 @@ def queued_test():
 def post(scan, status, detail, error=None):
     with database.get_db() as db:
         row = db.execute('SELECT * FROM flow_catalog_scans WHERE id=?', (scan,)).fetchone()
-        flow_recordings.update_operation(db, row, 'test-worker', flows.ScanProgress(status=status, progress=detail, error=error), '2026-09-07T00:00:01Z')
+        return flow_recordings.update_operation(db, row, 'test-worker', flows.ScanProgress(status=status, progress=detail, error=error), '2026-09-07T00:00:01Z')
 
 
 def test_debug_keeps_setting_probe_and_public_failure_from_frozen_definition(flow_db):
@@ -89,6 +89,96 @@ def test_diagnostic_allowlist_redacts_headers_paths_urls_and_entered_values():
     assert diagnostics.safe_error('Locator.fill: rejected value "PrivateCustomerName"', definition) == 'The recorded browser action failed.'
     assert diagnostics.safe_error('<html>Private report rows</html>') == 'Browser error details containing page content are excluded.'
     assert diagnostics.sanitize_diagnostic({'duration_ms': 10 ** 1000}) == {'version': 1}
+
+
+def test_terminal_error_and_step_messages_are_concise_in_recording_list(flow_db):
+    saved, _, scan = queued_test()
+    raw = 'Locator.click: Timeout 120000ms exceeded.\nCall log:\n  waiting for PrivateCustomerName'
+    post(scan, 'running', {'stage': 'recorded_action', 'message': raw,
+        'step_outcomes': {'public': {'outcome': 'failed', 'message': raw}}})
+    post(scan, 'failed', {'stage': 'failed', 'message': raw}, error=raw)
+    app = FastAPI(); app.include_router(routes.router)
+    with TestClient(app) as client:
+        response = client.get(f'/api/flows/{saved["id"]}/recordings')
+    assert response.status_code == 200
+    session = next(item for item in response.json()['sessions'] if item['scan_id'] == scan)
+    expected = 'Browser action timed out after 120000 ms.'
+    assert session['error'] == expected
+    progress = json.loads(session['progress_json'])
+    assert progress['message'] == expected
+    assert progress['step_outcomes']['public']['message'] == expected
+    with database.get_db() as db:
+        messages = '\n'.join(row[0] for row in db.execute('SELECT details_json FROM flow_scan_events WHERE scan_id=?', (scan,)))
+    assert 'Call log:' not in messages and 'PrivateCustomerName' not in messages
+
+
+def test_missing_error_and_cancelled_step_semantics_are_preserved(flow_db):
+    _, _, scan = queued_test()
+    post(scan, 'running', {'stage': 'recorded_action', 'message': None,
+        'step_outcomes': {'setting': {'outcome': 'running', 'message': None}}})
+    with database.get_db() as db:
+        row = db.execute('SELECT error,progress_json FROM flow_catalog_scans WHERE id=?', (scan,)).fetchone()
+    assert row['error'] is None
+    assert json.loads(row['progress_json'])['message'] is None
+    assert json.loads(row['progress_json'])['step_outcomes']['setting']['message'] is None
+    post(scan, 'cancelled', {'stage': 'cancelled'})
+    with database.get_db() as db:
+        row = db.execute('SELECT error,progress_json FROM flow_catalog_scans WHERE id=?', (scan,)).fetchone()
+    assert row['error'] is None
+    assert json.loads(row['progress_json'])['step_outcomes']['setting'] == {'outcome': 'cancelled', 'message': 'Test cancelled.'}
+
+
+def test_progress_returns_cancel_request_and_keeps_reservation_until_acknowledged(flow_db):
+    _, _, scan = queued_test()
+    with database.get_db() as db:
+        db.execute("INSERT INTO flow_workers(worker_id,display_name,status,current_scan_id) VALUES ('test-worker','Test worker','scanning',?)", (scan,))
+    assert post(scan, 'running', {'stage': 'recorded_action'})['cancel_requested'] is False
+    with database.get_db() as db:
+        job = json.loads(db.execute('SELECT job_json FROM flow_catalog_scans WHERE id=?', (scan,)).fetchone()[0])
+        job['cancel_requested'] = '2026-09-07T00:00:01Z'
+        db.execute('UPDATE flow_catalog_scans SET job_json=? WHERE id=?', (json.dumps(job), scan))
+    reply = post(scan, 'running', {'stage': 'recorded_action', 'step_outcomes': {'public': {'outcome': 'running'}}})
+    assert reply['cancel_requested'] is True and reply['status'] == 'running'
+    with database.get_db() as db:
+        session = db.execute('SELECT status,finished_at FROM flow_catalog_scans WHERE id=?', (scan,)).fetchone()
+        worker = db.execute("SELECT status,current_scan_id FROM flow_workers WHERE worker_id='test-worker'").fetchone()
+    assert session['status'] == 'running' and session['finished_at'] is None
+    assert worker['status'] == 'scanning' and worker['current_scan_id'] == scan
+    reply = post(scan, 'cancelled', {'stage': 'cancelled'})
+    assert reply['status'] == 'cancelled'
+    with database.get_db() as db:
+        worker = db.execute("SELECT status,current_scan_id FROM flow_workers WHERE worker_id='test-worker'").fetchone()
+    assert worker['status'] == 'idle' and worker['current_scan_id'] is None
+
+
+@pytest.mark.parametrize('stage', ['recorded_action', 'test_environment', 'authentication'])
+def test_cancel_button_requests_validation_stop_before_force_close(flow_db, monkeypatch, stage):
+    saved, _, scan = queued_test()
+    post(scan, 'running', {'stage': stage, 'step_outcomes': {'public': {'outcome': 'running'}}})
+    forced = []
+    def force_stop(scan_id, request):
+        forced.append(scan_id)
+        return {'scan_id': scan_id, 'status': 'cancelled'}
+    monkeypatch.setattr(flows, 'stop_scan', force_stop)
+    app = FastAPI(); app.include_router(routes.router)
+    with TestClient(app) as client:
+        path = f'/api/flows/{saved["id"]}/recordings/{scan}/cancel'
+        response = client.post(path)
+        assert response.status_code == 200 and response.json()['status'] == 'cancelling'
+        assert forced == []
+        with database.get_db() as db:
+            row = db.execute('SELECT status,job_json,progress_json FROM flow_catalog_scans WHERE id=?', (scan,)).fetchone()
+            assert row['status'] == 'running'
+            assert json.loads(row['progress_json'])['step_outcomes']['public']['outcome'] == 'running'
+            job = json.loads(row['job_json'])
+            assert job['cancel_requested']
+        assert client.post(path).json()['status'] == 'cancelling'
+        assert forced == []
+        with database.get_db() as db:
+            job['cancel_requested'] = (datetime.now(timezone.utc) - timedelta(seconds=11)).isoformat()
+            db.execute('UPDATE flow_catalog_scans SET job_json=? WHERE id=?', (json.dumps(job), scan))
+        assert client.post(path).json()['status'] == 'cancelled'
+        assert forced == [scan]
 
 
 @pytest.mark.parametrize('reason', ['legacy', 'worker_lost', 'startup'])
