@@ -110,6 +110,15 @@ def _write_companion(folder, name, content):
     flow_standalone._atomic_text(target, content)
 
 
+def snapshot_hash(metadata, documentation=None):
+    from app import flow_portable
+    if documentation is None:
+        documentation = (Path(__file__).resolve().parent.parent / 'docs' / 'flow_standalone.md').read_text(encoding='utf-8')
+    return flow_standalone.config_hash({'metadata': metadata, 'documentation': documentation,
+        'engine': flow_portable.execution_hash(),
+        'catalog_engine': flow_standalone.config_hash(flow_portable.execution_sources('catalog'))})
+
+
 def sync_flow(db, flow_id, *, force=False):
     from app.routers import flows
     from fastapi import HTTPException
@@ -122,8 +131,7 @@ def sync_flow(db, flow_id, *, force=False):
         flow_layout.ensure_layout(folder, flow_id)
         docs = (Path(__file__).resolve().parent.parent / 'docs' / 'flow_standalone.md').read_text(encoding='utf-8')
         # Include execution source so the next startup/save refreshes shipped code.
-        digest = flow_standalone.config_hash({'metadata': metadata, 'documentation': docs, 'engine': flow_portable.execution_hash(),
-                                              'catalog_engine': hashlib.sha256(str(flow_portable.execution_sources('catalog')).encode()).hexdigest()})
+        digest = snapshot_hash(metadata, docs)
         previous = manifest.get('handover') or {}
         target = folder / 'Scripts' / 'run_flow.py'
         flow_layout._regular(target)

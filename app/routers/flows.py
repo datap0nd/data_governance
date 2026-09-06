@@ -2969,9 +2969,10 @@ def regenerate_standalone(flow_id: int):
 
 @router.get("/{flow_id}/standalone")
 def standalone_status(flow_id: int):
-    from app import flow_layout
+    from app import flow_layout, flow_handover
     with get_db() as db:
         flow = _flow_out(db, flow_id)
+        metadata = flow_handover.snapshot(db, flow_id)
     try:
         manifest = flow_layout.read_manifest(flow['flow_folder'], flow_id)
         result = manifest.get('handover') or {'state': 'missing'}
@@ -2981,6 +2982,8 @@ def standalone_status(flow_id: int):
         if result.get('state') in {'current', 'draft'} and (
             not target.is_file() or hashlib.sha256(target.read_text(encoding='utf-8').encode()).hexdigest() != result.get('launcher_hash')):
             return {'state': 'modified', 'message': 'Saved Python file is missing or modified. Preserve your edits and save the Flow again.'}
+        if result.get('state') in {'current', 'draft'} and result.get('snapshot_hash') != flow_handover.snapshot_hash(metadata):
+            return {'state': 'stale', 'message': 'These files do not match the saved Flow. Restore folder access and save the Flow again.'}
         return result
     except (ValueError, OSError, TypeError):
         return {'state': 'error', 'message': 'Flow files are unavailable. Restore access to the managed folder, then save again.'}

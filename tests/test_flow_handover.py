@@ -181,3 +181,24 @@ def test_existing_operator_notes_and_dependencies_are_archived_before_refresh(fl
     assert next((scripts / 'versions').glob('requirements-*.txt')).read_text() == 'custom-transform-library==1.0'
     assert 'Task Scheduler' in (scripts / 'README.md').read_text()
     assert flows.standalone_status(saved['id'])['state'] == 'current'
+
+
+def test_status_detects_old_files_when_failed_share_write_could_not_record_error(flow_db, tmp_path, monkeypatch):
+    saved, _ = local_job(tmp_path)
+    before = (Path(saved['flow_folder']) / 'flow.json').read_bytes()
+    # Simulate an unavailable share: neither script nor error marker can be written.
+    with monkeypatch.context() as patch:
+        patch.setattr(flow_handover, 'synchronize', lambda *args, **kwargs: {saved['id']: {'state': 'error'}})
+        with database.get_db() as db:
+            db.execute('UPDATE flows SET name=? WHERE id=?', ('Changed while offline', saved['id']))
+    assert flows.standalone_status(saved['id'])['state'] == 'stale'
+    assert (Path(saved['flow_folder']) / 'flow.json').read_bytes() == before  # read-only status
+    flow_handover.after_commit(database.DB_PATH)
+    assert flows.standalone_status(saved['id'])['state'] == 'current'
+
+
+def test_snapshot_fingerprint_is_stable_across_python_hash_seeds():
+    code = 'from app.flow_handover import snapshot_hash; print(snapshot_hash({"name": "same saved Flow"}))'
+    values = [subprocess.check_output([sys.executable, '-c', code], text=True,
+              env={**os.environ, 'PYTHONHASHSEED': str(seed)}) for seed in (1, 2)]
+    assert values[0] == values[1]
