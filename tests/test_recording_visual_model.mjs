@@ -29,3 +29,12 @@ console.log('Visual recording model tests passed');
 const title={text:'Sales Report',kind:'page_title',target:{page:'page',locator:[]}};
 const waitTitle={steps:[{id:'wait',action:'wait',page:'page',seconds:5},{id:'open',action:'goto',page:'page'}],identity:title};
 assert.equal(M.remove(waitTitle,'wait').identity.text,'Sales Report');
+
+// Old readiness/title metadata must never impose hidden movement requirements.
+const legacy={steps:[input,{id:'generate',action:'click',page:'page'},event],
+    parameters:{start:{step_id:'input',mode:'fixed'}},
+    identity:{text:'Old title',target:{page:'closed-page',locator:[]}},
+    readiness:{mode:'changed_text',trigger_step_id:'generate',target:{page:'closed-page'}}};
+assert.equal(M.move(legacy,'event',0).steps[0].id,'event');
+assert.equal(M.move(legacy,'input',2).steps[2].id,'input');
+assert.throws(()=>M.validatePages({...legacy,parameters:{start:{step_id:'missing'}}}),/removed input/);

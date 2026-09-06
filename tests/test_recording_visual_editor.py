@@ -115,7 +115,7 @@ def test_mobile_details_follow_selected_card_and_keyboard_selection(editor_page)
     button.focus();page.keyboard.press('Enter')
     assert page.locator('[data-card].selected + .recording-details').count()==1
     page.get_by_role('button',name='Move up',exact=True).focus()
-    # Moving download above its readiness assertion is safe, but not above generation.
+    # Recorded actions can be reordered while their page remains available.
     page.keyboard.press('Enter')
     assert page.locator('.recording-details').count()==1
 
@@ -141,7 +141,7 @@ def test_compound_download_stays_grouped_and_roundtrips(editor_page):
     assert next(s for s in saved['steps'] if s['id']==event['id'])==event
 
 
-def test_identity_candidate_keeps_iframe_and_manual_download_is_not_label_inferred(editor_page):
+def test_missing_identity_does_not_block_test_and_download_is_not_label_inferred(editor_page):
     page,value=editor_page
     event=value['steps'][-1];value['steps'][-1]=event['steps'][0]
     value['identity']={}
@@ -152,11 +152,11 @@ def test_identity_candidate_keeps_iframe_and_manual_download_is_not_label_inferr
     assert not page.get_by_label('This action produces a download').is_checked()
     page.get_by_label('This action produces a download').check()
     page.get_by_role('button',name='Test recording',exact=True).click()
-    page.get_by_label('Recorded text').select_option('0')
-    page.get_by_role('button',name='Use this check',exact=True).click()
-    page.get_by_role('button',name='Save draft',exact=True).click()
+    page.wait_for_function('()=>calls.length===2')
+    assert page.get_by_text('Check the recorded page',exact=True).count()==0
     saved=page.evaluate('()=>calls[0].body.definition')
-    assert saved['identity']['target']==target
+    assert saved['identity']=={}
+    assert saved['identity_candidates'][0]['target']==target
     assert saved['steps'][-1]['steps'][0]['id']==event['steps'][0]['id']
 
 

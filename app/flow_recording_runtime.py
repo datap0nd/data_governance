@@ -39,69 +39,6 @@ def locate(pages, target):
     return node
 
 
-def _identity(pages, definition):
-    from playwright.sync_api import expect
-    identity = definition['identity']
-    target = locate(pages, identity['target'])
-    if identity.get('kind') == 'page_title':
-        expect(target).to_have_title(identity['text'], timeout=120_000)
-        return
-    expect(target).to_have_count(1)
-    expect(target).to_be_visible(timeout=120_000)
-    expect(target).to_have_text(identity['text'], timeout=120_000)
-    if target.evaluate("el => Boolean(el.closest('button,input,select,[role=button]'))"):
-        raise RuntimeError('A button or input label cannot establish the report identity. Choose the report title.')
-
-
-def _begin_completion(pages, definition, step):
-    signal = definition['readiness']
-    if signal['trigger_step_id'] != step['id']:
-        return None
-    if signal['mode'] == 'navigation':
-        return {'mode': 'navigation'}
-    node = locate(pages, signal['target'])
-    if signal['mode'] == 'changed_text':
-        return {'mode': 'changed_text', 'node': node, 'before': node.inner_text()}
-    # Install before triggering the report so fast loading transitions count.
-    # No portal event handler is overwritten. A replaced indicator is located
-    # by its exact DOM ID; otherwise a replacement fails closed.
-    key = 'metronome-' + uuid.uuid4().hex
-    node.evaluate('''(el, key) => {
-        const visible = () => {
-            const current = el.id ? document.getElementById(el.id) : el;
-            if (!current || !current.isConnected) return false;
-            const box = current.getBoundingClientRect(), style = getComputedStyle(current);
-            return box.width > 0 && box.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-        };
-        const state = {seen: false, done: false};
-        const observer = new MutationObserver(() => { const showing = visible();
-            state.seen ||= showing; state.done = state.seen && !showing; });
-        observer.observe(document, {subtree:true, childList:true, attributes:true});
-        state.observer = observer; window[key] = state;
-    }''', key)
-    return {'mode': 'loading_cycle', 'node': node, 'key': key}
-
-
-def _finish_completion(check, response=None):
-    from playwright.sync_api import expect
-    if check['mode'] == 'navigation':
-        if response is None or not response.ok:
-            raise RuntimeError('Report navigation did not return a successful fresh document response.')
-    elif check['mode'] == 'changed_text':
-        expect(check['node']).not_to_have_text(check['before'], timeout=120_000)
-        expect(check['node']).to_be_visible()
-    else:
-        node, key = check['node'], check['key']
-        try:
-            for _ in range(480):
-                if node.evaluate('(el, key) => Boolean(window[key]?.done)', key):
-                    return
-                time.sleep(0.25)
-            raise RuntimeError('The report loading indicator did not complete an observed loading cycle.')
-        finally:
-            node.evaluate('(el, key) => { window[key]?.observer.disconnect(); delete window[key]; }', key)
-
-
 def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifacts):
     from playwright.sync_api import expect
     from app import flow_worker
@@ -114,7 +51,6 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
     output_count = sum(step['action'] == 'download' for step in flow_recording.walk_steps(definition['steps']))
     output_index = 0
     captured = []
-    readiness_confirmed = False
     staging.mkdir(parents=True, exist_ok=True)
 
     outcomes = {}
@@ -128,17 +64,21 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
                  'step_outcomes': copy.deepcopy(outcomes),
                  **extra}, artifacts)
 
-    def read_defaults():
+    def read_defaults(*, final=False):
         for name, parameter in definition.get('parameters', {}).items():
             if parameter['mode'] != 'portal_default' or name in defaults:
                 continue
             if not parameter.get('target'):
                 continue
+            if parameter['target']['page'] not in pages:
+                if final:
+                    raise RuntimeError(f'Date parameter {name} could not be read from its recorded page.')
+                continue
             value = locate(pages, parameter['target']).input_value(timeout=30_000)
             datetime.strptime(value, parameter.get('format', '%Y-%m-%d'))
             defaults[name] = actual_parameters[name] = value
         for name, expected in prior_defaults.items():
-            if defaults.get(name) != expected:
+            if (name in defaults or final) and defaults.get(name) != expected:
                 raise RuntimeError('Portal defaults changed since the original run. Start a new run.')
         dates = {}
         for name, parameter in definition.get('parameters', {}).items():
@@ -152,7 +92,7 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
     active_step = None
 
     def execute(steps):
-        nonlocal output_index, readiness_confirmed, active_step
+        nonlocal output_index, active_step
         for step in steps:
             active_step = step
             action = step['action']
@@ -196,11 +136,7 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
             if skip:
                 notify(step, 'Portal default retained.', outcome='completed')
                 continue
-            check = _begin_completion(pages, definition, step)
             if action == 'download':
-                if not readiness_confirmed:
-                    raise RuntimeError('Report generation has not passed its completion check.')
-                _identity(pages, definition)
                 read_defaults()
                 # Optional input locators may be attached to fixed/calculated
                 # parameters absent from the original recording.
@@ -234,17 +170,13 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
                 getattr(expect(node), step['assertion'])(*[_value(item) for item in args], **kwargs)
             elif action == 'close':
                 node.close()
+                pages.pop(step['page'], None)
             elif action == 'goto':
-                response = node.goto(*args, **{**kwargs, 'wait_until': 'domcontentloaded'})
+                node.goto(*args, **{**kwargs, 'wait_until': 'domcontentloaded'})
             elif action in flow_recording.ACTIONS:
                 getattr(node, action)(*[_value(item) for item in args], **kwargs)
             else:
                 raise ValueError(f'Unsupported action {action}.')
-            if check:
-                read_defaults()
-                _finish_completion(check, response if action == 'goto' else None)
-                readiness_confirmed = True
-                notify(step, 'Report completion signal verified.', outcome='ready', attempt=1)
             notify(step, 'Action completed.', outcome='completed')
     try:
         execute(definition['steps'])
@@ -254,7 +186,7 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
         raise
     if len(captured) != output_count:
         raise RuntimeError('The recording did not produce its complete expected output bundle.')
-    read_defaults()
+    read_defaults(final=True)
     # All files are captured before publication, so a later failed interaction
     # cannot leave a partially published direct-output bundle.
     for step, staged, index in captured:
@@ -270,12 +202,24 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
             downstream = job.get('transformation', {}).get('enabled') or job.get('sql_handoff', {}).get('enabled')
             if downstream and fmt in {'html', 'txt'}:
                 raise ValueError('HTML/text downloads cannot be transformed or loaded into SQL.')
+            needs_table = bool(downstream or specification.get('min_rows') or specification.get('headers')
+                or specification.get('period_checks') or job['downloads'].get('excel_trim', 'none') != 'none')
             metadata = flow_worker._store_completed_download(staged, output,
                 file_format=fmt, asap_download_type={'html': 'html', 'txt': 'plain_text', 'csv': 'csv_file_format', 'xlsx': 'excel_plain_text'}[fmt],
-                require_normalized_csv=fmt in {'csv', 'xlsx'},
+                require_normalized_csv=fmt in {'csv', 'xlsx'} and needs_table, recorded_output=True,
                 allow_raw_xlsx_fallback=False, excel_trim=job['downloads'].get('excel_trim', 'none'), csv_preamble='none')
-            if fmt in {'csv', 'xlsx'} and not specification.get('allow_empty') and not metadata.get('row_count'):
-                raise RuntimeError(f"{step['id']}: the output contains no data rows.")
+            minimum_rows = specification.get('min_rows', 0)
+            if minimum_rows:
+                csv_path = metadata.get('normalized_file_path') or metadata.get('file_path')
+                if not csv_path or Path(csv_path).suffix.lower() != '.csv':
+                    raise RuntimeError('Data row checks require a normalized CSV output.')
+                with open(csv_path, encoding='utf-8-sig', newline='') as stream:
+                    rows = csv.reader(stream)
+                    next(rows, None)  # The first row contains column names.
+                    row_count = sum(any(cell.strip() for cell in row) for row in rows)
+                metadata['row_count'] = row_count
+                if row_count < minimum_rows:
+                    raise RuntimeError(f"{step['id']}: downloaded data has {row_count} rows; at least {minimum_rows} required.")
             if specification.get('headers'):
                 csv_path = metadata.get('normalized_file_path') or metadata.get('file_path')
                 if not csv_path or Path(csv_path).suffix.lower() != '.csv':

@@ -55,6 +55,8 @@ def test_v2_wait_multiple_outputs_and_transform_match_portable(flow_db, tmp_path
     url, requested = range_server
     _, job = draft_job(url)
     value = definition(url)
+    value.pop('identity')
+    value.pop('readiness')
     value['parameters']['start']['value'] = '2025-01-01'
     value['parameters']['end'].update(mode='fixed', value='2025-05-25')
     value['steps'].insert(1, {'id':'wait-user','action':'wait','page':'page','seconds':1})
