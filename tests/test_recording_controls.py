@@ -70,7 +70,8 @@ def test_recording_reservation_does_not_start_an_unrelated_queued_run(flow_db, m
         assert db.execute('SELECT status FROM flow_runs WHERE id=?', (queued,)).fetchone()[0] == 'queued'
 
 
-def test_recording_worker_does_not_launch_a_spare_catalog_browser(tmp_path, monkeypatch):
+@pytest.mark.parametrize('browser_error', [False, True])
+def test_recording_worker_does_not_launch_a_spare_catalog_browser(tmp_path, monkeypatch, browser_error):
     from contextlib import nullcontext
     from types import SimpleNamespace
     from app import flow_worker, flow_browser
@@ -84,11 +85,16 @@ def test_recording_worker_does_not_launch_a_spare_catalog_browser(tmp_path, monk
     monkeypatch.setattr(flow_worker, '_api', api)
     monkeypatch.setattr(flow_worker, 'sync_playwright', lambda: nullcontext(object()))
     monkeypatch.setattr(flow_browser, 'launch', lambda *a, **k: pytest.fail('Opened an unnecessary catalog browser'))
-    monkeypatch.setattr(recorder, 'browser_session', lambda *a, **k: nullcontext((context, tmp_path)))
+    def browser_session(*args, **kwargs):
+        assert statuses == ['running'], 'Opening browser progress must arrive before browser launch'
+        if browser_error:
+            raise RuntimeError('Test browser could not open')
+        return nullcontext((context, tmp_path))
+    monkeypatch.setattr(recorder, 'browser_session', browser_session)
     monkeypatch.setattr(recorder, 'reservation_heartbeat', lambda *a, **k: nullcontext())
     monkeypatch.setattr(recorder, 'record', lambda *a, **k: {'definition': definition()})
     flow_worker.run_worker('http://localhost:1', 'recorder', 'Recorder', tmp_path, True, True)
-    assert statuses == ['succeeded']
+    assert statuses == ['running', 'failed' if browser_error else 'succeeded']
 
 
 def recording_session(flow_db, monkeypatch):

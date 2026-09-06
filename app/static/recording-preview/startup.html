@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Recording startup preview</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>
+body { padding: 20px; }
+.startup-preview { max-width: 868px; margin: 0 auto 12px; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; color: var(--text-muted); }
+.startup-preview strong { margin-right: auto; }
+.startup-preview label { display: flex; align-items: center; gap: 8px; }
+.startup-preview select { max-width: 100%; }
+@media (max-width: 600px) { body { padding: 8px; } .startup-preview { padding: 0 16px; } .startup-preview label { flex-wrap: wrap; } }
+</style>
+<aside class="startup-preview">
+  <strong>Preview · fictional data</strong>
+  <label>Test outcome <select id="startup-outcome">
+    <option value="unavailable">Worker unavailable</option>
+    <option value="failed">Browser cannot open</option>
+    <option value="succeeded">Test passes</option>
+  </select></label>
+</aside>
+<main id="flow-workspace"><button type="button" class="btn-primary" id="startup-open">Review recording</button></main>
+<script src="/static/flow_recording_model.js"></script>
+<script src="/static/flow_recording_editor.js"></script>
+<script src="startup.js"></script>
+</html>

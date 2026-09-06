@@ -258,7 +258,11 @@ window.RecordedFlowEditor = (() => {
                 if(!body.querySelector('[data-start]')){load(data.revisions[0]);const kept=drafts.get(flowId);if(kept?.dirty){({draft,revisionId,baseline,selected,undo,dirty}=kept);}shell();renderEditor();}
                 else if(!draft || (wasRecording && previous!==arrived) || (!dirty && previous!==arrived && revisionId!==arrived)) {load(data.revisions.find(r=>r.id===revisionId)||data.revisions[0]);if(previous!==arrived)load(data.revisions[0]);if(wasRecording){if(settings)delete settings.recording_revision_id;window._flowRecordingSelections?.set(flowId,null);}renderEditor();}
                 const session=active()||data.sessions[0],progress=parse(session?.progress_json);
-                body.querySelector('[data-session]').textContent=session?(session.status==='succeeded'?(session.operation==='validate'?'Test passed. Back to Edit Flow, then Save.':''):(session.error||progress.message||'Starting worker…')):'';
+                const sessionMessage=!session?'':session.status==='succeeded'?(session.operation==='validate'?'Test passed. Back to Edit Flow, then Save.':''):
+                    session.error||(session.status==='failed'?(['failed','worker_start_failed'].includes(progress.stage)&&progress.message||'Could not complete this session. Try again.'):
+                    session.status==='cancelled'?(session.operation==='validate'?'Test cancelled.':'Recording cancelled.'):
+                    progress.message||({queued:'Waiting for worker…',claimed:'Opening browser…',running:session.operation==='validate'?'Testing recording…':'Recording…'}[session.status]||''));
+                body.querySelector('[data-session]').textContent=sessionMessage;
                 if(session?.operation==='validate'&&session.status==='succeeded'&&session.revision_id===revisionId&&!dirty){
                     const form=document.getElementById('flow-builder-form');
                     // The builder DOM is detached while recording is open; the callback

@@ -25,7 +25,6 @@ import time
 import traceback
 import zipfile
 from contextlib import contextmanager
-from app.flow_clock import dubai_today
 from datetime import date, datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
@@ -42,6 +41,7 @@ _CODE_DIR = Path(__file__).resolve().parent.parent
 if str(_CODE_DIR) not in sys.path:
     sys.path.insert(0, str(_CODE_DIR))
 
+from app.flow_clock import dubai_today
 from app.flow_paths import assert_job_paths
 from app import flow_layout
 
@@ -7242,6 +7242,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                                 context.close()
                             context, page = None, None
                             definition = (scan['job'].get('validation_job') or {}).get('recording', {}).get('definition', {})
+                            recording_progress('running', {'stage': 'opening_browser', 'message': 'Opening browser…'})
                             with flow_recorder_worker.reservation_heartbeat(server, worker_id, scan_id), flow_recorder_worker.browser_session(
                                     playwright, profile_dir, flow_browser.channel_for(scan['job']),
                                     timezone=definition.get('timezone', 'UTC')) as (recording_context, recording_profile):
