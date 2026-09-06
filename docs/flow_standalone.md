@@ -5,7 +5,7 @@ Every managed Flow automatically maintains these files after committed changes:
 - `flow.json` in the Flow folder: name, owner/contact, creator, schedule and Dubai timezone, source and bookmark/report route, saved filters, output policy, transformation and SQL settings, browser/timing defaults, and active/latest recording definitions.
 - `Scripts/run_flow.py`: Python execution code and frozen configuration. Catalog/bookmark, local-file and Outlook Flows now include their execution code as well as recorded Flows. No installed Metronome application or running server is required.
 - `Scripts/README.md` (this guide) and `Scripts/requirements.txt`: operator instructions and execution libraries.
-- `Scripts/versions/`: prior generated executable revisions. Preserve the whole Flow folder, including transformation scripts.
+- `Scripts/versions/`: prior generated executable revisions and previous documentation/requirements copies. Existing operator notes and custom dependency lists are archived before those generated files refresh. Preserve the whole Flow folder, including transformation scripts; consult archived notes and dependency lists when handing over.
 
 There is no Generate standalone step. Save/edit normally; owner, schedule, source/catalog, recording and shared preference changes also refresh the derived files. Startup reconciles existing managed Flows. SQLite remains the source of truth: editing these files does not edit or schedule a Flow in Metronome. `configuration` in flow.json describes the saved Flow; `handover.state` indicates whether its script is current, draft, or failed to update. These are continuity copies, not a database restore format or a backup of run history/data.
 

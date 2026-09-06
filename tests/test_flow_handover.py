@@ -169,3 +169,15 @@ def test_legacy_installed_launcher_is_upgraded_and_archived(flow_db, tmp_path):
     flow_handover.synchronize(database.DB_PATH, force=True)
     assert 'from app.flow_standalone' not in script.read_text()
     assert list((script.parent / 'versions').glob('*.py'))
+
+
+def test_existing_operator_notes_and_dependencies_are_archived_before_refresh(flow_db, tmp_path):
+    saved, _ = local_job(tmp_path)
+    scripts = Path(saved['flow_folder']) / 'Scripts'
+    (scripts / 'README.md').write_text('Team-specific recovery notes', encoding='utf-8')
+    (scripts / 'requirements.txt').write_text('custom-transform-library==1.0', encoding='utf-8')
+    flow_handover.synchronize(database.DB_PATH, flow_id=saved['id'], force=True)
+    assert next((scripts / 'versions').glob('README-*.md')).read_text() == 'Team-specific recovery notes'
+    assert next((scripts / 'versions').glob('requirements-*.txt')).read_text() == 'custom-transform-library==1.0'
+    assert 'Task Scheduler' in (scripts / 'README.md').read_text()
+    assert flows.standalone_status(saved['id'])['state'] == 'current'

@@ -88,6 +88,28 @@ def _draft(folder, flow_id, metadata, reason):
     return result
 
 
+def _write_companion(folder, name, content):
+    """Preserve any existing operator notes/dependencies before refreshing a copy."""
+    target = folder / 'Scripts' / name
+    flow_layout._regular(target)
+    if target.exists():
+        previous = target.read_text(encoding='utf-8')
+        if previous == content:
+            return
+        versions = folder / 'Scripts' / 'versions'
+        flow_layout._regular(versions)
+        versions.mkdir(exist_ok=True)
+        digest = hashlib.sha256(previous.encode()).hexdigest()
+        archived = versions / f'{target.stem}-{digest}{target.suffix}'
+        flow_layout._regular(archived)
+        if archived.exists():
+            if archived.read_text(encoding='utf-8') != previous:
+                raise ValueError('An archived Flow companion file was modified; preserve it before saving again.')
+        else:
+            flow_standalone._atomic_text(archived, previous)
+    flow_standalone._atomic_text(target, content)
+
+
 def sync_flow(db, flow_id, *, force=False):
     from app.routers import flows
     from fastapi import HTTPException
@@ -120,10 +142,10 @@ def sync_flow(db, flow_id, *, force=False):
         else:
             job['handover'] = metadata
             result = flow_standalone.generate(job)
-        flow_standalone._atomic_text(folder / 'Scripts' / 'README.md', docs)
+        _write_companion(folder, 'README.md', docs)
         # Execution dependencies only; Outlook uses the embedded PowerShell helper.
         requirements = '\n'.join(flow_portable.DEPENDENCIES) + '\n'
-        flow_standalone._atomic_text(folder / 'Scripts' / 'requirements.txt', requirements)
+        _write_companion(folder, 'requirements.txt', requirements)
         result = {**result, 'snapshot_hash': digest}
         flow_layout.update_manifest(folder, flow_id, handover=result)
         return result
