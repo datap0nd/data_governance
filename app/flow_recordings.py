@@ -99,12 +99,17 @@ def queue_operation(db, flow_id, operation, actor, *, revision_id=None, pending_
     from app.routers import flows
     assert_flow_idle(db, flow_id)
     flow = flows._flow_out(db, flow_id)
-    if flow['source_adapter'] not in {'asap_portal', 'gscm_portal'} or not flow.get('flow_folder'):
-        raise HTTPException(409, 'Recording needs an ASAP/GSCM Flow with a managed folder.')
+    if flow['source_adapter'] not in {'asap_portal', 'gscm_portal'}:
+        raise HTTPException(409, 'Choose an ASAP or GSCM website for recording.')
     if db.execute("SELECT 1 FROM flow_runs WHERE flow_id=? AND status IN ('queued','claimed','running')", (flow_id,)).fetchone():
         raise HTTPException(409, 'Wait for the active Flow run to finish.')
     from app.routers.pipelines import assert_resource_unlocked
     assert_resource_unlocked(db, 'flow', str(flow_id))
+    from app import flow_paths
+    try:
+        flow_paths.managed_destination(db, flow, adopt=True)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(409, f'Could not prepare the flow folder: {exc}') from exc
     site = dict(db.execute('SELECT * FROM flow_sites WHERE id=?', (flow['site_id'],)).fetchone())
     job = {'schema_version': 1, 'job_type': 'catalog_scan', 'recording_operation': operation,
            'recording_flow_id': flow_id, 'recording_version': 2, 'recorder_controls': 1, 'execution': {'browser_mode': 'headed', 'browser_channel': flow_browser.configured(db)}, 'browser_channel': flow_browser.configured(db),

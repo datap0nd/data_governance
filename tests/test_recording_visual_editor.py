@@ -152,8 +152,8 @@ def test_identity_candidate_keeps_iframe_and_manual_download_is_not_label_inferr
     assert not page.get_by_label('This action produces a download').is_checked()
     page.get_by_label('This action produces a download').check()
     page.get_by_role('button',name='Test recording',exact=True).click()
-    page.get_by_label('Suggested report title').select_option('0')
-    page.get_by_role('button',name='Use report title',exact=True).click()
+    page.get_by_label('Recorded text').select_option('0')
+    page.get_by_role('button',name='Use this check',exact=True).click()
     page.get_by_role('button',name='Save draft',exact=True).click()
     saved=page.evaluate('()=>calls[0].body.definition')
     assert saved['identity']['target']==target

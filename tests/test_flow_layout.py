@@ -50,7 +50,9 @@ def test_adoption_keeps_historic_target_and_is_idempotent(flow_db, tmp_path):
     old = tmp_path / "old"
     old.mkdir(); (old / "history.csv").write_text("history")
     saved = flows.create_flow(_flow(site["id"], report["id"], target_folder=str(old)), _request())
-    assert saved["flow_folder"] is None
+    # Simulate a pre-managed installation; new API creations always allocate.
+    with database.get_db() as db:
+        db.execute("UPDATE flows SET name=?, flow_folder=NULL, target_folder=? WHERE id=?", ("Legacy flow", str(old), saved["id"]))
     adopted = flows.adopt_flow_folder(saved["id"], _request())
     assert adopted["previous_target_folder"] == str(old)
     assert (old / "history.csv").read_text() == "history"

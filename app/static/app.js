@@ -10735,7 +10735,7 @@ function _flowEmptyState(catalog) {
 
 function _flowSourcePickerHtml(catalog) {
     const portalReady = catalog.sites.some(site => site.enabled)
-        && catalog.reports.some(report => report.enabled && !report.stale);
+        && catalog.reports.some(report => report.enabled && !report.stale && report.automation?.kind !== "recorded_route");
     return `
         <div class="flow-form-section">
             <div class="flow-section-head"><h2>Choose a flow source</h2><p>The source controls how Metronome acquires the data. Storage, transformation, scheduling, and SQL handoff stay consistent.</p></div>
@@ -11002,7 +11002,7 @@ function _flowReportGroup(report) {
 }
 
 function _flowReportOptions(catalog, siteId, selected) {
-    const reports = catalog.reports.filter(report => String(report.site_id) === String(siteId) && report.enabled && !report.stale);
+    const reports = catalog.reports.filter(report => String(report.site_id) === String(siteId) && report.enabled && !report.stale && report.automation?.kind !== "recorded_route");
     if (!reports.length) return '<option value="">Add or discover a report for this website first</option>';
     const groups = new Map();
     for (const report of reports) {
@@ -11192,53 +11192,23 @@ function _flowSqlLinkHtml(existing) {
 }
 
 function _flowDestinationHtml(existing) {
-    if (existing?.id && !existing.flow_folder && existing.source_type !== "file") {
-        return `<div id="flow-destination" class="flow-span-2"><label><span>Current target folder</span><input id="flow-target-folder" required value="${esc(existing.target_folder || "")}"></label><p>Historic files stay here after adoption.</p><button type="button" class="btn-secondary" id="flow-adopt-folder" data-id="${existing.id}">Adopt managed folder</button></div>`;
-    }
-    return `<div id="flow-destination" class="flow-span-2 flow-dialog-help"><strong>Flow folder</strong><p>${existing?.id && existing.flow_folder ? esc(existing.flow_folder) : "Metronome creates a folder with this flow's name and ID when you save."}</p><small>${existing?.source_type === "file" || existing?._source_type === "file" ? "Source snapshots stay private; the source file is never moved." : "Downloads and Scripts have separate subfolders. Renaming the flow preserves this path."}</small>${existing?.id && existing.flow_folder ? `<button type="button" class="btn-secondary" id="flow-repair-layout" data-id="${existing.id}">Repair folder layout</button>` : ""}${existing?.id && !existing.flow_folder ? `<button type="button" class="btn-secondary" id="flow-adopt-folder" data-id="${existing.id}">Adopt managed folder</button>` : ""}</div>`;
+    const folder = existing?.folder_relative || existing?.flow_folder;
+    const path = folder && (existing?.source_type === 'file' ? folder : `${folder}/Downloads`);
+    return `<div id="flow-destination" class="flow-span-2"><span>Output folder</span><div>${path ? esc(path) : "Created automatically in the source’s module"} ${existing?.id ? `<button type="button" class="btn-secondary flow-open-folder" data-id="${existing.id}">Open folder</button>` : ""}</div></div>`;
 }
 
 function _flowSyncParallelism() {
     const control = $('#flow-download-parallelism');
     if (!control) return;
     const headed = $('#flow-browser-mode')?.value === 'headed';
-    const unmanaged = control.dataset.unmanaged === 'true';
-    control.disabled = unmanaged;
+    control.disabled = false;
     const help = $('#flow-download-parallelism-help');
     if (help) help.textContent = [
         headed ? 'Uses visible slots configured in System > Flow workers. Each window has its own browser profile; complete sign-in in each window if prompted.' : '',
-        unmanaged ? 'In Where it goes, choose Adopt managed folder to enable parallel downloads. New downloads will use that folder; historical files stay where they are.' : '',
-        !headed && !unmanaged ? 'Uses available background slots configured in System > Flow workers.' : '',
-        !unmanaged ? 'SQL and transformations wait for the full bundle.' : '',
-    ].filter(Boolean).join(' ');
-}
 
-function _flowBindFolderActions(state) {
-    const repair = $('#flow-repair-layout');
-    if (repair) repair.onclick = async event => {
-        const button = event.currentTarget;
-        button.disabled = true;
-        try {
-            await apiPost(`/api/flows/${button.dataset.id}/repair-layout`);
-            toast('Folder layout checked and repaired.');
-        } catch (err) { toast(err.message); }
-        finally { button.disabled = false; }
-    };
-    const adopt = $('#flow-adopt-folder');
-    if (adopt) adopt.onclick = async event => {
-        const button = event.currentTarget;
-        button.disabled = true;
-        try {
-            const updated = await apiPost(`/api/flows/${button.dataset.id}/adopt-folder`);
-            Object.assign(state.flows.find(flow => flow.id === updated.id) || {}, updated);
-            $('#flow-destination').outerHTML = _flowDestinationHtml(updated);
-            const parallel = $('#flow-download-parallelism');
-            if (parallel) parallel.dataset.unmanaged = 'false';
-            _flowSyncParallelism();
-            _flowBindFolderActions(state);
-            toast('Managed folder created. Historical files stay in their original folder.');
-        } catch (err) { toast('Folder not adopted: ' + err.message); button.disabled = false; }
-    };
+        !headed ? 'Uses available background slots configured in System > Flow workers.' : '',
+        'SQL and transformations wait for the full bundle.',
+    ].filter(Boolean).join(' ');
 }
 
 function _flowOutlookBuilderHtml(existing = null) {
@@ -11258,7 +11228,7 @@ function _flowOutlookBuilderHtml(existing = null) {
             <form id="flow-builder-form" data-id="${existing?.id || ""}" data-source-type="${isFile ? "file" : "outlook"}">
                 <div class="flow-form-section">
                     ${isFile ? `
-                    <div class="flow-section-head"><h2>From file</h2><p>Metronome reads one exact path using the background worker's Windows account. The configured source is never modified.</p></div>
+                    <div class="flow-section-head"><h2>From file</h2></div>
                     <div class="flow-form-grid">
                         <label><span>Flow name</span><input id="flow-name" required maxlength="200" value="${esc(existing?.name || "")}" placeholder="Daily file ETL"></label>
                         <label class="flow-span-2"><span>Source file</span><input id="flow-local-file-path" required maxlength="2000" value="${esc(existing?.local_file_path || "")}" placeholder="\\\\server\\share\\folder\\data.xlsx"><small>Enter one absolute local or UNC path ending in .csv, .xls, .xlt, .xlsb, .xlsx, .xlsm, .xltx, or .xltm. Access is determined by the worker service account.</small></label>
@@ -11266,16 +11236,16 @@ function _flowOutlookBuilderHtml(existing = null) {
                         <div class="flow-span-2 flow-dialog-help">Producing runs keep the original bytes and normalized CSV in the private worker store. Only the newest 3 snapshots are retained; unchanged scheduled checks create no snapshot.</div>
                         ${_flowDestinationHtml(existing)}
                     </div>` : `
-                    <div class="flow-section-head"><h2>Outlook source</h2><p>Metronome searches the signed-in user's default, top-level Inbox and selects the newest email whose subject contains this text.</p></div>
+                    <div class="flow-section-head"><h2>Outlook source</h2></div>
                     <div class="flow-form-grid">
                         <label><span>Flow name</span><input id="flow-name" required maxlength="200" value="${esc(existing?.name || "")}" placeholder="Daily emailed data"></label>
                         <label><span>Subject contains</span><input id="flow-outlook-subject" required maxlength="500" value="${esc(existing?.outlook_subject_contains || "")}" placeholder="Customer data code"></label>
-                        <label><span>Output storage</span><select id="flow-output-mode"><option value="run_folders" ${existing?.output_mode !== "direct_replace" ? "selected" : ""}>Run folders · keep newest 3</option><option value="direct_replace" ${existing?.output_mode === "direct_replace" ? "selected" : ""}>Direct files · replace same name</option></select><small id="flow-output-mode-help">${existing?.output_mode === "direct_replace" ? "The attachment is published directly after validation. Outlook keeps the original attachment name, so dated names accumulate and only an identical name is replaced." : "Each producing run keeps the attachment inside its own #id_dd-mm-yyyy folder; only the newest 3 are kept."}</small></label>
+                        <label><span>Output files</span><select id="flow-output-mode"><option value="run_folders" ${existing?.output_mode !== "direct_replace" ? "selected" : ""}>Separate runs · keep last 3</option><option value="direct_replace" ${existing?.output_mode === "direct_replace" ? "selected" : ""}>Fixed file path · replace previous output</option></select><small id="flow-output-mode-help">${existing?.output_mode === "direct_replace" ? "The attachment is published directly after validation. Outlook keeps the original attachment name, so dated names accumulate and only an identical name is replaced." : "Each producing run keeps the attachment inside its own #id_dd-mm-yyyy folder; only the newest 3 are kept."}</small></label>
                         ${_flowDestinationHtml(existing)}
                     </div>`}
                 </div>
                 <div class="flow-form-section">
-                    <div class="flow-section-head"><h2>Transformation</h2><p>Optionally run one local script against the normalized CSV before SQL insertion.</p></div>
+                    <div class="flow-section-head"><h2>Transformation</h2></div>
                     <div class="flow-form-grid">
                         <label class="flow-check flow-span-2"><input id="flow-transform-enabled" type="checkbox" ${existing?.transform_enabled ? "checked" : ""}><span>Transform the normalized CSV before SQL insertion</span></label>
                         <div id="flow-transform-fields" class="flow-form-grid flow-span-2">
@@ -11284,11 +11254,11 @@ function _flowOutlookBuilderHtml(existing = null) {
                     </div>
                 </div>
                 <div class="flow-form-section">
-                    <div class="flow-section-head"><h2>Ownership and failure alerts</h2><p>The owner receives an Outlook alert whenever this flow fails.</p></div>
+                    <div class="flow-section-head"><h2>Ownership and failure alerts</h2></div>
                     <div class="flow-form-grid"><label class="flow-span-2"><span>Flow owner</span><select id="flow-owner">${_flowOwnerOptions(people, existing?.owner_person_id)}</select><small id="flow-owner-help">${_flowOwnerHelp(owner)}</small></label></div>
                 </div>
                 <div class="flow-form-section">
-                    <div class="flow-section-head"><h2>Schedule and SQL handoff</h2><p>${isFile ? "The background worker checks the path on schedule. Unchanged content skips transformation and SQL; Manual Run always reprocesses it." : "The background worker launches a per-run interactive Outlook task for acquisition, then uses the same transformation and SQL contract as website flows."}</p></div>
+                    <div class="flow-section-head"><h2>Schedule and SQL handoff</h2></div>
                     <div class="flow-form-grid">
                         <label><span>Schedule</span><select id="flow-schedule-type"><option value="manual" ${existing?.schedule_type === "manual" || !existing ? "selected" : ""}>Manual</option><option value="daily" ${existing?.schedule_type === "daily" ? "selected" : ""}>Daily</option><option value="weekly" ${existing?.schedule_type === "weekly" ? "selected" : ""}>Weekly</option><option value="monthly" ${existing?.schedule_type === "monthly" ? "selected" : ""}>Monthly</option></select></label>
                         <label><span>Run time</span><input id="flow-schedule-time" type="time" value="${esc(existing?.schedule_time || "08:00")}"></label>
@@ -11318,7 +11288,7 @@ function _flowBuilderHtml(catalog, existing = null) {
     }
     const sites = catalog.sites.filter(site => site.enabled);
     const siteId = existing?.site_id || sites[0]?.id || "";
-    const reports = catalog.reports.filter(report => String(report.site_id) === String(siteId) && report.enabled && !report.stale);
+    const reports = catalog.reports.filter(report => String(report.site_id) === String(siteId) && report.enabled && !report.stale && report.automation?.kind !== "recorded_route");
     const reportId = existing?.report_id || reports[0]?.id || "";
     const report = catalog.reports.find(item => String(item.id) === String(reportId));
     const selections = { ...(existing?.selections || {}) };
@@ -11371,7 +11341,7 @@ function _flowBuilderHtml(catalog, existing = null) {
     const preferredSuffix = isAsap
         ? (asapType?.preferred_suffix || ".xlsx").slice(1) : fileFormat;
     const defaultFilename = isGscm
-        ? `{flow}_{date}.${fileFormat}`
+        ? `{flow}_{export}.${fileFormat}`
         : (exportViewCount > 1 || downloadLinkCount > 1 || !hasWeekFilter
             ? `{flow}_{export}.${preferredSuffix}`
             : `{flow}_{start_period}_{end_period}.${preferredSuffix}`);
@@ -11380,35 +11350,35 @@ function _flowBuilderHtml(catalog, existing = null) {
             <div class="flow-builder-main">
                 <form id="flow-builder-form" data-id="${existing?.id || ""}" data-site-id="${siteId}" data-source-type="portal">
                     ${existing?.id ? "" : `<div class="flow-form-section" id="flow-replicate-section">
-                        <div class="flow-section-head"><h2>Start from an existing flow</h2><p>Copy every setting from a flow you already built, then change only what differs. Nothing is copied until you choose one.</p></div>
+                        <div class="flow-section-head"><h2>Start from an existing flow</h2></div>
                         <div class="flow-form-grid">
                             <label class="flow-span-2"><span>Replicate flow</span><div class="flow-file-control"><select id="flow-replicate-source"><option value="">Start from scratch</option>${(window._flowsState?.flows || []).filter(item => item.source_type === "portal").map(item => `<option value="${item.id}" ${String(item.id) === String(existing?._replicated_from || "") ? "selected" : ""}>${esc(item.name)}</option>`).join("")}</select><button type="button" class="btn-secondary" id="flow-replicate-apply">Copy settings</button></div><small id="flow-replicate-status">The copy keeps the source flow untouched. Give the new flow its own name and SQL table.</small></label>
                         </div>
                     </div>`}
                     <div class="flow-form-section">
-                        <div class="flow-section-head"><h2>Source and report</h2><p>${isGscm ? "Choose a GSCM bookmark. It already holds the filters you saved in GSCM." : "Choose an enabled catalog report and its configured filters."}</p></div>
+                        <div class="flow-section-head"><h2>Source</h2></div>
                         <div class="flow-form-grid">
-                            ${(isGscm || isAsap) ? `<label><span>Execution method</span><select id="flow-execution-method"><option value="catalog" ${existing?.execution_method === 'catalog' ? 'selected' : ''}>Use detected controls</option><option value="recorded" ${existing?.execution_method !== 'catalog' ? 'selected' : ''}>Record my actions</option></select></label><div>${existing?.id ? '<button type="button" class="btn-secondary" id="flow-record-review">Review recording</button>' : '<small>Save the draft to open the recorder.</small>'}</div>` : ''}
+                            ${(isGscm || isAsap) ? `<label><span>Method</span><select id="flow-execution-method"><option value="catalog" ${existing?.execution_method === 'catalog' ? 'selected' : ''}>Use detected controls</option><option value="recorded" ${existing?.execution_method !== 'catalog' ? 'selected' : ''}>Record my actions</option></select></label><div>${existing?.id ? '<button type="button" class="btn-secondary" id="flow-record-review">Review recording</button>' : '<button type="submit" class="btn-secondary" id="flow-record-start">Record actions</button>'}</div>` : ''}
                             <label><span>Flow name</span><input id="flow-name" required maxlength="200" value="${esc(existing?.name || "")}" placeholder="Weekly report download"></label>
                             <label><span>Website</span><select id="flow-site" required>${sites.length ? sites.map(site => `<option value="${site.id}" ${String(site.id) === String(siteId) ? "selected" : ""}>${esc(site.name)}</option>`).join("") : '<option value="">Add a website first</option>'}</select></label>
                             <label class="flow-span-2"><span>${isGscm ? "Bookmark" : "Report"}</span><div class="flow-file-control"><select id="flow-report" required>${_flowReportOptions(catalog, siteId, reportId)}</select><button type="button" class="btn-secondary" id="flow-scan-report-now">${isGscm ? "Rescan bookmark" : "Scan report"}</button></div><small id="flow-report-scan-status">${isGscm ? "Rescan to confirm this bookmark is still on the GSCM home screen." : "Scan this report to discover its filters and options without running a full catalog scan."}</small></label>
                         </div>
                     </div>
                     <div class="flow-form-section" id="flow-report-filters" ${isGscm ? "hidden" : ""}>
-                        <div class="flow-section-head"><h2>Report filters</h2><p>Every value below was discovered from the website. Rescan the catalog when the portal changes.</p></div>
+                        <div class="flow-section-head"><h2>Report filters</h2></div>
                         <div class="flow-form-grid">${report && report.filters.filter(filter => filter.enabled && filter.control_type !== "week").length ? report.filters.filter(filter => filter.enabled && filter.control_type !== "week").map(definition => `
                             <label><span>${esc(definition.label)}${definition.required ? " *" : ""}</span>${_flowFilterControl(definition, selections[definition.filter_key])}</label>`).join("") : '<p class="flow-inline-empty">This report has no configured filters.</p>'}</div>
                     </div>
                     <div class="flow-form-section" id="flow-export-views-section" ${isDashboard || isGscm ? "hidden" : ""}>
-                        <div class="flow-section-head"><h2>Export views</h2><p>One run downloads every checked view, validates the full bundle, and sends all files to one SQL transaction.</p></div>
+                        <div class="flow-section-head"><h2>Export views</h2></div>
                         <div class="flow-form-grid" id="flow-export-views">${_flowExportViewsHtml(report, existing?.export_views)}</div>
                     </div>
                     <div class="flow-form-section" id="flow-download-links-section" ${isDashboard && !isGscm ? "" : "hidden"}>
-                        <div class="flow-section-head"><h2>Download links</h2><p>This report is an embedded HTML dashboard with no Export Wizard. One run clicks every checked download link and saves each file.</p></div>
+                        <div class="flow-section-head"><h2>Download links</h2></div>
                         <div class="flow-form-grid" id="flow-download-links">${_flowDownloadLinksHtml(report, existing?.download_links)}</div>
                     </div>
                     <div class="flow-form-section">
-                        <div class="flow-section-head"><h2>Download behavior</h2><p>${isGscm ? "One run opens the bookmark, exports GSCM's Excel workbook, and normalizes it for SQL." : "Download through the latest ASAP week, use a fixed range, or advance through rolling windows."}</p></div>
+                        <div class="flow-section-head"><h2>Download behavior</h2></div>
                         <div class="flow-form-grid">
                             <label ${isGscm ? "hidden" : ""}><span>Period</span><select id="flow-period-strategy"><option value="none" ${periodStrategy === "none" ? "selected" : ""}>No period selection</option><option value="latest" ${periodStrategy === "latest" ? "selected" : ""}>Start to latest available</option><option value="fixed" ${periodStrategy === "fixed" ? "selected" : ""}>Fixed start + end</option><option value="rolling" ${periodStrategy === "rolling" ? "selected" : ""}>Rolling X-week window</option></select><small id="flow-period-help">${hasWeekFilter ? "Latest available comes from ASAP discovery." : "This report has no Sell-out Week prompt."}</small></label>
                             <label ${isGscm ? "hidden" : ""}><span>File grouping</span><select id="flow-download-mode"><option value="single" ${!["one_per_period", "one_per_week"].includes(existing?.download_mode) ? "selected" : ""}>One file for the full range</option><option value="one_per_period" ${["one_per_period", "one_per_week"].includes(existing?.download_mode) ? "selected" : ""}>One file every X weeks</option></select></label>
@@ -11420,18 +11390,18 @@ function _flowBuilderHtml(catalog, existing = null) {
                             <label id="flow-export-report-title-row" class="flow-check flow-span-2" ${isAsap ? "" : "hidden"}><input id="flow-export-report-title" type="checkbox" data-inherit="${titleInherited}" ${titleChecked ? "checked" : ""} ${asapCapability.known && !asapCapability.options.export_report_title?.available ? "disabled" : ""}><span>Export Report Title</span><small>${titleInherited ? "Inherited from ASAP until a scan observes a consistent state." : "The runner enforces this saved Export Wizard choice."}</small></label>
                             <label id="flow-export-filter-details-row" class="flow-check flow-span-2" ${isAsap ? "" : "hidden"}><input id="flow-export-filter-details" type="checkbox" data-inherit="${filtersInherited}" ${filtersChecked ? "checked" : ""} ${asapCapability.known && !asapCapability.options.export_filter_details?.available ? "disabled" : ""}><span>Export filter details</span><small>${filtersInherited ? "Inherited from ASAP until a scan observes a consistent state." : "The runner enforces this saved Export Wizard choice."}</small></label>
                             <label><span>Excel pre-processing</span><select id="flow-excel-trim"><option value="none" ${excelTrim === "none" ? "selected" : ""}>None</option><option value="first_row_and_column" ${excelTrim === "first_row_and_column" ? "selected" : ""}>Drop first row and first column (GSCM report frame)</option></select><small>Applied while normalizing the downloaded workbook to CSV, before headers are detected and before any transformation or SQL handoff. Recorded on every run.</small></label>
-                            <label><span>Browser mode</span><select id="flow-browser-mode"><option value="headless" ${existing?.browser_mode !== "headed" ? "selected" : ""}>Headless · background</option><option value="headed" ${existing?.browser_mode === "headed" ? "selected" : ""}>Headed · visible debugging</option></select><small id="flow-browser-mode-help">Headless is best for routine runs.</small></label>
-                            <label><span>Parallel downloads</span><select id="flow-download-parallelism" aria-describedby="flow-download-parallelism-help" ${existing?.id && !existing?.flow_folder ? 'disabled data-unmanaged="true"' : ''}>${Array.from({length:32}, (_, i) => i + 1).map(n => `<option value="${n}" ${n === Number(existing?.download_parallelism || 1) ? 'selected' : ''}>${n}</option>`).join('')}</select><small id="flow-download-parallelism-help" aria-live="polite"></small></label>
+                            <label><span>Browser mode</span><select id="flow-browser-mode"><option value="headless" ${existing?.browser_mode !== "headed" ? "selected" : ""}>Run in background</option><option value="headed" ${existing?.browser_mode === "headed" ? "selected" : ""}>Show browser</option></select><small id="flow-browser-mode-help">Headless is best for routine runs.</small></label>
+                            <label><span>Parallel downloads</span><select id="flow-download-parallelism" aria-describedby="flow-download-parallelism-help" >${Array.from({length:32}, (_, i) => i + 1).map(n => `<option value="${n}" ${n === Number(existing?.download_parallelism || 1) ? 'selected' : ''}>${n}</option>`).join('')}</select><small id="flow-download-parallelism-help" aria-live="polite"></small></label>
                             <label class="flow-week-field"><span>Sell-out Week - start</span><select id="flow-start-week" required><option value="">Choose a discovered week...</option>${_flowDiscoveredWeeks(report, existing?.start_week || "")}</select></label>
                             <label class="flow-week-field"><span>Sell-out Week - end</span><select id="flow-end-week" required><option value="">Choose a discovered week...</option>${_flowDiscoveredWeeks(report, existing?.end_week || "")}</select></label>
                             <label id="flow-window-weeks-field"><span>Weeks per download</span><input id="flow-window-weeks" type="number" min="1" max="105" value="${esc(existing?.window_weeks || 1)}"><small>Each file covers this many consecutive weeks.</small></label>
-                            <label><span>Output storage</span><select id="flow-output-mode"><option value="run_folders" ${existing?.output_mode !== "direct_replace" ? "selected" : ""}>Run folders · keep newest 3</option><option value="direct_replace" ${existing?.output_mode === "direct_replace" ? "selected" : ""}>Direct files · replace same name</option></select><small id="flow-output-mode-help">${existing?.output_mode === "direct_replace" ? "The full validated bundle is published directly. Only an identical resolved filename is replaced; date and week tokens intentionally create additional files." : "Each run downloads into its own #id_dd-mm-yyyy subfolder; only the newest 3 are kept."}</small></label>
+                            <label><span>Output files</span><select id="flow-output-mode"><option value="run_folders" ${existing?.output_mode !== "direct_replace" ? "selected" : ""}>Separate runs · keep last 3</option><option value="direct_replace" ${existing?.output_mode === "direct_replace" ? "selected" : ""}>Fixed file path · replace previous output</option></select><small id="flow-output-mode-help">${existing?.output_mode === "direct_replace" ? "The full validated bundle is published directly. Only an identical resolved filename is replaced; date and week tokens intentionally create additional files." : "Each run downloads into its own #id_dd-mm-yyyy subfolder; only the newest 3 are kept."}</small></label>
                             ${_flowDestinationHtml(existing)}
-                            <label class="flow-span-2"><span>Filename template</span><input id="flow-filename" required value="${esc(existing?.filename_template || defaultFilename)}"><small>${isGscm ? "One bookmark saves one file per run." : "Use {export} when downloading multiple views."} Tokens: {flow}, {report}, {export}, {week}, {start_period}, {end_period}, {year}, {week_number}, {index}, {date}.</small></label>
+                            <label class="flow-span-2"><span>Filename template</span><input id="flow-filename" required value="${esc(existing?.filename_template || defaultFilename)}"><small>Use {export} for separate files. Add {date} only if you want a new filename each day.</small></label>
                         </div>
                     </div>
                     <div class="flow-form-section">
-                        <div class="flow-section-head"><h2>Transformation</h2><p>Optionally run one local script against every downloaded file before SQL insertion.</p></div>
+                        <div class="flow-section-head"><h2>Transformation</h2></div>
                         <div class="flow-form-grid">
                             <label class="flow-check flow-span-2"><input id="flow-transform-enabled" type="checkbox" ${existing?.transform_enabled ? "checked" : ""}><span>Transform downloaded files before SQL insertion</span></label>
                             <div id="flow-transform-fields" class="flow-form-grid flow-span-2">
@@ -11440,13 +11410,13 @@ function _flowBuilderHtml(catalog, existing = null) {
                         </div>
                     </div>
                     <div class="flow-form-section">
-                        <div class="flow-section-head"><h2>Ownership and failure alerts</h2><p>The owner receives an Outlook alert every time a run of this flow fails, for any reason.</p></div>
+                        <div class="flow-section-head"><h2>Ownership and failure alerts</h2></div>
                         <div class="flow-form-grid">
                             <label class="flow-span-2"><span>Flow owner</span><select id="flow-owner">${_flowOwnerOptions(people, existing?.owner_person_id)}</select><small id="flow-owner-help">${_flowOwnerHelp(owner)}</small></label>
                         </div>
                     </div>
                     <div class="flow-form-section">
-                        <div class="flow-section-head"><h2>Schedule and SQL handoff</h2><p>Save the schedule here, then activate or pause the flow from the Flows list. SQL handoff uses transformed files when transformation is enabled.</p></div>
+                        <div class="flow-section-head"><h2>Schedule and SQL handoff</h2></div>
                         <div class="flow-form-grid">
                             <label><span>Schedule</span><select id="flow-schedule-type"><option value="manual" ${existing?.schedule_type === "manual" || !existing ? "selected" : ""}>Manual</option><option value="daily" ${existing?.schedule_type === "daily" ? "selected" : ""}>Daily</option><option value="weekly" ${existing?.schedule_type === "weekly" ? "selected" : ""}>Weekly</option><option value="monthly" ${existing?.schedule_type === "monthly" ? "selected" : ""}>Monthly</option></select></label>
                             <label><span>Run time</span><input id="flow-schedule-time" type="time" value="${esc(existing?.schedule_time || "08:00")}"></label>
@@ -11467,10 +11437,6 @@ function _flowBuilderHtml(catalog, existing = null) {
                     <div class="flow-form-error" role="alert"></div><div class="flow-builder-actions"><button type="button" class="btn-secondary" id="flow-builder-cancel">Cancel</button><button type="submit" class="btn-primary">${existing?.id ? "Save changes" : "Create flow"}</button></div>
                 </form>
             </div>
-            <aside class="flow-summary">
-                <h2>Execution contract</h2>
-                <dl><div><dt>Estimated download</dt><dd id="flow-download-estimate">${_flowDuration(downloadEstimate?.estimated_ms)}</dd></div><div><dt>Estimate source</dt><dd id="flow-download-estimate-source">${esc(downloadEstimate?.source || "No history")}</dd></div><div><dt>Execution host</dt><dd>BI desktop</dd></div><div><dt>Browser</dt><dd id="flow-browser-summary">${existing?.browser_mode === "headed" ? "Headed · visible" : "Headless · background"}</dd></div><div><dt>Transformation</dt><dd id="flow-transform-summary">${existing?.transform_enabled ? "Enabled · script_results" : "Disabled"}</dd></div><div><dt>Existing files</dt><dd id="flow-existing-files-summary">${existing?.output_mode === "direct_replace" ? "Replace an identical resolved filename" : "Keep and add a number suffix"}</dd></div><div><dt>File retention</dt><dd id="flow-file-retention-summary">${existing?.output_mode === "direct_replace" ? "Keep 3 private recovery runs; preserve old stable names" : "Keep the newest 3 visible run folders"}</dd></div><div><dt>SQL write</dt><dd id="flow-sql-summary">${existing?.sql_handoff_enabled ? esc(existing.sql_mode === "replace" ? "Replace all rows" : "Append rows") : "Disabled"}</dd></div><div><dt>Failure alerts</dt><dd id="flow-owner-summary">${_flowOwnerSummary(owner)}</dd></div><div><dt>Authentication</dt><dd>Shared local credential</dd></div></dl>
-            </aside>
         </div>`;
 }
 
@@ -11996,8 +11962,8 @@ function _flowCollectBuilder() {
     document.querySelectorAll("[data-flow-filter]").forEach(control => {
         selections[control.dataset.flowFilter] = control.multiple ? [...control.selectedOptions].map(option => option.value) : control.value;
     });
-    const periodStrategy = $("#flow-period-strategy").value;
-    const downloadMode = $("#flow-download-mode").value;
+    const periodStrategy = $("#flow-execution-method")?.value === "recorded" ? "none" : $("#flow-period-strategy").value;
+    const downloadMode = $("#flow-execution-method")?.value === "recorded" ? "single" : $("#flow-download-mode").value;
     const selectedSiteId = Number($("#flow-site").value);
     const isAsap = _flowSiteIsAsap(window._flowsState.catalog, selectedSiteId);
     const downloadValue = $("#flow-file-format").value;
@@ -12008,7 +11974,9 @@ function _flowCollectBuilder() {
     return {
         ...shared, recording_revision_id: $('#flow-execution-method')?.value === 'recorded' ? window._flowRecordingSelections?.get(Number(form.dataset.id)) || undefined : undefined, execution_method: $("#flow-execution-method")?.value || "catalog", source_type: "portal", outlook_subject_contains: null,
         local_file_path: null, local_file_worksheet: null,
-        site_id: Number($("#flow-site").value), report_id: Number($("#flow-report").value),
+        site_id: Number($("#flow-site").value), report_id: $('#flow-execution-method')?.value === 'recorded'
+            ? (existing?.site_id === Number($('#flow-site').value) ? existing.report_id : null)
+            : Number($("#flow-report").value),
         export_views: [...document.querySelectorAll("[data-flow-export-view]:checked")].map(input => input.value),
         download_links: [...document.querySelectorAll("[data-flow-download-link]:checked")].map(input => input.value),
         selections, download_mode: downloadMode, period_strategy: periodStrategy,
@@ -12172,12 +12140,28 @@ function _flowBuildSteps(form) {
     const section = id => form.querySelector(`#${id}`)?.closest(".flow-form-section");
     const source = section("flow-name"), transform = section("flow-transform-enabled"), schedule = section("flow-schedule-type"), owner = section("flow-owner");
     const download = section("flow-file-format");
+    const recorded = form.querySelector('#flow-execution-method')?.value === 'recorded';
+    const sourceGrid = source?.querySelector('.flow-form-grid');
+    const website = form.querySelector('#flow-site')?.closest('label');
+    if (website) sourceGrid.prepend(website);
+    const browser = form.querySelector('#flow-browser-mode')?.closest('label');
+    if (browser) sourceGrid.append(browser);
+    const trim = form.querySelector('#flow-excel-trim')?.closest('label');
+    if (trim) transform?.querySelector('.flow-form-grid')?.prepend(trim);
+    const name = form.querySelector('#flow-name')?.closest('label');
+    if (name) {
+        name.classList.add('flow-name-field');
+        name.querySelector('span').textContent = 'How do you want to name your flow?';
+        form.prepend(name);
+    }
+    form.querySelectorAll('.flow-section-head').forEach(heading => heading.remove());
+
     const destination = document.createElement("div"); destination.className = "flow-form-grid";
     for (const id of ["flow-output-mode", "flow-destination", "flow-filename"]) {
         const input = form.querySelector(`#${id}`);
         if (input) destination.append(id === "flow-destination" ? input : input.closest("label"));
     }
-    if (form.querySelector("#flow-filename")) {
+    if (destination.querySelector("#flow-filename")) {
         const preview = document.createElement("p"); preview.className = "flow-filename-preview flow-span-2";
         destination.append(preview);
     }
@@ -12195,15 +12179,16 @@ function _flowBuildSteps(form) {
     if (scheduleHeading) scheduleHeading.textContent = "Schedule";
     const groups = [
         ["source", "Source", [form.querySelector("#flow-replicate-section"), source]],
-        ...(download ? [["download", "What to download", [form.querySelector("#flow-report-filters"), form.querySelector("#flow-export-views-section"), form.querySelector("#flow-download-links-section"), download]]] : []),
-        ["destination", "Where it goes", [destination]],
+        ...(download && !recorded ? [["download", "What to download", [form.querySelector("#flow-report-filters"), form.querySelector("#flow-export-views-section"), form.querySelector("#flow-download-links-section"), download]]] : []),
+        ["destination", "Output", [destination]],
         ["after", "After download", [transform]],
         ["schedule", "Schedule and owner", [schedule, owner]],
     ];
     const anchor = form.querySelector(".flow-form-error");
+    if (recorded) download.hidden = true;
     groups.forEach(([key, title, sections], index) => {
         const step = document.createElement("section"); step.className = "flow-step"; step.dataset.step = key;
-        step.innerHTML = `<h2><button type="button" id="flow-step-toggle-${key}" class="flow-step-toggle" aria-controls="flow-step-body-${key}" aria-expanded="false"><span class="flow-step-number">${index + 1}</span><span>${title}<small class="flow-step-status"></small></span><span aria-hidden="true">⌄</span></button></h2><div class="flow-step-body" id="flow-step-body-${key}" hidden></div>`;
+        step.innerHTML = `<h2><button type="button" id="flow-step-toggle-${key}" class="flow-step-toggle" aria-controls="flow-step-body-${key}" aria-expanded="false"><span class="flow-step-number">${index + 1}</span><span>${title}</span><span aria-hidden="true">⌄</span></button></h2><div class="flow-step-body" id="flow-step-body-${key}" hidden></div>`;
         const body = step.querySelector(".flow-step-body");
         for (const existing of sections.filter(Boolean)) body.append(existing);
         if (index < groups.length - 1) {
@@ -12218,19 +12203,18 @@ function _flowBuildSteps(form) {
         form.insertBefore(step, anchor);
     });
     const shell = form.closest(".flow-builder-shell");
-    if (!shell.querySelector(".flow-summary")) {
-        const rail = document.createElement("aside"); rail.className = "flow-summary flow-step-overview";
-        rail.innerHTML = '<h2>Flow summary</h2><dl></dl>'; shell.append(rail);
-    }
+    shell.querySelectorAll('.flow-summary').forEach(rail => rail.remove());
+    shell.classList.add('flow-builder-minimal');
     const update = () => {
-        for (const step of form.querySelectorAll(".flow-step")) step.querySelector(".flow-step-status").textContent = _flowStepSummary(form, step.dataset.step);
         const preview = form.querySelector(".flow-filename-preview");
         if (preview) {
             const values = {flow: form.querySelector("#flow-name")?.value || "Flow", report: "Report", export: "Export", date: "2026-09-05", week: "2026-W01", start_period: "2026-W01", end_period: "2026-W02", year: "2026", week_number: "01", index: "1"};
-            preview.textContent = "Example only: " + (form.querySelector("#flow-filename")?.value || "").replace(/\{([a-z_]+)\}/g, (token, key) => values[key] || token);
+            preview.textContent = "Filename: " + (form.querySelector("#flow-filename")?.value || "").replace(/\{([a-z_]+)\}/g, (token, key) => values[key] || token);
+            if (form.querySelector('#flow-output-mode')?.value === 'direct_replace' && /\{(?:date|week|start_period|end_period|year|week_number)\}/.test(form.querySelector('#flow-filename').value)) {
+                preview.textContent += ' — Remove date and period tokens to keep the same file path.';
+            }
+
         }
-        const overview = shell.querySelector(".flow-step-overview dl");
-        if (overview) overview.innerHTML = groups.map(([key, title]) => `<div><dt>${title}</dt><dd>${esc(_flowStepSummary(form, key))}</dd></div>`).join("");
     };
     form.addEventListener("input", update); form.addEventListener("change", update); update();
     form.addEventListener("invalid", event => {
@@ -12240,7 +12224,7 @@ function _flowBuildSteps(form) {
         const target = event.target;
         queueMicrotask(() => { _flowRevealStep(form, target); target.focus(); form._invalidRevealPending = false; });
     }, true);
-    if (!form.dataset.id) _flowRevealStep(form, form.querySelector(".flow-step-toggle"));
+    _flowRevealStep(form, form.querySelector(".flow-step-toggle"));
 }
 
 function _bindFlowWorkspace() {
@@ -12299,7 +12283,6 @@ function _bindFlowWorkspace() {
             catch (_) { window.prompt("Copy this path and open it on the worker PC:", result.path); }
         } catch (err) { toast(err.message); }
     }));
-    _flowBindFolderActions(state);
     $("#flow-add-site-empty")?.addEventListener("click", () => _flowSiteDialog());
     $("#flow-scan-empty")?.addEventListener("click", async () => { const site = state.catalog.sites.find(item => item.enabled); if (!site) return; try { await apiPost(`/api/flows/sites/${site.id}/scan`); toast("Catalog discovery queued"); await navigate("flows"); } catch (err) { toast("Scan not queued: " + err.message); } });
     $("#flow-create-empty")?.addEventListener("click", () => _flowShowView("source-picker"));
@@ -12508,7 +12491,7 @@ function _bindFlowWorkspace() {
         $("#flow-browser-mode-help").textContent = headed
             ? "Opens the selected browser in the signed-in BI desktop. Use it to build or debug a flow."
             : "Runs in the background. Best for routine and scheduled downloads.";
-        $("#flow-browser-summary").textContent = headed ? "Headed · visible" : "Headless · background";
+
     });
     $("#flow-browser-mode")?.dispatchEvent(new Event("change"));
     $("#flow-owner")?.addEventListener("change", event => {
@@ -12523,12 +12506,9 @@ function _bindFlowWorkspace() {
         const outlook = $("#flow-builder-form")?.dataset.sourceType === "outlook";
         const direct = event.target.value === "direct_replace";
         if (help) help.textContent = direct
-                ? outlook
-                    ? "The attachment is published directly after validation. Outlook keeps the original attachment name, so dated names accumulate and only an identical name is replaced."
-                    : "The full validated bundle is published directly. Only an identical resolved filename is replaced; date and week tokens intentionally create additional files."
-                : outlook
-                    ? "Each producing run keeps the attachment inside its own #id_dd-mm-yyyy folder; only the newest 3 are kept."
-                    : "Each run downloads into its own #id_dd-mm-yyyy subfolder; only the newest 3 are kept.";
+            ? outlook ? 'Replaces the same attachment name. Dated attachment names still create different files.'
+                : 'Use this file path in Power BI or Excel. Each successful run replaces the previous file.'
+            : 'Each run has a separate folder. The last 3 runs are kept.';
         const existingFiles = $("#flow-existing-files-summary");
         const retention = $("#flow-file-retention-summary");
         if (existingFiles) existingFiles.textContent = direct
@@ -12562,6 +12542,7 @@ function _bindFlowWorkspace() {
         );
     });
     const syncAsapDownloadControls = () => {
+        if ($('#flow-execution-method')?.value === 'recorded') return;
         const siteId = Number($("#flow-site")?.value);
         if (!_flowSiteIsAsap(state.catalog, siteId)) return;
         const report = state.catalog.reports.find(
@@ -12750,6 +12731,15 @@ function _bindFlowWorkspace() {
     if (methodControl) {
         const syncMethod = () => {
             const recorded = methodControl.value === 'recorded';
+            const report = document.getElementById('flow-report');
+            if (report) { report.closest('label').hidden = recorded; report.required = !recorded; }
+            const review = document.getElementById('flow-record-review') || document.getElementById('flow-record-start');
+            if (review) review.parentElement.hidden = !recorded;
+            for (const id of ['flow-start-week', 'flow-end-week', 'flow-window-weeks']) {
+                const element = document.getElementById(id);
+                if (element && recorded) { element.closest('label').hidden = true; element.required = false; }
+            }
+
             for (const id of ['flow-report-filters', 'flow-export-views-section', 'flow-download-links-section']) {
                 const element = document.getElementById(id); if (element && recorded) element.hidden = true;
             }
