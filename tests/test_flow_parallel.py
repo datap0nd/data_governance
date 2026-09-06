@@ -526,7 +526,11 @@ def test_inline_browser_switch_keeps_parallelism_and_refreshes_standalone(bundle
     result = flows.patch_flow(saved['id'], flows.FlowInlineWrite(browser_mode='headed'), _request())
     generated = result['standalone']
     assert generated['state'] == 'current'
-    frozen = json.loads(Path(generated['launcher']).with_name('flow-config-' + generated['config_hash'] + '.json').read_text())['job']
+    import ast
+    module = ast.parse(Path(generated['launcher']).read_text(encoding='utf-8'))
+    assignment = next(node for node in module.body if isinstance(node, ast.Assign)
+                      and any(isinstance(target, ast.Name) and target.id == 'FLOW' for target in node.targets))
+    frozen = json.loads(ast.literal_eval(assignment.value.args[0]))
     assert frozen['execution']['browser_mode'] == 'headed'
     assert flow_tasks.parallelism(frozen) == 1  # standalone has no server task pool
     with database.get_db() as db:

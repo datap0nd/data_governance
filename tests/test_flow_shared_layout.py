@@ -12,15 +12,23 @@ def test_repair_only_owned_missing_children_and_explicit_missing_folder(flow_db)
     site, report = _seed_catalog()
     saved = flows.create_flow(_flow(site['id'], report['id'], target_folder=None), _request())
     folder = Path(saved['flow_folder'])
-    for generated in (folder / 'Scripts').iterdir():
-        assert generated.name == 'run_flow.py' or generated.name.startswith('flow-config-')
-        generated.unlink()
+    def remove_generated():
+        flow_layout.read_manifest(folder, saved['id'])
+        for generated in (folder / 'Scripts').iterdir():
+            if generated.is_dir():
+                assert generated.name == 'versions'
+                for version in generated.iterdir():
+                    assert version.name.startswith('run_flow-') and version.suffix == '.py'
+                    version.unlink()
+                generated.rmdir()
+            else:
+                assert generated.name in {'run_flow.py', 'README.md', 'requirements.txt'}
+                generated.unlink()
+    remove_generated()
     (folder / 'Scripts').rmdir()
     assert flows.get_flow(saved['id'])['layout']['missing'] == ['Scripts']
     assert flows.repair_flow_layout(saved['id'], _request())['layout']['created'] == ['Scripts']
-    for generated in (folder / 'Scripts').iterdir():
-        assert generated.name == 'run_flow.py' or generated.name.startswith('flow-config-')
-        generated.unlink()
+    remove_generated()
     flow_layout.cleanup_empty_creation(folder, saved['id'])
     assert not folder.exists()
     flows.repair_flow_layout(saved['id'], _request())
