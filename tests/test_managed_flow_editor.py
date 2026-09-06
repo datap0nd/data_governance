@@ -42,6 +42,11 @@ def test_saving_legacy_flow_manages_future_output_and_preserves_history(flow_db,
         db.execute('UPDATE flows SET name=?, flow_folder=NULL, target_folder=? WHERE id=?',
             ('Legacy orders', str(old), saved['id']))
     body = flows.FlowWrite.model_validate({**saved, 'name':'Legacy orders', 'target_folder':None})
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException):
+        flows.update_flow(saved['id'], body.model_copy(update={'owner_person_id':999999}), _request())
+    # A failed settings save can leave an allocated folder. Retrying must reuse
+    # its marker instead of trapping the user in a folder-already-exists error.
     updated = flows.update_flow(saved['id'], body, _request())
     assert updated['flow_folder']
     assert updated['target_folder'] == str(Path(updated['flow_folder']) / 'Downloads')

@@ -120,7 +120,15 @@ def managed_destination(db, flow: dict, *, adopt=False) -> dict:
             return flow
         if db.execute("SELECT 1 FROM flow_runs WHERE flow_id=? AND status IN ('queued','claimed','running')", (flow['id'],)).fetchone():
             raise ValueError('Wait for the current run to finish before saving this flow.')
-        folder = flow_layout.create_flow_folder(get_flows_root(db), flow['source_adapter'], flow['name'], flow['id'])
+        root = get_flows_root(db)
+        try:
+            folder = flow_layout.create_flow_folder(root, flow['source_adapter'], flow['name'], flow['id'])
+        except FileExistsError:
+            # A later settings validation can roll back the database after
+            # allocation. Retry only our own marked folder; preserve its files.
+            folder = Path(validate_root(root)) / source_folder_name(flow['source_adapter']) / flow_layout.flow_folder_slug(flow['name'], flow['id'])
+            flow_layout.read_manifest(folder, flow['id'])
+            flow_layout.ensure_layout(folder, flow['id'])
         try:
             script = flow.get('transform_script_path')
             if flow.get('transform_enabled'):
