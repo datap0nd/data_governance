@@ -44,17 +44,17 @@ def test_recorded_clicks_test_immediately_and_waits_survive_editing(optional_edi
     assert 'identity' not in latest_definition(page)
     assert 'readiness' not in latest_definition(page)
     assert page.get_by_text('How do we know the report is ready?', exact=True).count() == 0
-    page.get_by_role('button', name='Add wait', exact=True).click()
+    page.get_by_role('button', name='Click “Run report”', exact=True).click()
+    page.get_by_label('Wait before this step').select_option('custom')
     page.get_by_label('Wait in seconds', exact=True).fill('60')
     page.get_by_label('Wait in seconds', exact=True).press('Tab')
-    page.get_by_role('button', name='Move up', exact=True).click()
     page.get_by_role('button', name='Save draft', exact=True).click()
     saved = latest_definition(page)
-    assert [step['action'] for step in saved['steps']] == ['goto', 'click', 'wait', 'download']
-    assert saved['steps'][2]['seconds'] == 60
+    assert [step['action'] for step in saved['steps']] == ['goto', 'click', 'download']
+    assert saved['steps'][1]['delay_before_seconds'] == 60
     page.get_by_role('button', name='Back to Edit Flow', exact=True).click()
     page.get_by_role('button', name='Recording', exact=True).click()
-    page.get_by_role('button', name='Wait 60 seconds', exact=True).click()
+    page.get_by_role('button', name='Click “Run report”', exact=True).click()
     assert page.get_by_label('Wait in seconds', exact=True).input_value() == '60'
 
 

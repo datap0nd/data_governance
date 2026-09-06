@@ -51,7 +51,13 @@ def test_one_download_card_and_consistent_options(editor_page):
 
 def test_wait_undo_move_and_remove_preserve_ids(editor_page):
     page,value=editor_page
-    page.locator('[data-insert="1"]').click()
+    original_ids=[s['id'] for s in value['steps']]
+    value['steps'].insert(1,{'id':'legacy-wait','page':'page','action':'wait','seconds':5})
+    page.locator('[data-close]').click()
+    page.evaluate('v=>data.revisions[0].definition=v',value)
+    page.add_script_tag(path=str(Path(__file__).resolve().parents[1]/'app/static/flow_recording_editor.js'))
+    page.evaluate('()=>FlowRecordings.open(1)')
+    page.locator('[data-select="legacy-wait"]').click()
     page.get_by_label('Wait in seconds').fill('8');page.get_by_label('Wait in seconds').press('Tab')
     wait_id=page.locator('[data-card].selected').get_attribute('data-card')
     page.get_by_role('button',name='Move down',exact=True).click()
@@ -59,12 +65,12 @@ def test_wait_undo_move_and_remove_preserve_ids(editor_page):
     page.get_by_role('button',name='Undo',exact=True).click()
     assert page.locator('[data-card]').nth(1).get_attribute('data-card')==wait_id
     page.get_by_role('button',name='Remove',exact=True).click()
-    assert page.locator('[data-card]').count()==len(value['steps'])
+    assert page.locator('[data-card]').count()==len(original_ids)
     page.get_by_role('button',name='Undo',exact=True).click()
     page.get_by_role('button',name='Save draft',exact=True).click()
     saved=page.evaluate('()=>calls[0].body.definition')
     assert saved['steps'][1]['id']==wait_id and saved['steps'][1]['seconds']==8
-    assert [s['id'] for s in saved['steps'] if s['action']!='wait']==[s['id'] for s in value['steps']]
+    assert [s['id'] for s in saved['steps'] if s['action']!='wait']==original_ids
 
 
 def test_polling_preserves_selection_dirty_fields_and_collapsed_details(editor_page):
@@ -162,7 +168,13 @@ def test_missing_identity_does_not_block_test_and_download_is_not_label_inferred
 
 def test_drag_and_invalid_page_move(editor_page):
     page,value=editor_page
-    page.locator('[data-insert="1"]').click()
+    original_ids=[s['id'] for s in value['steps']]
+    value['steps'].insert(1,{'id':'legacy-wait','page':'page','action':'wait','seconds':5})
+    page.locator('[data-close]').click()
+    page.evaluate('v=>data.revisions[0].definition=v',value)
+    page.add_script_tag(path=str(Path(__file__).resolve().parents[1]/'app/static/flow_recording_editor.js'))
+    page.evaluate('()=>FlowRecordings.open(1)')
+    page.locator('[data-select="legacy-wait"]').click()
     wait_id=page.locator('[data-card].selected').get_attribute('data-card')
     page.get_by_role('button',name='Move down',exact=True).click()
     page.get_by_role('button',name='Move down',exact=True).click()

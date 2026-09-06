@@ -234,3 +234,53 @@ def test_worker_environment_survives_failure_and_trace_does_not_mask_it(flow_db,
         flow_recorder_worker.validate({'id': 123, 'job': {'validation_job': job}}, page, tmp_path, progress)
     assert events[0]['diagnostic']['environment']['worker_version'] == 'tested-worker'
     assert events[0]['diagnostic']['environment']['browser_version'] == 'browser-1'
+
+
+def test_technical_exception_preserves_cause_stack_and_redacts_browser_content():
+    try:
+        raise TimeoutError('Locator.click: Timeout 120000ms exceeded.\nCall log:\n'
+            '  element is not enabled\n  <div>PrivateCustomerName</div> intercepts pointer events\n'
+            '  Cookie: session=secret\n  https://private.example/report?token=secret')
+    except TimeoutError as error:
+        detail = diagnostics.sanitize_diagnostic({'exception': diagnostics.exception_detail(error)},
+            {'steps': [{'action': 'fill', 'args': ['PrivateCustomerName']}]})
+    exception = detail['exception']
+    assert exception['browser_api'] == 'Locator.click'
+    assert exception['timeout_ms'] == 120000
+    assert {'timeout', 'not_enabled', 'pointer_intercepted'} <= set(exception['signals'])
+    assert exception['stack'][-1]['file'] == 'test_recording_diagnostics.py'
+    assert exception['stack'][-1]['line'] > 0
+    assert 'PrivateCustomerName' not in json.dumps(detail) and 'private.example' not in json.dumps(detail)
+    assert 'session=secret' not in json.dumps(detail)
+
+
+def test_debug_always_includes_frozen_locator_and_rich_failure_evidence(flow_db):
+    saved, job, scan = queued_test()
+    step = next(s for s in job['recording']['definition']['steps'] if s['id'] == 'public')
+    post(scan, 'running', {'stage': 'recorded_action', 'step_id': 'public',
+        'diagnostic': {'phase': 'action_failed', 'call': diagnostics.execution_contract(step),
+            'target': {'match_count': 1, 'candidates': [{'tag': 'button', 'aria_selected': None, 'hit_id': 'overlay', 'hit_is_target': False}]},
+            'exception': {'type': 'TimeoutError', 'browser_api': 'Locator.click', 'signals': ['pointer_intercepted'],
+                'stack': [{'file': 'flow_recording_runtime.py', 'function': 'execute', 'line': 250}]}},
+        'step_outcomes': {'public': {'outcome': 'failed'}}})
+    with database.get_db() as db:
+        text = diagnostics.render_debug(db, saved['id'], scan)
+    for expected in ['technical-v2', 'get_by_text', 'Public', 'pointer_intercepted',
+                     '"aria_selected": null', '"hit_id": "overlay"', 'flow_recording_runtime.py',
+                     '"post_click_verification": "none"', '"timeout_ms": 120000']:
+        assert expected in text
+    assert 'PrivateCustomerName' not in text
+
+
+def test_historical_public_rule_explains_what_was_checked(flow_db):
+    saved, _, scan = queued_test()
+    post(scan, 'running', {'stage': 'recorded_action', 'step_id': 'public',
+        'diagnostic': {'click': {'transition': 'public_selected', 'confirmation': 'transition_missing',
+            'after': {'selected': False, 'open': True}}},
+        'step_outcomes': {'public': {'outcome': 'failed'}}})
+    with database.get_db() as db:
+        text = diagnostics.render_debug(db, saved['id'], scan)
+    assert 'Legacy selection rule:' in text
+    assert 'aria-selected=true OR aria-pressed=true' in text
+    assert 'getSelectStatus()=true OR get_selected()=true' in text
+    assert 'individual signals are unavailable' in text

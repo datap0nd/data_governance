@@ -9,6 +9,50 @@ MAX_TEXT = 200_000
 MAX_EVENTS = 1000
 MAX_STEPS = 500
 STATE_KEYS = {'expanded', 'selected', 'pressed', 'checked', 'visible', 'enabled', 'active', 'open', 'tab', 'scope'}
+CANDIDATE_KEYS = {'tag', 'role', 'element_id', 'class_name', 'visible', 'enabled',
+    'aria_selected', 'aria_pressed', 'aria_expanded', 'aria_disabled', 'userstatus',
+    'connected', 'disabled', 'display', 'visibility', 'pointer_events', 'z_index',
+    'x', 'y', 'width', 'height', 'hit_is_target', 'hit_id', 'hit_tag', 'hit_class'}
+
+
+def execution_contract(step):
+    """Technical call metadata without entered arguments or optional check values."""
+    return {'action': step.get('action'), 'page': step.get('page'),
+        'step_id': step.get('id'), 'locator': step.get('locator', []),
+        'timeout_ms': (step.get('kwargs') or {}).get('timeout', 120_000),
+        'delay_before_seconds': step.get('delay_before_seconds', 'inherit'),
+        'arguments': 'omitted' if step.get('args') else 'none',
+        'kwargs': _fields(step.get('kwargs') or {}, {'timeout', 'button', 'click_count', 'force',
+            'trial', 'no_wait_after', 'delay'}, None),
+        'post_click_verification': 'none',
+        'explicit_text_check': bool(step.get('expected_text')),
+        'explicit_assertion': step.get('assertion')}
+
+
+def exception_detail(exc):
+    """Keep diagnostic causes and code locations without copying DOM/input fragments."""
+    raw = str(exc)
+    patterns = {
+        'timeout': r'timeout|timed out', 'ambiguous_locator': r'strict mode violation',
+        'not_visible': r'not visible|outside of the viewport',
+        'not_enabled': r'not enabled|element is disabled', 'not_stable': r'not stable',
+        'pointer_intercepted': r'intercepts pointer events|subtree intercepts',
+        'detached': r'detached|not attached', 'closed': r'has been closed|was closed',
+        'frame_missing': r'failed to find frame|frame was detached',
+        'waiting_for_locator': r'waiting for .*locator|get_by_|getBy',
+    }
+    stack, tb = [], exc.__traceback__
+    while tb:
+        stack.append({'file': re.split(r'[\\/]', tb.tb_frame.f_code.co_filename)[-1],
+                      'line': tb.tb_lineno, 'function': tb.tb_frame.f_code.co_name})
+        tb = tb.tb_next
+    api = re.match(r'^([A-Za-z]+\.[A-Za-z_]+):', raw)
+    timeout = re.search(r'(?i)timeout\s+(\d+)\s*ms', raw)
+    return {'type': type(exc).__name__, 'browser_api': api.group(1) if api else 'unavailable',
+        'summary': safe_error(exc), 'timeout_ms': int(timeout.group(1)) if timeout else None,
+        'signals': [name for name, pattern in patterns.items() if re.search(pattern, raw, re.I)],
+        'stack': stack[-16:], 'omitted_stack_frames': max(0, len(stack) - 16),
+        'raw_message': 'excluded: may contain entered values or page content'}
 
 
 def _steps(definition):
@@ -143,8 +187,12 @@ def _locator(value, definition):
         if not isinstance(item, dict):
             continue
         part = _fields(item, {'method'}, definition)
-        part['args'] = [clean for arg in (item.get('args') or [])[:5] if (clean := _scalar(arg, definition)) is not None]
+        part['args'] = [({'regex': safe_text(arg['regex'], definition)} if isinstance(arg, dict) and isinstance(arg.get('regex'), str)
+                         else _scalar(arg, definition)) for arg in (item.get('args') or [])[:5]]
         part['kwargs'] = _fields(item.get('kwargs'), {'name', 'exact', 'has_text'}, definition)
+        name = (item.get('kwargs') or {}).get('name')
+        if isinstance(name, dict) and isinstance(name.get('regex'), str):
+            part['kwargs']['name'] = {'regex': safe_text(name['regex'], definition)}
         parts.append(part)
     return parts
 
@@ -157,23 +205,42 @@ def sanitize_diagnostic(detail, definition=None):
     target = detail.get('target')
     if isinstance(target, dict):
         result['target'] = _fields(target, {'page', 'frame', 'method', 'element_id', 'owner_id',
-            'match_count', 'visible_count', 'enabled_count'}, definition)
+            'match_count', 'visible_count', 'enabled_count', 'dispatch_target', 'document_state',
+            'frame_name', 'frame_url_hash', 'probe_error', 'sampled_count', 'omitted_candidates'}, definition)
         for key in ('recorded_locator', 'replay_locator', 'frame_locator'):
             if key in target:
                 result['target'][key] = _locator(target[key], definition)
         if isinstance(target.get('candidates'), list):
-            result['target']['candidates'] = [_fields(item, {'role', 'name', 'tag', 'visible', 'enabled', 'selected', 'checked'}, definition)
+            result['target']['candidates'] = [_fields(item, CANDIDATE_KEYS | {'name', 'selected', 'checked'}, definition)
                 for item in target['candidates'][:8] if isinstance(item, dict)]
+            for original, clean in zip((v for v in target['candidates'][:8] if isinstance(v, dict)), result['target']['candidates']):
+                for key in ('aria_selected', 'aria_pressed', 'aria_expanded', 'aria_disabled', 'userstatus'):
+                    if key in original and original[key] is None:
+                        clean[key] = None  # Attribute absent, distinct from a false value or an unavailable probe.
     if isinstance(detail.get('timing'), dict):
         result['timing'] = _fields(detail['timing'], {'default_seconds', 'override_seconds', 'explicit_wait_seconds',
             'effective_seconds', 'waited_seconds', 'timeout_ms', 'event_timeout_ms'}, definition)
     if isinstance(detail.get('click'), dict):
         click = detail['click']
         result['click'] = _fields(click, {'method', 'dispatched', 'completed', 'attempt', 'confirmation',
-            'transition', 'native_available'}, definition)
+            'transition', 'native_available', 'verification', 'retry_policy', 'timeout_ms'}, definition)
         for key in ('before', 'after'):
             if isinstance(click.get(key), dict):
                 result['click'][key] = _fields(click[key], STATE_KEYS, definition)
+    if isinstance(detail.get('exception'), dict):
+        error = detail['exception']
+        result['exception'] = _fields(error, {'type', 'browser_api', 'summary', 'timeout_ms',
+            'omitted_stack_frames', 'raw_message'}, definition)
+        result['exception']['signals'] = [safe_text(v, definition, limit=100) for v in error.get('signals', [])[:20] if isinstance(v, str)]
+        result['exception']['stack'] = [_fields(v, {'file', 'line', 'function'}, definition)
+            for v in error.get('stack', [])[-16:] if isinstance(v, dict)]
+    if isinstance(detail.get('call'), dict):
+        call = detail['call']
+        result['call'] = _fields(call, {'action', 'page', 'step_id', 'timeout_ms', 'delay_before_seconds',
+            'arguments', 'post_click_verification', 'explicit_text_check', 'explicit_assertion'}, definition)
+        result['call']['locator'] = _locator(call.get('locator', []), definition)
+        result['call']['kwargs'] = _fields(call.get('kwargs'), {'timeout', 'button', 'click_count',
+            'force', 'trial', 'no_wait_after', 'delay'}, definition)
     if isinstance(detail.get('environment'), dict):
         result['environment'] = _fields(detail['environment'], {'browser_channel', 'browser_version', 'playwright_version',
             'python_version', 'worker_version', 'engine_hash', 'revision', 'run_id', 'recording_wait_seconds'}, definition)
@@ -190,7 +257,7 @@ def _loads(value):
 
 def _merge_diagnostic(previous, current):
     result = {**previous, **current}
-    for key in ('target', 'timing', 'click'):
+    for key in ('target', 'timing', 'click', 'call', 'exception'):
         if key in previous or key in current:
             result[key] = {**previous.get(key, {}), **current.get(key, {})}
     if previous.get('click', {}).get('before'):
@@ -217,7 +284,14 @@ def render_debug(db, flow_id, scan_id):
     lines = ['Metronome recording debug log', f'Test: {scan_id} | Flow: {flow_id} | Revision: {row["revision_id"] or "not recorded"}',
         f'Status: {row["status"]} | Operation: {row["operation"]}',
         f'Created: {safe_text(row.get("created_at"))} | Finished: {safe_text(row.get("finished_at")) or "not finished"}',
-        'Private URLs, local paths, entered values and browser snapshots are excluded.', '']
+        'Format: technical-v2 | Private URLs, local paths, entered values and browser snapshots are excluded.',
+        'Click sent means the browser call returned; it does not verify an application transition.',
+        'Missing fields were not captured. Historical logs cannot reconstruct unavailable DOM evidence.', '']
+    lines.append('Frozen execution: ' + json.dumps({
+        'definition_hash': safe_text((job.get('recording') or {}).get('definition_hash')) or 'unavailable',
+        'engine_hash': safe_text((job.get('recording') or {}).get('engine_hash')) or 'unavailable',
+        'recording_wait_seconds': (job.get('execution') or {}).get('recording_wait_seconds', 'unavailable'),
+    }, sort_keys=True))
     progress = _loads(row.get('progress_json'))
     outcomes, diagnostics = {}, {}
     environment_event = db.execute('''SELECT details_json FROM flow_scan_events
@@ -260,6 +334,12 @@ def render_debug(db, flow_id, scan_id):
                 diagnostic = diagnostics.get(step.get('id'))
                 if diagnostic:
                     lines.append(json.dumps(diagnostic, ensure_ascii=False, sort_keys=True))
+                    transition = diagnostic.get('click', {}).get('transition', '')
+                    if transition in {'public_selected', 'private_selected', 'custom_selected'}:
+                        lines.append('Legacy selection rule: target visible AND favorite panel visible AND '
+                            '(aria-selected=true OR aria-pressed=true OR userstatus contains selected OR '
+                            'Nexacro getSelectStatus()=true OR get_selected()=true). '
+                            'Old logs may contain only aggregate selected/open booleans; individual signals are unavailable.')
         lines.append('')
     lines.append('Recorded steps')
     for index, step in enumerate(steps, 1):
@@ -272,6 +352,13 @@ def render_debug(db, flow_id, scan_id):
         if status == 'completed' and step.get('action') in {'click', 'dblclick'}:
             status = 'confirmed' if confirmation == 'confirmed' else 'click sent'
         lines.append(f'{index}. {label} — {safe_text(status)}')
+        contract = execution_contract(step)
+        # Frozen definition is available even if the worker died before dispatch.
+        # Do not invent the new policy for historical execution events.
+        contract.pop('post_click_verification', None)
+        lines.append('   Snapshot: ' + json.dumps(sanitize_diagnostic({'call': contract}, definition)['call'], ensure_ascii=False, sort_keys=True))
+        if step.get('id') in diagnostics:
+            lines.append('   Execution: ' + json.dumps(diagnostics[step['id']], ensure_ascii=False, sort_keys=True))
         if outcome.get('message') and (status == 'failed' or confirmation):
             lines.append('   ' + safe_error(outcome['message'], definition))
     if not steps:
@@ -296,7 +383,13 @@ def render_debug(db, flow_id, scan_id):
         timeline.append('No detailed events were recorded for this session.')
         if progress.get('message'):
             timeline.append(safe_error(progress['message'], definition))
-    prefix = ('\n'.join(lines) + '\n').encode('utf-8')[:MAX_TEXT - 2000]
+    prefix = b''
+    for line in lines:
+        encoded = (line + '\n').encode('utf-8')
+        if len(prefix) + len(encoded) > MAX_TEXT - 2100:
+            prefix += b'[Later step details omitted to keep this log bounded.]\n'
+            break
+        prefix += encoded
     remaining = MAX_TEXT - len(prefix) - 80
     tail = ('\n'.join(timeline) + '\n').encode('utf-8')
     if len(tail) > remaining:

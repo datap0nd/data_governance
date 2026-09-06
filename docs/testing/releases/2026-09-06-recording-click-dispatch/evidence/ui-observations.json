@@ -1,0 +1,62 @@
+{
+  "observed_at_utc": "2026-09-06T15:12:05.863074+00:00",
+  "baseline": "08f0404a7f2177e7d7034f71d033f6027863f288",
+  "environment": {
+    "os": "Windows-11-10.0.26200-SP0",
+    "python": "3.13.15",
+    "playwright": "1.62.0"
+  },
+  "source_sha256": {
+    "app/flow_recording_clicks.py": "af312f0619e7380ad1c030f58ce9de904e03b7d6820cc85017c840466363726f",
+    "app/flow_recording_diagnostics.py": "6e04a03a1c64f05a19f56820eb6cc7d326642f98947ce4fc135d844005e6affe",
+    "app/flow_recording_runtime.py": "ed0dbdb8e344208680b20163454d7a949d16edcdab391d8a3d1e3508415aaf69",
+    "app/static/flow_recording_editor.js": "9904bcf9195e929b28735d56e6079ec954b8835a40884ad95070165f236f7cfe",
+    "app/static/recording-preview/playback.js": "ee0eed6b402e05d0727ed5ee604d558d88114d27f040d6f5b7ff4e97908be0f0"
+  },
+  "manual_preview": {
+    "surface": "Codex in-app browser",
+    "path": "/static/recording-preview/playback.html",
+    "viewport": {
+      "width": 655,
+      "height": 632
+    },
+    "horizontal_overflow": false,
+    "step_count_before_and_after": 5,
+    "wait_insertion_controls": 0,
+    "public_custom_seconds": 60,
+    "advanced_open": false,
+    "setting_result": "Click sent.",
+    "public_result": "Click sent.",
+    "copy_feedback": "Debug log copied.",
+    "debug_fields_observed": [
+      "locator",
+      "timeout_ms",
+      "post_click_verification",
+      "match_count",
+      "aria_selected=null",
+      "aria_pressed=null",
+      "method",
+      "retry_policy"
+    ]
+  },
+  "automated_ui": {
+    "tests": 25,
+    "passed": 25,
+    "duration_seconds": 66.41,
+    "narrow_viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "checks": [
+      "wait persistence",
+      "legacy wait compatibility",
+      "copy fallback",
+      "failed fetch retry",
+      "historical test pinning",
+      "preserved edits",
+      "countdown",
+      "optional downloaded-data checks"
+    ]
+  },
+  "live_portal": "NOT RUN"
+}

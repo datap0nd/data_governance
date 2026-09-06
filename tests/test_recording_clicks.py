@@ -11,7 +11,7 @@ import pytest
 from playwright.sync_api import sync_playwright
 
 from app import flow_portable, flow_recording, flow_recording_clicks, flow_recording_runtime
-from app.flow_recording_clicks import RecordingClickError, click_recorded
+from app.flow_recording_clicks import click_recorded
 from test_flow_recordings import draft_job
 from test_flows import flow_db
 
@@ -60,8 +60,11 @@ window.openFavorite = () => {
     document.getElementById(setting).append(node);
     for(const scope of ['Private','Public','Custom']) {
         const id = panel + '.form.btn_' + scope.toLowerCase();
-        button(id, scope, () => {selected = id;
-            for(const button of node.querySelectorAll('button')) button.setAttribute('aria-pressed', String(button.id === id));
+        button(id, scope, () => {
+            if (!window.noSelectionMarkers) {
+                selected = id;
+                for(const button of node.querySelectorAll('button')) button.setAttribute('aria-pressed', String(button.id === id));
+            }
             if(scope === 'Public' && !node.querySelector('a')) {
                 const link = document.createElement('a'); link.href='/export'; link.textContent='Download file'; node.append(link);
             }
@@ -95,168 +98,107 @@ def page(recording_browser):
     page.close()
 
 
-def click(node, title, events=None, **budgets):
+def click(node, title, events=None):
     return click_recorded(node, {'action': 'click', 'page': 'page',
-        'locator': [{'method': 'get_by_title', 'args': [title]}]}, [], {'timeout': 1000},
-        events.append if events is not None else None,
-        **{'settle_timeout_ms': 40, 'proof_timeout_ms': 100, 'poll_ms': 10, **budgets})
+        'locator': [{'method': 'get_by_title', 'args': [title]}]}, [], {'timeout': 500},
+        events.append if events is not None else None)
 
 
-def test_inert_setting_caption_click_uses_exact_native_owner_once(page):
+def test_inert_caption_dispatches_observed_owning_button_once(page):
+    page.evaluate("window.mode='dom'; document.querySelector('button').style.textAlign='left'; document.querySelector('span').addEventListener('click', e=>e.stopPropagation())")
     events = []
     result = click(page.get_by_title('Setting', exact=True), 'Setting', events)
-    assert result['confirmation'] == 'confirmed'
-    assert result['native_fallback'] is True
-    assert result['component_id'] == GEAR
-    assert page.evaluate('calls') == {'dom': [GEAR], 'native': [GEAR]}
-    assert events[0]['target']['element_id'] == GEAR + ':icontext'
-    assert events[0]['target']['owner_id'] == GEAR
-    assert events[-1]['click']['confirmation'] == 'confirmed'
-    assert events[-1]['click']['attempt'] == 2
+    assert result['confirmation'] == 'not_requested'
+    assert result['message'] == 'Click sent.'
+    assert page.evaluate('calls') == {'dom': [GEAR], 'native': []}
     assert page.locator('[id="' + SETTING + '"]').is_visible()
+    assert events[0]['target']['dispatch_target'] == 'observed_owner'
+    assert events[-1]['click']['verification'] == 'none'
+    assert events[-1]['click']['retry_policy'] == 'never'
 
 
-@pytest.mark.parametrize('mode,delay', [('dom', 0), ('delayed', 100)])
-def test_normal_and_delayed_setting_clicks_never_dispatch_native_twice(page, mode, delay):
-    page.evaluate('([mode, delay]) => {window.mode = mode; window.delay = delay;}', [mode, delay])
-    result = click(page.get_by_title('Setting', exact=True), 'Setting', settle_timeout_ms=250)
-    assert result['native_fallback'] is False
+@pytest.mark.parametrize('mode', ['native', 'inert', 'stale', 'delayed'])
+def test_missing_transition_does_not_fail_or_repeat_dispatch(page, mode):
+    page.evaluate('mode=>{window.mode=mode; window.delay=200;}', mode)
+    result = click(page.get_by_title('Setting', exact=True), 'Setting')
+    assert result['message'] == 'Click sent.'
     assert page.evaluate('calls') == {'dom': [GEAR], 'native': []}
 
 
-def test_favorite_and_empty_public_scope_confirm_navigation_without_rows(page):
-    page.evaluate('openSetting()')
-    favorite = click(page.get_by_title('Favorite', exact=True), 'Favorite')
-    public = click(page.get_by_title('Public', exact=True), 'Public')
-    assert favorite['evidence']['transition'] == 'favorite_visible'
-    assert public['evidence']['transition'] == 'public_selected'
-    assert public['native_fallback'] is True
-    assert page.evaluate('calls.native') == [FAVORITE, PUBLIC]
-    assert page.locator('[id="' + PANEL + '.form.grd_bookmark"]').inner_text() == 'No bookmarks'
-    assert page.locator('[id*="gridrow_"]').count() == 0
+def test_public_changes_view_without_selection_markers_and_is_not_rejected(page):
+    page.evaluate("""() => {openSetting(); openFavorite(); window.mode='inert';
+        delete app.mainframe.VFrameSet.TopFrame.Setting0.form.div_favorite.form.btn_public.getSelectStatus;
+        document.querySelector('[title=Public]').parentElement.addEventListener('click',()=>{
+            const next=document.createElement('button'); next.textContent='Next report'; document.body.append(next);
+        });
+    }""")
+    result = click(page.get_by_title('Public', exact=True), 'Public')
+    assert result['message'] == 'Click sent.'
+    page.get_by_role('button', name='Next report', exact=True).click()
+    assert page.locator('[aria-selected=true],[aria-pressed=true],[userstatus=selected]').count() == 0
+    assert page.evaluate('calls') == {'dom': [PUBLIC], 'native': []}
 
 
-@pytest.mark.parametrize('title', ['Private', 'Custom'])
-def test_other_known_scopes_are_confirmed_without_bookmark_contents(page, title):
-    page.evaluate('openSetting(); openFavorite()')
-    result = click(page.get_by_title(title, exact=True), title)
-    assert result['evidence']['transition'] == title.lower() + '_selected'
-    assert result['confirmation'] == 'confirmed'
-
-
-def test_existing_setting_is_left_for_ordinary_recorded_dispatch(page):
-    page.evaluate('openSetting()')
-    assert click(page.get_by_title('Setting', exact=True), 'Setting') is None
-    assert page.evaluate('calls') == {'dom': [], 'native': []}
-
-
-def test_native_fallback_stays_inside_recorded_frame_despite_duplicate_outer_control(page):
-    page.evaluate('openSetting(); document.body.style.visibility = "hidden"')
-    frame = page.locator('body').evaluate_handle("body => {const node = document.createElement('iframe'); node.id = 'recorded'; node.style.visibility='visible'; node.style.width='800px'; node.style.height='500px'; body.append(node); return node;}")
-    child = frame.as_element().content_frame()
-    child.set_content(FIXTURE)
-    result = click(page.frame_locator('#recorded').get_by_title('Setting', exact=True), 'Setting')
-    assert result['native_fallback'] is True
-    assert child.evaluate('calls.native') == [GEAR]
+@pytest.mark.parametrize('title', ['Favorite', 'Public', 'Private', 'Custom'])
+def test_all_navigation_controls_use_single_dispatch_without_selection_gate(page, title):
+    page.evaluate('openSetting(); openFavorite(); window.mode="dom"')
+    assert click(page.get_by_title(title, exact=True), title)['confirmation'] == 'not_requested'
+    assert len(page.evaluate('calls.dom')) == 1
     assert page.evaluate('calls.native') == []
-    frame.dispose()
 
 
-def test_outer_setting_cannot_confirm_an_inert_frame_click(page):
-    page.evaluate('openSetting()')
-    page.locator('body').evaluate("body => {const frame = document.createElement('iframe'); frame.id='recorded'; frame.width=800; frame.height=500; body.append(frame);}")
+def test_click_remains_in_recorded_frame_with_duplicate_outer_control(page):
+    page.locator('body').evaluate("body => {const frame=document.createElement('iframe'); frame.id='recorded'; frame.width=800; frame.height=500; body.append(frame);}")
     child = next(frame for frame in page.frames if frame != page.main_frame)
     child.set_content(FIXTURE)
-    child.evaluate('window.mode="inert"')
-    with pytest.raises(RecordingClickError) as error:
-        click(page.frame_locator('#recorded').get_by_title('Setting', exact=True), 'Setting')
-    assert error.value.diagnostic['click']['confirmation'] == 'transition_missing'
-    assert child.evaluate('calls.native') == [GEAR]
-    assert page.evaluate('calls.native') == []
+    child.evaluate('window.mode="dom"')
+    click(page.frame_locator('#recorded').get_by_title('Setting', exact=True), 'Setting')
+    assert child.evaluate('calls') == {'dom': [GEAR], 'native': []}
+    assert page.evaluate('calls') == {'dom': [], 'native': []}
 
 
-def test_replaced_native_handler_is_never_used_to_repeat_the_click(page):
-    page.evaluate('window.mode="stale"')
-    with pytest.raises(RecordingClickError) as error:
-        click(page.get_by_title('Setting', exact=True), 'Setting')
-    assert error.value.diagnostic['click']['confirmation'] == 'target_changed'
-    assert page.evaluate('calls.native') == []
-
-
-def test_unavailable_native_handler_reports_failure_without_replaying_other_controls(page):
-    page.evaluate('delete app.mainframe.VFrameSet.TopFrame.form.div_main.form.btn_setting.on_fire_onclick')
-    with pytest.raises(RecordingClickError) as error:
-        click(page.get_by_title('Setting', exact=True), 'Setting')
-    assert error.value.diagnostic['click']['confirmation'] == 'native_unavailable'
-    assert page.evaluate('calls') == {'dom': [GEAR], 'native': []}
-
-
-def test_hidden_setting_shell_does_not_count_as_a_successful_transition(page):
-    page.evaluate('''() => {openSetting(); document.getElementById("mainframe.VFrameSet.TopFrame.Setting0").style.display='none'; window.mode='inert';}''')
-    with pytest.raises(RecordingClickError) as error:
-        click(page.get_by_title('Setting', exact=True), 'Setting')
-    assert error.value.diagnostic['click']['confirmation'] == 'transition_missing'
-    assert page.evaluate('calls.native') == [GEAR]
-
-
-def test_delayed_actionability_uses_playwright_waiting_without_force(page):
-    page.evaluate('''() => {window.mode='dom'; const button=document.getElementById("mainframe.VFrameSet.TopFrame.form.div_main.form.btn_setting"); button.disabled=true; setTimeout(()=>button.disabled=false,80);}''')
-    result = click(page.get_by_title('Setting', exact=True), 'Setting')
-    assert result['confirmation'] == 'confirmed'
-    assert page.evaluate('calls') == {'dom': [GEAR], 'native': []}
-
-
-def test_native_selected_state_confirms_empty_scope_without_dom_selection_attributes(page):
-    page.evaluate('''() => {openSetting(); openFavorite();
-        const component=app.mainframe.VFrameSet.TopFrame.Setting0.form.div_favorite.form.btn_public;
-        component.on_fire_onclick=()=>{calls.native.push("public-native"); selected="mainframe.VFrameSet.TopFrame.Setting0.form.div_favorite.form.btn_public";};
-    }''')
-    result = click(page.get_by_title('Public', exact=True), 'Public')
-    assert result['evidence']['transition'] == 'public_selected'
-    assert page.locator('[aria-selected=true],[aria-pressed=true],[userstatus=selected]').count() == 0
-    assert page.evaluate('calls.native') == ['public-native']
-
-
-def test_duplicate_recorded_targets_fail_before_any_dispatch(page):
-    page.evaluate('''() => {const copy=document.querySelector('button').cloneNode(true); document.body.append(copy);}''')
-    with pytest.raises(Exception, match='strict mode violation'):
+@pytest.mark.parametrize('condition', ['duplicate', 'hidden', 'disabled', 'missing'])
+def test_real_actionability_failure_still_stops_without_native_retry(page, condition):
+    changes = {'duplicate': "document.body.append(document.querySelector('button').cloneNode(true))",
+        'hidden': "document.querySelector('button').style.display='none'",
+        'disabled': "document.querySelector('button').disabled=true",
+        'missing': "document.querySelector('button').remove()"}
+    page.evaluate(changes[condition])
+    with pytest.raises(Exception):
         click(page.get_by_title('Setting', exact=True), 'Setting')
     assert page.evaluate('calls') == {'dom': [], 'native': []}
+
+
+def test_unavailable_native_handler_is_irrelevant_to_successful_dom_click(page):
+    page.evaluate('window.mode="dom"; delete app.mainframe.VFrameSet.TopFrame.form.div_main.form.btn_setting.on_fire_onclick')
+    assert click(page.get_by_title('Setting', exact=True), 'Setting')['message'] == 'Click sent.'
+    assert page.evaluate('calls.native') == []
+
+
+def test_delayed_actionability_still_uses_playwright(page):
+    page.evaluate("window.mode='dom'; document.querySelector('button').disabled=true; setTimeout(()=>document.querySelector('button').disabled=false,80)")
+    assert click(page.get_by_title('Setting', exact=True), 'Setting')['message'] == 'Click sent.'
+    assert page.evaluate('calls.dom') == [GEAR]
 
 
 @pytest.mark.parametrize('identifier,title', [('btn_run', 'Run report'), ('btn_excel', 'Download'), ('btn_unknown', 'Setting')])
-def test_generic_and_report_actions_are_not_dispatched_or_retried_by_helper(page, identifier, title):
+def test_generic_and_report_actions_are_left_for_normal_dispatch(page, identifier, title):
     page.evaluate('([identifier,title])=>{document.body.innerHTML="";button("mainframe.VFrameSet.TopFrame.form.div_main.form."+identifier,title,()=>{});}', [identifier, title])
     assert click(page.get_by_title(title, exact=True), title) is None
     assert page.evaluate('calls') == {'dom': [], 'native': []}
 
 
-def test_cancellation_from_diagnostic_callback_is_not_swallowed(page):
-    class Cancelled(RuntimeError):
-        pass
-
+def test_cancel_before_dispatch_never_clicks(page):
     def cancel(detail):
-        if detail['phase'] == 'click_waiting':
-            raise Cancelled('cancelled by fixture')
-
-    with pytest.raises(Cancelled, match='cancelled by fixture'):
-        click_recorded(page.get_by_title('Setting', exact=True), {'action': 'click'}, [], {'timeout': 1000}, cancel,
-            settle_timeout_ms=100, proof_timeout_ms=100, poll_ms=10)
-    assert page.evaluate('calls.native') == []
-
-
-def test_recorded_click_timeout_also_caps_transition_and_fallback(page):
-    page.evaluate('window.mode="inert"')
-    with pytest.raises(RecordingClickError) as error:
-        click_recorded(page.get_by_title('Setting', exact=True), {'action': 'click'}, [], {'timeout': 150},
-            settle_timeout_ms=500, proof_timeout_ms=500, poll_ms=10)
-    assert error.value.diagnostic['click']['confirmation'] == 'timeout'
-    assert page.evaluate('calls.native') == []
+        raise RuntimeError('cancelled by fixture')
+    with pytest.raises(RuntimeError, match='cancelled by fixture'):
+        click_recorded(page.get_by_title('Setting'), {'action': 'click'}, [], {'timeout': 500}, cancel)
+    assert page.evaluate('calls') == {'dom': [], 'native': []}
 
 
 @pytest.fixture
 def recorded_portal():
-    state = {'mode': 'native', 'exports': 0}
+    state = {'mode': 'dom', 'exports': 0}
     payload = b'Code,Amount\nRecorded,42\n'
 
     class Handler(BaseHTTPRequestHandler):
@@ -268,7 +210,7 @@ def recorded_portal():
                 self.send_header('Content-Type', 'text/csv')
                 self.send_header('Content-Disposition', 'attachment; filename="recorded.csv"')
             else:
-                content = (FIXTURE + '<script>window.mode=' + json.dumps(state['mode']) + ';</script>').encode()
+                content = (FIXTURE + '<script>window.noSelectionMarkers=true;window.mode=' + json.dumps(state['mode']) + ';</script>').encode()
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/html')
             self.end_headers()
@@ -327,12 +269,6 @@ def test_recorded_navigation_reaches_one_real_download_in_worker_and_portable(
         published = list(output_root.glob('*/*/Downloads/recorded.csv'))
         assert len(published) == 1
     else:
-        original = flow_recording_clicks.click_recorded
-
-        def short_proof(*args, **kwargs):
-            return original(*args, **kwargs, settle_timeout_ms=40, proof_timeout_ms=100, poll_ms=10)
-
-        monkeypatch.setattr(flow_recording_clicks, 'click_recorded', short_proof)
         profile = tmp_path / 'worker-profile'
         profile.mkdir()
         context = recording_browser.new_context(accept_downloads=True)
@@ -342,21 +278,61 @@ def test_recorded_navigation_reaches_one_real_download_in_worker_and_portable(
             result = flow_recording_runtime.execute_recorded_flow(page, job,
                 lambda status, detail, *args: events.append(detail), profile,
                 run_id=23, register_folder=lambda _: {'ops': []})
-            assert page.evaluate('calls.native') == [GEAR, FAVORITE, PUBLIC]
+            assert page.evaluate('calls.dom') == [GEAR, FAVORITE, PUBLIC]
+            assert page.evaluate('calls.native') == []
         finally:
             context.close()
         assert len(result['artifacts']) == 1
         published = [Path(job['downloads']['target_folder']) / 'recorded.csv']
-        for step_id in ('setting', 'favorite', 'public'):
-            assert any(event.get('step_id') == step_id
-                and event.get('diagnostic', {}).get('click', {}).get('method') == 'nexacro' for event in events)
-            assert any(event.get('step_id') == step_id
-                and event.get('diagnostic', {}).get('click', {}).get('after', {}).get('open') is True for event in events)
-        assert any(event.get('step_id') == 'public'
-            and event.get('diagnostic', {}).get('click', {}).get('after', {}).get('selected') is True for event in events)
     assert published[0].read_bytes() == payload
     assert server_state['exports'] == 1
     for step_id in ('setting', 'favorite', 'public'):
         assert any(event.get('step_id') == step_id and event.get('outcome') == 'completed'
-            and event.get('confirmation') == 'confirmed' for event in events)
+            and event.get('confirmation') == 'not_requested' for event in events)
     assert any(event.get('step_id') == 'download-click' and event.get('message') == 'Click sent.' for event in events)
+
+
+def test_probe_captures_absent_attributes_hit_blocker_and_duplicate_candidates(page):
+    from app import flow_recording_diagnostics as diagnostics
+    page.evaluate('''() => {openSetting(); openFavorite();
+        const overlay=document.createElement('div'); overlay.id='overlay'; overlay.style='position:fixed;inset:0;z-index:99'; document.body.append(overlay);
+    }''')
+    step = {'id': 'public', 'action': 'click', 'page': 'page',
+            'locator': [{'method': 'get_by_title', 'args': ['Public']}]}
+    detail = diagnostics.sanitize_diagnostic({'target': flow_recording_runtime.observe_target(page.get_by_title('Public'), step)})
+    target = detail['target']
+    assert target['match_count'] == 1
+    assert target['frame_url_hash'] and target['document_state'] == 'complete'
+    candidate = target['candidates'][0]
+    assert candidate['aria_selected'] is None and candidate['aria_pressed'] is None
+    assert candidate['hit_id'] == 'overlay' and candidate['hit_is_target'] is False
+    assert candidate['width'] > 0 and candidate['tag'] == 'span'
+    page.evaluate("document.body.append(document.querySelector('[title=Public]').parentElement.cloneNode(true))")
+    detail = flow_recording_runtime.observe_target(page.get_by_title('Public'), step)
+    assert detail['match_count'] == 2 and len(detail['candidates']) == 2
+
+
+def test_failed_next_target_keeps_previous_dispatch_and_technical_exception(
+        flow_db, tmp_path, recorded_portal, recording_browser):
+    url, state, _ = recorded_portal
+    state['mode'] = 'inert'
+    job = recorded_job(url)
+    job['execution']['recording_wait_seconds'] = 1
+    job['recording']['definition']['steps'][2]['kwargs'] = {'timeout': 200}
+    job['recording']['definition_hash'] = flow_recording.digest(job['recording']['definition'])
+    events = []
+    context = recording_browser.new_context(accept_downloads=True)
+    try:
+        with pytest.raises(Exception):
+            flow_recording_runtime.execute_recorded_flow(context.new_page(), job,
+                lambda status, detail, *args: events.append(detail), tmp_path,
+                run_id=24, register_folder=lambda _: {'ops': []})
+    finally:
+        context.close()
+    failed = next(e['diagnostic'] for e in events if e.get('outcome') == 'failed')
+    assert failed['prior_step_id'] == 'setting'
+    assert failed['call']['step_id'] == 'favorite'
+    assert failed['target']['match_count'] == 0
+    assert failed['exception']['type'] == 'TimeoutError'
+    assert failed['exception']['stack'] and 'timeout' in failed['exception']['signals']
+    assert any(e.get('step_id') == 'setting' and e.get('message') == 'Click sent.' for e in events)
