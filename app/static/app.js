@@ -12006,7 +12006,7 @@ function _flowCollectBuilder() {
     const titleControl = $("#flow-export-report-title");
     const filterDetailsControl = $("#flow-export-filter-details");
     return {
-        ...shared, recording_revision_id: window._flowRecordingSelections?.get(Number(form.dataset.id)) || undefined, execution_method: $("#flow-execution-method")?.value || "catalog", source_type: "portal", outlook_subject_contains: null,
+        ...shared, recording_revision_id: $('#flow-execution-method')?.value === 'recorded' ? window._flowRecordingSelections?.get(Number(form.dataset.id)) || undefined : undefined, execution_method: $("#flow-execution-method")?.value || "catalog", source_type: "portal", outlook_subject_contains: null,
         local_file_path: null, local_file_worksheet: null,
         site_id: Number($("#flow-site").value), report_id: Number($("#flow-report").value),
         export_views: [...document.querySelectorAll("[data-flow-export-view]:checked")].map(input => input.value),

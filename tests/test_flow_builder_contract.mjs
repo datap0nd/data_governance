@@ -37,3 +37,11 @@ assert.deepEqual(seen,[input,'focus']);
 assert.match(source,/queueMicrotask\(\(\) => \{ _flowRevealStep\(form, target\); target.focus\(\)/);
 assert.match(source,/next.type = "button"/);
 console.log('flow builder payload and error tests passed');
+
+// Switching to detected controls must not submit a pending recorded revision.
+form.dataset.id = '7';
+context.window._flowRecordingSelections = new Map([[7, 42]]);
+set('flow-execution-method', 'recorded');
+assert.equal(context._flowCollectBuilder().recording_revision_id, 42);
+set('flow-execution-method', 'catalog');
+assert.equal(context._flowCollectBuilder().recording_revision_id, undefined);
