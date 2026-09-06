@@ -21,8 +21,9 @@ window.RecordedFlowEditor = (() => {
     async function open(flowId, settings=null) {
         const el=openPage(flowId),body=el.querySelector('[data-body]');
         let error;
-        let data,revisionId,draft,baseline,selected,undo=[],dirty=false,pending=false,operation=null,timer,serial=0,expanded=new Set(),dragged,refreshError=false;
+        let data,revisionId,draft,baseline,selected,undo=[],dirty=false,pending=false,operation=null,timer,serial=0,expanded=new Set(),dragged,refreshError=false,debugScanId=null,debugSerial=0,debugAbort;
         const prefix=`/api/flows/${flowId}/recordings`;
+        const defaultWait=()=>Number.isInteger(data?.recording_wait_seconds)?data.recording_wait_seconds:10;
         const revision=()=>data?.revisions.find(r=>r.id===revisionId);
         const active=()=>data?.sessions.find(s=>['queued','claimed','running'].includes(s.status));
         const latest=()=>data?.sessions.find(s=>s.revision_id===revisionId && s.operation==='validate');
@@ -36,7 +37,7 @@ window.RecordedFlowEditor = (() => {
             else {panel.hidden=true;body.querySelector('.recording-workspace')?.append(panel);} if(root)panel.hidden=false;
         }
         narrow.addEventListener('change',placeDetails);
-        el.addEventListener('close',()=>{clearTimeout(timer);serial++;narrow.removeEventListener('change',placeDetails);},{once:true});
+        el.addEventListener('close',()=>{clearTimeout(timer);serial++;debugSerial++;debugAbort?.abort();narrow.removeEventListener('change',placeDetails);},{once:true});
         function load(r) {
             revisionId=r?.id; draft=r?M.clone(r.definition):null; baseline=JSON.stringify(draft);
             selected=null;dirty=false;undo=[];expanded=new Set();
@@ -72,8 +73,11 @@ window.RecordedFlowEditor = (() => {
         }
         function shell() {
             body.innerHTML=`<div class="recording-toolbar"><div><h1>${h(settings?.name||data.flow.name)}</h1><span data-state role="status"></span></div><details><summary>More</summary><button class="btn-secondary" data-start>Record again</button> <button class="btn-secondary" data-history>Saved versions</button></details></div>
-                <div data-history-panel hidden></div><div class="recording-actions"><button class="btn-primary" data-test>Test recording</button> <button class="btn-secondary" data-save>Save draft</button><span data-save-state role="status"></span><p data-error role="alert"></p><p data-session role="status"></p><div data-session-actions></div></div><div data-editor></div>`;
+                <div data-history-panel hidden></div><div class="recording-actions"><button class="btn-primary" data-test>Test recording</button> <button class="btn-secondary" data-save>Save draft</button><span data-save-state role="status"></span><p data-error role="alert"></p><div class="recording-session-result"><p data-session role="status"></p><button type="button" class="btn-secondary" data-debug-open hidden aria-expanded="false">Debug log</button></div><section data-debug-panel class="recording-debug" hidden aria-label="Debug log"><div class="recording-detail-heading"><h3 data-debug-title>Debug log</h3><button type="button" class="btn-secondary" data-debug-copy disabled>Copy debug log</button><button type="button" class="btn-secondary" data-debug-close>Close debug log</button></div><p data-debug-status role="status"></p><textarea data-debug-text aria-label="Debug log text" readonly rows="14" hidden></textarea><button type="button" class="btn-secondary" data-debug-retry hidden>Retry loading log</button></section><div data-session-actions></div></div><div data-editor></div>`;
             error=body.querySelector('[data-error]');
+            body.querySelector('[data-debug-close]').onclick=()=>{debugSerial++;debugAbort?.abort();body.querySelector('[data-debug-panel]').hidden=true;body.querySelector('[data-debug-open]').setAttribute('aria-expanded','false');};
+            body.querySelector('[data-debug-retry]').onclick=()=>openDebug(debugScanId);
+            body.querySelector('[data-debug-copy]').onclick=copyDebug;
             body.querySelector('[data-start]').onclick=()=>request(async()=>{remember();if(draft&&dirty){await save();if(!el.isConnected)return;}const r=await apiPost(`${prefix}/start`);if(r.worker?.status==='error')throw Error(r.worker.message);});
             body.querySelector('[data-history]').onclick=()=>{const panel=body.querySelector('[data-history-panel]');panel.hidden=!panel.hidden;renderHistory();};
             body.querySelector('[data-save]').onclick=()=>request(save);
@@ -86,6 +90,27 @@ window.RecordedFlowEditor = (() => {
                     if(result.worker?.status==='error')throw Error(result.worker.message);
                 });
             };
+        }
+        async function openDebug(scanId) {
+            if(!scanId)return;debugScanId=scanId;const requestId=++debugSerial;
+            debugAbort?.abort();debugAbort=new AbortController();
+            const panel=body.querySelector('[data-debug-panel]'),text=body.querySelector('[data-debug-text]'),status=body.querySelector('[data-debug-status]');
+            panel.hidden=false;body.querySelector('[data-debug-open]').setAttribute('aria-expanded','true');
+            body.querySelector('[data-debug-title]').textContent=`Debug log · ${scanId}`;
+            status.textContent='Loading debug log…';text.hidden=true;text.value='';
+            body.querySelector('[data-debug-copy]').disabled=true;body.querySelector('[data-debug-retry]').hidden=true;
+            try {
+                const headers=typeof apiHeaders==='function'?apiHeaders({Accept:'text/plain'}):{Accept:'text/plain'};
+                const response=await fetch(`${prefix}/${scanId}/debug`,{headers,credentials:'same-origin',signal:debugAbort.signal});
+                if(!response.ok)throw typeof apiError==='function'?await apiError(response):Error(`Could not load debug log (${response.status}).`);
+                const value=await response.text();if(!el.isConnected||requestId!==debugSerial)return;
+                text.value=value;text.hidden=false;status.textContent='';body.querySelector('[data-debug-copy]').disabled=!value;
+            }catch(e){if(!el.isConnected||requestId!==debugSerial||e.name==='AbortError')return;status.textContent=e.message;body.querySelector('[data-debug-retry]').hidden=false;}
+        }
+        async function copyDebug() {
+            const text=body.querySelector('[data-debug-text]'),status=body.querySelector('[data-debug-status]'),requestId=debugSerial;
+            try {if(!navigator.clipboard?.writeText)throw Error('Clipboard unavailable');await navigator.clipboard.writeText(text.value);if(el.isConnected&&requestId===debugSerial)status.textContent='Debug log copied.';}
+            catch {if(!el.isConnected||requestId!==debugSerial)return;text.focus();text.select();status.textContent='Copy unavailable. The log is selected; copy it with your keyboard.';}
         }
         function renderHistory() {
             const panel=body.querySelector('[data-history-panel]');
@@ -129,10 +154,13 @@ window.RecordedFlowEditor = (() => {
                 card.querySelector('[data-select]').setAttribute('aria-pressed',String(own?.id===step.id));
                 card.querySelector('[data-select]').textContent=M.describe(step);
                 const children=M.all([step]),failed=children.map(s=>outcomes[s.id]).find(o=>o?.outcome==='failed');
-                const outcome=dirty?null:failed || outcomes[step.id];
+                const waiting=children.map(s=>outcomes[s.id]).find(o=>o?.outcome==='running'&&Number.isFinite(o.remaining_seconds));
+                const outcome=dirty?null:failed || waiting || outcomes[step.id];
                 let state=outcome?.outcome==='failed'?'failed':outcome?.outcome==='completed'?'completed':['started','running','ready'].includes(outcome?.outcome)?'running':'';
                 if(outcome?.outcome==='cancelled'||(state==='running'&&!['running','queued','claimed'].includes(latest()?.status)))state='interrupted';
-                card.dataset.outcome=state;card.querySelector('.recording-outcome').textContent=state==='running'?'Running…':state==='completed'?'Completed':state==='failed'?'Needs attention':state==='interrupted'?'Not completed':'';
+                const action=M.triggering(step);
+                const message=state==='running'?(outcome?.message||'Running…'):state==='completed'?(outcome?.confirmation&&outcome.message?outcome.message:['click','dblclick'].includes(action.action)&&!['download','popup'].includes(step.action)?'Click sent':'Completed'):state==='failed'?'Needs attention':state==='interrupted'?'Not completed':'';
+                card.dataset.outcome=state;card.querySelector('.recording-outcome').textContent=message;
             });
         }
         function renderDetails() {
@@ -148,18 +176,18 @@ window.RecordedFlowEditor = (() => {
             const outcome=M.all([step]).map(s=>outcomes[s.id]).find(o=>o?.outcome==='failed') || outcomes[step.id] || outcomes[action.id];
             panel.innerHTML=`<div class="recording-detail-heading"><h3>Step ${index+1}</h3>${undo.length?'<button class="btn-secondary" data-undo>Undo</button>':''}<button class="btn-secondary" data-done>Done</button>${step===root?`<button class="btn-secondary" data-up aria-label="Move up" ${index===0?'disabled':''}>↑</button><button class="btn-secondary" data-down aria-label="Move down" ${index===draft.steps.length-1?'disabled':''}>↓</button><button class="btn-secondary" data-remove>Remove</button>`:'<button class="btn-secondary" data-parent>Back to group</button>'}</div>
                 <p data-step-failure role="alert">${outcome?.outcome==='failed'?h(outcome.message):''}</p>
-                ${action.repair_reason?`<p role="alert">${h(action.repair_reason)}</p>`:''}
                 <section><h4>Action</h4><label>Step name <input data-label maxlength="160" value="${h(step.label || '')}" placeholder="${h(M.describe(step))}"></label><p>${h(M.describe(action))}</p>
                 ${action.locator?.length?`<p class="recording-target">Target: ${h(M.name(action))}</p>`:''}
                 ${valueActions.includes(action.action)||action.action==='press'||action.action==='goto'?`<label>${action.action==='goto'?'Address':'Entered value'} <input data-value value="${h(typeof action.args?.[0]==='string'?action.args[0]:'')}" ${action.args?.[0] && typeof action.args[0]!=='string'?'disabled':''}></label>`:''}
                 ${step.steps?.length && action===step?`<details data-section="group" ${expanded.has('group')?'open':''}><summary>${step.steps.length} actions in this event group</summary>${step.steps.map(child=>`<button type="button" class="recording-group-action" data-child="${h(child.id)}">${h(M.describe(child))}</button>`).join('')}<p>This group moves as one unit to preserve its event listener.</p></details>`:''}</section>
                 <section><h4>Options</h4>
+                ${M.canDelay(action)?`<label>Wait before this step <select data-delay-mode>${option('default',`Use default · ${defaultWait()} seconds`,action.delay_before_seconds===undefined?'default':'custom')}${option('custom','Custom',action.delay_before_seconds===undefined?'default':'custom')}</select></label>${action.delay_before_seconds===undefined?'':`<label>Wait in seconds <input data-delay-seconds type="number" min="1" max="600" step="1" required value="${action.delay_before_seconds}"></label>`}`:''}
                 ${action.action==='wait'?`<label>Wait in seconds <input data-seconds type="number" min="1" max="600" step="1" value="${action.seconds}"></label>`:''}
                 ${downloadActions.includes(action.action)||output?`<label><input data-download type="checkbox" ${output||associated?'checked':''} ${(output&&action===step)||associated?'disabled':''}> This action produces a download</label>${associated?`<button class="btn-secondary" data-associated="${h(associated.id)}">Edit download group</button>`:''}`:''}
                 ${output?`<label>Output format <select data-format>${['xlsx','csv','html','txt'].map(v=>option(v,v,output.format)).join('')}</select></label>
                 ${hasDataCheck?`<section data-data-check><h4>Data check</h4>${tabularOutput?`${output.min_rows>0?`<label>Minimum data rows <input data-min-rows type="number" min="1" step="1" value="${h(output.min_rows)}"></label><p>Excludes the header and blank rows.</p>`:'<button class="btn-secondary" data-add-row-check>Add row count check</button>'}<details data-section="data-columns" ${expanded.has('data-columns')?'open':''}><summary>Columns and dates</summary><label>Expected columns, in order <input data-headers value="${h((output.headers||[]).join(', '))}"></label><label>Period column <input data-period-column value="${h(output.period_checks?.[0]?.column)}"></label><label>Period parameter <input data-period-parameter value="${h(output.period_checks?.[0]?.parameter)}"></label></details>`:'<p>Data checks require XLSX or CSV. Change the format or remove this check.</p>'}<button class="btn-secondary" data-remove-data-check>Remove data check</button></section>`:tabularOutput?'<button class="btn-secondary" data-add-data-check>Add data check</button>':''}`:''}
                 ${valueActions.includes(action.action)?`<label>Date behavior <select data-date-mode>${option('','Use recorded value',parameter.mode||'')}${option('fixed','Fixed date',parameter.mode)}${option('portal_default','Portal default — leave untouched',parameter.mode)}${option('calculated','Calculated date',parameter.mode)}</select></label><div data-date-options ${parameter.mode?'':'hidden'}><label>Parameter name <input data-date-name value="${h(parameterName || action.id.replaceAll('-','_'))}"></label><label ${parameter.mode==='fixed'?'':'hidden'}>Fixed date <input data-date-value value="${h(parameter.value??action.args?.[0])}"></label><label ${parameter.mode==='calculated'?'':'hidden'}>Calculation <select data-date-expression>${['today','yesterday','month_start','previous_month_start','previous_month_end','year_start','week_start'].map(v=>option(v,v.replaceAll('_',' '),parameter.expression)).join('')}</select></label><label>Date format <select data-date-format>${['%Y-%m-%d','%d/%m/%Y','%m/%d/%Y','%Y%m%d'].map(v=>option(v,v,parameter.format||'%Y-%m-%d')).join('')}</select></label></div>`:''}
-                </section><details data-section="advanced" ${expanded.has('advanced')||outcome?.outcome==='failed'?'open':''}><summary>Advanced</summary><p>Page: ${h(action.page)}</p><code class="recording-locator">${h(JSON.stringify(action.locator || []))}</code>
+                </section><details data-section="advanced" ${expanded.has('advanced')?'open':''}><summary>Advanced</summary>${action.repair_reason?`<p role="alert">${h(action.repair_reason)}</p>`:''}<p>Page: ${h(action.page)}</p><code class="recording-locator">${h(JSON.stringify(action.locator || []))}</code>
                 ${action.locator?.length?`<label>Repair target <select data-repair-kind>${option('','Keep recorded target','')}${option('text','Exact visible text','')}${option('label','Exact input label','')}${option('css','Stable CSS selector','')}</select></label><input data-repair-value aria-label="Replacement target"><button class="btn-secondary" data-repair>Apply target repair</button><label>Expected element text <input data-expected value="${h(action.expected_text)}"></label>`:''}
                 ${output?`<label>Download completion <select data-completion>${option('native','Browser download',output.completion||'native')}${option('staging','Verified staging fallback',output.completion)}</select></label>`:''}
                 ${valueActions.includes(action.action)?`<label>Date must not be after parameter <input data-not-after value="${h(parameter.not_after)}"></label>`:''}
@@ -181,6 +209,8 @@ window.RecordedFlowEditor = (() => {
             panel.querySelectorAll('[data-section]').forEach(d=>d.ontoggle=()=>{if(d.open)expanded.add(d.dataset.section);else expanded.delete(d.dataset.section);});
             bind('[data-label]',n=>change(d=>getStep(d).label=n.value),'input');
             bind('[data-value]',n=>change(d=>get(d).args=[n.value]),'input');
+            bind('[data-delay-mode]',n=>change(d=>{const action=get(d);if(n.value==='custom')action.delay_before_seconds=defaultWait();else delete action.delay_before_seconds;},true));
+            bind('[data-delay-seconds]',n=>{const v=Number(n.value);if(!Number.isInteger(v)||v<1||v>600)throw Error('Choose 1–600 whole seconds.');change(d=>get(d).delay_before_seconds=v);});
             bind('[data-seconds]',n=>{const v=Number(n.value);if(!Number.isInteger(v)||v<1||v>600)throw Error('Choose 1–600 whole seconds.');change(d=>get(d).seconds=v);});
             bind('[data-expected]',n=>change(d=>get(d).expected_text=n.value),'input');
             panel.querySelector('[data-repair]')?.addEventListener('click',()=>guarded(()=>{const kind=panel.querySelector('[data-repair-kind]').value,text=panel.querySelector('[data-repair-value]').value;if(!kind||!text)throw Error('Choose a target type and enter its value.');change(d=>{const node=get(d),target=M.frame(node);target.locator.push({method:{text:'get_by_text',label:'get_by_label',css:'locator'}[kind],args:[text],kwargs:kind==='css'?{}:{exact:true}});Object.assign(node,target);delete node.repair_reason;},true);}));
@@ -239,6 +269,8 @@ window.RecordedFlowEditor = (() => {
                     session.status==='cancelled'?(session.operation==='validate'?'Test cancelled.':'Recording cancelled.'):
                     progress.message||({queued:'Waiting for worker…',claimed:'Opening browser…',running:session.operation==='validate'?'Testing recording…':'Recording…'}[session.status]||''));
                 body.querySelector('[data-session]').textContent=sessionMessage;
+                const debugButton=body.querySelector('[data-debug-open]');debugButton.hidden=!session?.scan_id;debugButton.onclick=()=>openDebug(session.scan_id);
+                body.querySelectorAll('[data-delay-mode] option[value=default]').forEach(option=>option.textContent=`Use default · ${defaultWait()} seconds`);
                 if(session?.operation==='validate'&&session.status==='succeeded'&&session.revision_id===revisionId&&!dirty){
                     const form=document.getElementById('flow-builder-form');
                     // The builder DOM is detached while recording is open; the callback

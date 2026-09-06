@@ -7934,3 +7934,11 @@ body.remote-flow-control-enabled { padding-top: 32px; }
 .flow-builder-minimal #flow-destination > div { margin-top: 8px; color: var(--text-muted); }
 
 .flow-recording-page .recording-add-wait { margin-top: 12px; }
+
+.flow-recording-page .recording-session-result { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+.flow-recording-page .recording-session-result p { flex:1; min-width:220px; }
+.flow-recording-page .recording-debug { padding:16px; margin:12px 0; border:1px solid var(--border); background:var(--surface); }
+.flow-recording-page .recording-debug textarea { display:block; width:100%; min-height:220px; resize:vertical; font:12px/1.6 monospace; white-space:pre; }
+.flow-recording-page .recording-card { flex-wrap:wrap; }
+.flow-recording-page .recording-outcome { max-width:42%; overflow-wrap:anywhere; }
+@media(max-width:760px) { .flow-recording-page .recording-outcome:not(:empty) { display:block; flex-basis:100%; max-width:none; margin-left:40px; } }

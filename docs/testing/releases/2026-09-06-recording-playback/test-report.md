@@ -1,0 +1,47 @@
+# Recording playback, timing and text diagnostics: test report
+
+- Plan: [test-plan.md](test-plan.md).
+- Evidence cutoff: 2026-09-06 13:20 UTC. Final-head GitHub CI completes after this report's commit and is recorded in the PR before merge.
+- Tested code: the full local run started on the working tree committed as `1bf79d94eda34fd5f719a3cf64174978f4fdf843`. Terminal-message and worker-cancellation follow-ups were added while it ran and tested separately below. Final-head CI retests the integrated changes. Exact UI source hashes are in [browser observations](evidence/ui-observations.json).
+- Environment: Windows 11 build 26200, Python 3.13 ARM64, pytest 8.3.5, Playwright 1.62.0, Chrome 152.0.7977.76. Browser fixtures use fictional local HTTP data.
+- Finding: full local regression and focused follow-ups pass. Live GSCM/work-PC execution is **NOT RUN**.
+
+## Executed checks
+
+| Check | Command / procedure | Actual result | Evidence |
+| --- | --- | --- | --- |
+| Timing | `pytest tests/test_recording_pacing.py -q` with the host-only wrapper below | 17 passed, 15.88 s. A real browser waited the initial 10 seconds and the custom 2 seconds and dispatched each click once. | Local focused run; final full suite also covers the added nested-countdown assertion. |
+| Recorded click behavior | `pytest tests/test_recording_clicks.py -q` | 22 passed, 24.74 s. Exact-frame native recovery, delayed ordinary clicks, empty scopes, stale targets, cancellation, worker CSV download, and portable pipeline. | Synthetic browser fixture only. |
+| Settings and diagnostics | `pytest tests/test_recording_timing_settings.py tests/test_recording_diagnostics.py tests/test_flow_capacity.py tests/test_recording_startup.py tests/test_recording_v2_model.py -q --tb=short` | 73 passed, 1 Starlette/httpx deprecation warning, 17.47 s. | Includes frozen/resumed waits, redaction, previous-action evidence, authenticated-start failure and worker loss. |
+| Buffer-before-input regression | `pytest tests/test_recording_pacing_probes.py -q` | 2 passed, 0.27 s. Wait precedes locator/type/expected-text probes for fill and typing. | Synthetic unavailable-input test. |
+| Root contract check | `pytest tests/test_recording_pacing_probes.py tests/test_recording_timing_settings.py tests/test_recording_diagnostics.py -q` | 22 passed, 1 Starlette/httpx warning, 3.39 s. | Independent integration check. |
+| Related recording regression | `pytest tests/test_flow_recordings.py tests/test_recorded_browser_pipeline.py tests/test_recording_v2_pipeline.py tests/test_recording_optional_checks.py tests/test_recording_controls.py tests/test_recording_pacing.py -q --junitxml=test_reports/recording-playback-related.xml` | 94 passed, 160.17 s. | Local XML/log retained; run began before the final nested-countdown/pre-probe refinements, which have separate regressions. |
+| New editor journey | `pytest tests/test_recording_playback_ui.py -q` | 6 passed, 19.48 s. | [Text/DOM observations](evidence/ui-observations.json), wide and narrow layouts; no screenshots. |
+| Existing editor journeys | `pytest tests/test_optional_recording_editor.py tests/test_recording_visual_editor.py -q` | 19 passed, 46.99 s. | Existing optional checks and visual editing preserved. |
+| Frontend models / syntax | All 22 `tests/test_*.mjs` suites; `node --check` for app, editor, model and playback preview | PASS; Node suite loop 3.29 s. Added unlabeled `get_by_title('Setting')` / `get_by_text('Public')` regression also passed. | UI source hashes in the observation artifact. |
+| Full local Python suite | Full-suite wrapper below; output `test_reports/recording-playback-full.log` and XML | **1,683 passed, 10 warnings, 571.69 s**. | No skips/failures. Existing Starlette/httpx/TestClient deprecations. |
+| Final error/cancel API integration | `pytest tests/test_recording_timing_settings.py tests/test_recording_diagnostics.py -q --tb=short`, then `pytest tests/test_recording_controls.py tests/test_recording_diagnostics.py -q --tb=short` | **26 passed**, 1 warning, 5.01 s; **30 passed**, 1 warning, 17.68 s. | Concise terminal errors; real Cancel route requests cooperative stop, progress acknowledgement carries cancellation, reservation retained until acknowledgement. |
+| Actual worker cancellation acknowledgement | `pytest tests/test_recording_cancel_buffer.py -q` | **3 passed**, 0.91 s. | Worker receives Cancel during a 600-second buffer, acknowledges cancellation and dispatches no click; ended reservations also stop execution. |
+
+## Full regression and CI
+
+The full local suite passed. The final terminal-message and cancellation follow-ups have separate focused evidence above. Required Windows/Linux CI must pass on the final PR head; its run URL, tested SHA, counts and result will be recorded in the PR before merge. No passing CI result is claimed at this cutoff.
+
+## Host-specific test setup and early failures
+
+This Windows host disables following pytest's optional `*current` directory symlinks. A first focused command therefore failed during cleanup. A second attempt placed test Flow roots inside the checkout and correctly hit the managed-folder guard. Neither attempt is counted as a pass. Subsequent local database/browser suites use fresh temporary directories outside the checkout and disable only pytest's convenience symlink creation in the test process:
+
+```powershell
+python -c "import _pytest.pathlib as p,pytest,tempfile,uuid; p._force_symlink=lambda *a,**k: None; raise SystemExit(pytest.main(['tests','-q','--basetemp='+tempfile.gettempdir()+'/metronome-playback-full-'+uuid.uuid4().hex,'--junitxml=test_reports/recording-playback-full.xml']))"
+```
+
+No production path guard or operating-system symlink policy was changed. A parallel portable test initially encountered the shared test Flow execution lock; its fixture now uses an isolated lock directory. The completed click suite passed afterward.
+
+## Unperformed live checks
+
+| Case | Status | Reason / next action |
+| --- | --- | --- |
+| RP-LIVE: actual Setting → Public recording, five attempts | NOT RUN | No authenticated work-PC test has run on this implementation. After deployment, use the existing Test recording action and copy its debug log for each attempt. |
+| Actual business-data output inspection | NOT RUN | Synthetic CSV/XLSX assertions cannot establish the actual portal report's correctness. Optional configured output checks remain available. |
+
+The fixtures establish repeatable handling and honest diagnostics; they do not prove that the user's particular live failure has been resolved. Existing execution-engine validation remains, while changing the shared timing preference alone does not invalidate recording evidence.

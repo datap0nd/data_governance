@@ -3,6 +3,8 @@ window.RecordedFlowModel = (() => {
     const clone = value => structuredClone(value);
     const all = steps => steps.flatMap(step => [step, ...all(step.steps || [])]);
     const triggering = step => ['download','popup'].includes(step.action) && step.steps?.length === 1 && !step.steps[0].steps ? step.steps[0] : step;
+    const interactions = new Set(['click','dblclick','fill','press','select_option','check','uncheck','set_checked','hover','clear','press_sequentially']);
+    const canDelay = step => interactions.has(step.action);
     const target = step => ({page:step.page || 'page',locator:clone(step.locator || [])});
     const frame = step => {
         const parts = step?.locator || []; let end = -1;
@@ -30,6 +32,7 @@ window.RecordedFlowModel = (() => {
             for (const step of steps) {
                 if (!step.id || ids.has(step.id)) throw Error('Step identities must remain unique.');
                 ids.add(step.id);
+                if (step.delay_before_seconds !== undefined && (!canDelay(step) || !Number.isInteger(step.delay_before_seconds) || step.delay_before_seconds < 1 || step.delay_before_seconds > 600)) throw Error('Choose 1–600 whole seconds before an action.');
                 if (step.action === 'wait') continue;
                 if (step.action === 'new_page') {
                     if (created.has(step.page) || (pages.has(step.page) && step.page !== 'page')) throw Error('A page cannot be opened twice.');
@@ -74,5 +77,5 @@ window.RecordedFlowModel = (() => {
         return validatePages(next);
     }
     function owner(definition,id) { return definition.steps.find(s=>all([s]).some(child=>child.id===id)); }
-    return {all,clone,target,frame,name,describe,triggering,validatePages,move,remove,owner};
+    return {all,clone,target,frame,name,describe,triggering,canDelay,validatePages,move,remove,owner};
 })();

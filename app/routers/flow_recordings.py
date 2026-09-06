@@ -5,10 +5,11 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 from app.database import get_db
-from app import flow_recording, flow_recordings
+from app import flow_recording, flow_recordings, flow_recording_timing, flow_recording_diagnostics
 from app.routers import flows
 
 router = APIRouter(prefix='/api/flows', tags=['Flow recordings'])
@@ -115,7 +116,15 @@ def list_recordings(flow_id: int):
             json_extract(c.job_json,'$.cancel_requested') AS cancel_requested
             FROM flow_recording_sessions s JOIN flow_catalog_scans c ON c.id=s.scan_id
             WHERE s.flow_id=? ORDER BY c.id DESC LIMIT 10''', (flow_id,))]
-        return {'flow': flow, 'revisions': revisions, 'sessions': sessions}
+        return {'flow': flow, 'revisions': revisions, 'sessions': sessions,
+                'recording_wait_seconds': flow_recording_timing.configured(db)}
+
+
+@router.get('/{flow_id}/recordings/{scan_id}/debug', response_class=PlainTextResponse)
+def recording_debug(flow_id: int, scan_id: int):
+    with get_db() as db:
+        content = flow_recording_diagnostics.render_debug(db, flow_id, scan_id)
+    return PlainTextResponse(content, headers={'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff'})
 
 
 @router.post('/{flow_id}/recordings/start')
@@ -135,18 +144,21 @@ def cancel_recording(flow_id: int, scan_id: int, request: Request):
         if not row:
             raise HTTPException(404, 'Recording session not found.')
         job = json.loads(row['job_json'])
-        stage = json.loads(row['progress_json'] or '{}').get('stage')
+        previous_progress = json.loads(row['progress_json'] or '{}')
+        stage = previous_progress.get('stage')
         now = datetime.now(timezone.utc)
         requested = job.get('cancel_requested')
-        if row['status'] == 'running' and stage in {'recording', 'finishing', 'cancelling'}:
+        validating = job.get('recording_operation') == 'validate'
+        if row['status'] == 'running' and (validating or stage in {'recording', 'finishing', 'cancelling'}):
             if not requested or (now - datetime.fromisoformat(requested)).total_seconds() < 10:
                 job['cancel_requested'] = requested or now.isoformat()
-                progress = {'stage': 'cancelling', 'message': 'Closing this recording and discarding its unsaved actions.'}
+                progress = {**previous_progress, 'stage': 'cancelling',
+                    'message': 'Stopping this test.' if validating else 'Closing this recording and discarding its unsaved actions.'}
                 db.execute('UPDATE flow_catalog_scans SET job_json=?,progress_json=? WHERE id=?',
                            (json.dumps(job), json.dumps(progress), scan_id))
                 return {'scan_id': scan_id, 'status': 'cancelling', 'message': progress['message']}
-    # Authentication/validation may be blocked inside a portal call. The
-    # existing exact-worker stop is also the fallback for an unresponsive CLI.
+    # A second request after ten seconds closes the exact assigned worker if
+    # a portal call or the recording CLI cannot acknowledge cancellation.
     return flows.stop_scan(scan_id, request)
 
 

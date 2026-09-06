@@ -282,6 +282,10 @@ def validate_definition(definition, *, activation=True):
             validate_target(step)
         if action not in ACTIONS | {'new_page', 'goto', 'close', 'download', 'popup', 'assert', 'wait'}:
             raise ValueError(f'Unsupported recorded action: {action}.')
+        if 'delay_before_seconds' in step:
+            delay = step['delay_before_seconds']
+            if action not in ACTIONS or type(delay) is not int or not 1 <= delay <= 600:
+                raise ValueError('Wait before this step needs a browser interaction and whole seconds from 1 to 600.')
         if 'label' in step and (not isinstance(step['label'], str) or len(step['label']) > 160):
             raise ValueError('Step names must be text of at most 160 characters.')
         if action == 'wait':

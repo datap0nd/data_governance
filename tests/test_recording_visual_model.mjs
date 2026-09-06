@@ -38,3 +38,17 @@ const legacy={steps:[input,{id:'generate',action:'click',page:'page'},event],
 assert.equal(M.move(legacy,'event',0).steps[0].id,'event');
 assert.equal(M.move(legacy,'input',2).steps[2].id,'input');
 assert.throws(()=>M.validatePages({...legacy,parameters:{start:{step_id:'missing'}}}),/removed input/);
+
+const delayed={steps:[{...click,delay_before_seconds:60},{id:'pause',action:'wait',page:'page',seconds:15}]};
+assert.equal(M.move(delayed,'click',1).steps[1].delay_before_seconds,60);
+assert.throws(()=>M.validatePages({steps:[{...click,delay_before_seconds:0}]}),/1–600/);
+assert.throws(()=>M.validatePages({steps:[{id:'pause',action:'wait',seconds:10,delay_before_seconds:10}]}),/before an action/);
+assert.equal(M.canDelay(click),true);assert.equal(M.canDelay({action:'goto'}),false);
+
+// Ordinary codegen title/text targets already describe the recorded control;
+// friendly presentation must not require labels added to a validated definition.
+const settingTitle={id:'setting',action:'click',page:'page',locator:[{method:'get_by_title',args:['Setting'],kwargs:{}}],args:[],kwargs:{}};
+const publicText={id:'public',action:'click',page:'page',locator:[{method:'get_by_text',args:['Public'],kwargs:{exact:true}}],args:[],kwargs:{}};
+assert.equal(M.describe(settingTitle),'Click “Setting”');
+assert.equal(M.describe(publicText),'Click “Public”');
+assert.equal(settingTitle.label,undefined);assert.equal(publicText.label,undefined);

@@ -2464,6 +2464,8 @@ def inspect_resume_eligibility(db, run_id: int) -> dict:
             return _recovery_result('blocked', 'recording_defaults_unknown',
                 'The original portal defaults were not captured. Start a new run.', _source=source)
         job['recording_parameters'] = source_job['recording_parameters']
+        from app.flow_recording_timing import for_job
+        job['execution']['recording_wait_seconds'] = for_job(source_job)
         job['resume'] = {'from_run_id': run_id, 'completed': [], 'recording_defaults': defaults[0] if defaults else {}}
         try:
             assert_flow_target_available(db, flow_target_resource_key_from_job(job))

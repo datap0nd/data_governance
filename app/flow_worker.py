@@ -7270,8 +7270,14 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                     if scan['job'].get('recording_operation'):
                         from app import flow_recorder_worker
                         def recording_progress(status, detail, **extra):
-                            return _api(client, 'POST', f'/api/flows/worker/{worker_id}/scans/{scan_id}/progress',
+                            response = _api(client, 'POST', f'/api/flows/worker/{worker_id}/scans/{scan_id}/progress',
                                 {'status': status, 'progress': detail, 'complete': False, **extra})
+                            if status == 'running':
+                                if response.get('cancel_requested') or response.get('status') == 'cancelled':
+                                    raise flow_recorder_worker.RecordingCancelled('Test cancelled.' if scan['job']['recording_operation'] == 'validate' else 'Recording cancelled.')
+                                if response.get('ignored') and response.get('status') in {'failed', 'succeeded'}:
+                                    raise flow_recorder_worker.RecordingCancelled('This recording session has ended.')
+                            return response
                         try:
                             if not headed:
                                 raise RuntimeError('Recording requires a visible worker.')
