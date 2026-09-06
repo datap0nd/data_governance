@@ -210,3 +210,13 @@ def test_opening_history_clears_previous_pending_selection(editor_page):
     page.locator('[data-close]').click()
     assert page.evaluate('()=>window._flowRecordingSelections.get(1)') is None
     assert page.evaluate('()=>window.accepted') is None
+
+
+def test_opening_recording_preserves_setup_for_tab_navigation(editor_page):
+    page,_=editor_page
+    page.locator('[data-close]').click()
+    page.evaluate('()=>window._flowBuilderDrafts=new Map()')
+    page.evaluate("()=>FlowRecordings.open(1,{name:'Pending setup',filename_template:'pending.csv'})")
+    # Tab navigation removes the recording page instead of calling Back.
+    page.evaluate("()=>document.querySelector('.flow-recording-page').remove()")
+    assert page.evaluate('()=>window._flowBuilderDrafts.get(1)')=={'name':'Pending setup','filename_template':'pending.csv'}

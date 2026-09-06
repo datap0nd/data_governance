@@ -30,6 +30,9 @@ window.FlowRecordings = (() => {
         } catch (error) { element.querySelector('[data-error]').textContent = error.message; }
     }
 
-    const open = (flowId,settings=null) => window.RecordedFlowEditor.open(flowId,settings);
+    const open = (flowId,settings=null) => {
+        if(settings)window._flowBuilderDrafts?.set(flowId,{...settings});
+        return window.RecordedFlowEditor.open(flowId,settings);
+    };
     return {create,open};
 })();
