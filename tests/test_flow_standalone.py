@@ -28,7 +28,8 @@ def test_generated_launcher_is_atomic_versioned_and_detects_stale_config(flow_db
     compile(standalone.launcher_source(Path("C:/odd 'folder\\code"), "quote'config.json"), 'launcher', 'exec')
     job['flow']['name'] = 'renamed'
     assert standalone.status(job)['state'] == 'stale'
-    previous = list(path.parent.glob('flow-config-*.json'))
+    previous = list((path.parent / 'versions').glob('run_flow-*.py'))
+    assert previous
     standalone.generate(job)
     assert all(p.exists() for p in previous)
     assert standalone.status(job)['state'] == 'current'
@@ -109,7 +110,7 @@ def test_bundles_reject_credentials_and_foreign_launcher(flow_db, tmp_path):
         standalone.freeze(job)
     job['report']['automation'].pop('password')
     Path(saved['standalone']['launcher']).write_text('print("user file")')
-    with pytest.raises(ValueError, match='not a managed launcher'):
+    with pytest.raises(ValueError, match='modified'):
         standalone.generate(job)
     assert 'user file' in Path(saved['standalone']['launcher']).read_text()
 
@@ -117,11 +118,10 @@ def test_bundles_reject_credentials_and_foreign_launcher(flow_db, tmp_path):
 def test_dry_run_reports_saved_sql_enabled_without_connecting(flow_db, tmp_path, capsys):
     _, job = local_job(tmp_path)
     job['sql_handoff']['enabled'] = True
-    generated = standalone.generate(job)
-    bundle = Path(generated['launcher']).with_name('flow-config-' + generated['config_hash'] + '.json')
-    assert standalone.main(['--dry-run'], bundle=bundle) == 0
+    standalone.generate(job)
+    assert standalone.offline_main(job, ['--dry-run']) == 0
     assert json.loads(capsys.readouterr().out)['sql'] is True
-    assert standalone.main(['--dry-run', '--no-sql'], bundle=bundle) == 0
+    assert standalone.offline_main(job, ['--dry-run', '--no-sql']) == 0
     assert json.loads(capsys.readouterr().out)['sql'] is False
 
 

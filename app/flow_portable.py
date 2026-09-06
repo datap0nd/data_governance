@@ -57,8 +57,8 @@ class _Rebase(ast.NodeTransformer):
         return node
 
 
-@lru_cache(maxsize=1)
-def execution_sources():
+@lru_cache(maxsize=2)
+def execution_sources(entry='recorded'):
     trees, declarations, imports, selected = {}, {}, {}, {}
 
     def index(module):
@@ -143,7 +143,10 @@ def execution_sources():
                 if dependency and dependency[1]:
                     include(*dependency)
 
-    include('flow_recording_runtime', 'standalone_main')
+    if entry == 'recorded':
+        include('flow_recording_runtime', 'standalone_main')
+    else:
+        include('flow_standalone', 'offline_main')
     result = {}
     for module, nodes in selected.items():
         if module == 'config':
@@ -155,6 +158,10 @@ def execution_sources():
             body.extend(ast.parse(text).body)
         body.extend(copy.deepcopy(node) for node in trees[module].body if node in nodes)
         rewritten = _Rebase().visit(ast.Module(body=body, type_ignores=[]))
+        if module == 'flow_outlook':
+            for node in rewritten.body:
+                if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == '_EMBEDDED_SCRIPT' for t in node.targets):
+                    node.value = ast.Constant((ROOT.parent / 'tools' / 'outlook_flow_attachment.ps1').read_text(encoding='utf-8-sig'))
         result[module] = ast.unparse(ast.fix_missing_locations(rewritten)) + '\n'
         compile(result[module], f'portable:{module}', 'exec')
     return result
@@ -168,6 +175,7 @@ def configuration_hash(job):
     from app.flow_standalone import freeze
     frozen = freeze(job)
     frozen.pop('recording_parameters', None)
+    frozen.pop('handover', None)
     return flow_recording.digest(frozen)
 
 
@@ -207,17 +215,19 @@ def source(job):
     from app.flow_standalone import freeze
     job = freeze(job)
     job.pop('recording_parameters', None)
-    flow_recording.validate_definition(job['recording']['definition'])
-    if job['recording'].get('engine_hash') != execution_hash():
-        raise ValueError('The recorded execution core changed; validate a new revision before generating.')
-    sources = execution_sources()
+    recorded = job['flow'].get('execution_method') == 'recorded'
+    if recorded:
+        flow_recording.validate_definition(job['recording']['definition'])
+        if job['recording'].get('engine_hash') != execution_hash():
+            raise ValueError('The recorded execution core changed; validate a new revision before generating.')
+    sources = execution_sources('recorded' if recorded else 'catalog')
     versions = {}
     for package in DEPENDENCIES:
         try:
             versions[package] = importlib.metadata.version(package)
         except importlib.metadata.PackageNotFoundError:
             pass
-    transform = job['recording'].get('transformation_source') or ''
+    transform = job.get('recording', {}).get('transformation_source') or ''
     packages = importlib.metadata.packages_distributions() if transform else {}
     for node in ast.walk(ast.parse(transform)):
         names = [node.module] if isinstance(node, ast.ImportFrom) else [alias.name for alias in node.names] if isinstance(node, ast.Import) else []
@@ -227,7 +237,7 @@ def source(job):
                 continue
             for package in packages.get(base, []):
                 versions[package] = importlib.metadata.version(package)
-    header = HEADER + '# Requires Python 3.11+, the saved Chrome/Edge browser, and these installed libraries:\n'
+    header = (HEADER if recorded else '# Metronome portable catalog Flow v1\n') + '# Requires Python 3.11+, the saved Chrome/Edge browser, and these installed libraries:\n'
     header += '# ' + ', '.join(f'{key}=={value}' for key, value in sorted(versions.items())) + '\n'
     header += '# Configuration and readable execution source are included below. Credentials are not.\n'
     header += 'import sys, json, importlib.abc, importlib.util\n'
@@ -253,6 +263,9 @@ if __name__ == '__main__':
     from _mf.flow_recording_runtime import standalone_main
     raise SystemExit(standalone_main(FLOW))
 '''
+    if not recorded:
+        header = header.replace('from _mf.flow_recording_runtime import standalone_main\n    raise SystemExit(standalone_main(FLOW))',
+                                'from _mf.flow_standalone import offline_main\n    raise SystemExit(offline_main(FLOW))')
     compile(header, 'run_flow.py', 'exec')
     return header
 
@@ -260,12 +273,15 @@ if __name__ == '__main__':
 def generate(job):
     from app import flow_layout
     from app.flow_standalone import _atomic_text
+    from app.flow_paths import assert_job_paths
+    assert_job_paths(job)
     folder = Path(job['paths']['flow_folder'])
     flow_layout.ensure_layout(folder, job['flow']['id'])
     content = source(job)
     checksum = hashlib.sha256(content.encode()).hexdigest()
     scripts = folder / 'Scripts'
     target = scripts / 'run_flow.py'
+    flow_layout._regular(target)
     manifest = flow_layout.read_manifest(folder, job['flow']['id'])
     if target.exists():
         previous = target.read_text(encoding='utf-8')
@@ -292,8 +308,8 @@ def generate(job):
             stream.write(content)
     _atomic_text(target, content)
     flow_layout.update_manifest(folder, job['flow']['id'], standalone={
-        'version': 2, 'kind': 'portable_recorded', 'launcher_hash': checksum,
+        'version': 2, 'kind': 'portable_recorded' if job['flow'].get('execution_method') == 'recorded' else 'portable_catalog', 'launcher_hash': checksum,
         'config_hash': configuration_hash(job),
-        'recording_revision': job['recording']['revision'], 'script_revision': str(version)})
-    return {'state': 'current', 'kind': 'portable_recorded', 'launcher': str(target),
+        'recording_revision': job.get('recording', {}).get('revision'), 'script_revision': str(version)})
+    return {'state': 'current', 'kind': 'portable_recorded' if job['flow'].get('execution_method') == 'recorded' else 'portable_catalog', 'launcher': str(target),
             'script_revision': str(version), 'launcher_hash': checksum}

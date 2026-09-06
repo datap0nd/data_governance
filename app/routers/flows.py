@@ -2947,14 +2947,9 @@ def open_flow_folder(flow_id: int, request: Request):
 def _generate_saved_standalone(saved: dict) -> dict:
     if not saved.get("flow_folder"):
         return saved
-    from app import flow_standalone
+    from app import database, flow_handover
     try:
-        with get_db() as db:
-            flow = _flow_out(db, saved['id'])
-            if flow.get('execution_method') == 'recorded' and not flow.get('recording_revision_id'):
-                return {**saved, 'standalone': {'state': 'draft', 'message': 'Validate and activate a recording to generate its portable script.'}}
-            job = _build_job(db, saved["id"], force_reprocess=True)
-        result = flow_standalone.generate(job)
+        result = flow_handover.synchronize(database.DB_PATH, flow_id=saved['id'])[saved['id']]
     except (OSError, ValueError, RuntimeError, HTTPException) as exc:
         result = {"state": "error", "message": str(exc)}
     return {**saved, "standalone": result}
@@ -2974,10 +2969,24 @@ def regenerate_standalone(flow_id: int):
 
 @router.get("/{flow_id}/standalone")
 def standalone_status(flow_id: int):
-    from app import flow_standalone
+    from app import flow_layout, flow_handover
     with get_db() as db:
-        job = _build_job(db, flow_id, force_reprocess=True)
-    return flow_standalone.status(job)
+        flow = _flow_out(db, flow_id)
+        metadata = flow_handover.snapshot(db, flow_id)
+    try:
+        manifest = flow_layout.read_manifest(flow['flow_folder'], flow_id)
+        result = manifest.get('handover') or {'state': 'missing'}
+        target = Path(flow['flow_folder']) / 'Scripts' / 'run_flow.py'
+        flow_layout._regular(target)
+        import hashlib
+        if result.get('state') in {'current', 'draft'} and (
+            not target.is_file() or hashlib.sha256(target.read_text(encoding='utf-8').encode()).hexdigest() != result.get('launcher_hash')):
+            return {'state': 'modified', 'message': 'Saved Python file is missing or modified. Preserve your edits and save the Flow again.'}
+        if result.get('state') in {'current', 'draft'} and result.get('snapshot_hash') != flow_handover.snapshot_hash(metadata):
+            return {'state': 'stale', 'message': 'These files do not match the saved Flow. Restore folder access and save the Flow again.'}
+        return result
+    except (ValueError, OSError, TypeError):
+        return {'state': 'error', 'message': 'Flow files are unavailable. Restore access to the managed folder, then save again.'}
 
 
 @router.post("/{flow_id}/repair-layout")
@@ -3248,7 +3257,7 @@ def patch_flow(flow_id: int, body: FlowInlineWrite, request: Request):
                                      for key, value in changes.items()}), actor=get_actor(request))
         saved = {'id': flow_id, 'flow_folder': flow['flow_folder']}
     result = {"id": flow_id, **changes}
-    if 'browser_mode' in changes and saved['flow_folder']:
+    if saved['flow_folder']:
         result['standalone'] = _generate_saved_standalone(saved)['standalone']
     return result
 
@@ -3297,7 +3306,8 @@ def set_flow_enabled(flow_id: int, body: FlowEnabledWrite, request: Request):
             db, "flow", flow_id, flow["name"],
             "activated" if body.enabled else "deactivated", actor=get_actor(request),
         )
-        return _flow_out(db, flow_id)
+        saved = _flow_out(db, flow_id)
+    return _generate_saved_standalone(saved)
 
 
 @router.delete("/{flow_id}")

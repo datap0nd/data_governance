@@ -1,61 +1,54 @@
-# Standalone Flows
+# Running a saved Flow without Metronome
 
-For global Chrome/Edge selection and the new ASAP/GSCM recorded method, see [recorded Flows](recorded_flows.md). The existing behavior below applies to catalog/bookmark Flows.
+Every managed Flow automatically maintains these files after committed changes:
 
-Managed saves, adoption and layout repair generate `Scripts/run_flow.py` and a
-versioned `flow-config-<hash>.json`. The launcher imports the installed Metronome
-code. It is an offline entry point, not a self-contained executable or backup of
-the application. Keep installed Python and dependencies available. More actions
-in the Flows list can check its status or regenerate it. Old configurations stay
-on disk; user-owned `run_flow.py` files are never overwritten.
+- `flow.json` in the Flow folder: name, owner/contact, creator, schedule and Dubai timezone, source and bookmark/report route, saved filters, output policy, transformation and SQL settings, browser/timing defaults, and active/latest recording definitions.
+- `Scripts/run_flow.py`: Python execution code and frozen configuration. Catalog/bookmark, local-file and Outlook Flows now include their execution code as well as recorded Flows. No installed Metronome application or running server is required.
+- `Scripts/README.md` (this guide) and `Scripts/requirements.txt`: operator instructions and execution libraries.
+- `Scripts/versions/`: prior generated executable revisions and previous documentation/requirements copies. Existing operator notes and custom dependency lists are archived before those generated files refresh. Preserve the whole Flow folder, including transformation scripts; consult archived notes and dependency lists when handing over.
 
-Run with the installed Python:
+There is no Generate standalone step. Save/edit normally; owner, schedule, source/catalog, recording and shared preference changes also refresh the derived files. Startup reconciles existing managed Flows. SQLite remains the source of truth: editing these files does not edit or schedule a Flow in Metronome. `configuration` in flow.json describes the saved Flow; `handover.state` indicates whether its script is current, draft, or failed to update. These are continuity copies, not a database restore format or a backup of run history/data.
 
+## First-time setup on Windows
+
+Use Python 3.11 or newer. In PowerShell, change to this Scripts directory:
+
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe run_flow.py --dry-run
+.\.venv\Scripts\python.exe run_flow.py --headed --no-sql
 ```
-python "<flow folder>/Scripts/run_flow.py" --dry-run
-python "<flow folder>/Scripts/run_flow.py" --headed
-python "<flow folder>/Scripts/run_flow.py" --no-transform
-python "<flow folder>/Scripts/run_flow.py"
-python "<flow folder>/Scripts/run_flow.py" --no-sql
+
+The generated Python header lists the library versions available when it was saved; use those versions when reproducing an environment. Install the saved Chrome or Edge browser. Outlook requires Windows, classic Outlook configured for the operator, and permission to run its per-run interactive Scheduled Task. The PowerShell attachment helper is embedded in the saved Python file; pywin32 is not required. Transformation scripts can require extra libraries or files: preserve their Scripts folder and install those declared by the script's maintainer.
+
+Dry-run checks the saved configuration without downloading, changing output files or connecting to SQL. A normal run **does** publish to the saved destination; use a dedicated test Flow/destination for rehearsals. Run under an account with access to the shared folders, website, Outlook and SQL target. Initial interactive SSO may be required. Credentials/cookies are not exported: configure the caller's credential provider and SQL environment separately. SQL uses `DG_UPLOAD_PGHOST`, `DG_UPLOAD_PGPORT`, `DG_UPLOAD_PGDATABASE`, `DG_UPLOAD_PGUSER` and `DG_UPLOAD_PGPASSWORD` (never paste secrets into these saved files).
+
+## Routine execution and scheduling
+
+```powershell
+.\.venv\Scripts\python.exe run_flow.py
+.\.venv\Scripts\python.exe run_flow.py --headed
+.\.venv\Scripts\python.exe run_flow.py --no-sql
+.\.venv\Scripts\python.exe run_flow.py --no-transform
 ```
 
-Dry-run reads the frozen configuration, prints a redacted summary and creates
-nothing. Normal runs recheck on-disk path containment and folder ownership.
-They use a separate `.metronome/standalone-profile`; initial interactive SSO may
-be necessary. They never copy a running worker profile or take its browser lock.
-Portal access, Outlook interaction and installed credential providers still need
-to work under the caller's Windows account.
+Saved SQL, transformations and browser mode apply by default. `--no-sql` and `--no-transform` skip those operations for one run. `--headed`/`--headless` override browser mode. Run `--help` for method-specific options. Recorded scripts additionally support `--output-root`, `--profile-dir` and `--parameter NAME=VALUE`; catalog/file/Outlook scripts use the saved paths. To move them, preserve the original share paths or maintain a separate copy of the script with reviewed configuration changes.
 
-All saved execution settings are honored by default, including SQL,
-transformations and browser mode. `--no-sql` and `--no-transform` are explicit
-per-run overrides; `--headed`/`--headless` override the saved browser mode.
-The worker and launcher call the same `execute_flow` runner for acquisition,
-publication, transformation, SQL, artifact roles and source outcomes. Metronome
-adds scheduling, progress transport, receipts and history around that runner.
+Schedule metadata is documentation; the Python script runs **once**. If Metronome is unavailable, create a Windows Task Scheduler task using the virtual environment's Python executable as Program, the quoted full path to `run_flow.py` as its argument, and Scripts as Start in. Translate the documented Asia/Dubai schedule into the workstation timezone, including daylight-saving differences. Use the authorized account, prevent overlapping runs, and use an interactive session for headed browsers/Outlook. Disable the Metronome schedule before enabling a replacement task to avoid duplicate jobs.
 
-SQL uses the same installed `DG_UPLOAD_*` configuration and loader as Metronome,
-with credentials supplied by the launch environment. The bundle contains no
-credentials or cookies. Use the same environment/account as the worker to reach
-the same systems. A commit whose outcome is unknown requires inspection before
-repeating an append; neither entry point silently repeats unknown commits.
+Period windows and catalog filters are frozen at synchronization time. They do not advance automatically without Metronome. Inspect `FLOW` in the Python script before future manual/scheduled runs; a maintainer must adjust frozen periods in a separate copy when needed. Recorded relative-date parameters resolve at execution. Standalone execution does not update server history, receipts, schedules or retention, and performs no retention deletion; operators maintain its output files separately.
 
-Both offline and upgraded scheduled workers acquire process-lifetime locks for
-the flow, physical output folder and exact SQL target. The default lock directory
-is `%ProgramData%/Metronome/execution-locks` on Windows (the system temporary
-directory on other hosts). All participating accounts must be able to use that
-same directory. `DG_FLOW_LOCK_ROOT` may override it only if set identically for
-every participant. An inaccessible/busy lock refuses the run. Locks release when
-the process exits; do not delete lock files to bypass another process.
+## Incomplete work and recovery
 
-Offline runs use UUID-sized IDs outside the server sequence. Their JSONL logs are
-under `Scripts/standalone-logs`; downloads and transformed artifacts follow the
-saved output policy. Local/Outlook are explicit manual reprocesses. Server history,
-source receipts, schedules and retention are not updated; offline runs perform no
-retention deletion and their files require separate operator housekeeping.
+An unfinished or incompatible recording still has a Python file and complete descriptive JSON. Its script exits with an explicit draft explanation instead of running old settings. Finish/test the recording and save it to obtain an executable version. The active and latest draft definitions are identified separately; a new draft does not replace the activated recording used for execution.
 
-Period windows, paths and filters are frozen when generated. Regenerate after
-changing discovery or Paths settings. To resolve current configuration/periods
-from an available local database without contacting the server, pass
-`--refresh-db "<path to governance.db>"`; the database is opened read-only.
-This option cannot be combined with dry-run. The launcher continues to require
-compatible installed code. Reverting code does not remove generated artifacts.
+Open **More → Flow files** to check synchronization; **Open folder** takes you to the files. If a share is unavailable, the database save remains successful and the UI reports that the files need attention. Restore access and save again, or restart Metronome to reconcile. Never assume a file with an old timestamp is current after a failed synchronization. If `run_flow.py` was edited manually, preserve/rename it and save the Flow again; Metronome will not overwrite those edits.
+
+Offline runs write JSONL logs under `Scripts/standalone-logs`. Outputs follow the saved stable-file or run-folder policy. Normal runs recheck path containment and folder ownership. A separate `.metronome/standalone-profile` holds the operator's session. Process locks protect the Flow/output/SQL target; do not remove locks to bypass another run. All participants need access to the same lock directory (`%ProgramData%/Metronome/execution-locks`, or a consistently configured `DG_FLOW_LOCK_ROOT`).
+
+If SQL may have committed before interruption, inspect the target before rerunning an append. Recorded scripts leave `sql-outcome.json` for unresolved SQL outcomes; reconcile it before retrying. Preserve the failed logs and the exact script revision for the maintainer. Do not share credentials, raw report contents or unredacted logs publicly.
+
+## Team handover checklist
+
+Keep the managed folder and its permissions backed up. Assign an owner/contact in Metronome. Have another team member install the libraries, complete dry-run, authenticate under their own account, then run a dedicated test Flow against a safe destination. Record the date, script hash, output row checks and any extra transformation dependencies. A synthetic test or dry-run alone does not prove that the live portal, corporate authentication or SQL access works for that person.

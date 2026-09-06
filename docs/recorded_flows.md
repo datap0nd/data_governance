@@ -145,8 +145,8 @@ dependencies must be made portable before validation.
 
 The generated file records its generator, dependency versions, definition/core
 hashes and Flow revision. Its content hash and current status are in the folder
-manifest. Regenerate after changing global browser selection when exporting a
-new standalone copy. Modified launchers and immutable versions are preserved;
+manifest. Saved Flow files update automatically after changes, including global
+browser selection; see [team handover instructions](flow_standalone.md). Modified launchers and immutable versions are preserved;
 editing a standalone file does not change scheduled execution. Workers use the
 same reviewed execution helpers and reject jobs pinned to a different core.
 After an execution-core change, save and validate a new recording revision.
