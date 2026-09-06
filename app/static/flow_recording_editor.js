@@ -106,7 +106,7 @@ window.RecordedFlowEditor = (() => {
             const panel=body.querySelector('[data-history-panel]');
             if(!panel || panel.hidden)return;
             panel.innerHTML=`<p>${dirty?'Save your draft before opening another version.':'Opening a saved version keeps the active recording unchanged.'}</p>${data.revisions.map(r=>`<button class="btn-secondary" data-version="${r.id}">${h(typeof formatDate==='function'?formatDate(r.created_at):r.created_at)} · ${h(r.status)}${r.id===data.flow.recording_revision_id?' · active':''}</button>`).join(' ')}`;
-            panel.querySelectorAll('[data-version]').forEach(button=>{button.disabled=dirty||Boolean(active())||pending;button.onclick=()=>{load(data.revisions.find(r=>r.id===Number(button.dataset.version)));renderEditor();};});
+            panel.querySelectorAll('[data-version]').forEach(button=>{button.disabled=dirty||Boolean(active())||pending;button.onclick=()=>{load(data.revisions.find(r=>r.id===Number(button.dataset.version)));if(settings)delete settings.recording_revision_id;window._flowRecordingSelections?.set(flowId,null);renderEditor();};});
         }
         function renderEditor() {
             const host=body.querySelector('[data-editor]');

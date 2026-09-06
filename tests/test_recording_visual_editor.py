@@ -196,3 +196,17 @@ def test_leaving_during_save_does_not_launch_a_late_test(editor_page):
     page.wait_for_timeout(100)
     assert page.evaluate('()=>calls.length')==1
     assert page.locator('.flow-recording-page').count()==0
+
+def test_opening_history_clears_previous_pending_selection(editor_page):
+    page,_=editor_page
+    page.locator('[data-close]').click()
+    page.evaluate('''()=>{data.revisions.push({...structuredClone(data.revisions[0]),id:2});
+      window._flowRecordingSelections=new Map([[1,1]]);window.accepted=null;
+      window._flowAcceptRecording=(id,r)=>window.accepted=r;}''')
+    page.evaluate('()=>FlowRecordings.open(1,{recording_revision_id:1})')
+    page.get_by_text('More',exact=True).click()
+    page.get_by_role('button',name='Saved versions',exact=True).click()
+    page.locator('[data-version="2"]').click()
+    page.locator('[data-close]').click()
+    assert page.evaluate('()=>window._flowRecordingSelections.get(1)') is None
+    assert page.evaluate('()=>window.accepted') is None
