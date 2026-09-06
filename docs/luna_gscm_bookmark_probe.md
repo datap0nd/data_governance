@@ -141,4 +141,3 @@ Finish with:
 - [Nexacro tree navigation examples](https://docs.tobesoft.com/developer_guide_nexacro_n_en/1420bd57c8db36f0).
 - [Nexacro Grid reference](https://docs.tobesoft.com/reference_guide_nexacro_n_v24_ko/Grid):
   version 24 reference; confirm methods on the deployed build before use.
-
