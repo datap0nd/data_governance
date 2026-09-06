@@ -188,6 +188,15 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
                 # Buffer before any target-dependent read, not just dispatch:
                 # an input may itself be created during the requested pause.
                 buffer(step, timing)
+            if action == 'click' and definition.get('adapter', job.get('site', {}).get('adapter')) == 'gscm_portal':
+                from app.flow_recording_gscm_bookmark import is_target, select
+                if is_target(step):
+                    result = select(pages[step['page']], step, lambda detail: notify(step,
+                        f"{label}: selecting exact GSCM Favorite bookmark.", outcome='running', diagnostic=detail))
+                    notify(step, 'GSCM Favorite bookmark selected.', outcome='completed', confirmation='exact_identity',
+                           diagnostic={'phase': 'action_finished', 'timing': timing, 'bookmark': result})
+                    previous_step = step
+                    continue
             node = locate(pages, step)
             if timing:
                 notify(step, f'{label}: sending action.', outcome='running', diagnostic={
