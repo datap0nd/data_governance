@@ -9,6 +9,7 @@ This is a standing instruction from the repository owner, recorded in
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-09-06: intuitive recording | [Test plan](releases/2026-09-06-intuitive-recording/test-plan.md) | [Test report](releases/2026-09-06-intuitive-recording/test-report.md) |
 | 2026-09-05: visual recording editor, increment 3 | [Start here: record, review, test and schedule](releases/2026-09-05-visual-recording-editor/test-plan.md) | [Test report](releases/2026-09-05-visual-recording-editor/test-report.md) |
 | 2026-09-05: recording v2, redesign increment 2 | [Compatibility instructions](releases/2026-09-05-recording-v2/test-plan.md) | [Test report](releases/2026-09-05-recording-v2/test-report.md) |
 | 2026-09-05: Dubai time, redesign increment 1 | [Time-policy instructions](releases/2026-09-05-dubai-time/test-plan.md) | [Test report](releases/2026-09-05-dubai-time/test-report.md) |

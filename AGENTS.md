@@ -32,3 +32,17 @@ For **every PR merged to main**, including documentation, maintenance and fixes:
 
 Do not commit credentials, cookies, private portal URLs, raw report data or
 unsanitized traces/logs. Reference protected evidence by an opaque identifier.
+
+## Usability review for changed journeys
+
+Build a clickable local preview with fictional data using existing components,
+fonts and design tokens. Obtain owner feedback before implementing a changed
+journey. Approval applies to the demonstrated journey; material changes return
+for review. Small wording or spacing fixes require usability review but no
+separate approval pause.
+
+Walk every changed control, including failure and recovery. Check clear labels,
+visible feedback beside actions, preserved work, predictable navigation and a
+clear next action. Record actual browser evidence tied to the tested revision.
+Favor minimal screens and contextual questions over permanent configuration
+forms; never hide a required choice under Advanced.

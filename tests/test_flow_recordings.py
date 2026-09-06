@@ -272,10 +272,10 @@ def test_ui_can_review_gscm_without_code_and_keeps_portal_default_date():
             page.add_script_tag(path=str(root / 'app/static' / script))
         page.add_script_tag(path=str(root/'app/static/flow_recordings.js'))
         page.evaluate('() => FlowRecordings.open(1)')
-        assert page.get_by_role('dialog').is_visible()
+        assert page.locator('.flow-recording-page').is_visible()
         page.get_by_role('button',name='Enter value in “End”',exact=True).click()
         page.locator('[data-date-mode]').select_option('portal_default')
-        page.get_by_role('button',name='Save',exact=True).click()
+        page.get_by_role('button',name='Save draft',exact=True).click()
         value=page.evaluate('() => saved[0].body.definition')
         assert value['parameters']['end']['mode']=='portal_default'
         flow_recording.validate_definition(value)

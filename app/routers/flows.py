@@ -669,6 +669,7 @@ class ReportWrite(BaseModel):
 class FlowWrite(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     execution_method: Literal['catalog', 'recorded'] | None = None
+    recording_revision_id: int | None = Field(default=None, ge=1)
     source_type: str = "portal"
     site_id: int | None = Field(default=None, ge=1)
     report_id: int | None = Field(default=None, ge=1)
@@ -1531,8 +1532,22 @@ def _validate_flow_selections(db, body: FlowWrite, *, new_flow: bool = False):
             raise HTTPException(400, f"Invalid {row['label']} value: {invalid[0]}")
 
 
-def _build_job(db, flow_id: int, *, force_reprocess: bool = False, recording_draft: bool = False) -> dict:
+def _build_job(db, flow_id: int, *, force_reprocess: bool = False, recording_draft: bool = False, pending_settings: FlowWrite | None = None) -> dict:
     flow = _flow_out(db, flow_id, include_private_storage=True)
+    if pending_settings is not None:
+        body = pending_settings.model_copy(deep=True)
+        if body.source_type != 'portal' or body.execution_method != 'recorded':
+            raise HTTPException(422, 'Choose Record my actions before testing a recording.')
+        _resolve_flow_source(db, body)
+        _validate_flow_selections(db, body)
+        _validate_sql_target(db, body)
+        _validate_owner(db, body)
+        # Managed destinations belong to the Flow, not a caller-supplied path.
+        if flow.get('flow_folder') or not body.target_folder:
+            body.target_folder = flow['target_folder']
+        flow.update(body.model_dump(exclude={'recording_revision_id'}))
+        if body.recording_revision_id is not None:
+            flow['recording_revision_id'] = body.recording_revision_id
     if flow.get('sql_reconciliation_required'):
         raise HTTPException(409, 'A prior SQL commit may have completed. Reconcile the target and acknowledge it before another run.')
     paths = flow_paths.policy(db, flow)
@@ -3031,7 +3046,7 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
                       schedule_day, freshness_effective_from_at,
                       sql_database, sql_schema, sql_table, sql_target_source_id,
                       target_folder, local_file_path, local_file_worksheet, flow_folder,
-                      local_file_last_identity, local_file_config_revision, download_parallelism, execution_method
+                      local_file_last_identity, local_file_config_revision, download_parallelism, execution_method, recording_revision_id
                FROM flows WHERE id=?""",
             (flow_id,),
         ).fetchone()
@@ -3054,6 +3069,9 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
         _resolve_flow_source(db, body)
         if existing["flow_folder"] or not body.target_folder:
             body.target_folder = existing["target_folder"]
+        if body.execution_method == 'recorded' and (body.recording_revision_id or existing['recording_revision_id']):
+            # Reject stale settings/evidence before importing files or changing settings.
+            _build_job(db, flow_id, pending_settings=body)
         if existing["flow_folder"]:
             if body.transform_enabled:
                 try:
@@ -3142,6 +3160,15 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
             raise HTTPException(404, "Flow not found.")
         db.execute("UPDATE flows SET download_parallelism=? WHERE id=?", (body.download_parallelism, flow_id))
         db.execute('UPDATE flows SET execution_method=? WHERE id=?', (body.execution_method, flow_id))
+        if body.recording_revision_id is not None:
+            if body.execution_method != 'recorded':
+                raise HTTPException(422, 'A recording can only be selected for a recorded Flow.')
+            if db.execute("SELECT 1 FROM flow_runs WHERE flow_id=? AND status IN ('queued','claimed','running')", (flow_id,)).fetchone():
+                raise HTTPException(409, 'Wait for the active Flow run to finish.')
+            db.execute('UPDATE flows SET recording_revision_id=?,recording_review_reason=NULL WHERE id=?', (body.recording_revision_id, flow_id))
+            # Same transaction as settings: a mismatch rolls back both changes.
+            _build_job(db, flow_id)
+
         if body.enabled and body.execution_method == 'recorded':
             _build_job(db, flow_id)
         from app.freshness_inheritance import reconcile_file_binding, reconcile_source

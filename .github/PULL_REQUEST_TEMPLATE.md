@@ -20,3 +20,11 @@ Describe the problem and resulting behavior.
 - [ ] No credentials, report data or private traces included in GitHub evidence.
 
 See [the testing workflow](https://github.com/datap0nd/data_governance/blob/main/docs/testing/README.md).
+
+## Usability evidence
+
+- Clickable fake-data preview and owner feedback (or wording/spacing-only scope):
+- Changed-control walkthrough, including failure and recovery:
+- Browser evidence and tested revision:
+- [ ] Clear labels, visible feedback, preserved work, predictable navigation and a clear next action checked.
+- [ ] Material changes to the approved journey returned for review.
