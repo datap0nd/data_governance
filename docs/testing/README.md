@@ -9,6 +9,7 @@ This is a standing instruction from the repository owner, recorded in
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-09-06: Luna GSCM investigation prompt | [Test plan](releases/2026-09-06-luna-gscm-probe/test-plan.md) | [Test report](releases/2026-09-06-luna-gscm-probe/test-report.md) |
 | 2026-09-06: automatic Flow files | [Test plan](releases/2026-09-06-automatic-flow-files/test-plan.md) | [Test report](releases/2026-09-06-automatic-flow-files/test-report.md) |
 | 2026-09-06: recorded click dispatch and technical logs | [Test plan](releases/2026-09-06-recording-click-dispatch/test-plan.md) | [Test report](releases/2026-09-06-recording-click-dispatch/test-report.md) |
 | 2026-09-06: recording playback and diagnostics | [Test plan](releases/2026-09-06-recording-playback/test-plan.md) | [Test report](releases/2026-09-06-recording-playback/test-report.md) |
