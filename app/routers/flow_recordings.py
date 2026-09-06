@@ -67,14 +67,14 @@ def _launch(scan_id):
         job = json.loads(row['job_json'])
         job['execution']['worker_id'] = flow_capacity.worker_id(slot, 'headed')
         db.execute('UPDATE flow_catalog_scans SET job_json=? WHERE id=?', (json.dumps(job), scan_id))
+        row = db.execute('SELECT * FROM flow_catalog_scans WHERE id=?', (scan_id,)).fetchone()
+        flow_recordings.refresh_queued_operation(db, row, datetime.now(timezone.utc))
     worker = launch_local_worker('headed', slot=slot)
-    if worker.get('status') == 'error':
+    if worker.get('status') in {'error', 'skipped'}:
         with get_db() as db:
-            changed = db.execute("UPDATE flow_catalog_scans SET status='failed',error=?,finished_at=? WHERE id=? AND status='queued'",
-                       (worker.get('message', 'Could not start recording worker.'), datetime.now(timezone.utc).isoformat(), scan_id))
-            if changed.rowcount:
-                db.execute("UPDATE flow_recording_revisions SET status='draft' WHERE id=(SELECT revision_id FROM flow_recording_sessions WHERE scan_id=?) AND status='validating'", (scan_id,))
-            else:
+            failed = flow_recordings.fail_queued_operation(db, scan_id,
+                worker.get('message') or 'Could not start the recording browser. Try again.', datetime.now(timezone.utc))
+            if not failed:
                 worker = {'status': 'already_assigned'}
     return {'scan_id': scan_id, 'worker': worker}
 

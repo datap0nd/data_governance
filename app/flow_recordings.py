@@ -10,6 +10,75 @@ from fastapi import HTTPException
 from app import flow_recording, flow_browser
 
 
+STARTUP_TIMEOUT_SECONDS = 120
+
+
+def _timestamp(value, fallback):
+    try:
+        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+    except (AttributeError, TypeError, ValueError):
+        return fallback
+
+
+def fail_queued_operation(db, scan_id, message, now):
+    """Fail an unclaimed request without racing a worker that already owns it."""
+    progress = {'stage': 'worker_start_failed', 'message': message}
+    changed = db.execute("""UPDATE flow_catalog_scans
+        SET status='failed',error=?,progress_json=?,finished_at=? WHERE id=? AND status='queued'""",
+        (message, json.dumps(progress), now.isoformat(), scan_id))
+    if changed.rowcount:
+        db.execute("""UPDATE flow_recording_revisions SET status='draft'
+            WHERE id=(SELECT revision_id FROM flow_recording_sessions WHERE scan_id=?) AND status='validating'""", (scan_id,))
+    return bool(changed.rowcount)
+
+
+def _queued_wait_reason(db, row, job):
+    from app import flow_capacity, flow_parallel
+    identity = job.get('execution', {}).get('worker_id')
+    if identity and any(item['worker_id'] == identity for item in flow_capacity.assignments(db)):
+        return 'Waiting for the current work in this browser to finish.'
+    if identity and db.execute("""SELECT 1 FROM flow_catalog_scans WHERE status='queued' AND id<?
+            AND json_extract(job_json,'$.recording_operation') IS NOT NULL
+            AND json_extract(job_json,'$.execution.worker_id')=? LIMIT 1""", (row['id'], identity)).fetchone():
+        return 'Waiting for the earlier recording or test to finish.'
+    if not flow_capacity.can_claim(db, identity or '', 'headed'):
+        return 'Waiting for a visible browser slot.'
+    if not flow_parallel.portal_available(db, job):
+        return 'Waiting for other work on this website to finish.'
+    return None
+
+
+def refresh_queued_operation(db, row, now):
+    """Describe capacity waits; bound startup only while a request can run."""
+    from app import flow_capacity
+    job = json.loads(row['job_json'])
+    previous = json.loads(row['progress_json'] or '{}')
+    slot = flow_capacity.slot_number(job.get('execution', {}).get('worker_id', ''), 'headed')
+    if slot and slot > flow_capacity.capacity(db, 'headed'):
+        return fail_queued_operation(db, row['id'], 'This browser slot is no longer enabled. Try again.', now)
+    reason = _queued_wait_reason(db, row, job)
+    if reason:
+        progress = {'stage': 'waiting_for_capacity', 'message': reason}
+    else:
+        # Time spent waiting for another operation must not consume the next
+        # worker's startup allowance. Legacy unobserved requests use created_at.
+        started = (_timestamp(previous.get('startup_started_at'), now)
+                   if previous.get('stage') == 'starting_worker'
+                   else now if previous.get('stage') == 'waiting_for_capacity'
+                   else _timestamp(row['created_at'], now))
+        if (now - started).total_seconds() >= STARTUP_TIMEOUT_SECONDS:
+            message = ('The recording browser did not start. Try again. '
+                       'If it repeats, check Flow workers in System.')
+            return fail_queued_operation(db, row['id'], message, now)
+        progress = {'stage': 'starting_worker', 'message': 'Waiting for worker…',
+                    'startup_started_at': started.isoformat()}
+    if progress != previous:
+        db.execute("UPDATE flow_catalog_scans SET progress_json=? WHERE id=? AND status='queued'",
+                   (json.dumps(progress), row['id']))
+    return False
+
+
 def reap(db, *, restarted_worker=None, timeout_seconds=180):
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(seconds=timeout_seconds)
@@ -34,6 +103,12 @@ def reap(db, *, restarted_worker=None, timeout_seconds=180):
         db.execute("""UPDATE flow_workers SET status='offline',current_scan_id=NULL,
             stop_requested_pid=COALESCE(json_extract(capabilities_json,'$.process_id'),-1)
             WHERE worker_id=? AND current_scan_id=?""", (row['worker_id'],row['id']))
+    # A successful Windows task-start request is not evidence that Python
+    # registered or claimed the operation. Detect crashes before registration.
+    queued = db.execute('''SELECT c.* FROM flow_recording_sessions s
+        JOIN flow_catalog_scans c ON c.id=s.scan_id WHERE c.status='queued' ORDER BY c.id''').fetchall()
+    for row in queued:
+        refresh_queued_operation(db, row, now)
 
 
 def assert_flow_idle(db, flow_id):
