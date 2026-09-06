@@ -38,6 +38,9 @@ def test_windows_extended_paths_and_alternate_streams(tmp_path):
     assert flow_paths.is_inside("\\\\?\\" + str(tmp_path / "child"), str(tmp_path))
     assert not flow_paths.is_inside(str(tmp_path / "file:stream"), str(tmp_path))
     assert flow_paths.clean_absolute(r"\\?\UNC\server\share\child") == r"\\server\share\child"
+    root = r"\\fileserver\users\worker\Desktop\Metronome\Flows\GSCM"
+    assert flow_paths.is_inside(root.upper() + r"\Orders (id 1)\Downloads", root, resolve=False)
+    assert flow_paths.is_inside(root.replace('\\', '/') + '/Orders (id 1)/Downloads', root, resolve=False)
 
 
 def test_setting_root_does_not_enable_enforcement_and_diagnostics_do_not_probe(flow_db, tmp_path, monkeypatch):
@@ -49,7 +52,8 @@ def test_setting_root_does_not_enable_enforcement_and_diagnostics_do_not_probe(f
     assert (Path(root) / "Web").is_dir()
     assert state["flows_outside_root"][0]["id"] == saved["id"]
     with database.get_db() as db:
-        assert "paths" not in flows._build_job(db, saved["id"])
+        with pytest.raises(HTTPException, match="Flow folder"):
+            flows._build_job(db, saved["id"])
     monkeypatch.setattr(os.path, "realpath", lambda *a, **k: (_ for _ in ()).throw(AssertionError("disk probe")))
     assert system_paths.get_paths()["flows_root"] == root
 
@@ -59,9 +63,9 @@ def test_enforcement_rejects_save_and_queue_and_freezes_valid_policy(flow_db, tm
     saved = flows.create_flow(_flow(site["id"], report["id"]), _request())
     root = tmp_path / "managed"
     system_paths.put_paths(system_paths.PathsWrite(flows_root=str(root), create=True, enforced=True), _request())
-    with pytest.raises(HTTPException, match="Target folder"):
-        flows.create_flow(_flow(site["id"], report["id"], name="Outside"), _request())
-    with database.get_db() as db, pytest.raises(HTTPException, match="Target folder"):
+    managed = flows.create_flow(_flow(site["id"], report["id"], name="Outside"), _request())
+    assert flow_paths.is_inside(managed["target_folder"], str(root / "Web"))
+    with database.get_db() as db, pytest.raises(HTTPException, match="Flow folder"):
         flows.queue_flow_run_service(db, saved["id"], requested_by=None, trigger_type="pipeline")
     valid = flows.create_flow(_flow(site["id"], report["id"], name="Inside", target_folder=str(root / "Web" / "target")), _request())
     with database.get_db() as db:
@@ -87,15 +91,15 @@ def test_scheduler_skips_outside_flow_without_blocking_other_schedules(flow_db, 
     site, report = _seed_catalog()
     bad = flows.create_flow(_flow(site["id"], report["id"]), _request())
     root = tmp_path / "managed"
-    good = flows.create_flow(_flow(site["id"], report["id"], name="Valid schedule", target_folder=str(root / "Web" / "target")), _request())
     system_paths.put_paths(system_paths.PathsWrite(flows_root=str(root), enforced=True), _request())
+    good = flows.create_flow(_flow(site["id"], report["id"], name="Valid schedule"), _request())
     with database.get_db() as db:
         db.execute("UPDATE flows SET next_run_at='2000-01-01T00:00:00'")
     flows.queue_due_flows()
     with database.get_db() as db:
         rows = db.execute("SELECT flow_id FROM flow_runs").fetchall()
         assert [row[0] for row in rows] == [good["id"]]
-        assert "Target folder" in db.execute("SELECT last_error FROM flows WHERE id=?", (bad["id"],)).fetchone()[0]
+        assert "Flow folder" in db.execute("SELECT last_error FROM flows WHERE id=?", (bad["id"],)).fetchone()[0]
 
 
 def test_transform_upload_stays_in_unique_root_staging(flow_db, tmp_path):

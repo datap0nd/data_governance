@@ -963,6 +963,13 @@ def _flow(site_id, report_id, **overrides):
     return flows.FlowWrite(**data)
 
 
+def _legacy_destination(saved, target):
+    """Seed a pre-managed installation for historical shared-path recovery tests."""
+    with database.get_db() as db:
+        db.execute("UPDATE flows SET flow_folder=NULL, folder_slug=NULL, folder_state='legacy', target_folder=? WHERE id=?", (target, saved['id']))
+    return flows.get_flow(saved['id'])
+
+
 def _seed_catalog():
     site = flows.create_site(_site(), _request())
     report = flows.create_report(_report(site["id"]), _request())
@@ -1043,6 +1050,8 @@ def test_direct_flows_share_a_folder_lock_even_with_different_sql_targets(
         _request(),
     )
 
+    _legacy_destination(first, shared['target_folder'])
+    _legacy_destination(second, shared['target_folder'])
     first_run = flows.queue_run(first["id"], _request())
     with pytest.raises(HTTPException, match="Direct Flow output folder"):
         flows.queue_run(second["id"], _request())
@@ -1129,12 +1138,12 @@ def test_private_sql_retry_is_deferred_to_and_claimed_by_matching_artifact_store
     assert retry["job"]["execution"]["required_artifact_store_id"] == "store-a"
     flows.register_worker(flows.WorkerRegister(
         worker_id="wrong-store", display_name="Wrong store",
-        capabilities={"artifact_store_id": "store-b"},
+        capabilities={"shared_flow_artifacts": True, "artifact_store_id": "store-b"},
     ))
     assert flows.claim_run("wrong-store")["run"] is None
     flows.register_worker(flows.WorkerRegister(
         worker_id="right-store", display_name="Right store",
-        capabilities={"artifact_store_id": "store-a"},
+        capabilities={"shared_flow_artifacts": True, "artifact_store_id": "store-a"},
     ))
     assert flows.claim_run("right-store")["run"]["id"] == retry["id"]
 
@@ -1147,7 +1156,7 @@ def test_private_sql_retry_is_deferred_to_and_claimed_by_matching_artifact_store
         ).lastrowid
     flows.register_worker(flows.WorkerRegister(
         worker_id=flows.LOCAL_WORKER_ID, display_name="Moved profile",
-        capabilities={"artifact_store_id": "new-store"},
+        capabilities={"shared_flow_artifacts": True, "artifact_store_id": "new-store"},
     ))
     assert flows.claim_run(flows.LOCAL_WORKER_ID)["run"] is None
     with database.get_db() as db:
@@ -1170,7 +1179,7 @@ def test_published_metadata_persists_and_extension_drift_records_warning(
         _flow(site["id"], report["id"], output_mode="direct_replace"), _request(),
     )
     flows.register_worker(flows.WorkerRegister(
-        worker_id="publish-worker", display_name="Publish worker", capabilities={},
+        worker_id="publish-worker", display_name="Publish worker", capabilities={"shared_flow_artifacts": True, },
     ))
 
     first = flows.queue_run(saved["id"], _request())
@@ -1273,16 +1282,19 @@ def test_one_per_period_job_is_expanded_without_delete_or_overwrite(flow_db):
     }
 
 
-def test_transformation_configuration_is_persisted_in_job(flow_db):
+def test_transformation_configuration_is_persisted_in_job(flow_db, tmp_path):
     site, report = _seed_catalog()
     _mark_discovered(report["id"])
+    script = tmp_path / "clean_report.py"
+    script.write_text("# synthetic transformation\n")
     saved = flows.create_flow(_flow(
         site["id"], report["id"], transform_enabled=True,
-        transform_script_path=r"C:\Scripts\clean_report.py",
+        transform_script_path=str(script),
     ), _request())
     queued = flows.queue_run(saved["id"], _request())
     assert saved["transform_enabled"] is True
-    assert queued["job"]["transformation"]["script_path"] == r"C:\Scripts\clean_report.py"
+    assert queued["job"]["transformation"]["script_path"] == saved["transform_script_path"]
+    assert Path(saved["transform_script_path"]).read_text() == script.read_text()
 
 
 def test_transformation_requires_supported_absolute_script_path(flow_db):
@@ -1664,7 +1676,7 @@ def test_rolling_window_advances_only_after_success(flow_db):
     assert queued["job"]["downloads"]["next_start_week"] == "2026-W33"
 
     worker = flows.WorkerRegister(
-        worker_id="rolling-worker", display_name="Rolling worker", capabilities={}
+        worker_id="rolling-worker", display_name="Rolling worker", capabilities={"shared_flow_artifacts": True, }
     )
     flows.register_worker(worker)
     claimed = flows.claim_run(worker.worker_id)
@@ -3209,7 +3221,7 @@ def test_worker_claim_and_completion_records_artifact(flow_db):
     worker = flows.WorkerRegister(
         worker_id="personal-session",
         display_name="Authenticated browser",
-        capabilities={"adapters": ["web_export"]},
+        capabilities={"shared_flow_artifacts": True, "adapters": ["web_export"]},
     )
     flows.register_worker(worker)
     claimed = flows.claim_run(worker.worker_id)
@@ -3256,7 +3268,7 @@ def test_an_oversized_progress_message_is_truncated_not_stored_verbatim(flow_db)
     flows.register_worker(flows.WorkerRegister(
         worker_id=worker_id,
         display_name="Verbose worker",
-        capabilities={"headed": False},
+        capabilities={"shared_flow_artifacts": True, "headed": False},
     ))
     assert flows.claim_run(worker_id)["run"]["id"] == queued["id"]
 
@@ -3287,7 +3299,7 @@ def test_terminal_sql_retry_serializes_list_period_key_instead_of_returning_500(
     flows.register_worker(flows.WorkerRegister(
         worker_id=worker_id,
         display_name="SQL retry worker",
-        capabilities={"headed": False},
+        capabilities={"shared_flow_artifacts": True, "headed": False},
     ))
     assert flows.claim_run(worker_id)["run"]["id"] == queued["id"]
 
@@ -3347,7 +3359,7 @@ def test_worker_restart_fails_active_sql_run_without_replaying_it(flow_db, monke
     worker_id = "restart-safe-worker"
     flows.register_worker(flows.WorkerRegister(
         worker_id=worker_id, display_name="SQL worker",
-        capabilities={"headed": False, "process_id": 101},
+        capabilities={"shared_flow_artifacts": True, "headed": False, "process_id": 101},
     ))
     assert flows.claim_run(worker_id)["run"]["id"] == queued["id"]
     flows.update_run(
@@ -3360,7 +3372,7 @@ def test_worker_restart_fails_active_sql_run_without_replaying_it(flow_db, monke
 
     registered = flows.register_worker(flows.WorkerRegister(
         worker_id=worker_id, display_name="SQL worker",
-        capabilities={"headed": False, "process_id": 202},
+        capabilities={"shared_flow_artifacts": True, "headed": False, "process_id": 202},
     ))
 
     assert registered["interrupted_run_id"] == queued["id"]
@@ -3869,7 +3881,7 @@ def test_terminal_run_can_retry_sql_without_browser_or_download(flow_db, tmp_pat
     assert dict(row) == {"trigger_type": "sql_retry", "status": "queued"}
 
     worker = flows.WorkerRegister(
-        worker_id="sql-retry-worker", display_name="SQL retry worker", capabilities={},
+        worker_id="sql-retry-worker", display_name="SQL retry worker", capabilities={"shared_flow_artifacts": True, },
     )
     flows.register_worker(worker)
     claimed = flows.claim_run(worker.worker_id)
@@ -4029,10 +4041,10 @@ def test_headed_flow_is_routed_only_to_headed_worker(flow_db, monkeypatch):
     )
     queued = flows.queue_run(saved["id"], _request())
     flows.register_worker(flows.WorkerRegister(
-        worker_id="bi-desktop-headless", display_name="Background", capabilities={"headed": False},
+        worker_id="bi-desktop-headless", display_name="Background", capabilities={"shared_flow_artifacts": True, "headed": False},
     ))
     flows.register_worker(flows.WorkerRegister(
-        worker_id="bi-desktop-headed", display_name="Visible", capabilities={"headed": True},
+        worker_id="bi-desktop-headed", display_name="Visible", capabilities={"shared_flow_artifacts": True, "headed": True},
     ))
 
     assert queued["job"]["execution"]["browser_mode"] == "headed"
@@ -4075,7 +4087,7 @@ def test_stop_cancels_assigned_run_and_targets_reported_worker_pid(flow_db, monk
     queued = flows.queue_run(saved["id"], _request())
     flows.register_worker(flows.WorkerRegister(
         worker_id="bi-desktop-headed", display_name="Visible",
-        capabilities={"headed": True, "process_id": 4321},
+        capabilities={"shared_flow_artifacts": True, "headed": True, "process_id": 4321},
     ))
     flows.claim_run("bi-desktop-headed")
     stopped = []
@@ -4106,7 +4118,7 @@ def test_stop_cancels_queued_run_without_stopping_another_flows_worker(flow_db, 
     second_run = flows.queue_run(second_flow["id"], _request())
     flows.register_worker(flows.WorkerRegister(
         worker_id="bi-desktop-headed", display_name="Visible",
-        capabilities={"headed": True, "process_id": 4321},
+        capabilities={"shared_flow_artifacts": True, "headed": True, "process_id": 4321},
     ))
     assert flows.claim_run("bi-desktop-headed")["run"]["id"] == first_run["id"]
     stopped = []
@@ -4139,7 +4151,7 @@ def test_stop_cancels_assigned_headless_run(flow_db, monkeypatch):
     queued = flows.queue_run(saved["id"], _request())
     flows.register_worker(flows.WorkerRegister(
         worker_id="bi-desktop-headless", display_name="Background",
-        capabilities={"headed": False, "process_id": 9876},
+        capabilities={"shared_flow_artifacts": True, "headed": False, "process_id": 9876},
     ))
     flows.claim_run("bi-desktop-headless")
     stopped = []
@@ -4189,7 +4201,7 @@ def test_stop_cancels_running_catalog_scan_and_ignores_late_success(flow_db, mon
     queued = flows.queue_report_scan(report["id"], _request())
     flows.register_worker(flows.WorkerRegister(
         worker_id="catalog-worker", display_name="Catalog worker",
-        capabilities={"headed": False, "process_id": 2468},
+        capabilities={"shared_flow_artifacts": True, "headed": False, "process_id": 2468},
     ))
     claimed = flows.claim_run("catalog-worker")
     assert claimed["scan"]["id"] == queued["id"]
@@ -4591,7 +4603,7 @@ def test_stale_browser_run_is_failed_and_worker_released(flow_db, monkeypatch):
     queued = flows.queue_run(saved["id"], _request())
     flows.register_worker(flows.WorkerRegister(
         worker_id="bi-desktop-headed", display_name="Visible",
-        capabilities={"headed": True, "process_id": 4321},
+        capabilities={"shared_flow_artifacts": True, "headed": True, "process_id": 4321},
     ))
     flows.claim_run("bi-desktop-headed")
     old = "2026-08-13T10:00:00"
@@ -4626,7 +4638,7 @@ def test_run_heartbeat_prevents_active_worker_from_being_reaped(flow_db, monkeyp
     queued = flows.queue_run(saved["id"], _request())
     flows.register_worker(flows.WorkerRegister(
         worker_id="bi-desktop-headed", display_name="Visible",
-        capabilities={"headed": True, "process_id": 4321},
+        capabilities={"shared_flow_artifacts": True, "headed": True, "process_id": 4321},
     ))
     flows.claim_run("bi-desktop-headed")
     monkeypatch.setattr(flows, "_now", lambda: datetime.fromisoformat("2026-08-13T10:05:00"))
@@ -4646,7 +4658,7 @@ def test_long_running_flow_remains_active_with_fresh_heartbeat(flow_db, monkeypa
     queued = flows.queue_run(saved["id"], _request())
     flows.register_worker(flows.WorkerRegister(
         worker_id="bi-desktop-headed", display_name="Visible",
-        capabilities={"headed": True, "process_id": 4321},
+        capabilities={"shared_flow_artifacts": True, "headed": True, "process_id": 4321},
     ))
     flows.claim_run("bi-desktop-headed")
     monkeypatch.setattr(flows, "_now", lambda: datetime.fromisoformat("2026-08-13T10:31:00"))
@@ -4729,7 +4741,7 @@ def test_failed_run_emails_the_flow_owner(flow_db, monkeypatch):
     )
     queued = flows.queue_run(saved["id"], _request())
     flows.register_worker(flows.WorkerRegister(
-        worker_id="alert-worker", display_name="Alert worker", capabilities={},
+        worker_id="alert-worker", display_name="Alert worker", capabilities={"shared_flow_artifacts": True, },
     ))
     flows.claim_run("alert-worker")
     result = flows.update_run(
@@ -4778,7 +4790,7 @@ def test_failed_run_without_owner_or_email_sends_nothing(flow_db, monkeypatch):
         _request(),
     )
     flows.register_worker(flows.WorkerRegister(
-        worker_id="quiet-worker", display_name="Quiet worker", capabilities={},
+        worker_id="quiet-worker", display_name="Quiet worker", capabilities={"shared_flow_artifacts": True, },
     ))
     for flow, reason in ((unowned, "no owner"), (owned, "no email")):
         queued = flows.queue_run(flow["id"], _request())
@@ -4803,7 +4815,7 @@ def test_worker_loss_and_restart_failures_email_the_flow_owner(flow_db, monkeypa
     queued = flows.queue_run(saved["id"], _request())
     flows.register_worker(flows.WorkerRegister(
         worker_id="lost-worker", display_name="Lost worker",
-        capabilities={"process_id": 100},
+        capabilities={"shared_flow_artifacts": True, "process_id": 100},
     ))
     flows.claim_run("lost-worker")
     old = "2026-08-13T10:00:00"
@@ -4819,7 +4831,7 @@ def test_worker_loss_and_restart_failures_email_the_flow_owner(flow_db, monkeypa
     flows.claim_run("lost-worker")
     flows.register_worker(flows.WorkerRegister(
         worker_id="lost-worker", display_name="Lost worker",
-        capabilities={"process_id": 101},
+        capabilities={"shared_flow_artifacts": True, "process_id": 101},
     ))
     assert len(sent) == 2
     assert f"run #{retry['id']}" in sent[1][0][0]["subject"]
@@ -4851,7 +4863,7 @@ def test_resume_queues_a_run_that_skips_saved_files(flow_db):
     queued = flows.queue_run(saved["id"], _request())
     assert queued["job"]["downloads"]["periods"] == [["2026-W30"], ["2026-W31"], ["2026-W32"]]
     flows.register_worker(flows.WorkerRegister(
-        worker_id="resume-worker", display_name="Resume worker", capabilities={},
+        worker_id="resume-worker", display_name="Resume worker", capabilities={"shared_flow_artifacts": True, },
     ))
     flows.claim_run("resume-worker")
     _fail_run_with_saved_files("resume-worker", queued["id"], ["2026-W30"])
@@ -4885,7 +4897,7 @@ def test_resume_rejects_active_runs_and_runs_without_saved_progress(flow_db):
     saved = flows.create_flow(_flow(site["id"], report["id"]), _request())
     queued = flows.queue_run(saved["id"], _request())
     flows.register_worker(flows.WorkerRegister(
-        worker_id="strict-worker", display_name="Strict worker", capabilities={},
+        worker_id="strict-worker", display_name="Strict worker", capabilities={"shared_flow_artifacts": True, },
     ))
     flows.claim_run("strict-worker")
 
@@ -4922,7 +4934,7 @@ def test_failed_report_without_artifacts_keeps_previously_saved_files(flow_db):
     saved = flows.create_flow(_flow(site["id"], report["id"]), _request())
     queued = flows.queue_run(saved["id"], _request())
     flows.register_worker(flows.WorkerRegister(
-        worker_id="wipe-worker", display_name="Wipe worker", capabilities={},
+        worker_id="wipe-worker", display_name="Wipe worker", capabilities={"shared_flow_artifacts": True, },
     ))
     flows.claim_run("wipe-worker")
     flows.update_run(
@@ -4978,7 +4990,7 @@ def test_scan_progress_posts_build_a_live_event_log(flow_db):
     site = flows.create_site(_asap_site(), _request())
     flows.register_worker(flows.WorkerRegister(
         worker_id="scan-log-worker", display_name="Scan log worker",
-        capabilities={"adapters": ["asap_portal"]},
+        capabilities={"shared_flow_artifacts": True, "adapters": ["asap_portal"]},
     ))
     with database.get_db() as db:
         scan_id, _browser_mode = flows._queue_scan(db, dict(
@@ -5056,7 +5068,7 @@ def test_oversized_option_lists_are_capped_not_rejected():
 def test_invalid_reports_are_skipped_so_the_scan_still_lands(flow_db):
     site = flows.create_site(_asap_site(), _request())
     flows.register_worker(flows.WorkerRegister(
-        worker_id="skip-worker", display_name="Skip worker", capabilities={},
+        worker_id="skip-worker", display_name="Skip worker", capabilities={"shared_flow_artifacts": True, },
     ))
     with database.get_db() as db:
         scan_id, _browser_mode = flows._queue_scan(db, dict(
@@ -5279,8 +5291,9 @@ def _retention_flow(target, **overrides):
     saved = flows.create_flow(
         _flow(site["id"], report["id"], target_folder=target, **overrides), _request(),
     )
+    saved = _legacy_destination(saved, target)
     flows.register_worker(flows.WorkerRegister(
-        worker_id="retention-worker", display_name="Retention worker", capabilities={},
+        worker_id="retention-worker", display_name="Retention worker", capabilities={"shared_flow_artifacts": True, },
     ))
     return saved, site, report
 
@@ -5340,8 +5353,9 @@ def test_an_active_runs_folder_is_never_assigned_for_cleanup(flow_db):
         _flow(site["id"], report["id"], name="Second flow", target_folder=target),
         _request(),
     )
+    other = _legacy_destination(other, target)
     flows.register_worker(flows.WorkerRegister(
-        worker_id="stuck-worker", display_name="Stuck worker", capabilities={},
+        worker_id="stuck-worker", display_name="Stuck worker", capabilities={"shared_flow_artifacts": True, },
     ))
     stuck = flows.queue_run(other["id"], _request())
     flows.claim_run("stuck-worker")
@@ -5446,9 +5460,10 @@ def test_a_queued_resume_pins_its_source_folders_against_cleanup(flow_db):
     # The resumable flow runs headed so the headless helper worker for the
     # second flow can never claim the queued resume out from under the test.
     saved, site, report = _retention_flow(target, browser_mode="headed")
+    saved = _legacy_destination(saved, target)
     flows.register_worker(flows.WorkerRegister(
         worker_id="retention-worker", display_name="Retention worker",
-        capabilities={"headed": True},
+        capabilities={"shared_flow_artifacts": True, "headed": True},
     ))
 
     failed = flows.queue_run(saved["id"], _request())
@@ -5472,8 +5487,9 @@ def test_a_queued_resume_pins_its_source_folders_against_cleanup(flow_db):
         _flow(site["id"], report["id"], name="Second flow", target_folder=target),
         _request(),
     )
+    other = _legacy_destination(other, target)
     flows.register_worker(flows.WorkerRegister(
-        worker_id="other-worker", display_name="Other worker", capabilities={},
+        worker_id="other-worker", display_name="Other worker", capabilities={"shared_flow_artifacts": True, },
     ))
     for _ in range(3):
         _complete_registered_run("other-worker", other["id"], target)

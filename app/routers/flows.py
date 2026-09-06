@@ -806,7 +806,7 @@ class FlowWrite(BaseModel):
             self.outlook_subject_contains = None
             self.local_file_path = None
             self.local_file_worksheet = None
-            if self.site_id is None or self.report_id is None:
+            if self.site_id is None or (self.report_id is None and self.execution_method != 'recorded'):
                 raise ValueError("Choose a website and report.")
             self.file_format = self.file_format.strip().casefold()
             compatible_suffixes = None
@@ -1285,6 +1285,21 @@ def _resolve_flow_source(db, body: FlowWrite) -> None:
         body.site_id, body.report_id = _outlook_source_ids(db)
     elif body.source_type == "file":
         body.site_id, body.report_id = _local_file_source_ids(db)
+    elif body.execution_method == 'recorded' and body.report_id is None:
+        site = db.execute('SELECT * FROM flow_sites WHERE id=? AND enabled=1', (body.site_id,)).fetchone()
+        if not site or site['adapter'] not in {ASAP_PORTAL_ADAPTER, GSCM_PORTAL_ADAPTER}:
+            raise HTTPException(400, 'Choose an enabled ASAP or GSCM website.')
+        # Internal route only. Recording owns navigation, not a catalog bookmark.
+        route = db.execute("SELECT id FROM flow_reports WHERE site_id=? AND discovery_key='recorded-route'", (body.site_id,)).fetchone()
+        if not route:
+            now = _iso(_now())
+            cursor = db.execute("""INSERT INTO flow_reports
+                (site_id, discovery_key, name, report_url, automation_json, source_kind, enabled, created_at, updated_at)
+                VALUES (?, 'recorded-route', 'Recorded actions', ?, ?, 'recording', 1, ?, ?)""",
+                (body.site_id, site['base_url'] or site['auth_url'], json.dumps({'kind': 'recorded_route'}), now, now))
+            body.report_id = cursor.lastrowid
+        else:
+            body.report_id = route['id']
 
 
 def _latest_discovered_week(report: dict, start_week: str) -> str:
@@ -1405,6 +1420,16 @@ def _validate_flow_selections(db, body: FlowWrite, *, new_flow: bool = False):
         if body.site_id != expected_site or body.report_id != expected_report:
             raise HTTPException(400, "The local-file flow source could not be resolved.")
         return
+    if body.execution_method == 'recorded':
+        site = db.execute('SELECT adapter FROM flow_sites WHERE id=? AND enabled=1', (body.site_id,)).fetchone()
+        if not site or site['adapter'] not in {ASAP_PORTAL_ADAPTER, GSCM_PORTAL_ADAPTER}:
+            raise HTTPException(400, 'Choose an enabled ASAP or GSCM website.')
+        route = db.execute('SELECT site_id FROM flow_reports WHERE id=?', (body.report_id,)).fetchone()
+        if not route or route['site_id'] != body.site_id:
+            raise HTTPException(400, 'The recorded route belongs to a different website.')
+        if new_flow and body.enabled:
+            raise HTTPException(409, 'Record and validate the draft before enabling its schedule.')
+        return
     report = db.execute(
         """SELECT r.site_id, r.automation_json, s.adapter FROM flow_reports r
            JOIN flow_sites s ON s.id = r.site_id
@@ -1414,12 +1439,6 @@ def _validate_flow_selections(db, body: FlowWrite, *, new_flow: bool = False):
     if not report or report["site_id"] != body.site_id:
         raise HTTPException(400, "Choose an enabled report from the selected website.")
     adapter = report["adapter"]
-    if body.execution_method == 'recorded':
-        if adapter not in {ASAP_PORTAL_ADAPTER, GSCM_PORTAL_ADAPTER}:
-            raise HTTPException(400, 'Record a Flow on ASAP or GSCM.')
-        if new_flow and body.enabled:
-            raise HTTPException(409, 'Record and validate the draft before enabling its schedule.')
-        return
     if adapter == ASAP_PORTAL_ADAPTER:
         try:
             download_type = resolve_asap_download_type(
@@ -1534,17 +1553,18 @@ def _validate_flow_selections(db, body: FlowWrite, *, new_flow: bool = False):
 
 def _build_job(db, flow_id: int, *, force_reprocess: bool = False, recording_draft: bool = False, pending_settings: FlowWrite | None = None) -> dict:
     flow = _flow_out(db, flow_id, include_private_storage=True)
+    flow_paths.managed_destination(db, flow)
     if pending_settings is not None:
         body = pending_settings.model_copy(deep=True)
         if body.source_type != 'portal' or body.execution_method != 'recorded':
             raise HTTPException(422, 'Choose Record my actions before testing a recording.')
         _resolve_flow_source(db, body)
+        # Apply the server-owned destination before path validation. Editor
+        # payloads deliberately contain no destination field.
+        body.target_folder = flow['target_folder']
         _validate_flow_selections(db, body)
         _validate_sql_target(db, body)
         _validate_owner(db, body)
-        # Managed destinations belong to the Flow, not a caller-supplied path.
-        if flow.get('flow_folder') or not body.target_folder:
-            body.target_folder = flow['target_folder']
         flow.update(body.model_dump(exclude={'recording_revision_id'}))
         if body.recording_revision_id is not None:
             flow['recording_revision_id'] = body.recording_revision_id
@@ -1815,7 +1835,7 @@ def catalog():
         ).fetchall()]
         reports = [dict(row) for row in db.execute(
             """SELECT r.* FROM flow_reports r JOIN flow_sites s ON s.id=r.site_id
-               WHERE s.adapter NOT IN (?, ?) ORDER BY r.name""",
+               WHERE s.adapter NOT IN (?, ?) AND r.source_kind != 'recording' ORDER BY r.name""",
             (OUTLOOK_ATTACHMENT_ADAPTER, LOCAL_FILE_ADAPTER),
         ).fetchall()]
         report_ids = [report["id"] for report in reports]
@@ -2773,9 +2793,9 @@ def refresh_sql_catalog_now(request: Request):
 
 @router.post("")
 def create_flow(body: FlowWrite, request: Request):
-    managed = not body.target_folder
-    if (body.download_parallelism or 1) > 1 and not managed:
-        raise HTTPException(422, "Parallel downloads require a managed shared folder. Create the flow with its automatic folder.")
+    # Destinations are owned by Metronome, including requests from older clients.
+    managed = True
+    body.target_folder = None
     allocated = None
     flow_id = None
     now = _iso(_now())
@@ -3060,15 +3080,17 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
         assert_flow_idle(db, flow_id)
         if body.download_parallelism is None:
             body.download_parallelism = existing['download_parallelism']
-        if body.download_parallelism > 1 and not existing['flow_folder']:
-            raise HTTPException(422, "Adopt a managed shared folder before enabling parallel downloads.")
         from app.routers.pipelines import assert_resource_unlocked
         assert_resource_unlocked(db, "flow", str(flow_id))
         if (existing["source_type"] or "portal") != body.source_type:
             raise HTTPException(409, "A flow's source category cannot be changed after creation.")
         _resolve_flow_source(db, body)
-        if existing["flow_folder"] or not body.target_folder:
-            body.target_folder = existing["target_folder"]
+        try:
+            managed = flow_paths.managed_destination(db, _flow_out(db, flow_id, include_private_storage=True), adopt=True)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(409, f'Could not prepare the flow folder: {exc}') from exc
+        existing = {**dict(existing), 'flow_folder': managed['flow_folder'], 'target_folder': managed['target_folder']}
+        body.target_folder = existing['target_folder']
         if body.execution_method == 'recorded' and (body.recording_revision_id or existing['recording_revision_id']):
             # Reject stale settings/evidence before importing files or changing settings.
             _build_job(db, flow_id, pending_settings=body)

@@ -112,6 +112,45 @@ def policy(db, flow: dict) -> dict | None:
             "enforced": enforced, "flow_folder": flow.get("flow_folder"), "version": 1}
 
 
+def managed_destination(db, flow: dict, *, adopt=False) -> dict:
+    """Restore the canonical destination without moving any historical files."""
+    from app import flow_layout
+    if not flow.get("flow_folder"):
+        if not adopt:
+            return flow
+        if db.execute("SELECT 1 FROM flow_runs WHERE flow_id=? AND status IN ('queued','claimed','running')", (flow['id'],)).fetchone():
+            raise ValueError('Wait for the current run to finish before saving this flow.')
+        root = get_flows_root(db)
+        try:
+            folder = flow_layout.create_flow_folder(root, flow['source_adapter'], flow['name'], flow['id'])
+        except FileExistsError:
+            # A later settings validation can roll back the database after
+            # allocation. Retry only our own marked folder; preserve its files.
+            folder = Path(validate_root(root)) / source_folder_name(flow['source_adapter']) / flow_layout.flow_folder_slug(flow['name'], flow['id'])
+            flow_layout.read_manifest(folder, flow['id'])
+            flow_layout.ensure_layout(folder, flow['id'])
+        try:
+            script = flow.get('transform_script_path')
+            if flow.get('transform_enabled'):
+                script = flow_layout.import_script(str(folder), flow['id'], script)
+            db.execute("""UPDATE flows SET flow_folder=?, folder_slug=?, folder_state='managed',
+                transform_script_path=? WHERE id=?""", (str(folder), folder.name, script, flow['id']))
+            flow.update(flow_folder=str(folder), transform_script_path=script)
+        except Exception:
+            flow_layout.cleanup_empty_creation(folder, flow['id'])
+            raise
+    folder = flow["flow_folder"]
+    if adopt:
+        flow_layout.read_manifest(folder, flow["id"])
+    if flow.get("source_type") != "file":
+        target = str(Path(folder) / "Downloads")
+        if flow.get("target_folder") != target:
+            if adopt:
+                db.execute("UPDATE flows SET target_folder=? WHERE id=?", (target, flow["id"]))
+            flow["target_folder"] = target
+    return flow
+
+
 def validate_flow(flow: dict, rules: dict | None, *, resolve=True):
     if not rules:
         return

@@ -7927,3 +7927,11 @@ body.remote-flow-control-enabled { padding-top: 32px; }
 .flow-recording-page .recording-card { padding: 6px 12px; gap: 12px; }
 .flow-recording-page .recording-card-title { padding: 8px 0; min-height: 0; }
 .flow-recording-page .recording-gap { height: 4px; }
+.flow-builder-shell.flow-builder-minimal { grid-template-columns: minmax(0, 820px); justify-content: center; }
+.flow-name-field { display: grid; gap: 8px; margin-bottom: 24px; }
+.flow-name-field input { width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface); color: var(--text); font: inherit; }
+.flow-name-field span { font-size: .9rem; font-weight: 600; }
+.flow-builder-minimal .btn-secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+.flow-builder-minimal [hidden] { display: none !important; }
+.flow-builder-minimal #flow-destination { overflow-wrap: anywhere; }
+.flow-builder-minimal #flow-destination > div { margin-top: 8px; color: var(--text-muted); }

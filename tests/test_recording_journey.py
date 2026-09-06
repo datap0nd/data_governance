@@ -46,7 +46,10 @@ def test_raw_import_preserved_rejection_and_identical_save(flow_db,monkeypatch):
 def test_pending_snapshot_atomic_apply_and_active_evidence(flow_db,monkeypatch):
     saved,job=draft_job();client=client_for(monkeypatch);fid=saved['id'];base=f'/api/flows/{fid}'
     revision=client.post(base+'/recordings/revisions',json={'definition':job['recording']['definition']}).json()['revision_id']
-    pending=flows.FlowWrite.model_validate(saved).model_dump();pending.update(name='Pending name',filename_template='pending_{index}.xlsx')
+    pending=flows.FlowWrite.model_validate(saved).model_dump();pending.update(name='Pending name',filename_template='pending_{index}.xlsx',target_folder=None)
+    # Match the real editor: no client-owned destination, even with enforcement.
+    with database.get_db() as db:
+        db.execute("INSERT OR REPLACE INTO app_settings(key,value) VALUES ('flows_paths_enforced','1')")
     queued=client.post(f'{base}/recordings/revisions/{revision}/validate',json={'settings':pending});assert queued.status_code==200,queued.text
     with database.get_db() as db:
         frozen=json.loads(db.execute('SELECT job_json FROM flow_catalog_scans WHERE id=?',(queued.json()['scan_id'],)).fetchone()[0])
@@ -111,11 +114,11 @@ def test_browser_real_api_save_test_return_apply(flow_db,monkeypatch,tmp_path,re
         page.get_by_role('button',name='Save draft',exact=True).click()
         page.get_by_text('Draft saved',exact=True).wait_for()
         page.get_by_role('button',name='Test recording',exact=True).click()
-        page.get_by_text('Which report should open?',exact=True).wait_for()
-        page.get_by_label('Exact report title').fill('Sales Report')
+        page.get_by_text('Check the recorded page',exact=True).wait_for()
+        page.get_by_label('Text to check').fill('Sales Report')
         # The page containing the title must be chosen explicitly.
         assert page.locator('[data-title-frame]').is_hidden()
-        page.get_by_role('button',name='Use report title').click()
+        page.get_by_role('button',name='Use this check').click()
         page.get_by_text('How do we know the report is ready?',exact=True).wait_for()
         steps=list(flow_recording.walk_steps(raw['steps']))
         page.locator('[data-check-trigger]').select_option(next(s['id'] for s in steps if s['action']=='click' and s.get('locator',[{}])[-1].get('kwargs',{}).get('name')=='Generate'))
