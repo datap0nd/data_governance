@@ -1,6 +1,6 @@
 # Automatic Flow files: test report
 
-[Plan](test-plan.md) · [PR #80 and subsequent CI evidence](https://github.com/datap0nd/data_governance/pull/80). Evidence cutoff: 2026-09-06 UTC, before completed GitHub CI results. Runtime/UI code revision: `3d20e74b312f9b2ccdc4d93dc42efc046a1f75a0`. Updated regression assertions: `dea773e66ff12d0744dbd6be582b00789620838f` (tests only). Companion-file preservation revision: `0aa12ce7aae196f26dfdf91325fab52337ea65c7`, an isolated synchronization change tested with the 28-case retest below. Subsequent report-only commits change no execution code.
+[Plan](test-plan.md) · [PR #80 and subsequent CI evidence](https://github.com/datap0nd/data_governance/pull/80). Evidence cutoff: 2026-09-06 UTC, before completed final-head GitHub CI results. Runtime/UI code revision: `3d20e74b312f9b2ccdc4d93dc42efc046a1f75a0`. Updated regression assertions: `dea773e66ff12d0744dbd6be582b00789620838f` (tests only). Companion-file preservation revision: `0aa12ce7aae196f26dfdf91325fab52337ea65c7`, an isolated synchronization change tested with the 28-case retest below. Read-only stale-file status and stable fingerprint revision: `fbac8d38829fdea3770cc471f945a3605b872985`, validated with the 30-case retest below. Subsequent report-only commits change no execution code.
 
 Environment: Windows 11 ARM64, Python 3.13.15, pytest 8.3.5, Node 24.19.0, Playwright 1.62.0. All 22 Node suites and `node --check app/static/app.js` passed. Targeted handover tests: 11 passed in 5.57s. Auto-update lifecycle plus earlier 9 handover tests: 72 passed, 1 pre-existing Starlette/httpx deprecation warning, 60.82s.
 
@@ -17,6 +17,8 @@ Browser preview HF-07: saved a renamed Flow, opened Flow files and folder listin
 | New handover cases, including isolated Python execution and packaged Outlook helper | Runtime/UI code represented by `3d20e74b` | **11 passed**, 5.57s. Outlook's command runner was synthetic; no Outlook session was opened. |
 | Lifecycle plus initial handover cases | Intermediate code with connection fix | **72 passed, 1 warning**, 60.82s. |
 | Companion preservation + standalone + shared layout | `0aa12ce7` code; final guide wording added afterward | **28 passed**, 10.51s. Existing team notes/dependency lists are archived before refresh. |
+| Stale-file detection after failed share writes + stable fingerprints | `fbac8d38` | **30 passed**, 14.07s. Read-only status detects old files even when the error marker could not be written; saving again repairs them. Fingerprints match across different Python hash seeds. |
+| Linux CI on superseded `4ff4b360` | [Job](https://github.com/datap0nd/data_governance/actions/runs/34045169358/job/101518832217) | **1705 passed, 5 skipped, 14 warnings**, 645.31s; all frontend/syntax checks passed. Windows was cancelled for the final status correction, so this is not final-head evidence. |
 | Frontend | Final UI code | **22 Node suites passed**; app.js syntax passed. |
 | Preview / diff hygiene | Final UI code | HF-07 walkthrough passed; `git diff --check` passed. |
 
