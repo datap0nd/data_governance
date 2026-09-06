@@ -125,7 +125,7 @@ def test_real_browser_waits_default_then_override_and_sends_each_click_once(flow
     assert clicks[1]['at'] - clicks[0]['at'] >= 1900
     sent = [event for event in events if event.get('message') == 'Click sent.']
     assert len(sent) == 2
-    assert all(event['confirmation'] == 'unconfirmed' for event in sent)
+    assert all(event['confirmation'] == 'not_requested' for event in sent)
     waits = [event['remaining_seconds'] for event in events if event.get('step_id') == 'generate' and 'remaining_seconds' in event]
     assert waits[0] == 10 and waits[-1] == 0
     nested = next(event for event in events if event.get('step_id') == 'download-click' and event.get('remaining_seconds') == 2)

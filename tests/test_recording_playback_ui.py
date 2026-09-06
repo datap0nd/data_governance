@@ -41,8 +41,8 @@ def test_step_wait_default_custom_wrap_move_undo_and_clear(playback_editor):
     assert 'delay_before_seconds' not in next(step for step in saved_definition(page)['steps'] if step['id'] == 'run')
     page.get_by_role('button', name='Open reports.example.test', exact=True).click()
     assert page.get_by_label('Wait before this step').count() == 0
-    page.get_by_role('button', name='Add wait', exact=True).click()
-    assert page.get_by_label('Wait before this step').count() == 0
+    assert page.get_by_role('button', name='Add wait', exact=True).count() == 0
+    assert page.locator('[data-insert]').count() == 0
 
 
 def test_general_wait_setting_saves_and_failed_save_preserves_value(playback_editor):
@@ -65,12 +65,12 @@ def test_general_wait_setting_saves_and_failed_save_preserves_value(playback_edi
     assert page.get_by_role('option', name='Use default · 20 seconds', exact=True).count() == 1
 
 
-def test_completed_clicks_distinguish_confirmed_controls_and_advanced_stays_closed(playback_editor):
+def test_clicks_report_dispatch_and_advanced_stays_closed(playback_editor):
     page = playback_editor
     page.get_by_role('button', name='Test recording', exact=True).click()
     page.get_by_text('Test passed. Back to Edit Flow, then Save.', exact=True).wait_for()
-    assert page.locator('[data-card="setting"] .recording-outcome').inner_text() == 'Setting opened.'
-    assert page.locator('[data-card="public"] .recording-outcome').inner_text() == 'Public selected.'
+    assert page.locator('[data-card="setting"] .recording-outcome').inner_text() == 'Click sent.'
+    assert page.locator('[data-card="public"] .recording-outcome').inner_text() == 'Click sent.'
     assert page.locator('[data-card="run"] .recording-outcome').inner_text() == 'Click sent.'
     page.evaluate('''()=>{const session=playbackPreview.data.sessions[0];session.status='failed';session.error='Setting did not open.';
         session.progress_json=JSON.stringify({step_outcomes:{setting:{outcome:'failed',message:'Setting did not open.'}}});}''')
@@ -96,6 +96,8 @@ def test_debug_log_retry_copy_fallback_pinning_and_edits_preserved(playback_edit
     page.get_by_label('Debug log text', exact=True).wait_for()
     original = page.get_by_label('Debug log text', exact=True).input_value()
     assert original.startswith('Recording test 2\n')
+    assert '"post_click_verification":"none"' in original
+    assert '"aria_selected":null' in original
     assert page.evaluate("()=>playbackPreview.debugRequests[0].headers['X-Client-Key']") == 'fictional-preview'
     page.evaluate("()=>Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async()=>{throw Error('Denied')}}})")
     page.get_by_role('button', name='Copy debug log', exact=True).click()

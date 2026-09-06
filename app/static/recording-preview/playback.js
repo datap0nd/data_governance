@@ -1,6 +1,6 @@
 /* Uses production components with fictional, in-memory settings and playback. */
 if(document.readyState==='loading')await new Promise(resolve=>document.addEventListener('DOMContentLoaded',resolve,{once:true}));
-for(const src of ['/static/app.js?v=69','/static/flow_recording_model.js?v=4','/static/flow_recording_editor.js?v=7']){
+for(const src of ['/static/app.js?v=69','/static/flow_recording_model.js?v=4','/static/flow_recording_editor.js?v=8']){
     await new Promise((resolve,reject)=>{const script=document.createElement('script');script.src=src;script.onload=resolve;script.onerror=reject;document.head.append(script);});
 }
 const button=name=>[{method:'get_by_role',args:['button'],kwargs:{name}}];
@@ -27,7 +27,7 @@ window.apiPostJson=async(path,body)=>{
     calls.push({path,body:structuredClone(body)});
     if(path.endsWith('/validate')){
         const revision=data.revisions[0];revision.status='validated';
-        const outcomes=Object.fromEntries(RecordedFlowModel.all(revision.definition.steps).map(step=>[step.id,{outcome:'completed',...(step.action==='click'?{confirmation:step.id==='setting'||step.id==='public'?'confirmed':'unconfirmed',message:step.id==='setting'?'Setting opened.':step.id==='public'?'Public selected.':'Click sent.'}:{})}]));
+        const outcomes=Object.fromEntries(RecordedFlowModel.all(revision.definition.steps).map(step=>[step.id,{outcome:'completed',...(step.action==='click'?{confirmation:'not_requested',message:'Click sent.'}:{})}]));
         data.sessions.unshift({scan_id:calls.length,revision_id:revision.id,operation:'validate',status:'succeeded',progress_json:JSON.stringify({step_outcomes:outcomes})});
         return {revision_id:revision.id};
     }
@@ -41,7 +41,7 @@ window.fetch=async(path,options)=>{
     debugRequests.push({path,headers:options?.headers});
     if(window.previewFailDebug)return new Response(JSON.stringify({detail:'Debug log is temporarily unavailable.'}),{status:503,headers:{'Content-Type':'application/json'}});
     if(window.previewDeferDebug)return new Promise(resolve=>window.finishPreviewDebug=resolve);
-    return new Response(`Recording test ${match[1]}\nDefault wait: ${settings.recording_wait_seconds} seconds\n1. Open report page — completed\n2. Click Setting — confirmed: Setting opened.\n3. Click Public — confirmed: Public selected.\n4. Click Run report — click sent; transition unconfirmed\n5. Download Excel — completed\n`,{headers:{'Content-Type':'text/plain'}});
+    return new Response(`Recording test ${match[1]}\nDefault wait: ${settings.recording_wait_seconds} seconds\n1. Open report page — completed\n2. Click Setting — click sent\n3. Click Public — click sent\n  Call: {"action":"click","timeout_ms":120000,"post_click_verification":"none","locator":[{"method":"get_by_role","args":["button"],"kwargs":{"name":"Public"}}]}\n  Target: {"match_count":1,"visible_count":1,"enabled_count":1,"candidates":[{"tag":"button","aria_selected":null,"aria_pressed":null}]}\n  Click: {"method":"playwright.element_handle.click","attempt":1,"completed":true,"verification":"none","retry_policy":"never"}\n4. Click Run report — click sent\n5. Download Excel — completed\n`,{headers:{'Content-Type':'text/plain'}});
 };
 window.toast=message=>document.getElementById('preview-status').textContent=message;
 const workspace=document.getElementById('flow-workspace');

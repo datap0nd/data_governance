@@ -65,7 +65,7 @@ def test_custom_wait_precedes_locator_password_and_expected_text_probes(monkeypa
         runtime.acquire(object(), job, lambda status, detail, *_: events.append(detail),
                         tmp_path, tmp_path / 'staging', target=tmp_path / 'output', run_id=1, artifacts=[])
     assert trace == [('wait', 60), ('locate', 'input'), ('attribute', 'type'),
-                     ('expected', 'Ready'), ('dispatch', 'North')]
+                         ('expected', 'Ready'), ('dispatch', 'North'), ('locate', 'input')]
     waiting = next(event for event in events if event.get('remaining_seconds') == 60)
     assert waiting['step_outcomes']['input']['remaining_seconds'] == 60
     assert waiting['step_outcomes']['input']['effective_wait_seconds'] == 60

@@ -130,12 +130,11 @@ window.RecordedFlowEditor = (() => {
             bindCards();renderDetails();updateButtons();
         }
         function cards() {
-            return draft.steps.map((step,i)=>`<div class="recording-gap"><span aria-hidden="true">${i?'↓':''}</span><button type="button" data-insert="${i}" aria-label="Insert wait before step ${i+1}">+</button></div>
-                <article class="recording-card" data-card="${h(step.id)}"><span class="recording-number">${i+1}</span><button type="button" class="recording-card-title" data-select="${h(step.id)}">${h(M.describe(step))}</button>${step.action==='download'?'<span class="recording-badge">Download</span>':''}<span class="recording-outcome" role="status"></span><button type="button" class="recording-drag" draggable="true" data-drag="${h(step.id)}" aria-label="Drag step ${i+1}">⠿</button></article>`).join('')+`<div class="recording-add-wait"><button type="button" class="btn-secondary" data-insert="${draft.steps.length}">Add wait</button></div>`;
+            return draft.steps.map((step,i)=>`<div class="recording-gap"><span aria-hidden="true">${i?'↓':''}</span></div>
+                <article class="recording-card" data-card="${h(step.id)}"><span class="recording-number">${i+1}</span><button type="button" class="recording-card-title" data-select="${h(step.id)}">${h(M.describe(step))}</button>${step.action==='download'?'<span class="recording-badge">Download</span>':''}<span class="recording-outcome" role="status"></span><button type="button" class="recording-drag" draggable="true" data-drag="${h(step.id)}" aria-label="Drag step ${i+1}">⠿</button></article>`).join('');
         }
         function bindCards() {
             body.querySelectorAll('[data-select]').forEach(b=>b.onclick=()=>{selected=selected===b.dataset.select?null:b.dataset.select;renderDetails();updateCards();});
-            body.querySelectorAll('[data-insert]').forEach(b=>b.onclick=()=>guarded(()=>{const next=M.clone(draft),step={id:uid(),page:'page',action:'wait',seconds:5};next.steps.splice(Number(b.dataset.insert),0,step);edit(next,step.id);}));
             body.querySelectorAll('[data-drag]').forEach(b=>{
                 b.ondragstart=e=>{if(pending||active()){e.preventDefault();return;}dragged=b.dataset.drag;e.dataTransfer.setData('text/plain',dragged);};
                 b.ondragend=()=>dragged=null;

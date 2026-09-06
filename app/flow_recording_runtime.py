@@ -51,19 +51,36 @@ def observe_target(node, step):
     try:
         count = node.count()
         result['match_count'] = count
+        candidates = node.evaluate_all('''nodes => nodes.slice(0, 8).map(el => {
+            const doc = el.ownerDocument, view = doc.defaultView;
+            const box = el.getBoundingClientRect(), style = view.getComputedStyle(el);
+            let enabled = true;
+            for (let n = el; n; n = n.parentElement) {
+                if (n.disabled || n.getAttribute('aria-disabled') === 'true') enabled = false;
+            }
+            const hit = doc.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+            return {element_id: el.id, tag: el.tagName.toLowerCase(), role: el.getAttribute('role'),
+                class_name: String(el.className || '').slice(0,400), connected: el.isConnected,
+                visible: box.width > 0 && box.height > 0 && style.visibility !== 'hidden' && style.display !== 'none',
+                enabled, disabled: Boolean(el.disabled), aria_disabled: el.getAttribute('aria-disabled'),
+                aria_selected: el.getAttribute('aria-selected'), aria_pressed: el.getAttribute('aria-pressed'),
+                aria_expanded: el.getAttribute('aria-expanded'), userstatus: el.getAttribute('userstatus'),
+                display: style.display, visibility: style.visibility, pointer_events: style.pointerEvents,
+                z_index: style.zIndex, x: box.x, y: box.y, width: box.width, height: box.height,
+                hit_is_target: Boolean(hit && (hit === el || el.contains(hit))),
+                hit_id: hit?.id || '', hit_tag: hit?.tagName.toLowerCase() || '',
+                hit_class: String(hit?.className || '').slice(0,400)};
+        })''')
+        result.update(candidates=candidates, sampled_count=len(candidates), omitted_candidates=max(0, count - len(candidates)),
+                      visible_count=sum(item['visible'] for item in candidates), enabled_count=sum(item['enabled'] for item in candidates))
+        if candidates:
+            result['element_id'] = candidates[0]['element_id'] if count == 1 else ''
         if count == 1:
-            observed = node.evaluate('''el => {
-                const box = el.getBoundingClientRect(), style = getComputedStyle(el);
-                const visible = box.width > 0 && box.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-                const enabled = !el.disabled && el.getAttribute('aria-disabled') !== 'true';
-                return {element_id: el.id, visible_count: Number(visible), enabled_count: Number(enabled),
-                    candidates: [{tag: el.tagName.toLowerCase(), role: el.getAttribute('role'), visible, enabled,
-                        selected: el.getAttribute('aria-selected'), checked: el.getAttribute('aria-checked')}]};
-            }''', timeout=1000)
-            result.update(observed)
-    except Exception:
-        # A detached frame or unavailable diagnostic must not change execution.
-        pass
+            context = node.evaluate('el => ({state:el.ownerDocument.readyState, name:el.ownerDocument.defaultView.name, url:el.ownerDocument.URL})', timeout=1000)
+            result.update(document_state=context['state'], frame_name=context['name'],
+                          frame_url_hash=hashlib.sha256(context['url'].encode()).hexdigest())
+    except Exception as exc:
+        result['probe_error'] = type(exc).__name__  # Probe failures never replace dispatch failures.
     return result
 
 
@@ -92,6 +109,7 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
                                 'confirmation': extra.get('confirmation'),
                                 **{key: extra[key] for key in ('remaining_seconds', 'effective_wait_seconds') if key in extra}}
         detail = {'version': 1, 'action_label': diagnostics.action_label(step),
+                  'call': diagnostics.execution_contract(step),
                   'phase': extra.get('outcome', 'running'),
                   'duration_ms': round((time.monotonic() - step_started.get(step['id'], time.monotonic())) * 1000),
                   **extra.pop('diagnostic', {})}
@@ -244,11 +262,11 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
                 if action == 'click' and definition.get('adapter', job.get('site', {}).get('adapter')) == 'gscm_portal':
                     from app.flow_recording_clicks import click_recorded
                     result = click_recorded(node, step, args, kwargs, lambda detail: notify(step,
-                        f'{label}: checking result.', outcome='running', diagnostic=detail))
+                        f'{label}: sending click.', outcome='running', diagnostic=detail))
                     if result is not None:
-                        notify(step, result['message'], outcome='completed', confirmation='confirmed',
+                        notify(step, result['message'], outcome='completed', confirmation=result['confirmation'],
                                diagnostic={'phase': 'action_finished', 'timing': timing,
-                                           'click': {'confirmation': 'confirmed', 'dispatched': True}})
+                                           'target': observe_target(node, step), 'click': result['click']})
                         previous_step = step
                         continue
                 getattr(node, action)(*[_value(item) for item in args], **kwargs)
@@ -256,9 +274,10 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
                 raise ValueError(f'Unsupported action {action}.')
             is_click = action in {'click', 'dblclick'}
             notify(step, 'Click sent.' if is_click else 'Action completed.', outcome='completed',
-                   confirmation='unconfirmed' if is_click else None,
+                   confirmation='not_requested' if is_click else None,
                    diagnostic={'phase': 'action_finished', 'timing': timing,
-                               'click': {'method': 'playwright', 'dispatched': True, 'confirmation': 'unconfirmed'} if is_click else {}})
+                               'click': {'method': 'playwright', 'dispatched': True, 'completed': True,
+                                         'confirmation': 'not_requested', 'verification': 'none', 'retry_policy': 'never'} if is_click else {}})
             if action in flow_recording.ACTIONS:
                 previous_step = step
     try:
@@ -266,8 +285,13 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
     except Exception as exc:
         if active_step:
             try:
+                failed_target = observe_target(locate(pages, active_step), active_step)
+            except Exception as probe_exc:
+                failed_target = {'probe_error': type(probe_exc).__name__}
+            try:
                 notify(active_step, diagnostics.safe_error(exc, definition), outcome='failed', failure_reason='recorded_action_failed',
                        diagnostic={'phase': 'action_failed', 'error_type': type(exc).__name__,
+                                   'exception': diagnostics.exception_detail(exc), 'target': failed_target,
                                    'failure_reason': 'recorded_action_failed', **getattr(exc, 'diagnostic', {})})
             except Exception:
                 pass  # Preserve the original failure, including cancellation.
