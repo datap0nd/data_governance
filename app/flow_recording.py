@@ -19,6 +19,7 @@ from app.flow_clock import TIMEZONE
 VERSION = 2
 V2_CAPABILITY = 'recorded_flows_v2'
 CAPABILITY = 'recorded_flows_v1'
+GSCM_BOOKMARK_CAPABILITY = 'gscm_bookmark_targets_v1'
 RECORD_CAPABILITY = 'flow_recorder_v1'
 LOCATORS = {'locator', 'get_by_role', 'get_by_label', 'get_by_text', 'get_by_placeholder',
             'get_by_title', 'get_by_alt_text', 'get_by_test_id', 'frame_locator', 'filter', 'nth'}
@@ -275,6 +276,9 @@ def validate_definition(definition, *, activation=True):
             raise ValueError('Invalid action arguments.')
         action = step.get('action')
         _validate_target(step, activation=activation)
+        if step.get('bookmark_target') is not None:
+            from app.flow_recording_gscm_bookmark import validate_target
+            validate_target(step)
         if activation and step.get('repair_reason'):
             raise ValueError(f"{step['id']}: {step['repair_reason']}")
         if definition.get('adapter') == 'gscm_portal' and activation:
