@@ -2,9 +2,9 @@
 
 - Plan: [test-plan.md](test-plan.md).
 - Baseline: `08f0404a7f2177e7d7034f71d033f6027863f288`.
-- Tested code: uncommitted implementation on `codex/recording-click-dispatch`; source hashes and actual DOM observations are in [evidence/ui-observations.json](evidence/ui-observations.json). Final-head CI is recorded in the PR before merge.
-- Environment: Windows 11, Python 3.13 ARM64, Playwright 1.62.0; synthetic Chrome/local HTTP fixtures.
-- Evidence cutoff: pending full local regression completion.
+- Tested code: the full local run started on the working tree committed as `c7aadbd65c7b685d01bca99f5fcae2990f84eee4`; code did not change during that run. Source hashes and actual DOM observations are in [evidence/ui-observations.json](evidence/ui-observations.json). Final-head CI is recorded in the PR before merge.
+- Environment: Windows 11, Python 3.13 ARM64, Playwright 1.62.0; Chrome 152.0.7977.76 with synthetic local HTTP fixtures.
+- Evidence cutoff: 2026-09-06 15:18 UTC. Final PR CI completes after this report commit; its exact head, run and results are recorded in the PR before merge.
 
 ## Executed checks
 
@@ -14,7 +14,7 @@
 | Production editor journeys | **25 passed, 66.41 s** | Playback, optional-check and legacy-editor suites. Includes custom waits, legacy waits, copy/failure/recovery and narrow layout. |
 | Frontend | **22 Node suites passed**, 2.81 s; app/editor/preview syntax passed | Every `tests/test_*.mjs` file executed. |
 | Manual fictional preview | **PASS** | In-app browser DOM: five steps remained five after Public wait changed to 60; no insertion controls; Click sent results; Advanced collapsed; technical text copied successfully. 655×632 viewport with no horizontal overflow. |
-| Full local Python suite | PENDING | `test_reports/recording-click-full.log` and XML. |
+| Full local Python suite | **1,698 passed, 10 existing deprecation warnings, 575.00 s (9m35s)** | `test_reports/recording-click-full.log` and XML. |
 | Final Windows/Linux CI | PENDING | Final head/run/results must be recorded in the PR before merge. |
 
 ## Earlier checks and corrections
