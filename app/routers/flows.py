@@ -328,7 +328,7 @@ def notify_flow_owner_of_failure(run_id: int) -> dict:
             outcome = {
                 "status": "not_sent",
                 "owner_name": context["owner_name"],
-                "reason": f"Owner {context['owner_name']} has no email mapped in Tools > Create Artifacts > People.",
+                "reason": f"Owner {context['owner_name']} has no email mapped in Users.",
             }
         else:
             from app.routers.email import _launch_outlook_payload
@@ -1136,7 +1136,8 @@ def _flow_out(db, flow_id: int, *, include_private_storage: bool = False) -> dic
     row = db.execute(
         """SELECT f.*, s.name AS site_name, s.adapter AS source_adapter,
                   r.name AS report_name, r.automation_json AS report_automation_json,
-                  p.name AS owner_name, p.email AS owner_email
+                  p.name AS owner_name, p.email AS owner_email,
+                  p.sql_username AS owner_sql_username
            FROM flows f
            JOIN flow_sites s ON s.id = f.site_id
            JOIN flow_reports r ON r.id = f.report_id
@@ -1345,7 +1346,7 @@ def _validate_owner(db, body: FlowWrite):
         return
     row = db.execute("SELECT id FROM people WHERE id=?", (body.owner_person_id,)).fetchone()
     if not row:
-        raise HTTPException(400, "Choose a flow owner from Tools > Create Artifacts > People.")
+        raise HTTPException(400, "Choose a flow owner from Users.")
 
 
 def _normalize_new_sql_table(name: str) -> str:
@@ -3528,7 +3529,7 @@ def patch_flow(flow_id: int, body: FlowInlineWrite, request: Request):
         if body.owner_person_id is not None and not db.execute(
             "SELECT id FROM people WHERE id=?", (body.owner_person_id,),
         ).fetchone():
-            raise HTTPException(400, "Choose an existing People record.")
+            raise HTTPException(400, "Choose an existing user from Users.")
         if "browser_mode" in changes and (flow["source_type"] or "portal") != "portal":
             raise HTTPException(400, "Browser mode is supported only for website flows.")
         db.execute(

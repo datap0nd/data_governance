@@ -913,6 +913,9 @@ MIGRATIONS = [
     "CREATE TABLE IF NOT EXISTS people (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, role TEXT NOT NULL, email TEXT, include_all_alerts INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
     "ALTER TABLE people ADD COLUMN email TEXT",
     "ALTER TABLE people ADD COLUMN include_all_alerts INTEGER DEFAULT 0",
+    # Optional SQL principal mapping for future Flow-owner permissions. This
+    # stores an identity only; profile writes never execute SQL grants.
+    "ALTER TABLE people ADD COLUMN sql_username TEXT",
     # Scheduled tasks (Windows Task Scheduler)
     """CREATE TABLE IF NOT EXISTS scheduled_tasks (
         id              INTEGER PRIMARY KEY AUTOINCREMENT,

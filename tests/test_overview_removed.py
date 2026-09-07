@@ -44,7 +44,7 @@ def test_management_group_became_create_artifacts_under_tools():
     assert 'aria-label="Management pages"' not in index_html
     assert ">Management <" not in index_html
     assert '<a href="#create" data-page="create" role="menuitem">Create Artifacts</a>' in index_html
-    assert 'data-pages="create,bestpractices' in index_html
+    assert 'data-pages="create,dataquality' in index_html
     assert "<h1>Create Artifacts</h1>" in app_js
 
 
@@ -106,3 +106,22 @@ def test_dashboard_alert_table_has_scan_driven_state_and_neutral_issue_labels():
     assert 'status-pill-wrapper' not in table_source
     assert 'actionTypeBadge(a.type, true)' in table_source
     assert 'colspan="6"' in table_source
+
+
+def test_users_and_checker_retirement_do_not_remove_artifact_creation_or_tmdl_discovery():
+    index_html = (ROOT / "app/static/index.html").read_text(encoding="utf-8")
+    app_js = (ROOT / "app/static/app.js").read_text(encoding="utf-8")
+    assert '<a href="#users" data-page="users">Users</a>' in index_html
+    assert 'users: renderUsers' in app_js
+    assert 'bindUsersPage()' in app_js
+    assert 'create-tab-people' not in app_js
+    assert 'btn-add-person' not in app_js
+    assert 'bestpractices: renderBestPractices' not in app_js
+    assert 'TMDL Checker' not in app_js
+    assert 'bindBestPracticesPage' not in app_js
+    assert '/api/best-practices' not in app_js
+    assert 'data-entity="report"' in app_js
+    assert 'data-entity="source"' in app_js
+    assert 'data-entity="upstream"' in app_js
+    assert 'TMDL Folder Analysis' in app_js
+    assert 'Tools > Create Artifacts > People' not in app_js

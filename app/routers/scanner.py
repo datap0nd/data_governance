@@ -685,11 +685,6 @@ def _execute_power_bi_metadata_job(job_id: int, generation: int | None) -> None:
 def _run_governance_subscans() -> dict:
     results = {}
     try:
-        from app.routers.best_practices import run_best_practice_scan
-        results["best_practices"] = run_best_practice_scan(persist=False)
-    except Exception as exc:
-        results["best_practices"] = {"status": "failed", "error": str(exc)}
-    try:
         from app.routers.schedules import run_schedule_discrepancy_scan
         results["schedule_discrepancies"] = run_schedule_discrepancy_scan(persist=True)
     except Exception as exc:
@@ -720,7 +715,7 @@ def _execute_governance_job(job_id: int, generation: int | None) -> None:
     )
     scanner_jobs.mark_running(
         job_id, current_step="Evaluating governance checks",
-        message="Running best-practice, schedule, and documentation checks.",
+        message="Running schedule and documentation checks.",
     )
     try:
         assert_not_cancelled(generation, "Governance checks")
@@ -736,7 +731,7 @@ def _execute_governance_job(job_id: int, generation: int | None) -> None:
             details=result,
             log="\n".join(
                 f"{name}: {result.get(name, {}).get('status', 'unknown')}"
-                for name in ("best_practices", "schedule_discrepancies", "documentation")
+                for name in ("schedule_discrepancies", "documentation")
             ),
         )
         scanner_jobs.finish_job(job_id, status=result["status"], result=result, message=summary)

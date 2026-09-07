@@ -486,7 +486,7 @@ def test_pg_scan_rolls_back_when_a_tracked_mv_identity_is_ambiguous(
 
 def _stub_runner_followups(monkeypatch, reports=None) -> None:
     from app import usage
-    from app.routers import best_practices, documentation, schedules
+    from app.routers import documentation, schedules
     from app.scanner import pg_cron
 
     monkeypatch.setattr(runner, "_backup_db", lambda: None)
@@ -505,11 +505,6 @@ def _stub_runner_followups(monkeypatch, reports=None) -> None:
         usage,
         "sync_usage_from_csv_if_configured",
         lambda _db: {"status": "not_requested"},
-    )
-    monkeypatch.setattr(
-        best_practices,
-        "run_best_practice_scan",
-        lambda persist=False: {"status": "completed"},
     )
     monkeypatch.setattr(
         schedules,

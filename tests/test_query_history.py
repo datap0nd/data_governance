@@ -22,6 +22,9 @@ from app.source_identity import upsert_postgres_identity
 @pytest.fixture
 def query_db(tmp_path, monkeypatch):
     monkeypatch.setattr(database, "DB_PATH", str(tmp_path / "query-history.db"))
+    # The scanner imports its backup path separately; keep backup I/O inside
+    # this synthetic fixture as well as its SQL writes.
+    monkeypatch.setattr(runner, "DB_PATH", str(tmp_path / "query-history.db"))
     database.init_db()
     return tmp_path
 
@@ -54,7 +57,7 @@ def _report(name: str, owner: str, expressions: dict[str, str]) -> DiscoveredRep
 
 def _stub_scan_side_effects(monkeypatch):
     from app import usage
-    from app.routers import best_practices, documentation, schedules
+    from app.routers import documentation, schedules
     from app.scanner import pg_cron
 
     monkeypatch.setattr(pg_deps, "scan_pg_dependencies", lambda scan_run_id=None, **_kwargs: {
@@ -62,7 +65,6 @@ def _stub_scan_side_effects(monkeypatch):
     })
     monkeypatch.setattr(pg_cron, "scan_pg_cron", lambda: {"status": "completed"})
     monkeypatch.setattr(usage, "sync_usage_from_csv_if_configured", lambda db: {"status": "skipped"})
-    monkeypatch.setattr(best_practices, "run_best_practice_scan", lambda persist=False: {"status": "completed"})
     monkeypatch.setattr(schedules, "run_schedule_discrepancy_scan", lambda persist=True: {"status": "completed"})
     monkeypatch.setattr(documentation, "sync_documentation_completeness_actions", lambda: {"status": "completed"})
 

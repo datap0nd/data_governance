@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Metronome</title>
     <link rel="stylesheet" href="/static/style.css?v=59">
+    <link rel="stylesheet" href="/static/users.css?v=1">
 </head>
 <body>
     <a href="#app" class="skip-link">Skip to main content</a>
@@ -24,6 +25,7 @@
             <span>Flows</span>
             <span class="nav-new-badge">New</span>
         </a>
+        <a href="#users" data-page="users">Users</a>
         <div class="nav-group" data-pages="reports,sources" role="group" aria-label="Data pages">
             <span class="nav-group-label" tabindex="0" aria-haspopup="true">Data <span class="nav-arrow">&#9662;</span></span>
             <div class="nav-dropdown" role="menu">
@@ -31,11 +33,10 @@
                 <a href="#sources" data-page="sources" role="menuitem">Sources</a>
             </div>
         </div>
-        <div class="nav-group" data-pages="create,bestpractices,dataquality,email,recurrences,export" role="group" aria-label="Tools pages">
+        <div class="nav-group" data-pages="create,dataquality,email,recurrences,export" role="group" aria-label="Tools pages">
             <span class="nav-group-label" tabindex="0" aria-haspopup="true">Tools <span class="nav-arrow">&#9662;</span></span>
             <div class="nav-dropdown" role="menu">
                 <a href="#create" data-page="create" role="menuitem">Create Artifacts</a>
-                <a href="#bestpractices" data-page="bestpractices" role="menuitem">TMDL Checker</a>
                 <a href="#dataquality" data-page="dataquality" role="menuitem">Data Quality</a>
                 <a href="#email" data-page="email" role="menuitem">Email</a>
                 <a href="#recurrences" data-page="recurrences" role="menuitem">Recurrences</a>
@@ -65,7 +66,8 @@
         <div class="loading">Loading...</div>
     </main>
     <script src="/static/remote_flow_control.js?v=1"></script>
-    <script src="/static/app.js?v=71"></script>
+    <script src="/static/users.js?v=1"></script>
+    <script src="/static/app.js?v=72"></script>
     <script src="/static/flow_recording_model.js?v=4"></script>
     <script src="/static/flow_recording_editor.js?v=9"></script>
     <script src="/static/flow_recordings.js?v=4"></script>

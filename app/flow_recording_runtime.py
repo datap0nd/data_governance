@@ -474,6 +474,10 @@ def standalone_main(job, argv=None):
         from app import flow_view_refresh
         refresh_plan = job.get('post_sql_refresh') or {}
         refresh_views = flow_view_refresh.plan_views(job) if job['sql_handoff']['enabled'] else []
+        # Bind recovery to the exact ordered identities used by the executor,
+        # excluding presentation/discovery metadata on each planned view.
+        refresh_identities = [{key: view[key] for key in ('database', 'schema', 'name')}
+                              for view in refresh_views]
         if args.dry_run:
             print(json.dumps({'flow': job['flow']['name'], 'revision': job['recording']['revision'],
                 'parameters': job['recording_parameters'], 'sql': job['sql_handoff']['enabled'],
@@ -522,13 +526,45 @@ def standalone_main(job, argv=None):
         with ExecutionLocks([*resource_keys(job), 'profile:' + os.path.normcase(str(profile.resolve()))]):
             logs.mkdir(parents=True, exist_ok=True)
             journal = logs / 'sql-outcome.json'
-            if job['sql_handoff']['enabled'] and journal.exists():
-                raise RuntimeError('A previous standalone SQL outcome requires reconciliation; inspect sql-outcome.json before rerunning.')
+            if job['sql_handoff']['enabled'] and (journal.exists() or args.retry_views):
+                try:
+                    previous_sql = json.loads(journal.read_text(encoding='utf-8'))
+                except (OSError, ValueError):
+                    previous_sql = {}
+                if not isinstance(previous_sql, dict):
+                    previous_sql = {}
+                if not (args.retry_views and previous_sql.get('outcome') == 'committed'
+                        and previous_sql.get('target') == job['sql_handoff']):
+                    raise RuntimeError('A previous standalone SQL outcome requires reconciliation; inspect sql-outcome.json before rerunning.'
+                        + (' SQL insertion already committed; use --retry-views to finish the remaining views.'
+                           if previous_sql.get('outcome') == 'committed' else ''))
+                if previous_sql.get('refresh_views') != refresh_identities:
+                    # Older journals deliberately stay blocked: a current plan
+                    # cannot establish what the already-committed run owed.
+                    raise RuntimeError('The saved SQL outcome requires reconciliation: its original materialized-view plan '
+                                       'is missing or differs from this script. Use the original script with its matching '
+                                       'journal, or reconcile the saved outcome before rerunning.')
             checkpoint = flow_view_refresh.checkpoint_path(job)
             if args.retry_views:
-                completed = flow_view_refresh.read_checkpoint(checkpoint)
-                if not completed and not (checkpoint and checkpoint.is_file()):
-                    raise RuntimeError('No local view-refresh checkpoint exists; run the Flow normally first.')
+                if not (checkpoint and checkpoint.is_file()):
+                    raise RuntimeError('No local view-refresh checkpoint exists; reconcile the committed SQL outcome before rerunning.')
+                try:
+                    saved_checkpoint = json.loads(checkpoint.read_text(encoding='utf-8'))
+                    saved_views = saved_checkpoint['views']
+                    if not isinstance(saved_views, list):
+                        raise ValueError('Invalid checkpoint views')
+                    identities = [{key: view[key] for key in ('database', 'schema', 'name')}
+                                  for view in saved_views]
+                    if identities != refresh_identities or any(
+                        view.get('key') != flow_view_refresh.view_key(view)
+                        or view.get('status') not in {'pending', 'running', 'succeeded', 'failed', 'skipped'}
+                        for view in saved_views
+                    ):
+                        raise ValueError('Checkpoint does not match the committed plan')
+                except (OSError, ValueError, KeyError, TypeError):
+                    raise RuntimeError('The local view-refresh checkpoint requires reconciliation: it is unreadable '
+                                       'or does not match the original materialized-view plan.') from None
+                completed = [view['key'] for view in saved_views if view['status'] == 'succeeded']
                 job['view_retry'] = {'source_run_id': None, 'completed': completed}
             elif job['sql_handoff']['enabled'] and refresh_views and checkpoint and checkpoint.is_file():
                 raise RuntimeError('A previous local run left materialized views unfinished; run with --retry-views first or delete view-refresh-checkpoint.json.')
@@ -536,15 +572,29 @@ def standalone_main(job, argv=None):
                 def progress(status, detail, artifacts=None, timings=None, **extra):
                     if detail.get('stage') == 'sql_insertion':
                         with journal.open('x', encoding='utf-8') as marker:
-                            json.dump({'run_id': str(run_id), 'target': job['sql_handoff'], 'outcome': 'unknown'}, marker)
+                            json.dump({'run_id': str(run_id), 'target': job['sql_handoff'], 'outcome': 'unknown',
+                                       'refresh_views': refresh_identities}, marker)
                             marker.flush()
                             os.fsync(marker.fileno())
+                    elif detail.get('stage') == 'sql_insertion_complete':
+                        # Keep the SQL replay barrier until the whole run is
+                        # finished, but allow refresh-only recovery once the
+                        # loader has confirmed its commit. Replace atomically
+                        # so an interrupted write leaves the unknown barrier.
+                        confirmed = journal.with_name(journal.name + '.tmp')
+                        with confirmed.open('w', encoding='utf-8') as marker:
+                            json.dump({'run_id': str(run_id), 'target': job['sql_handoff'], 'outcome': 'committed',
+                                       'refresh_views': refresh_identities}, marker)
+                            marker.flush()
+                            os.fsync(marker.fileno())
+                        os.replace(confirmed, journal)
                     log.write(json.dumps({'status': status, 'progress': detail, 'artifacts': artifacts or [], 'timings': timings or []}, default=str) + '\n')
                     log.flush()
                 if args.retry_views:
                     job['_standalone'] = True
                     flow_worker.execute_flow(None, job, progress, profile, None, run_id=run_id,
                         register_folder=lambda folder: {'ops': []}, headed=False)
+                    journal.unlink(missing_ok=True)
                     return 0
                 job['_standalone'] = True
                 with flow_worker._exclusive_worker_lock(profile) as owned:
