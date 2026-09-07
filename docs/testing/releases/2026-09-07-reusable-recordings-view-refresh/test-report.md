@@ -53,6 +53,14 @@
   pre-existing platform-conditional tests. The PR testing section carries the
   final-head CI run.
 
+- First CI run (34117084476) on `558501d`: Ubuntu PASS (Python suite and every
+  Node check); the Windows job failed 12 `tests/test_flows.py` cases that read
+  `app.js` with the platform default cp1252 encoding because the new catalog
+  search message used curly quotes (U+201D encodes to byte 0x9D). The quotes
+  are now HTML entities; the job was cancelled at 85% to fetch the log, so it
+  carries no other Windows result. The follow-up commit's CI run is recorded in
+  the PR testing section.
+
 ## Merge evidence
 
 Pending until the PR's final CI run finishes; the PR testing section records

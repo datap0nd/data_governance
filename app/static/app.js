@@ -11450,7 +11450,7 @@ function _flowBindViewRefresh() {
             results.hidden = false;
             results.innerHTML = result.views.length
                 ? result.views.slice(0, 25).map(view => `<button type="button" class="flow-view-refresh-result" data-view="${esc(JSON.stringify({ database: view.database, schema: view.schema, name: view.name }))}"><code>${esc(label(view))}</code><small>${esc(view.source_name || "")}</small></button>`).join("")
-                : `<p class="flow-inline-empty">No catalog materialized view matches “${esc(q)}”. Use Add view manually for a view the scanner has not seen.</p>`;
+                : `<p class="flow-inline-empty">No catalog materialized view matches &ldquo;${esc(q)}&rdquo;. Use Add view manually for a view the scanner has not seen.</p>`;
             results.querySelectorAll("[data-view]").forEach(button => button.onclick = () => add(JSON.parse(button.dataset.view)));
         } catch (err) {
             if (requestId !== catalogSerial) return;
