@@ -58,7 +58,7 @@ def test_missing_enrollment_does_not_guess_a_user(monkeypatch, tmp_path):
     assert not flow_credentials.credential_path(tmp_path).exists()
 
 
-@pytest.mark.parametrize("failure", ["read", "encrypt"])
+@pytest.mark.parametrize("failure", ["read", "encrypt", "replace"])
 def test_failure_is_sanitized_and_preserves_existing_file(monkeypatch, encrypted_profile, capsys, failure):
     monkeypatch.setenv("DG_SVC_PASSWORD", NEW_PASSWORD)
     monkeypatch.setattr(sys, "argv", ["sync_flow_sso_password.py", str(encrypted_profile)])
@@ -70,8 +70,14 @@ def test_failure_is_sanitized_and_preserves_existing_file(monkeypatch, encrypted
 
     if failure == "read":
         monkeypatch.setattr(sync, "load_asap_credentials", fail)
+    elif failure == "encrypt":
+        decrypt = flow_credentials._dpapi
+        monkeypatch.setattr(
+            flow_credentials, "_dpapi",
+            lambda data, protect: fail() if protect else decrypt(data, protect),
+        )
     else:
-        monkeypatch.setattr(flow_credentials, "_dpapi", fail)
+        monkeypatch.setattr(Path, "replace", fail)
     assert sync.main() == 1
     captured = capsys.readouterr()
     assert NEW_PASSWORD not in captured.out + captured.err
