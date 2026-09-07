@@ -86,6 +86,31 @@ rejected. The editor can repair locators using exact text, labels or stable CSS
 while retaining the frame chain. GSCM recycled virtual row/cell IDs require
 repair; bookmark identity selection remains preferable for bookmark lists.
 
+### GSCM Favorite bookmark clicks
+
+The recorder captures a click on whatever row the Favorite grid had rendered;
+it cannot know that the grid virtualizes and recycles rows. Import therefore
+inspects the recorded component path: a click inside `div_favorite`/
+`grd_bookmark` is suggested as **Bookmark in GSCM Favorite list**. When the
+recorder captured the row's exact text the target is filled in automatically;
+when it captured only a recycled `gridrow_N` ID the step asks for the exact
+bookmark name beside it. The rest of the journey (Setting, scope tab, folder
+clicks and the following Go) stays recorded and unchanged.
+
+Playback resolves the exact name (plus optional scope and stable bookmark ID)
+in the grid's bound `gds_bookmark` data, then clicks the freshly rendered row
+if it is in view. Otherwise it walks the grid's own scrollbar buttons to the
+confirmed top and sweeps downward one overlapping page at a time, waiting for
+an observed rendered-row change after each movement and reacquiring rows after
+every repaint. Same-named bookmarks are accepted only when the visible folder
+rows confirm the intended folder; duplicates inside one folder fail closed.
+The step stops on the target, a confirmed end, a stalled scrollbar, run
+cancellation or a 120-second deadline, and reports a collapsed ancestor as an
+actionable failure. It never replays mouse wheel gestures, forces clicks,
+reuses row handles or searches the whole page. Native Nexacro selection stays
+disabled until the work-PC investigation qualifies an exact sequence. Run logs
+record the strategy, movement/rendering counters and the stop reason.
+
 Navigation completion is appropriate for a report produced by the document
 response. For a page that calculates asynchronously, select its Run/Generate
 action and a loading cycle or changed result value. An HTTP 200 response alone
