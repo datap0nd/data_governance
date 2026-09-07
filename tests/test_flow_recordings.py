@@ -288,6 +288,33 @@ def test_ui_can_review_gscm_without_code_and_keeps_portal_default_date():
         browser.close()
 
 
+def test_ui_repairs_a_recycled_gscm_row_as_an_exact_bookmark_target():
+    from playwright.sync_api import sync_playwright
+    root = Path(__file__).resolve().parents[1]
+    value = definition(); value['adapter'] = 'gscm_portal'
+    click = next(item for item in flow_recording.walk_steps(value['steps']) if item['action'] == 'click')
+    click['locator'] = [{'method':'locator','args':['#mainframe\\.Setting0\\.form\\.div_favorite\\.form\\.grd_bookmark\\.body\\.gridrow_7'],'kwargs':{}}]
+    click['repair_reason'] = 'This GSCM grid cell is recycled.'
+    data = {'flow': {'name': 'GSCM sales', 'source_adapter': 'gscm_portal'}, 'sessions': [],
+            'revisions': [{'id': 1, 'status': 'draft', 'definition': value}]}
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(channel='chrome', headless=True)
+        page = browser.new_page()
+        page.set_content('<main>Fixture</main>')
+        page.evaluate('''data => { window.api=async()=>data; window.apiPostJson=async(_url,body)=>{window.saved=body;return {revision_id:1};}; window.apiPost=async()=>({}); }''', data)
+        for script in ('flow_recording_model.js', 'flow_recording_editor.js', 'flow_recordings.js'):
+            page.add_script_tag(path=str(root / 'app/static' / script))
+        page.evaluate('() => FlowRecordings.open(1)')
+        page.locator('[data-select="' + click['id'] + '"]').click()
+        page.locator('[data-target-kind]').select_option('bookmark')
+        page.locator('[data-bookmark-name]').fill('Saved report')
+        page.get_by_role('button', name='Save draft', exact=True).click()
+        repaired = next(item for item in flow_recording.walk_steps(page.evaluate('() => saved.definition.steps')) if item['id'] == click['id'])
+        assert repaired['bookmark_target'] == {'kind': 'gscm_favorite', 'bookmark_name': 'Saved report'}
+        assert 'repair_reason' not in repaired
+        browser.close()
+
+
 @pytest.mark.parametrize('change',[
     lambda d: d.update(steps=[None]),
     lambda d: d['parameters']['start'].update(step_id='absent',target={'page':'page','locator':[]}),

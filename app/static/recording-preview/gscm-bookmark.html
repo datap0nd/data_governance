@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Bookmark target review — fictional preview</title>
+  <link rel="stylesheet" href="preview.css">
+  <style>
+    .bookmark-demo { max-width: 780px; margin: 32px auto; }
+    .bookmark-demo .step { border: 1px solid #d7dce5; border-radius: 12px; padding: 20px; background: #fff; }
+    .bookmark-demo h1 { font-size: 25px; margin: 0 0 8px; }
+    .bookmark-demo h2 { font-size: 17px; margin: 24px 0 10px; }
+    .bookmark-demo label { display:block; font-weight:600; margin:14px 0 6px; }
+    .bookmark-demo input,.bookmark-demo select { width:100%; box-sizing:border-box; padding:10px; border:1px solid #aeb8c7; border-radius:7px; font:inherit; }
+    .bookmark-demo .hint,.bookmark-demo .state { color:#536174; margin:7px 0; }
+    .bookmark-demo .notice { padding:11px 13px; border-radius:8px; background:#eef5ff; color:#173f70; margin:16px 0; }
+    .bookmark-demo .error { background:#fff1f1; color:#9d2020; border-left:4px solid #ca3c3c; }
+    .bookmark-demo .success { background:#eef9f1; color:#186335; border-left:4px solid #2e8b57; }
+    .bookmark-demo button { margin-top:16px; padding:10px 15px; border:0; border-radius:7px; background:#185abd; color:white; font:inherit; font-weight:600; cursor:pointer; }
+    .bookmark-demo button.secondary { margin-left:8px; background:#e8edf5; color:#1b2f4e; }
+    .bookmark-demo code { background:#f2f4f8; padding:2px 5px; border-radius:4px; }
+  </style>
+</head>
+<body>
+  <main class="bookmark-demo">
+    <div class="step">
+      <p class="eyebrow">Fictional preview · no portal data</p>
+      <h1>Make this recorded click reliable</h1>
+      <p>The recorded journey stays intact: Setting → Public → bookmark → Go. This step only tells the runner how to identify the bookmark in the current Favorite list.</p>
+
+      <h2>Step 4: choose report</h2>
+      <label for="target-kind">Target type</label>
+      <select id="target-kind"><option value="bookmark">Bookmark in GSCM Favorite list</option><option value="recorded">Keep recorded target</option></select>
+      <p class="hint" id="suggestion">Suggested because this recording points to the Favorite grid.</p>
+
+      <div id="bookmark-fields">
+        <label for="bookmark-name">Exact bookmark name</label>
+        <input id="bookmark-name" value="Regional sales scorecard" autocomplete="off">
+        <p class="hint">Use the text shown in GSCM. A recycled row ID or a screen position cannot identify a bookmark.</p>
+        <label for="bookmark-id">Stable bookmark ID <span class="hint">(only needed if names collide)</span></label>
+        <input id="bookmark-id" placeholder="Optional unless GSCM has duplicate names" autocomplete="off">
+        <div id="feedback" class="notice">The runner will stay in the current Public Favorite grid, resolve this exact name, then use its qualified selection or the grid’s scrollbar controls. The recorded Go click remains next.</div>
+        <button id="save">Save target repair</button><button id="simulate" class="secondary">Simulate failed lookup</button>
+      </div>
+    </div>
+  </main>
+  <script>
+    const kind=document.querySelector('#target-kind'), fields=document.querySelector('#bookmark-fields'), name=document.querySelector('#bookmark-name'), id=document.querySelector('#bookmark-id'), feedback=document.querySelector('#feedback');
+    function show(message, state){ feedback.textContent=message; feedback.className='notice '+state; }
+    kind.onchange=()=>{ fields.hidden=kind.value!=='bookmark'; document.querySelector('#suggestion').textContent=kind.value==='bookmark'?'Suggested because this recording points to the Favorite grid.':'The original locator will run unchanged.'; };
+    document.querySelector('#save').onclick=()=>{ const value=name.value.trim(); if(!value){show('Bookmark name needed. Enter the exact text shown in GSCM before this repair can be saved.','error');name.focus();return;} if(value==='Regional sales scorecard'&&!id.value.trim()){show('Saved for retest. If GSCM reports duplicate names, return here and add the stable bookmark ID.','success');return;} show('Saved for retest. The next validation will resolve the exact name in the current scope.','success'); };
+    document.querySelector('#simulate').onclick=()=>{ const value=name.value.trim(); if(!value){show('Bookmark name needed. Enter the exact text shown in GSCM before retesting.','error');return;} show('Could not find “'+value+'” in the current Public Favorite grid. Confirm the recorded Setting and folder steps reached the right scope, correct the name, then retest. The runner did not open another tab or expand unrelated folders.','error'); };
+  </script>
+</body>
+</html>

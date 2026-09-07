@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 
 from app.config import DB_PATH, UPLOAD_PGHOST, UPLOAD_PGPORT
 from app.database import get_db
-from app import flow_paths, flow_layout, flow_capacity, flow_tasks, flow_parallel, flow_browser
+from app import flow_paths, flow_layout, flow_capacity, flow_tasks, flow_parallel, flow_browser, flow_recording
 from app.flow_credentials import asap_credential_status, save_asap_credentials
 from app.flow_asap_exports import (
     public_asap_download_types,
@@ -5112,6 +5112,7 @@ def claim_run(worker_id: str):
                 and (job.get('flow', {}).get('execution_method') != 'recorded' or capabilities.get('recorded_flows_v1'))
                 and 'date_batch' not in job.get('recording', {}).get('definition', {})
                 and (job.get('recording', {}).get('definition', {}).get('version', 1) < 2 or capabilities.get('recorded_flows_v2'))
+                and (not any(step.get('bookmark_target') for step in flow_recording.walk_steps(job.get('recording', {}).get('definition', {}).get('steps', []))) or capabilities.get('gscm_bookmark_targets_v1'))
                 and (not flow_tasks.enabled(job) or flow_tasks.supported(job, capabilities))
                 and flow_parallel.portal_available(db, job)
                 and (not required_adapter or required_adapter in adapters)

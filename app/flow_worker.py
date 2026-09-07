@@ -7172,6 +7172,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
         registration['capabilities'][flow_browser.CAPABILITY] = True
         registration['capabilities']['recorded_flows_v1'] = True
         registration['capabilities']['recorded_flows_v2'] = True
+        registration['capabilities']['gscm_bookmark_targets_v1'] = True
         registration['capabilities']['recorded_validation_engine_v1'] = True
         registration['capabilities']['flow_recorder_v1'] = headed
         registration['capabilities']['flow_recorder_controls_v1'] = headed
