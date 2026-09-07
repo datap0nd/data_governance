@@ -42,7 +42,7 @@ def task_matrix(job: dict) -> list[dict]:
 
 def parallelism(job: dict) -> int:
     execution = job.get('execution') or {}
-    if (job.get('job_type') == 'sql_retry' or job.get('flow', {}).get('source_type', 'portal') != 'portal'
+    if (job.get('job_type') in {'sql_retry', 'view_retry'} or job.get('flow', {}).get('source_type', 'portal') != 'portal'
             or job.get('flow', {}).get('execution_method') == 'recorded'):
         return 1
     return max(1, min(MAX_SLOTS, int(execution.get('download_parallelism') or 1)))

@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 
 from app.config import DB_PATH, UPLOAD_PGHOST, UPLOAD_PGPORT
 from app.database import get_db
-from app import flow_paths, flow_layout, flow_capacity, flow_tasks, flow_parallel, flow_browser, flow_recording
+from app import flow_paths, flow_layout, flow_capacity, flow_tasks, flow_parallel, flow_browser, flow_recording, flow_view_refresh
 from app.flow_credentials import asap_credential_status, save_asap_credentials
 from app.flow_asap_exports import (
     public_asap_download_types,
@@ -712,11 +712,19 @@ class FlowWrite(BaseModel):
     sql_schema: str | None = Field(default=None, max_length=63)
     sql_table: str | None = Field(default=None, max_length=63)
     sql_target_source_id: int | None = Field(default=None, ge=1)
+    # None means "keep the saved setting": an older client that omits this
+    # field must not switch an existing Flow back to Off.
+    post_sql_refresh: dict[str, Any] | None = None
     owner_person_id: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def validate_flow(self):
         self.name = self.name.strip()
+        if self.post_sql_refresh is not None:
+            from app.flow_view_refresh import normalize_config
+            self.post_sql_refresh = normalize_config(self.post_sql_refresh)
+            if not self.sql_handoff_enabled:
+                self.post_sql_refresh = {"mode": "off", "views": []}
         if self.execution_method == 'recorded':
             if self.source_type != 'portal':
                 raise ValueError('Recording is available only for portal Flows.')
@@ -1153,6 +1161,7 @@ def _flow_out(db, flow_id: int, *, include_private_storage: bool = False) -> dic
     for key in ("export_report_title", "export_filter_details"):
         result[key] = None if result.get(key) is None else bool(result[key])
     result["selections"] = _loads(result.pop("selections_json"), {})
+    result["post_sql_refresh"] = _post_sql_refresh_config(result.pop("post_sql_refresh_json", None))
     result["export_views"] = _loads(result.pop("export_views_json", None), [])
     result["download_links"] = _loads(result.pop("download_links_json", None), [])
     result["schedule_days"] = _loads(result.pop("schedule_days"), [])
@@ -1193,6 +1202,15 @@ def _flow_out(db, flow_id: int, *, include_private_storage: bool = False) -> dic
         # user can act on. Keep it out of editor/list/diagnostic API payloads.
         result["target_folder"] = None
     return result
+
+
+def _post_sql_refresh_config(raw) -> dict:
+    """Saved refresh setting; malformed or absent data reads as Off."""
+    from app.flow_view_refresh import normalize_config
+    try:
+        return normalize_config(_loads(raw, None))
+    except ValueError:
+        return {"mode": "off", "views": []}
 
 
 def _public_flow_job(job: dict) -> dict:
@@ -1565,7 +1583,9 @@ def _build_job(db, flow_id: int, *, force_reprocess: bool = False, recording_dra
         _validate_flow_selections(db, body)
         _validate_sql_target(db, body)
         _validate_owner(db, body)
-        flow.update(body.model_dump(exclude={'recording_revision_id'}))
+        flow.update(body.model_dump(exclude={'recording_revision_id', 'post_sql_refresh'}))
+        if body.post_sql_refresh is not None:
+            flow['post_sql_refresh'] = body.post_sql_refresh
         if body.recording_revision_id is not None:
             flow['recording_revision_id'] = body.recording_revision_id
     if flow.get('sql_reconciliation_required'):
@@ -1696,10 +1716,46 @@ def _build_job(db, flow_id: int, *, force_reprocess: bool = False, recording_dra
             "table": flow.get("sql_table"),
         },
     }
+    from app.flow_view_refresh_discovery import build_plan
+    job["post_sql_refresh"] = build_plan(db, flow.get("post_sql_refresh"), job["sql_handoff"], _flow_server_identity())
     if flow.get('execution_method') == 'recorded':
         from app.flow_recordings import attach_job
         attach_job(db, flow, job, allow_draft=recording_draft)
     return job
+
+
+def _assert_refresh_plan_runnable(db, job: dict, *, exclude_run_id: int | None = None) -> None:
+    """Reject a blocked discovery and views reserved by a full-pipeline run."""
+    from app import flow_view_refresh
+    from app.routers.pipelines import assert_resource_unlocked
+    plan = job.get("post_sql_refresh") or {}
+    if plan.get("blocked"):
+        raise HTTPException(409, "Refresh materialized views cannot run: " + str(plan["blocked"]))
+    server = plan.get("server") or _flow_server_identity()
+    for view in flow_view_refresh.plan_views(job):
+        assert_resource_unlocked(db, "mv", flow_view_refresh.resource_key(server, view))
+        active = active_view_refresh_run(db, flow_view_refresh.resource_key(server, view), exclude_run_id=exclude_run_id)
+        if active:
+            raise HTTPException(409, f"{flow_view_refresh.label(view)} is already being refreshed by Flow "
+                                     f"'{active['flow_name']}' run #{active['id']}.")
+
+
+def active_view_refresh_run(db, key: str, *, exclude_run_id: int | None = None):
+    """The active Flow run whose frozen plan refreshes this exact view, if any."""
+    from app import flow_view_refresh
+    rows = db.execute(
+        """SELECT r.id, r.flow_id, r.job_json, f.name AS flow_name FROM flow_runs r JOIN flows f ON f.id=r.flow_id
+           WHERE r.status IN ('queued','claimed','running')"""
+    ).fetchall()
+    for row in rows:
+        if exclude_run_id is not None and int(row["id"]) == int(exclude_run_id):
+            continue
+        job = _loads(row["job_json"], {})
+        plan = job.get("post_sql_refresh") or {}
+        server = plan.get("server") or _flow_server_identity()
+        if any(flow_view_refresh.resource_key(server, view) == key for view in flow_view_refresh.plan_views(job)):
+            return {"id": int(row["id"]), "flow_id": int(row["flow_id"]), "flow_name": row["flow_name"]}
+    return None
 
 
 def queue_flow_run_service(
@@ -1712,7 +1768,7 @@ def queue_flow_run_service(
     """Create one durable Flow run for manual, scheduled, or pipeline callers."""
     from app.flow_recordings import assert_flow_idle
     assert_flow_idle(db, flow_id)
-    if trigger_type not in {"manual", "scheduled", "pipeline", "resume", "sql_retry"}:
+    if trigger_type not in {"manual", "scheduled", "pipeline", "resume", "sql_retry", "view_retry"}:
         raise ValueError("Unsupported Flow trigger type.")
     # The folder-wide direct-publish availability check and the queued row are
     # one reservation. Pipeline callers that already wrote on this connection
@@ -1736,6 +1792,13 @@ def queue_flow_run_service(
     )
     assert_no_active_flow_target_run(db, flow_target_resource_key_from_job(job))
     assert_no_active_flow_publish_run(db, job)
+    if trigger_type == "pipeline":
+        # The parent pipeline refreshes each configured view once, after every
+        # upstream Flow finished, so the child run must not refresh it too.
+        plan = job.get("post_sql_refresh") or {}
+        job["post_sql_refresh"] = {**plan, "deferred_to_pipeline": True, "views": [], "deferred_views": plan.get("views") or []}
+    else:
+        _assert_refresh_plan_runnable(db, job)
     cursor = db.execute(
         """INSERT INTO flow_runs
                (flow_id, trigger_type, status, requested_by, job_json, created_at)
@@ -2105,6 +2168,8 @@ def list_runs(flow_id: int | None = None, limit: int = Query(default=100, ge=1, 
                 "progress": _loads(row["progress_json"], {}),
                 "artifacts": _loads(row["artifact_json"], []),
                 "timings": [dict(item) for item in timings],
+                "sql_outcome": _loads(public_row.pop("sql_outcome_json", None), None),
+                "view_refresh": _view_refresh_summary(db, row),
             })
         return result
 
@@ -2153,7 +2218,124 @@ def get_run(run_id: int):
             ],
             "files": [dict(item) for item in files],
             "downloads": flow_parallel.snapshot(db, run_id),
+            "sql_outcome": _loads(public_row.pop("sql_outcome_json", None), None),
+            "view_refresh": _view_refresh_summary(db, row),
         }
+
+
+def _view_refresh_rows(db, run_id: int) -> list[dict]:
+    return [dict(item) for item in db.execute(
+        """SELECT sequence_no, database_name AS database, schema_name AS schema, view_name AS name,
+                  status, duration_ms, error, started_at, finished_at
+           FROM flow_run_view_refreshes WHERE run_id=? ORDER BY sequence_no""", (run_id,)).fetchall()]
+
+
+def _view_refresh_summary(db, row) -> dict | None:
+    """Frozen plan, per-view outcomes and whether refresh-only recovery applies."""
+    job = _loads(row["job_json"], {})
+    plan = job.get("post_sql_refresh") or {}
+    planned = flow_view_refresh.plan_views(job)
+    if not planned and not plan.get("deferred_to_pipeline") and not plan.get("blocked"):
+        return None
+    views = _view_refresh_rows(db, int(row["id"]))
+    if not views:
+        # A succeeded run finished every planned view even if a worker never
+        # posted per-view detail (older workers, deferred pipeline runs).
+        status = "succeeded" if row["status"] == "succeeded" and planned else "pending"
+        views = [{"sequence_no": index + 1, **view, "status": status, "duration_ms": None, "error": None,
+                  "started_at": None, "finished_at": None} for index, view in enumerate(planned)]
+    outcome = _loads(row["sql_outcome_json"], None) if "sql_outcome_json" in row.keys() else None
+    completed = sum(1 for item in views if item["status"] == "succeeded")
+    unfinished = [item for item in views if item["status"] != "succeeded"]
+    retry = None
+    if row["status"] in RUN_TERMINAL and unfinished and planned:
+        retry = inspect_view_retry_eligibility(db, int(row["id"]))
+        retry = {"status": retry["status"], "reason_code": retry["reason_code"], "message": retry["message"]}
+    return {
+        "mode": plan.get("mode", "off"), "deferred_to_pipeline": bool(plan.get("deferred_to_pipeline")),
+        "blocked": plan.get("blocked"), "discovered_at": plan.get("discovered_at"), "metadata_at": plan.get("metadata_at"),
+        "source_run_id": (job.get("view_retry") or {}).get("source_run_id"),
+        "total": len(views), "completed": completed, "views": views,
+        "sql_committed": bool(outcome and outcome.get("committed")),
+        "retry": retry,
+    }
+
+
+def inspect_view_retry_eligibility(db, run_id: int) -> dict:
+    """Pure preflight for refresh-only recovery of a run whose SQL already committed."""
+    source = db.execute(
+        """SELECT r.*, f.name AS flow_name, f.sql_reconciliation_required FROM flow_runs r
+           JOIN flows f ON f.id=r.flow_id WHERE r.id=?""",
+        (run_id,),
+    ).fetchone()
+    if not source:
+        return _recovery_result("not_applicable", "run_not_found", "Source flow run not found.", http_status=404)
+    from app.routers.pipelines import assert_resource_unlocked
+    try:
+        assert_resource_unlocked(db, "flow", str(source["flow_id"]))
+    except HTTPException as exc:
+        return _recovery_result("blocked", "pipeline_lock", str(exc.detail), http_status=exc.status_code, _source=source)
+    if source["status"] not in RUN_TERMINAL:
+        return _recovery_result("blocked", "run_active", "Wait for the run to finish before retrying its view refresh.", _source=source)
+    source_job = _loads(source["job_json"], {})
+    planned = flow_view_refresh.plan_views(source_job)
+    if not planned:
+        return _recovery_result("not_applicable", "no_view_refresh", "This run has no materialized views to refresh.",
+                                http_status=400, _source=source)
+    if source["sql_reconciliation_required"]:
+        return _recovery_result("blocked", "sql_reconciliation_required",
+                                "Reconcile the uncertain SQL commit and acknowledge it before retrying.", _source=source)
+    outcome = _loads(source["sql_outcome_json"], None)
+    if not outcome or not outcome.get("committed"):
+        return _recovery_result("blocked", "sql_not_committed",
+                                "SQL insertion did not commit in this run, so there is nothing to refresh. Use Run or Retry SQL instead.",
+                                _source=source)
+    rows = _view_refresh_rows(db, run_id)
+    completed = [flow_view_refresh.view_key(item) for item in rows if item["status"] == "succeeded"]
+    remaining = [view for view in planned if flow_view_refresh.view_key(view) not in set(completed)]
+    if source["status"] == "succeeded" or not remaining:
+        return _recovery_result("not_applicable", "views_complete", "Every materialized view in this run already refreshed.",
+                                http_status=400, _source=source)
+    origin_id = (source_job.get("view_retry") or {}).get("source_run_id") or run_id
+    newer = db.execute(
+        """SELECT id FROM flow_runs WHERE flow_id=? AND id>? AND sql_outcome_json IS NOT NULL
+             AND json_extract(sql_outcome_json,'$.committed')=1
+             AND json_extract(job_json,'$.job_type') IS NOT 'view_retry' LIMIT 1""",
+        (source["flow_id"], origin_id),
+    ).fetchone()
+    if newer:
+        return _recovery_result("blocked", "superseded",
+                                f"A newer run (#{newer['id']}) already committed SQL for this Flow; refresh the views from that run instead.",
+                                _source=source)
+    active = db.execute(
+        """SELECT id FROM flow_runs WHERE flow_id=? AND status IN ('queued','claimed','running') LIMIT 1""",
+        (source["flow_id"],),
+    ).fetchone()
+    if active:
+        return _recovery_result("blocked", "flow_active", "This flow already has an active run.",
+                                _source=source, active_run_id=int(active["id"]))
+    job = copy.deepcopy(source_job)
+    job["job_type"] = flow_view_refresh.RETRY_JOB_TYPE
+    job.pop("resume", None)
+    job.pop("sql_retry", None)
+    job["execution"] = {"mode": "local", "host": "bi_desktop", "browser_mode": "headless", "worker_id": LOCAL_WORKER_ID}
+    job["view_retry"] = {"source_run_id": origin_id, "retried_run_id": run_id, "completed": completed,
+                         "plan": {"mode": job.get("post_sql_refresh", {}).get("mode"), "views": planned}}
+    plan = job.get("post_sql_refresh") or {}
+    server = plan.get("server") or _flow_server_identity()
+    for view in remaining:
+        try:
+            assert_resource_unlocked(db, "mv", flow_view_refresh.resource_key(server, view))
+        except HTTPException as exc:
+            return _recovery_result("blocked", "pipeline_lock", str(exc.detail), http_status=exc.status_code, _source=source)
+        busy = active_view_refresh_run(db, flow_view_refresh.resource_key(server, view))
+        if busy:
+            return _recovery_result("blocked", "view_busy",
+                                    f"{flow_view_refresh.label(view)} is being refreshed by Flow '{busy['flow_name']}' run #{busy['id']}.",
+                                    _source=source)
+    return _recovery_result("eligible", "views_pending",
+                            f"{len(remaining)} of {len(planned)} materialized view(s) still need refreshing; SQL insertion stays committed.",
+                            http_status=200, _source=source, _job=job, _remaining=remaining, _outcome=outcome)
 
 
 def _recovery_result(
@@ -2649,6 +2831,99 @@ def retry_run_sql(run_id: int, request: Request):
     }
 
 
+@router.post("/runs/{run_id}/retry-views")
+def retry_run_views(run_id: int, request: Request):
+    """Queue a refresh-only run for the views a terminal run left unfinished.
+
+    No download, transformation or SQL insertion happens: the frozen original
+    plan is reused and completed views are kept as checkpoints.
+    """
+    now = _iso(_now())
+    with get_db() as db:
+        db.execute("BEGIN IMMEDIATE")
+        eligibility = inspect_view_retry_eligibility(db, run_id)
+        if eligibility["status"] != "eligible":
+            raise HTTPException(eligibility["http_status"], eligibility["message"])
+        source = eligibility["_source"]
+        job = eligibility["_job"]
+        remaining = eligibility["_remaining"]
+        cursor = db.execute(
+            """INSERT INTO flow_runs (flow_id, trigger_type, status, requested_by, job_json, sql_outcome_json, created_at)
+               VALUES (?, 'view_retry', 'queued', ?, ?, ?, ?)""",
+            (source["flow_id"], get_actor(request), _json(job),
+             _json({**eligibility["_outcome"], "inherited_from_run_id": job["view_retry"]["source_run_id"]}), now),
+        )
+        new_run_id = cursor.lastrowid
+        db.execute(
+            """INSERT OR IGNORE INTO flow_run_source_refs (consumer_run_id, source_run_id, created_at) VALUES (?, ?, ?)""",
+            (new_run_id, run_id, now),
+        )
+        # Carry the completed checkpoints so the new run's ledger starts complete.
+        for index, view in enumerate(flow_view_refresh.plan_views(job)):
+            done = flow_view_refresh.view_key(view) in set(job["view_retry"]["completed"])
+            db.execute(
+                """INSERT INTO flow_run_view_refreshes (run_id, sequence_no, database_name, schema_name, view_name, status, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (new_run_id, index + 1, view["database"], view["schema"], view["name"], "succeeded" if done else "pending", now),
+            )
+        log_event(db, "flow", source["flow_id"], source["flow_name"], "view_retry_queued",
+                  f"source_run_id={run_id}; run_id={new_run_id}; views={len(remaining)}", get_actor(request))
+    worker = launch_local_worker("headless")
+    if worker.get("status") == "error":
+        with get_db() as db:
+            db.execute("UPDATE flow_runs SET progress_json=? WHERE id=?",
+                       (_json({"stage": "waiting_for_bi_desktop", "message": worker.get("message")}), new_run_id))
+    return {"id": new_run_id, "flow_id": source["flow_id"], "status": "queued", "job": _public_flow_job(job),
+            "worker": worker, "source_run_id": run_id, "remaining_views": len(remaining)}
+
+
+class ViewRefreshTarget(BaseModel):
+    database: str = Field(min_length=1, max_length=63)
+    schema_name: str = Field(min_length=1, max_length=63, alias="schema")
+    table: str = Field(min_length=1, max_length=63)
+    model_config = {"populate_by_name": True}
+
+
+class ViewRefreshVerify(BaseModel):
+    views: list[dict[str, Any]] = Field(default_factory=list, max_length=200)
+
+
+@router.post("/view-refresh/discover")
+def discover_view_refresh(body: ViewRefreshTarget):
+    """Automatic setup preview: the ordered downstream list for one exact SQL table."""
+    from app.flow_view_refresh_discovery import discover_automatic
+    with get_db() as db:
+        result = discover_automatic(db, _flow_server_identity(), {
+            "database": body.database, "schema": body.schema_name, "table": body.table})
+    return {**result, "server": _flow_server_identity()}
+
+
+@router.get("/view-refresh/catalog")
+def view_refresh_catalog(q: str = Query(default="", max_length=200)):
+    """Materialized views known on the configured SQL server, for the Manual picker."""
+    from app.flow_view_refresh_discovery import catalog_materialized_views
+    with get_db() as db:
+        views = catalog_materialized_views(db, _flow_server_identity(), q)
+        state = db.execute("SELECT MAX(verified_at) AS verified_at FROM source_postgres_identities WHERE server_name=?",
+                           (_flow_server_identity(),)).fetchone()
+    return {"server": _flow_server_identity(), "views": views, "metadata_at": state["verified_at"] if state else None}
+
+
+@router.post("/view-refresh/verify")
+def verify_view_refresh(body: ViewRefreshVerify):
+    """Manual setup check: existence, type and refresh permission against PostgreSQL, then ordering."""
+    from app.flow_view_refresh_discovery import verify_manual
+    status = sql_configuration_status()
+    try:
+        with get_db() as db:
+            result = verify_manual(db, _flow_server_identity(), body.views, inspect=status["configured"])
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if not status["configured"]:
+        result["warnings"].append("SQL handoff is not configured, so PostgreSQL could not verify the selection.")
+    return {**result, "server": _flow_server_identity()}
+
+
 @router.post("/runs/{run_id}/resume")
 def resume_run(run_id: int, request: Request):
     """Queue a fresh run that skips every file the source run already saved.
@@ -2845,6 +3120,8 @@ def create_flow(body: FlowWrite, request: Request):
             flow_id = cursor.lastrowid
             db.execute('UPDATE flows SET execution_method=? WHERE id=?', (body.execution_method or 'catalog', flow_id))
             db.execute("UPDATE flows SET download_parallelism=? WHERE id=?", (body.download_parallelism or 1, flow_id))
+            db.execute("UPDATE flows SET post_sql_refresh_json=? WHERE id=?",
+                       (_json(body.post_sql_refresh or {"mode": "off", "views": []}), flow_id))
             if managed:
                 adapter = db.execute("SELECT adapter FROM flow_sites WHERE id=?", (body.site_id,)).fetchone()[0]
                 allocated = flow_layout.create_flow_folder(flow_paths.get_flows_root(db), adapter, body.name, flow_id)
@@ -3077,7 +3354,8 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
                       schedule_day, freshness_effective_from_at,
                       sql_database, sql_schema, sql_table, sql_target_source_id,
                       target_folder, local_file_path, local_file_worksheet, flow_folder,
-                      local_file_last_identity, local_file_config_revision, download_parallelism, execution_method, recording_revision_id
+                      local_file_last_identity, local_file_config_revision, download_parallelism, execution_method, recording_revision_id,
+                      post_sql_refresh_json
                FROM flows WHERE id=?""",
             (flow_id,),
         ).fetchone()
@@ -3091,6 +3369,10 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
         assert_flow_idle(db, flow_id)
         if body.download_parallelism is None:
             body.download_parallelism = existing['download_parallelism']
+        if body.post_sql_refresh is None:
+            body.post_sql_refresh = _post_sql_refresh_config(existing["post_sql_refresh_json"])
+            if not body.sql_handoff_enabled:
+                body.post_sql_refresh = {"mode": "off", "views": []}
         from app.routers.pipelines import assert_resource_unlocked
         assert_resource_unlocked(db, "flow", str(flow_id))
         if (existing["source_type"] or "portal") != body.source_type:
@@ -3192,6 +3474,7 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
         if not cursor.rowcount:
             raise HTTPException(404, "Flow not found.")
         db.execute("UPDATE flows SET download_parallelism=? WHERE id=?", (body.download_parallelism, flow_id))
+        db.execute("UPDATE flows SET post_sql_refresh_json=? WHERE id=?", (_json(body.post_sql_refresh), flow_id))
         db.execute('UPDATE flows SET execution_method=? WHERE id=?', (body.execution_method, flow_id))
         if body.recording_revision_id is not None:
             if body.execution_method != 'recorded':
@@ -3539,6 +3822,7 @@ def queue_flow_run(
             )
             assert_flow_target_available(db, flow_target_resource_key_from_job(job))
             assert_no_active_flow_publish_run(db, job)
+            _assert_refresh_plan_runnable(db, job)
             cursor = db.execute(
                 """INSERT INTO flow_runs (flow_id, trigger_type, status, requested_by, job_json, created_at)
                    VALUES (?, ?, 'queued', ?, ?, ?)""",
@@ -5117,6 +5401,7 @@ def claim_run(worker_id: str):
                 and flow_parallel.portal_available(db, job)
                 and (not required_adapter or required_adapter in adapters)
                 and (not (job.get("paths") or {}).get("artifact_store_root") or capabilities.get("shared_flow_artifacts"))
+                and (not flow_view_refresh.plan_views(job) or capabilities.get(flow_view_refresh.CAPABILITY))
                 and set(execution.get("required_artifact_store_ids") or []).issubset(artifact_stores)
                 and (
                     not required_store
@@ -5628,9 +5913,11 @@ def update_run(worker_id: str, run_id: int, body: WorkerProgress):
         )
         if body.progress.get("stage") == "publish_complete":
             _record_publish_name_drift(db, row, stored_artifacts, now)
+        _record_sql_outcome(db, run_id, body, now)
+        _record_view_refresh(db, run_id, body.progress, now)
         execution_success_at = (
             iso_utc(utc_now())
-            if body.status == "succeeded" and row["trigger_type"] != "sql_retry"
+            if body.status == "succeeded" and row["trigger_type"] not in {"sql_retry", "view_retry"}
             else None
         )
         db.execute(
@@ -5750,6 +6037,65 @@ def update_run(worker_id: str, run_id: int, body: WorkerProgress):
             )
     owner_alert = notify_flow_owner_of_failure(run_id) if body.status == "failed" else None
     return {"run_id": run_id, "status": body.status, "owner_alert": owner_alert}
+
+
+def _record_sql_outcome(db, run_id: int, body: WorkerProgress, now: str) -> None:
+    """Keep the confirmed commit separate from whatever happens afterwards."""
+    stage = body.progress.get("stage")
+    if stage == "sql_insertion_complete":
+        outcome = {
+            "committed": True, "at": now, "target": body.progress.get("target"),
+            "rows_written": body.progress.get("rows_written"), "files_loaded": body.progress.get("files_loaded"),
+            "mode": body.progress.get("mode"),
+        }
+        db.execute("UPDATE flow_runs SET sql_outcome_json=? WHERE id=?", (_json(outcome), run_id))
+    elif stage == "sql_insertion":
+        db.execute("UPDATE flow_runs SET sql_outcome_json=COALESCE(sql_outcome_json, ?) WHERE id=?",
+                   (_json({"committed": None, "started_at": now}), run_id))
+    elif body.status == "failed" and stage in {"sql_failed", "failed"}:
+        current = db.execute("SELECT sql_outcome_json FROM flow_runs WHERE id=?", (run_id,)).fetchone()
+        outcome = _loads(current["sql_outcome_json"] if current else None, None)
+        if outcome and outcome.get("committed") is None:
+            events = db.execute(
+                "SELECT stage, details_json FROM flow_run_events WHERE run_id=? AND stage IN ('sql_commit','sql_failed') ORDER BY id DESC",
+                (run_id,),
+            ).fetchall()
+            confirmed_rollback = any(
+                "rollback" in str(_loads(item["details_json"], {}).get("outcome") or "").casefold()
+                and "could not" not in str(_loads(item["details_json"], {}).get("outcome") or "").casefold()
+                for item in events if item["stage"] == "sql_failed"
+            )
+            outcome.update(committed=False if confirmed_rollback else None, failed_at=now)
+            db.execute("UPDATE flow_runs SET sql_outcome_json=? WHERE id=?", (_json(outcome), run_id))
+
+
+def _record_view_refresh(db, run_id: int, progress: dict, now: str) -> None:
+    """Persist each view's own status, duration and error as the worker reports them."""
+    detail = progress.get("view_refresh") if isinstance(progress, dict) else None
+    if not isinstance(detail, dict) or not isinstance(detail.get("views"), list):
+        return
+    for index, item in enumerate(detail["views"][:500]):
+        if not isinstance(item, dict):
+            continue
+        view = flow_view_refresh.normalize_view(item)
+        if view is None:
+            continue
+        status = str(item.get("status") or "pending")[:32]
+        duration = item.get("duration_ms")
+        duration = int(duration) if isinstance(duration, (int, float)) and duration >= 0 else None
+        error = str(item.get("error"))[:4000] if item.get("error") else None
+        db.execute(
+            """INSERT INTO flow_run_view_refreshes
+               (run_id, sequence_no, database_name, schema_name, view_name, status, duration_ms, error, started_at, finished_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(run_id, sequence_no) DO UPDATE SET
+                 database_name=excluded.database_name, schema_name=excluded.schema_name, view_name=excluded.view_name,
+                 status=excluded.status, duration_ms=excluded.duration_ms, error=excluded.error,
+                 started_at=COALESCE(excluded.started_at, flow_run_view_refreshes.started_at),
+                 finished_at=excluded.finished_at, updated_at=excluded.updated_at""",
+            (run_id, index + 1, view["database"], view["schema"], view["name"], status, duration, error,
+             item.get("started_at"), item.get("finished_at"), now),
+        )
 
 
 @router.post("/worker/{worker_id}/runs/{run_id}/heartbeat")

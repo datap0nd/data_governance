@@ -270,7 +270,7 @@ def abort(db, run_id, message, *, terminal='failed', coordinator_stopped=False):
     parent = _fanout(db, run_id)
     if not parent or parent['state'] == 'complete':
         return
-    if parent['sql_started']:
+    if parent['sql_started'] and not sql_committed(db, run_id):
         db.execute('UPDATE flows SET sql_reconciliation_required=1 WHERE id=(SELECT flow_id FROM flow_runs WHERE id=?)', (run_id,))
         message += ' SQL may have committed; reconcile the target before another run.'
     now = timestamp()
@@ -341,11 +341,20 @@ def claim_finalizer(db, worker_id, run_id):
     return {**snapshot(db, run_id), 'finalizer_token': token}
 
 
+POST_DOWNLOAD_STAGES = {'direct_publish','publish_complete','transformation','transformation_complete','sql_insertion',
+                        'sql_insertion_complete','view_refresh_precheck','view_refresh','view_refresh_complete','view_refresh_failed'}
+
+
+def sql_committed(db, run_id):
+    """A confirmed commit event rules out an uncertain SQL outcome."""
+    return bool(db.execute("SELECT 1 FROM flow_run_events WHERE run_id=? AND stage='sql_insertion_complete' LIMIT 1", (run_id,)).fetchone())
+
+
 def guard_progress(db, worker_id, run_id, status, token, stage):
     parent = _fanout(db, run_id)
     if not parent:
         job = _job(db.execute('SELECT job_json FROM flow_runs WHERE id=?', (run_id,)).fetchone())
-        if flow_tasks.enabled(job) and (status == 'succeeded' or stage in {'direct_publish','publish_complete','transformation','transformation_complete','sql_insertion','sql_insertion_complete'}):
+        if flow_tasks.enabled(job) and (status == 'succeeded' or stage in POST_DOWNLOAD_STAGES):
             raise HTTPException(409, 'Parallel jobs require a complete validated task bundle.')
         return
     if parent['coordinator_id'] != worker_id or parent['state'] == 'complete':
@@ -358,9 +367,9 @@ def guard_progress(db, worker_id, run_id, status, token, stage):
             raise HTTPException(409, 'The finalizer token is stale.')
         if stage == 'sql_insertion':
             db.execute('UPDATE flow_run_fanout SET sql_started=1 WHERE run_id=?', (run_id,))
-        if status in {'failed','cancelled'} and parent['sql_started']:
+        if status in {'failed','cancelled'} and parent['sql_started'] and not sql_committed(db, run_id):
             db.execute('UPDATE flows SET sql_reconciliation_required=1 WHERE id=(SELECT flow_id FROM flow_runs WHERE id=?)', (run_id,))
-    elif status == 'succeeded' or stage in {'direct_publish','publish_complete','transformation','transformation_complete','sql_insertion','sql_insertion_complete'}:
+    elif status == 'succeeded' or stage in POST_DOWNLOAD_STAGES:
         raise HTTPException(409, 'The complete bundle has not acquired finalization.')
     if status in {'succeeded','failed','cancelled'}:
         if parent['state'] == 'downloading' and not snapshot(db, run_id)['drained']:

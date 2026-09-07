@@ -1902,6 +1902,39 @@ MIGRATIONS = [
        WHERE source_kind='system'
          AND site_id IN (SELECT id FROM flow_sites WHERE adapter='local_file')
          AND NOT EXISTS (SELECT 1 FROM flows WHERE source_type='file')""",
+    # Reusable recordings and downstream materialized-view refresh.
+    "ALTER TABLE flow_recording_revisions ADD COLUMN template_source_json TEXT",
+    "ALTER TABLE flows ADD COLUMN post_sql_refresh_json TEXT",
+    "ALTER TABLE flow_runs ADD COLUMN sql_outcome_json TEXT",
+    """CREATE TABLE IF NOT EXISTS flow_run_view_refreshes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id INTEGER NOT NULL REFERENCES flow_runs(id) ON DELETE CASCADE,
+        sequence_no INTEGER NOT NULL,
+        database_name TEXT NOT NULL,
+        schema_name TEXT NOT NULL,
+        view_name TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        duration_ms INTEGER,
+        error TEXT,
+        started_at TEXT,
+        finished_at TEXT,
+        updated_at TEXT,
+        UNIQUE(run_id, sequence_no)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_flow_run_view_refreshes_run ON flow_run_view_refreshes(run_id, sequence_no)",
+    # A view refresh failure after a confirmed commit is not an uncertain
+    # commit: the reconciliation flag applies only when the commit outcome is
+    # unknown, which the sql_insertion_complete event rules out.
+    "DROP TRIGGER IF EXISTS recorded_flow_unknown_sql_commit",
+    """CREATE TRIGGER IF NOT EXISTS recorded_flow_unknown_sql_commit_v2
+        AFTER UPDATE OF status ON flow_runs
+        WHEN NEW.status IN ('failed','cancelled')
+          AND json_extract(NEW.job_json, '$.flow.execution_method') = 'recorded'
+          AND json_extract(NEW.job_json, '$.sql_handoff.enabled') = 1
+          AND json_extract(NEW.job_json, '$.job_type') IS NOT 'view_retry'
+          AND EXISTS (SELECT 1 FROM flow_run_events WHERE run_id=NEW.id AND stage='sql_insertion')
+          AND NOT EXISTS (SELECT 1 FROM flow_run_events WHERE run_id=NEW.id AND stage='sql_insertion_complete')
+        BEGIN UPDATE flows SET sql_reconciliation_required=1 WHERE id=NEW.flow_id; END""",
 ]
 
 

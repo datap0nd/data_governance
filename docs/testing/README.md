@@ -9,6 +9,7 @@ This is a standing instruction from the repository owner, recorded in
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-09-07: Reusable recordings and downstream view refresh | [Test plan](releases/2026-09-07-reusable-recordings-view-refresh/test-plan.md) | [Test report](releases/2026-09-07-reusable-recordings-view-refresh/test-report.md) |
 | 2026-09-07: Pipeline explanation quality gate | [Test plan](releases/2026-09-07-pipeline-explanation-quality/test-plan.md) | [Test report](releases/2026-09-07-pipeline-explanation-quality/test-report.md) |
 | 2026-09-07: Pipelines edges routed around cards | [Test plan](releases/2026-09-07-pipeline-edge-routing/test-plan.md) | [Test report](releases/2026-09-07-pipeline-edge-routing/test-report.md) |
 | 2026-09-07: GSCM bookmark fallback navigation and import suggestion | [Test plan](releases/2026-09-07-gscm-bookmark-fallback/test-plan.md) | [Test report](releases/2026-09-07-gscm-bookmark-fallback/test-report.md) |

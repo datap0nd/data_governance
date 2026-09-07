@@ -64,8 +64,17 @@ def row_progress(db, run):
             work.append(("Transform", 1, int(bool(stages & {"transformation_complete", "sql_insertion", "complete"}))))
     else:
         work.append(("Read saved files", 1, int(any(str(item).startswith("sql_") and item != "sql_retry" for item in stages))))
-    if job.get("sql_handoff", {}).get("enabled") or sql_only:
+    views_only = job.get("job_type") == "view_retry"
+    planned_views = [] if (job.get("post_sql_refresh") or {}).get("deferred_to_pipeline") else ((job.get("post_sql_refresh") or {}).get("views") or [])
+    if views_only:
+        work = []
+    elif job.get("sql_handoff", {}).get("enabled") or sql_only:
         work.append(("Insert into SQL", 1, int("sql_insertion_complete" in stages or "complete" in stages)))
+    if planned_views and (views_only or job.get("sql_handoff", {}).get("enabled")):
+        refreshed = [row[0] for row in db.execute(
+            "SELECT status FROM flow_run_view_refreshes WHERE run_id=? ORDER BY sequence_no", (run["id"],))]
+        done = len(planned_views) if "view_refresh_complete" in stages or "complete" in stages else sum(item == "succeeded" for item in refreshed)
+        work.append(("Refresh materialized views", len(planned_views), done))
     work.append(("Finish", 1, int(status == "succeeded")))
     no_op = bool(detail.get("no_op") or stages & {"local_file_no_op", "outlook_no_op"})
     if no_op:

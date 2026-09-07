@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 from datetime import datetime, timezone
 from typing import Literal
@@ -48,6 +49,68 @@ class ValidationWrite(BaseModel):
 class SingleRangeWrite(BaseModel):
     start: str = Field(min_length=1, max_length=32)
     end: str = Field(min_length=1, max_length=32)
+
+
+class TemplateCopy(BaseModel):
+    source_flow_id: int = Field(ge=1)
+    source_revision_id: int | None = Field(default=None, ge=1)
+    # The destination's pending, unsaved website choice; the server enforces
+    # the module boundary against it as well as the saved website.
+    site_id: int | None = Field(default=None, ge=1)
+
+
+RECORDING_MODULES = {'asap_portal': 'ASAP', 'gscm_portal': 'GSCM'}
+
+
+def _destination_module(db, flow, site_id=None):
+    """The recording module (ASAP or GSCM) the destination will use."""
+    adapter = flow['source_adapter']
+    if site_id is not None and int(site_id) != int(flow['site_id']):
+        site = db.execute('SELECT adapter FROM flow_sites WHERE id=?', (site_id,)).fetchone()
+        if not site:
+            raise HTTPException(400, 'The pending website no longer exists.')
+        adapter = site['adapter']
+    if adapter not in RECORDING_MODULES:
+        raise HTTPException(409, 'Choose an ASAP or GSCM website before using a recording template.')
+    return adapter
+
+
+def _template_revision_rows(db, flow_id):
+    return db.execute('SELECT id, status, created_at, validated_at, definition_json, template_source_json FROM flow_recording_revisions WHERE flow_id=? ORDER BY id DESC', (flow_id,)).fetchall()
+
+
+def _step_count(definition_json):
+    try:
+        definition = json.loads(definition_json)
+        return len(list(flow_recording.walk_steps(definition.get('steps') or [])))
+    except (ValueError, TypeError, AttributeError):
+        return 0
+
+
+def _default_revision(flow, revisions):
+    """The active recording, or the latest draft when none is active."""
+    active = next((r for r in revisions if r['id'] == flow.get('recording_revision_id')), None)
+    if active:
+        return active
+    return revisions[0] if revisions else None
+
+
+def _template_source(db, destination, module, source_flow_id, revision_id=None):
+    if int(source_flow_id) == int(destination['id']):
+        raise HTTPException(400, 'Choose a different Flow as the template.')
+    source = flows._flow_out(db, source_flow_id)
+    if source['source_adapter'] != module:
+        raise HTTPException(409, f"That recording belongs to {RECORDING_MODULES.get(source['source_adapter'], 'another')} "
+                                 f"and cannot be used for a {RECORDING_MODULES[module]} Flow.")
+    revisions = _template_revision_rows(db, source_flow_id)
+    if not revisions:
+        raise HTTPException(404, 'That Flow has no saved recording yet.')
+    row = next((r for r in revisions if revision_id is None or r['id'] == int(revision_id)), None) if revision_id else _default_revision(source, revisions)
+    if row is None:
+        raise HTTPException(404, 'That recording version no longer exists.')
+    if 'date_batch' in json.loads(row['definition_json']):
+        raise HTTPException(409, 'That version uses removed date batching; choose a converted version.')
+    return source, row, revisions
 
 
 def _launch(scan_id):
@@ -109,6 +172,7 @@ def list_recordings(flow_id: int):
             item = dict(row)
             item['definition'] = flow_recording.suggest_review(json.loads(item.pop('definition_json')))
             item['evidence'] = json.loads(item.pop('evidence_json') or '{}')
+            item['template_source'] = json.loads(item.pop('template_source_json', None) or 'null')
             item.pop('transformation_source', None)
             revisions.append(item)
         sessions = [dict(row) for row in db.execute('''SELECT s.*, c.status,c.progress_json,c.error,c.result_json,
@@ -118,6 +182,92 @@ def list_recordings(flow_id: int):
             WHERE s.flow_id=? ORDER BY c.id DESC LIMIT 10''', (flow_id,))]
         return {'flow': flow, 'revisions': revisions, 'sessions': sessions,
                 'recording_wait_seconds': flow_recording_timing.configured(db)}
+
+
+@router.get('/{flow_id}/recordings/templates')
+def list_templates(flow_id: int, site_id: int | None = None, q: str = ''):
+    """Other Flows with saved recordings in the destination's portal module."""
+    needle = (q or '').strip().casefold()
+    with get_db() as db:
+        destination = flows._flow_out(db, flow_id)
+        module = _destination_module(db, destination, site_id)
+        rows = db.execute(
+            """SELECT f.id, f.name, f.recording_revision_id, f.enabled, s.name AS site_name, s.adapter
+               FROM flows f JOIN flow_sites s ON s.id=f.site_id
+               WHERE f.id<>? AND s.adapter=? AND EXISTS (SELECT 1 FROM flow_recording_revisions r WHERE r.flow_id=f.id)
+               ORDER BY f.name""", (flow_id, module)).fetchall()
+        templates = []
+        for row in rows:
+            revisions = _template_revision_rows(db, row['id'])
+            default = _default_revision(dict(row), revisions)
+            if default is None or 'date_batch' in json.loads(default['definition_json']):
+                continue
+            text = f"{row['name']} {row['site_name']}".casefold()
+            if needle and needle not in text:
+                continue
+            active_id = row['recording_revision_id']
+            templates.append({
+                'flow_id': row['id'], 'name': row['name'], 'website': row['site_name'], 'module': row['adapter'],
+                'step_count': _step_count(default['definition_json']),
+                'recording_status': 'active' if default['id'] == active_id else default['status'],
+                'default_revision_id': default['id'],
+                'revisions': [{'id': r['id'], 'status': 'active' if r['id'] == active_id else r['status'],
+                               'created_at': r['created_at'], 'validated_at': r['validated_at'],
+                               'step_count': _step_count(r['definition_json']),
+                               'from_template': bool(r['template_source_json'])} for r in revisions
+                              if 'date_batch' not in json.loads(r['definition_json'])],
+            })
+    return {'module': module, 'module_label': RECORDING_MODULES[module], 'templates': templates}
+
+
+@router.get('/{flow_id}/recordings/templates/{source_flow_id}/revisions/{revision_id}')
+def preview_template(flow_id: int, source_flow_id: int, revision_id: int, site_id: int | None = None):
+    """The complete definition of one template version, for preview before applying."""
+    with get_db() as db:
+        destination = flows._flow_out(db, flow_id)
+        module = _destination_module(db, destination, site_id)
+        source, row, _revisions = _template_source(db, destination, module, source_flow_id, revision_id)
+        definition = flow_recording.suggest_review(json.loads(row['definition_json']))
+    return {'source_flow_id': source['id'], 'source_name': source['name'], 'website': source['site_name'],
+            'revision_id': row['id'], 'status': 'active' if row['id'] == source.get('recording_revision_id') else row['status'],
+            'created_at': row['created_at'], 'definition': definition,
+            'step_count': len(list(flow_recording.walk_steps(definition.get('steps') or []))),
+            'provenance': json.loads(row['template_source_json'] or 'null')}
+
+
+def copy_template_revision(db, flow_id: int, body: TemplateCopy, *, now: str | None = None) -> dict:
+    """Copy a source revision into an independent draft on the destination Flow.
+
+    The copy carries the complete definition (steps, parameters, output
+    settings, checks, waits and GSCM bookmark targets) but none of the source's
+    validation evidence or activation; it must pass Test recording first.
+    """
+    destination = flows._flow_out(db, flow_id)
+    module = _destination_module(db, destination, body.site_id)
+    source, row, _revisions = _template_source(db, destination, module, body.source_flow_id, body.source_revision_id)
+    definition = copy.deepcopy(json.loads(row['definition_json']))
+    definition.update(version=2, timezone='Asia/Dubai')
+    if definition.get('adapter') and definition['adapter'] != module:
+        definition['adapter'] = module
+    try:
+        definition = flow_recording.validate_definition(definition, activation=False)
+    except (ValueError, KeyError, TypeError) as exc:
+        raise HTTPException(422, f'That recording cannot be copied: {exc}') from exc
+    provenance = {'source_flow_id': source['id'], 'source_flow_name': source['name'], 'source_revision_id': row['id'],
+                  'source_status': 'active' if row['id'] == source.get('recording_revision_id') else row['status'],
+                  'copied_at': now or datetime.now(timezone.utc).isoformat()}
+    cursor = db.execute("""INSERT INTO flow_recording_revisions(flow_id,definition_json,status,created_at,template_source_json)
+        VALUES (?,?,'draft',?,?)""", (flow_id, flow_recording.canonical(definition), provenance['copied_at'], json.dumps(provenance)))
+    return {'revision_id': cursor.lastrowid, 'definition': flow_recording.suggest_review(definition), 'provenance': provenance}
+
+
+@router.post('/{flow_id}/recordings/revisions/copy')
+def copy_template(flow_id: int, body: TemplateCopy):
+    with get_db() as db:
+        db.execute('BEGIN IMMEDIATE')
+        flow_recordings.assert_flow_idle(db, flow_id)
+        result = copy_template_revision(db, flow_id, body)
+    return result
 
 
 @router.get('/{flow_id}/recordings/{scan_id}/debug', response_class=PlainTextResponse)

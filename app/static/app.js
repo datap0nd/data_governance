@@ -11320,6 +11320,185 @@ function _flowSiteIsAsap(catalog, siteId) {
     return catalog.sites.find(site => String(site.id) === String(siteId))?.adapter === "asap_portal";
 }
 
+function _flowViewRefreshHtml(existing) {
+    const config = existing?.post_sql_refresh || { mode: "off", views: [] };
+    const mode = ["off", "automatic", "manual"].includes(config.mode) ? config.mode : "off";
+    const views = Array.isArray(config.views) ? config.views : [];
+    return `<fieldset id="flow-view-refresh" class="flow-span-2 flow-view-refresh" data-mode="${mode}" data-views="${esc(JSON.stringify(views))}">
+        <legend>Refresh materialized views</legend>
+        <p class="flow-dialog-help">After the SQL insertion commits, refresh the PostgreSQL materialized views that read this table. Each view commits on its own; a failed view stops the run and can be retried without inserting again.</p>
+        <div class="flow-view-refresh-modes" role="radiogroup" aria-label="Refresh materialized views">
+            <label class="flow-check"><input type="radio" name="flow-view-refresh-mode" value="off" ${mode === "off" ? "checked" : ""}><span>Off</span></label>
+            <label class="flow-check"><input type="radio" name="flow-view-refresh-mode" value="automatic" ${mode === "automatic" ? "checked" : ""}><span>Automatic <small>Discover every downstream materialized view from the dependency metadata when a run is queued</small></span></label>
+            <label class="flow-check"><input type="radio" name="flow-view-refresh-mode" value="manual" ${mode === "manual" ? "checked" : ""}><span>Manual <small>Refresh exactly the views you choose</small></span></label>
+        </div>
+        <div id="flow-view-refresh-automatic" ${mode === "automatic" ? "" : "hidden"}>
+            <p id="flow-view-refresh-auto-status" class="flow-view-refresh-status" role="status"></p>
+            <ol id="flow-view-refresh-auto-list" class="flow-view-refresh-list" aria-label="Discovered materialized views, upstream first"></ol>
+            <div class="flow-view-refresh-actions"><button type="button" class="btn-sm btn-outline" id="flow-view-refresh-preview">Preview discovered views</button><button type="button" class="btn-sm btn-outline" id="flow-view-refresh-metadata" hidden>Refresh metadata</button><button type="button" class="btn-sm btn-outline" id="flow-view-refresh-use-manual" hidden>Use Manual</button></div>
+        </div>
+        <div id="flow-view-refresh-manual" ${mode === "manual" ? "" : "hidden"}>
+            <ol id="flow-view-refresh-manual-list" class="flow-view-refresh-list" aria-label="Selected materialized views, upstream first"></ol>
+            <div class="flow-view-refresh-actions">
+                <input type="search" id="flow-view-refresh-search" placeholder="Search materialized views in the catalog" aria-label="Search materialized views in the catalog">
+                <button type="button" class="btn-sm btn-outline" id="flow-view-refresh-add-manual" aria-expanded="false">Add view manually</button>
+                <button type="button" class="btn-sm btn-outline" id="flow-view-refresh-verify">Verify selection</button>
+            </div>
+            <div id="flow-view-refresh-results" class="flow-view-refresh-results" hidden aria-label="Catalog matches"></div>
+            <div id="flow-view-refresh-manual-form" class="flow-view-refresh-form" hidden>
+                <label><span>Database</span><input id="flow-view-refresh-db" maxlength="63"></label>
+                <label><span>Schema</span><input id="flow-view-refresh-schema" maxlength="63"></label>
+                <label><span>View name</span><input id="flow-view-refresh-name" maxlength="63"></label>
+                <button type="button" class="btn-sm" id="flow-view-refresh-add">Add view</button>
+            </div>
+            <p id="flow-view-refresh-manual-status" class="flow-view-refresh-status" role="status"></p>
+        </div>
+    </fieldset>`;
+}
+
+function _flowBindViewRefresh() {
+    const fieldset = $("#flow-view-refresh");
+    if (!fieldset) return;
+    const read = () => { try { return JSON.parse(fieldset.dataset.views || "[]"); } catch (_) { return []; } };
+    const write = views => { fieldset.dataset.views = JSON.stringify(views); };
+    const target = () => ({ database: $("#flow-sql-database")?.value || "", schema: $("#flow-sql-schema")?.value || "", table: ($("#flow-sql-table")?.value || "").trim() });
+    const key = view => `${view.database}|${view.schema}|${view.name}`;
+    const label = view => `${view.database}.${view.schema}.${view.name}`;
+    const autoStatus = $("#flow-view-refresh-auto-status"), autoList = $("#flow-view-refresh-auto-list");
+    const manualStatus = $("#flow-view-refresh-manual-status"), manualList = $("#flow-view-refresh-manual-list");
+    const metadataButton = $("#flow-view-refresh-metadata"), manualButton = $("#flow-view-refresh-use-manual");
+    let previewSerial = 0, verified = null, catalogSerial = 0;
+    const showMode = () => {
+        const mode = fieldset.querySelector('input[name="flow-view-refresh-mode"]:checked')?.value || "off";
+        fieldset.dataset.mode = mode;
+        $("#flow-view-refresh-automatic").hidden = mode !== "automatic";
+        $("#flow-view-refresh-manual").hidden = mode !== "manual";
+        if (mode === "automatic" && !autoList.children.length) preview();
+        if (mode === "manual") renderManual();
+    };
+    const renderList = (list, views, extra) => {
+        list.innerHTML = views.map((view, index) => `<li><span class="flow-view-refresh-order">${index + 1}</span><code>${esc(label(view))}</code>${extra ? extra(view, index) : ""}</li>`).join("");
+    };
+    const preview = async () => {
+        const current = target();
+        const requestId = ++previewSerial;
+        metadataButton.hidden = manualButton.hidden = true;
+        if (!current.database || !current.schema || !current.table) {
+            autoList.innerHTML = "";
+            autoStatus.textContent = "Choose the SQL database, schema and table first; discovery starts from that exact table.";
+            autoStatus.dataset.state = "blocked";
+            return;
+        }
+        autoStatus.textContent = `Discovering views downstream of ${label({ ...current, name: current.table })}…`;
+        autoStatus.dataset.state = "loading";
+        try {
+            const result = await apiPostJson("/api/flows/view-refresh/discover", current);
+            if (requestId !== previewSerial) return;
+            const when = result.metadata_at ? ` Metadata verified ${timeAgo(result.metadata_at)}.` : "";
+            if (result.status === "ok") {
+                renderList(autoList, result.views);
+                autoStatus.textContent = (result.views.length
+                    ? `${result.views.length} materialized view(s) will refresh in this order after SQL insertion, recalculated from current metadata each time a run is queued.${when}`
+                    : `Verified: no materialized view reads this table.${when}`)
+                    + (result.warnings?.length ? " " + result.warnings.join(" ") : "");
+                autoStatus.dataset.state = result.stale ? "warning" : "ok";
+                metadataButton.hidden = !result.stale;
+            } else {
+                autoList.innerHTML = "";
+                autoStatus.textContent = (result.blockers || []).join(" ") + when;
+                autoStatus.dataset.state = "blocked";
+                metadataButton.hidden = !["missing", "incomplete", "stale"].includes(result.status);
+                manualButton.hidden = result.status === "unconfigured";
+            }
+        } catch (err) {
+            if (requestId !== previewSerial) return;
+            autoList.innerHTML = "";
+            autoStatus.textContent = "Discovery failed: " + err.message;
+            autoStatus.dataset.state = "blocked";
+        }
+    };
+    const invalidate = () => {
+        if (fieldset.dataset.mode === "automatic") {
+            autoList.innerHTML = "";
+            autoStatus.textContent = "The SQL destination changed; preview the discovered views again.";
+            autoStatus.dataset.state = "warning";
+            metadataButton.hidden = manualButton.hidden = true;
+        }
+    };
+    const renderManual = () => {
+        const views = read();
+        renderList(manualList, views, (view, index) => `${verified && verified[key(view)] === true ? '<span class="badge badge-green">verified</span>' : verified && verified[key(view)] === false ? '<span class="badge badge-red">check</span>' : ""}<button type="button" class="btn-xs btn-outline" data-remove-view="${index}" aria-label="Remove ${esc(label(view))}">Remove</button>`);
+        if (!views.length) manualList.innerHTML = '<li class="flow-view-refresh-empty">No views selected yet. Search the catalog or add a view manually.</li>';
+        manualList.querySelectorAll("[data-remove-view]").forEach(button => button.onclick = () => { const next = read(); next.splice(Number(button.dataset.removeView), 1); write(next); verified = null; manualStatus.textContent = next.length ? "Selection changed; verify it before saving." : ""; manualStatus.dataset.state = "warning"; renderManual(); });
+    };
+    const add = view => {
+        const next = read();
+        if (next.some(item => key(item) === key(view))) { manualStatus.textContent = `${label(view)} is already selected.`; manualStatus.dataset.state = "warning"; return; }
+        next.push(view); write(next); verified = null;
+        manualStatus.textContent = `Added ${label(view)}. Verify the selection to confirm it exists and can be refreshed.`;
+        manualStatus.dataset.state = "warning";
+        renderManual();
+    };
+    const search = async () => {
+        const q = $("#flow-view-refresh-search").value.trim();
+        const results = $("#flow-view-refresh-results");
+        const requestId = ++catalogSerial;
+        if (!q) { results.hidden = true; results.innerHTML = ""; return; }
+        try {
+            const result = await api(`/api/flows/view-refresh/catalog?q=${encodeURIComponent(q)}`);
+            if (requestId !== catalogSerial) return;
+            results.hidden = false;
+            results.innerHTML = result.views.length
+                ? result.views.slice(0, 25).map(view => `<button type="button" class="flow-view-refresh-result" data-view="${esc(JSON.stringify({ database: view.database, schema: view.schema, name: view.name }))}"><code>${esc(label(view))}</code><small>${esc(view.source_name || "")}</small></button>`).join("")
+                : `<p class="flow-inline-empty">No catalog materialized view matches “${esc(q)}”. Use Add view manually for a view the scanner has not seen.</p>`;
+            results.querySelectorAll("[data-view]").forEach(button => button.onclick = () => add(JSON.parse(button.dataset.view)));
+        } catch (err) {
+            if (requestId !== catalogSerial) return;
+            results.hidden = false; results.innerHTML = `<p class="flow-inline-empty">Catalog search failed: ${esc(err.message)}</p>`;
+        }
+    };
+    const verify = async () => {
+        const views = read();
+        const button = $("#flow-view-refresh-verify");
+        if (!views.length) { manualStatus.textContent = "Add at least one materialized view first."; manualStatus.dataset.state = "blocked"; return; }
+        button.disabled = true; manualStatus.textContent = "Checking the views against PostgreSQL…"; manualStatus.dataset.state = "loading";
+        try {
+            const result = await apiPostJson("/api/flows/view-refresh/verify", { views });
+            verified = {};
+            for (const item of result.views) verified[key(item)] = Boolean(item.verified);
+            write(result.views.map(item => ({ database: item.database, schema: item.schema, name: item.name })));
+            renderManual();
+            const problems = [...(result.blockers || []), ...(result.warnings || [])];
+            manualStatus.textContent = result.status === "ok"
+                ? `${result.views.length} view(s) verified and ordered upstream first.${result.warnings?.length ? " " + result.warnings.join(" ") : ""}`
+                : problems.join(" ");
+            manualStatus.dataset.state = result.status === "ok" ? (result.warnings?.length ? "warning" : "ok") : "blocked";
+        } catch (err) {
+            manualStatus.textContent = "Verification failed: " + err.message; manualStatus.dataset.state = "blocked";
+        } finally { button.disabled = false; }
+    };
+    fieldset.querySelectorAll('input[name="flow-view-refresh-mode"]').forEach(radio => radio.addEventListener("change", showMode));
+    $("#flow-view-refresh-preview").onclick = preview;
+    manualButton.onclick = () => { fieldset.querySelector('input[name="flow-view-refresh-mode"][value="manual"]').checked = true; showMode(); };
+    metadataButton.onclick = async () => {
+        metadataButton.disabled = true;
+        try { await apiPost("/api/scanner/jobs/postgres-lineage"); autoStatus.textContent = "PostgreSQL lineage recheck queued. Preview again when the scanner finishes."; autoStatus.dataset.state = "loading"; }
+        catch (err) { autoStatus.textContent = "Metadata refresh not queued: " + err.message; autoStatus.dataset.state = "blocked"; }
+        finally { metadataButton.disabled = false; }
+    };
+    $("#flow-view-refresh-add-manual").onclick = event => { const form = $("#flow-view-refresh-manual-form"); form.hidden = !form.hidden; event.currentTarget.setAttribute("aria-expanded", String(!form.hidden)); if (!form.hidden) { $("#flow-view-refresh-db").value ||= $("#flow-sql-database")?.value || ""; $("#flow-view-refresh-schema").value ||= $("#flow-sql-schema")?.value || ""; $("#flow-view-refresh-name").focus(); } };
+    $("#flow-view-refresh-add").onclick = () => {
+        const view = { database: $("#flow-view-refresh-db").value.trim(), schema: $("#flow-view-refresh-schema").value.trim(), name: $("#flow-view-refresh-name").value.trim() };
+        if (!view.database || !view.schema || !view.name) { manualStatus.textContent = "Enter the database, schema and view name."; manualStatus.dataset.state = "blocked"; return; }
+        add(view); $("#flow-view-refresh-name").value = "";
+    };
+    let searchTimer;
+    $("#flow-view-refresh-search").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(search, 200); });
+    $("#flow-view-refresh-verify").onclick = verify;
+    for (const id of ["flow-sql-database", "flow-sql-schema", "flow-sql-table"]) $(`#${id}`)?.addEventListener("change", invalidate);
+    showMode();
+}
+
 function _flowSqlLinkHtml(existing) {
     if (!existing?.sql_handoff_enabled) return "";
     const effectiveSourceId = existing.sql_target_effective_source_id ?? existing.sql_target_source_id;
@@ -11415,6 +11594,7 @@ function _flowOutlookBuilderHtml(existing = null) {
                             <label><span>Schema</span><select id="flow-sql-schema">${sqlSchemas.map(value => `<option ${value === selectedSchema ? "selected" : ""}>${esc(value)}</option>`).join("")}</select></label>
                             <label><span>Table</span><input id="flow-sql-table" list="flow-sql-table-options" maxlength="63" value="${esc(existing?.sql_table || sqlTables[0] || "")}" placeholder="Existing or new table name"><datalist id="flow-sql-table-options">${sqlTables.map(value => `<option value="${esc(value)}"></option>`).join("")}</datalist><small>New table names are lowercased with spaces converted to underscores automatically; existing tables keep their exact names.</small></label>
                             ${_flowSqlLinkHtml(existing)}
+                            ${_flowViewRefreshHtml(existing)}
                             <button type="button" class="btn-secondary" id="flow-sql-refresh">Refresh SQL targets</button>
                         </div>
                     </div>
@@ -11491,11 +11671,12 @@ function _flowBuilderHtml(catalog, existing = null) {
     return `
         <div class="flow-builder-shell">
             <div class="flow-builder-main">
-                <form id="flow-builder-form" data-id="${existing?.id || ""}" data-site-id="${siteId}" data-source-type="portal">
+                <form id="flow-builder-form" data-id="${existing?.id || ""}" data-site-id="${siteId}" data-source-type="portal" data-replicate-from="${existing?._replicated_from || ""}" data-replicate-recording="${existing?._replicate_recording ? "1" : ""}">
                     ${existing?.id ? "" : `<div class="flow-form-section" id="flow-replicate-section">
                         <div class="flow-section-head"><h2>Start from an existing flow</h2></div>
                         <div class="flow-form-grid">
                             <label class="flow-span-2"><span>Replicate flow</span><div class="flow-file-control"><select id="flow-replicate-source"><option value="">Start from scratch</option>${(window._flowsState?.flows || []).filter(item => item.source_type === "portal").map(item => `<option value="${item.id}" ${String(item.id) === String(existing?._replicated_from || "") ? "selected" : ""}>${esc(item.name)}</option>`).join("")}</select><button type="button" class="btn-secondary" id="flow-replicate-apply">Copy settings</button></div><small id="flow-replicate-status">The copy keeps the source flow untouched. Give the new flow its own name and SQL table.</small></label>
+                            <label class="flow-check flow-span-2" id="flow-replicate-recording-field" ${(window._flowsState?.flows || []).find(item => String(item.id) === String(existing?._replicated_from || ""))?.execution_method === "recorded" ? "" : "hidden"}><input id="flow-replicate-recording" type="checkbox" ${existing?._replicate_recording === false ? "" : "checked"}><span>Include its recording <small>Copies the saved recording as a new draft on the new flow; test it before activation. The new flow starts paused.</small></span></label>
                         </div>
                     </div>`}
                     <div class="flow-form-section">
@@ -11573,6 +11754,7 @@ function _flowBuilderHtml(catalog, existing = null) {
                                 <label><span>Schema</span><select id="flow-sql-schema">${sqlSchemas.map(value => `<option ${value === selectedSchema ? "selected" : ""}>${esc(value)}</option>`).join("")}</select></label>
                                 <label><span>Table</span><input id="flow-sql-table" list="flow-sql-table-options" maxlength="63" value="${esc(existing?.sql_table || sqlTables[0] || "")}" placeholder="Existing or new table name"><datalist id="flow-sql-table-options">${sqlTables.map(value => `<option value="${esc(value)}"></option>`).join("")}</datalist><small>Append rows requires an existing table. Replace all rows may create this name in the selected schema. New table names are lowercased with spaces converted to underscores automatically; existing tables keep their exact names.</small></label>
                                 ${_flowSqlLinkHtml(existing)}
+                                ${_flowViewRefreshHtml(existing)}
                             </div>
                             <div class="flow-span-2 flow-dialog-help">${sqlCatalog.configured ? `SQL catalog: ${sqlCatalog.targets.length} table(s), last scan ${sqlCatalog.scan?.last_scan_at ? esc(timeAgo(sqlCatalog.scan.last_scan_at)) : "not run"}${Number.isFinite(Number(sqlCatalog.scan?.duration_ms)) ? ` (${_flowDuration(sqlCatalog.scan.duration_ms)})` : ""}.` : `SQL handoff unavailable. ${esc((sqlCatalog.missing || []).join(", "))}`} <button type="button" class="btn-sm" id="flow-sql-refresh" ${!sqlCatalog.configured ? "disabled" : ""}>Refresh SQL targets</button></div>
                         </div>
@@ -11731,7 +11913,7 @@ function _flowRunsHtml(runs) {
         const resumable = sourceType === "portal"
             && ["failed", "cancelled"].includes(run.status)
             && doneFiles > 0 && doneFiles < totalFiles;
-        return `<tr><td>#${run.id}<small>${esc(timeAgo(run.created_at))}</small></td><td>${esc(run.flow_name)}</td><td>${_flowStatusBadge(run.status)}</td><td>${esc(run.requested_by || run.trigger_type)}</td><td>${esc(run.worker_id || "Waiting")}<small>${workerMode}</small></td><td>${duration === null ? "Pending" : _flowDuration(duration)}<small>${_flowTimingSummary(run.timings)}</small></td><td>${run.error ? `<span class="flow-error">${esc(run.error)}</span>` : esc(run.progress?.message || `${run.artifacts?.length || 0} file(s)`)}</td><td class="flow-row-actions">${resumable ? `<button class="btn-sm flow-resume" data-id="${run.id}" title="Queue a run that skips the ${doneFiles} file(s) already saved">Resume · ${doneFiles} of ${totalFiles} saved</button>` : ""}<a class="btn-sm btn-outline" href="/flow-runs/${run.id}" target="_blank" rel="noopener">Expanded logs</a></td></tr>`;
+        return `<tr><td>#${run.id}<small>${esc(timeAgo(run.created_at))}</small></td><td>${esc(run.flow_name)}</td><td>${_flowStatusBadge(run.status)}</td><td>${esc(run.requested_by || run.trigger_type)}</td><td>${esc(run.worker_id || "Waiting")}<small>${workerMode}</small></td><td>${duration === null ? "Pending" : _flowDuration(duration)}<small>${_flowTimingSummary(run.timings)}</small></td><td>${run.error ? `<span class="flow-error">${esc(run.error)}</span>` : esc(run.progress?.message || `${run.artifacts?.length || 0} file(s)`)}${run.view_refresh ? `<small>${run.view_refresh.deferred_to_pipeline ? "Materialized views refresh in the parent pipeline" : `Materialized views: ${run.view_refresh.completed} of ${run.view_refresh.total} refreshed${run.view_refresh.sql_committed ? " · SQL insertion committed" : ""}`}</small>` : ""}</td><td class="flow-row-actions">${resumable ? `<button class="btn-sm flow-resume" data-id="${run.id}" title="Queue a run that skips the ${doneFiles} file(s) already saved">Resume · ${doneFiles} of ${totalFiles} saved</button>` : ""}${run.view_refresh?.retry?.status === "eligible" ? `<button class="btn-sm flow-retry-views" data-id="${run.id}" title="${esc(run.view_refresh.retry.message)}">Retry view refresh</button>` : ""}<a class="btn-sm btn-outline" href="/flow-runs/${run.id}" target="_blank" rel="noopener">Expanded logs</a></td></tr>`;
     }).join("");
     return `<div class="flow-table-wrap"><table class="flow-table"><thead><tr><th>Run</th><th>Flow</th><th>Status</th><th>Requested</th><th>Worker</th><th>Duration</th><th>Result</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
@@ -12071,6 +12253,7 @@ function _flowCollectBuilder() {
                 || (sqlTargetUnchanged ? existing?.sql_target_source_id : null)
                 || null)
             : null,
+        post_sql_refresh: sqlEnabled ? _flowViewRefreshRead() : { mode: "off", views: [] },
         owner_person_id: Number($("#flow-owner")?.value) || null,
     };
     if (form?.dataset.sourceType === "file") {
@@ -12137,6 +12320,15 @@ function _flowCollectBuilder() {
         end_week: periodStrategy === "fixed" ? ($("#flow-end-week").value || null) : null,
         filename_template: $("#flow-filename").value.trim(),
     };
+}
+
+function _flowViewRefreshRead() {
+    const fieldset = $("#flow-view-refresh");
+    if (!fieldset) return { mode: "off", views: [] };
+    const mode = fieldset.querySelector('input[name="flow-view-refresh-mode"]:checked')?.value || "off";
+    let views = [];
+    try { views = JSON.parse(fieldset.dataset.views || "[]"); } catch (_) { views = []; }
+    return { mode, views: mode === "manual" ? views : [] };
 }
 
 function _pipelineDuration(seconds) {
@@ -12254,7 +12446,7 @@ function _flowStepSummary(form, key) {
     if (key === "source") return value("flow-name") || "Name this flow";
     if (key === "download") return [label("flow-file-format"), label("flow-period-strategy")].filter(Boolean).join(" · ");
     if (key === "destination") return form.dataset.sourceType === "file" ? "Private snapshots · source unchanged" : label("flow-output-mode") || "Managed Downloads folder";
-    if (key === "after") return `${control("flow-transform-enabled")?.checked ? "Transform enabled" : "No transformation"} · ${control("flow-sql-enabled")?.checked ? [value("flow-sql-database"), value("flow-sql-schema"), value("flow-sql-table")].filter(Boolean).join(".") : "No SQL handoff"}`;
+    if (key === "after") { const refresh = control("flow-sql-enabled")?.checked ? _flowViewRefreshRead() : null; return `${control("flow-transform-enabled")?.checked ? "Transform enabled" : "No transformation"} · ${control("flow-sql-enabled")?.checked ? [value("flow-sql-database"), value("flow-sql-schema"), value("flow-sql-table")].filter(Boolean).join(".") : "No SQL handoff"}${refresh && refresh.mode !== "off" ? ` · refresh views: ${refresh.mode === "manual" ? `${refresh.views.length} chosen` : "automatic"}` : ""}`; }
     return [label("flow-schedule-type"), value("flow-schedule-type") !== "manual" ? value("flow-schedule-time") : "", label("flow-owner")].filter(Boolean).join(" · ");
 }
 
@@ -12495,6 +12687,7 @@ function _bindFlowWorkspace() {
     document.querySelectorAll(".flow-enabled-switch").forEach(input => input.onchange = async () => { const enabled = input.checked; input.disabled = true; try { const updated = await apiPatch(`/api/flows/${input.dataset.id}/enabled`, { enabled }); const flow = state.flows.find(item => item.id === updated.id); Object.assign(flow, updated); input.disabled = false; toast(enabled ? "Flow activated" : "Flow paused"); } catch (err) { input.checked = !enabled; input.disabled = false; toast("Flow status not changed: " + err.message); } });
     document.querySelectorAll(".flow-run").forEach(button => button.onclick = async () => { button.disabled = true; button.dataset.busy = "true"; const flow = state.flows.find(item => item.id === Number(button.dataset.id)); try { await apiPost(`/api/flows/${button.dataset.id}/run`); toast(flow?.source_type === "file" ? "Run queued. The worker will read the configured file and force a new snapshot." : flow?.source_type === "outlook" ? "Run queued. The worker will check the signed-in user's Outlook Inbox." : flow?.browser_mode === "headed" ? "Run queued. The selected browser is opening in the BI desktop." : "Run queued for the background worker"); } catch (err) { toast("Run not queued: " + err.message); button.disabled = false; } finally { delete button.dataset.busy; button.disabled = false; _flowRefreshActivity(); } });
     document.querySelectorAll(".flow-stop").forEach(button => button.onclick = async () => { button.disabled = true; button.dataset.busy = "true"; try { const result = await apiPost(`/api/flows/${button.dataset.id}/stop`); toast(result.message || "Run stopped"); } catch (err) { toast("Run not stopped: " + err.message); button.disabled = false; } finally { delete button.dataset.busy; button.disabled = false; _flowRefreshActivity(); } });
+    document.querySelectorAll(".flow-retry-views").forEach(button => button.onclick = async () => { button.disabled = true; try { const result = await apiPost(`/api/flows/runs/${button.dataset.id}/retry-views`); toast(`View refresh queued - ${result.remaining_views} view(s) left; SQL insertion is not repeated`); await navigate("flows"); } catch (err) { toast("View refresh not queued: " + err.message); button.disabled = false; } });
     document.querySelectorAll(".flow-resume").forEach(button => button.onclick = async () => { button.disabled = true; try { const result = await apiPost(`/api/flows/runs/${button.dataset.id}/resume`); toast(`Resume queued - skipping ${result.skipped_files} saved file(s)`); await navigate("flows"); } catch (err) { toast("Resume not queued: " + err.message); button.disabled = false; } });
     document.querySelectorAll('.flow-row-actions a[href^="/flow-runs/"]').forEach(link => {
         if (link.parentElement.querySelector(".ai-investigate-run")) return;
@@ -12514,6 +12707,11 @@ function _bindFlowWorkspace() {
         );
     });
     $("#flow-builder-cancel")?.addEventListener("click", () => _flowShowView("list"));
+    $("#flow-replicate-source")?.addEventListener("change", event => {
+        const source = (state.flows || []).find(item => item.id === Number(event.target.value));
+        const field = $("#flow-replicate-recording-field");
+        if (field) field.hidden = source?.execution_method !== "recorded";
+    });
     $("#flow-replicate-apply")?.addEventListener("click", () => {
         const sourceId = Number($("#flow-replicate-source")?.value);
         if (!sourceId) { toast("Choose a flow to replicate"); return; }
@@ -12523,9 +12721,11 @@ function _bindFlowWorkspace() {
         // and it starts paused so a copied schedule cannot fire before it has
         // been reviewed. The SQL table is kept - changing it is usually the
         // only edit - but the name is deliberately left for the user.
+        const includeRecording = source.execution_method === "recorded" && ($("#flow-replicate-recording")?.checked ?? true);
         const copy = {
             ...source,
-            id: null, name: "", enabled: false, _replicated_from: sourceId,
+            id: null, name: "", enabled: false, _replicated_from: sourceId, _replicate_recording: includeRecording,
+            recording_revision_id: null,
             flow_folder: null, folder_slug: null, folder_state: "unmanaged", target_folder: null,
             last_run_at: null, last_status: null, last_error: null, last_success_at: null,
         };
@@ -12533,7 +12733,7 @@ function _bindFlowWorkspace() {
         const status = $("#flow-replicate-status");
         const picker = $("#flow-replicate-source");
         if (picker) picker.value = String(sourceId);
-        if (status) status.textContent = `Copied from ${source.name}. Give this flow a name, then change what differs.`;
+        if (status) status.textContent = `Copied from ${source.name}. Give this flow a name, then change what differs.${includeRecording ? " Its recording is copied as a new draft when you create the flow." : ""}`;
         const nameInput = $("#flow-name");
         if (nameInput) { nameInput.value = `${source.name} copy`; nameInput.focus(); nameInput.select(); }
         toast(`Settings copied from ${source.name}`);
@@ -12856,6 +13056,7 @@ function _bindFlowWorkspace() {
     $("#flow-sql-schema")?.addEventListener("change", repopulateSql);
     $("#flow-sql-refresh")?.addEventListener("click", async event => { const button = event.currentTarget; button.disabled = true; try { await apiPost("/api/flows/sql/catalog/refresh"); state.sqlCatalog = await api("/api/flows/sql/catalog"); repopulateSql(); updateSqlFields(); toast("SQL targets refreshed; your draft is preserved."); } catch (err) { toast("SQL targets not refreshed: " + err.message); } finally { button.disabled = false; } });
     if ($("#flow-sql-fields")) updateSqlFields();
+    _flowBindViewRefresh();
     $("#flow-schedule-type")?.addEventListener("change", event => {
         const manual = event.target.value === "manual";
         const weekly = event.target.value === "weekly";
@@ -12892,7 +13093,7 @@ function _bindFlowWorkspace() {
         }); syncMethod();
     }
     _flowBuildSteps($("#flow-builder-form"));
-    $("#flow-builder-form")?.addEventListener("submit", async event => { event.preventDefault(); const form = event.currentTarget; const button = form.querySelector('button[type="submit"]'); const error = form.querySelector(".flow-form-error"); button.disabled = true; error.textContent = ""; try { const body = _flowCollectBuilder(); if(body.execution_method==='recorded' && window._flowRecordingSelections?.has(Number(form.dataset.id)) && window._flowRecordingSelections.get(Number(form.dataset.id))===null) throw Error('Test the recording changes before saving this Flow.'); const saved = await (form.dataset.id ? apiPut(`/api/flows/${form.dataset.id}`, body) : apiPostJson("/api/flows", body)); toast(saved.standalone?.state === "error" ? `Flow saved; its files could not be updated: ${saved.standalone.message}` : "Flow saved"); window._flowRecordingSelections?.delete(saved.id); window._flowBuilderDrafts?.delete(saved.id); window._flowBuilderDrafts?.delete('new'); await navigate("flows"); if (!form.dataset.id && body.execution_method === "recorded") { _flowShowView("builder", saved); await FlowRecordings.open(saved.id, _flowCollectBuilder()); } } catch (err) { error.textContent = "Flow not saved: " + err.message; _flowRevealServerError(form, err); error.scrollIntoView({ behavior: "smooth", block: "nearest" }); button.disabled = false; } });
+    $("#flow-builder-form")?.addEventListener("submit", async event => { event.preventDefault(); const form = event.currentTarget; const button = form.querySelector('button[type="submit"]'); const error = form.querySelector(".flow-form-error"); button.disabled = true; error.textContent = ""; try { const body = _flowCollectBuilder(); if(body.execution_method==='recorded' && window._flowRecordingSelections?.has(Number(form.dataset.id)) && window._flowRecordingSelections.get(Number(form.dataset.id))===null) throw Error('Test the recording changes before saving this Flow.'); const saved = await (form.dataset.id ? apiPut(`/api/flows/${form.dataset.id}`, body) : apiPostJson("/api/flows", body)); toast(saved.standalone?.state === "error" ? `Flow saved; its files could not be updated: ${saved.standalone.message}` : "Flow saved"); window._flowRecordingSelections?.delete(saved.id); window._flowBuilderDrafts?.delete(saved.id); window._flowBuilderDrafts?.delete('new'); const replicateFrom = Number(form.dataset.replicateFrom) || 0; const replicateRecording = form.dataset.replicateRecording === "1"; await navigate("flows"); if (!form.dataset.id && body.execution_method === "recorded" && replicateFrom && replicateRecording) { try { const copied = await apiPostJson(`/api/flows/${saved.id}/recordings/revisions/copy`, { source_flow_id: replicateFrom }); toast(`Recording copied from ${copied.provenance?.source_flow_name || "the source flow"} as a draft; test it before activation.`); } catch (err) { toast("Recording not copied: " + err.message); } } if (!form.dataset.id && body.execution_method === "recorded") { _flowShowView("builder", saved); await FlowRecordings.open(saved.id, _flowCollectBuilder()); } } catch (err) { error.textContent = "Flow not saved: " + err.message; _flowRevealServerError(form, err); error.scrollIntoView({ behavior: "smooth", block: "nearest" }); button.disabled = false; } });
 }
 
 function bindFlowsPage() {

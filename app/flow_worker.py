@@ -6937,7 +6937,8 @@ def execute_flow(page, job: dict, progress, profile_dir: Path, download_staging_
     Callers own process locks, browser lifetime, progress transport and retention
     registration. Failure state retains partial artifacts and phase timings.
     """
-    if job.get('flow', {}).get('execution_method') == 'recorded' and job.get('job_type') != 'sql_retry':
+    from app import flow_view_refresh
+    if job.get('flow', {}).get('execution_method') == 'recorded' and job.get('job_type') not in {'sql_retry', flow_view_refresh.RETRY_JOB_TYPE}:
         from app.flow_recording_runtime import execute_recorded_flow
         return execute_recorded_flow(page, job, progress, profile_dir, download_staging_dir,
             run_id=run_id, register_folder=register_folder, headed=headed, artifacts=artifacts,
@@ -6951,6 +6952,23 @@ def execute_flow(page, job: dict, progress, profile_dir: Path, download_staging_
     run_started = run_started if run_started is not None else time.perf_counter()
     try:
         sql_only = job.get("job_type") == "sql_retry"
+        views_only = job.get("job_type") == flow_view_refresh.RETRY_JOB_TYPE
+        if views_only:
+            # Refresh-only recovery: the frozen plan and completed checkpoints
+            # are reused; nothing is downloaded, transformed or inserted.
+            timings = [{"phase": "total", "duration_ms": 0, "status": "running"}]
+            retry = job.get("view_retry") or {}
+            progress("running", {"stage": "view_retry", "sql_committed": True,
+                "message": (f"Retrying the materialized-view refresh from run #{retry.get('source_run_id')}: "
+                            f"{len(retry.get('completed') or [])} view(s) already refreshed are kept. "
+                            "No download, transformation or SQL insertion runs.")}, artifacts, timings)
+            results = flow_view_refresh.execute_after_sql(job, progress, artifacts, timings, state,
+                checkpoint=flow_view_refresh.checkpoint_path(job) if job.get("_standalone") else None)
+            timings[-1].update({"duration_ms": round((time.perf_counter() - run_started) * 1000), "status": "succeeded"})
+            progress("succeeded", {"stage": "complete", "sql_committed": True,
+                "message": f"Refreshed {len(results or [])} materialized view(s); SQL insertion from run "
+                           f"#{retry.get('source_run_id')} was already committed."}, artifacts, timings)
+            return state
         assert_job_paths(job)
         if sql_only:
             if not job.get("sql_handoff", {}).get("enabled"):
@@ -7080,6 +7098,7 @@ def execute_flow(page, job: dict, progress, profile_dir: Path, download_staging_
             source_label = "transformed" if job.get("transformation", {}).get("enabled") else "downloaded"
             if sql_only:
                 source_label = "saved"
+            flow_view_refresh.precheck_before_sql(job, progress, artifacts, timings)
             progress("running", {"stage": "sql_insertion", "message": f"Loading {source_label} files into SQL."}, artifacts, timings)
             sql_started = time.perf_counter()
 
@@ -7104,6 +7123,12 @@ def execute_flow(page, job: dict, progress, profile_dir: Path, download_staging_
                 },
                 artifacts, timings,
             )
+            # Only a confirmed commit reaches this point; the refresh keeps it.
+            view_results = flow_view_refresh.execute_after_sql(job, progress, artifacts, timings, state,
+                checkpoint=flow_view_refresh.checkpoint_path(job) if job.get("_standalone") else None)
+        else:
+            view_results = None
+        refreshed = f" Refreshed {len(view_results)} materialized view(s)." if view_results else ""
         progress(
             "succeeded", {
                 "stage": "complete",
@@ -7111,9 +7136,9 @@ def execute_flow(page, job: dict, progress, profile_dir: Path, download_staging_
                 "message": (
                     source_outcome.get("message", "The configured source is unchanged.")
                     if no_op
-                    else f"SQL-only retry committed {sql_result['rows_written']} row(s) from {sql_result['files_loaded']} saved file(s)."
+                    else f"SQL-only retry committed {sql_result['rows_written']} row(s) from {sql_result['files_loaded']} saved file(s).{refreshed}"
                     if sql_only
-                    else f"Saved the full {len(sql_artifacts)}-export bundle and committed {sql_result['rows_written']} row(s) to {sql_result['target']}."
+                    else f"Saved the full {len(sql_artifacts)}-export bundle and committed {sql_result['rows_written']} row(s) to {sql_result['target']}.{refreshed}"
                     if sql_result is not None
                     else f"Saved {len(sql_artifacts)} transformed CSV file(s) after {len(artifacts) - len(sql_artifacts)} download(s)."
                     if job.get("transformation", {}).get("enabled")
@@ -7138,6 +7163,14 @@ def execute_flow(page, job: dict, progress, profile_dir: Path, download_staging_
                 timings.insert(-1, {
                     "phase": "sql_insertion",
                     "duration_ms": round((time.perf_counter() - sql_started) * 1000),
+                    "status": "failed",
+                })
+            if state.get("view_refresh_started") is not None and not any(
+                item.get("phase") == "view_refresh" for item in timings
+            ):
+                timings.insert(-1, {
+                    "phase": "view_refresh",
+                    "duration_ms": round((time.perf_counter() - state["view_refresh_started"]) * 1000),
                     "status": "failed",
                 })
             timings[-1].update({
@@ -7174,6 +7207,9 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
         registration['capabilities']['recorded_flows_v2'] = True
         registration['capabilities']['gscm_bookmark_targets_v1'] = True
         registration['capabilities']['recorded_validation_engine_v1'] = True
+        # Older workers lack this key and are never given a job whose frozen
+        # plan refreshes materialized views after SQL insertion.
+        registration['capabilities']['post_sql_refresh_v1'] = True
         registration['capabilities']['flow_recorder_v1'] = headed
         registration['capabilities']['flow_recorder_controls_v1'] = headed
         # Metronome can take several minutes to boot after an update (service
@@ -7221,7 +7257,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                 if work:
                     browser_job = work['job']
                     portal_work = (browser_job.get('flow', {}).get('source_type') not in {'file', 'outlook'}
-                                   and browser_job.get('job_type') != 'sql_retry' and not browser_job.get('recording_operation'))
+                                   and browser_job.get('job_type') not in {'sql_retry', 'view_retry'} and not browser_job.get('recording_operation'))
                     requested_channel = flow_browser.channel_for(browser_job)
                     if portal_work and (context is None or requested_channel != current_channel):
                         try:
@@ -7427,7 +7463,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                         from functools import partial
                         from app.flow_parallel_worker import acquire_bundle as parallel_bundle
                         acquire_bundle = partial(parallel_bundle, client, worker_id, transport_state)
-                    if run['job'].get('flow', {}).get('execution_method') == 'recorded' and run['job'].get('job_type') != 'sql_retry':
+                    if run['job'].get('flow', {}).get('execution_method') == 'recorded' and run['job'].get('job_type') not in {'sql_retry', 'view_retry'}:
                         from app import flow_recorder_worker, flow_portable
                         if run['job'].get('recording', {}).get('engine_hash') != flow_portable.execution_hash():
                             raise RuntimeError('This job is pinned to a different recorded execution core. Validate a new revision.')

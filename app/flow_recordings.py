@@ -127,7 +127,7 @@ def assert_flow_idle(db, flow_id):
 
 def config_hash(job, *, legacy=False):
     clean = copy.deepcopy(job)
-    for key in ('recording', 'recording_parameters', 'resume', 'sql_retry', 'job_type'):
+    for key in ('recording', 'recording_parameters', 'resume', 'sql_retry', 'view_retry', 'job_type', 'post_sql_refresh'):
         clean.pop(key, None)
     # Browser validation runs headed; the intended production mode remains a
     # compatibility attribute tested independently when changing it.
