@@ -407,7 +407,7 @@ def flow_target_resource_key_from_job(job_or_json) -> str | None:
 def flow_publish_resource_key_from_job(job_or_json) -> str | None:
     """Folder-wide lock for direct publishers, independent of SQL targets."""
     job = _loads(job_or_json, {}) if isinstance(job_or_json, str) else (job_or_json or {})
-    if job.get("job_type") == "sql_retry":
+    if job.get("job_type") in {"sql_retry", "view_retry"}:
         return None
     downloads = job.get("downloads") or {}
     if downloads.get("output_mode", "run_folders") != "direct_replace":
@@ -725,6 +725,19 @@ def build_refresh_plan(report_id: int, requester: str | None, *, probe_mvs: bool
                     + "."
                 )
 
+        materialized_views, flow_view_blockers = _incorporate_flow_refresh_views(
+            db, flows, materialized_views, identities
+        )
+        blockers.extend(flow_view_blockers)
+        from app.routers.flows import active_view_refresh_run
+        for mv in materialized_views:
+            active = active_view_refresh_run(db, mv["resource_key"])
+            if active:
+                blockers.append(
+                    f"Materialized view {mv['database']}.{mv['schema']}.{mv['relation']} is being refreshed by "
+                    f"Flow '{active['flow_name']}' run #{active['id']}."
+                )
+
         workers = _worker_readiness(db, {flow["browser_mode"] for flow in flows})
         for worker in workers:
             if not worker["ready"]:
@@ -818,6 +831,67 @@ def build_refresh_plan(report_id: int, requester: str | None, *, probe_mvs: bool
     snapshot = _plan_snapshot(plan)
     plan["plan_hash"] = hashlib.sha256(_json(snapshot).encode("utf-8")).hexdigest()
     return plan
+
+
+def _incorporate_flow_refresh_views(db, flows: list[dict], materialized_views: list[dict], identities: dict) -> tuple[list[dict], list[str]]:
+    """Add each selected Flow's configured post-SQL views to the parent stage once.
+
+    The parent pipeline runs every view a single time after all upstream Flows
+    finish, upstream views first, so a child Flow run never refreshes on its own.
+    """
+    from app import flow_view_refresh
+    from app.flow_view_refresh_discovery import build_plan, catalog_edges
+    from app.routers.flows import _post_sql_refresh_config
+    blockers: list[str] = []
+    server = _flow_server_identity()
+    known = {mv["resource_key"]: mv for mv in materialized_views}
+    extras: list[dict] = []
+    for flow in flows:
+        row = db.execute("SELECT post_sql_refresh_json FROM flows WHERE id=?", (flow["id"],)).fetchone()
+        config = _post_sql_refresh_config(row["post_sql_refresh_json"] if row else None)
+        if config["mode"] == "off":
+            continue
+        target = {"enabled": True, **flow["target"]}
+        plan = build_plan(db, config, target, server)
+        if plan.get("blocked"):
+            blockers.append(f"Flow '{flow['name']}' refresh materialized views is blocked: {plan['blocked']}")
+            continue
+        for view in plan.get("views") or []:
+            key = flow_view_refresh.resource_key(server, view)
+            if key in known:
+                continue
+            identity = next((item for item in identities.values() if item["database"] == view["database"]
+                             and item["schema"] == view["schema"] and item["relation"] == view["name"]), None)
+            if identity is None:
+                catalog = db.execute(
+                    """SELECT spi.source_id, s.name AS source_name, spi.verified_at FROM source_postgres_identities spi
+                       JOIN sources s ON s.id=spi.source_id WHERE spi.server_name=? AND spi.database_name=?
+                         AND spi.schema_name=? AND spi.relation_name=? AND spi.relation_kind='materialized_view'
+                         AND COALESCE(s.archived,0)=0 ORDER BY spi.source_id LIMIT 1""",
+                    (server, view["database"], view["schema"], view["name"]),
+                ).fetchone()
+            else:
+                catalog = {"source_id": identity["source_id"], "source_name": identity["source_name"], "verified_at": identity["verified_at"]}
+            item = {
+                "source_id": catalog["source_id"] if catalog else None,
+                "source_name": catalog["source_name"] if catalog else flow_view_refresh.label(view),
+                "server": server, "database": view["database"], "schema": view["schema"], "relation": view["name"],
+                "kind": "materialized_view", "verified_at": catalog["verified_at"] if catalog else None,
+                "resource_key": key, "requested_by_flow": flow["name"],
+            }
+            known[key] = item
+            extras.append(item)
+    if not extras:
+        return materialized_views, blockers
+    combined = [*materialized_views, *extras]
+    views = [{"database": mv["database"], "schema": mv["schema"], "name": mv["relation"]} for mv in combined]
+    edges = catalog_edges(db, server, {view["database"] for view in views})
+    ordered, cycle = flow_view_refresh.order_views(views, edges)
+    if cycle:
+        blockers.append("Materialized-view dependency cycle: " + " -> ".join(cycle) + ".")
+        return combined, blockers
+    by_key = {flow_view_refresh.resource_key(server, {"database": mv["database"], "schema": mv["schema"], "name": mv["relation"]}): mv for mv in combined}
+    return [by_key[flow_view_refresh.resource_key(server, view)] for view in ordered], blockers
 
 
 def _step_details(row) -> dict:
@@ -1760,7 +1834,7 @@ def create_pipeline_run(report_id: int, body: RunCreate, request: Request):
                     """INSERT INTO pipeline_run_steps
                            (run_id, step_type, sequence_no, entity_type, entity_id, entity_name, details_json)
                        VALUES (?, 'mv', ?, 'source', ?, ?, ?)""",
-                    (run_id, sequence, str(mv["source_id"]), mv["source_name"], _json(mv)),
+                    (run_id, sequence, str(mv["source_id"]) if mv.get("source_id") is not None else mv["resource_key"], mv["source_name"], _json(mv)),
                 )
                 sequence += 1
             db.execute(

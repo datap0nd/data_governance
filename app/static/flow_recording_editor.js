@@ -22,6 +22,7 @@ window.RecordedFlowEditor = (() => {
         const el=openPage(flowId),body=el.querySelector('[data-body]');
         let error;
         let data,revisionId,draft,baseline,selected,undo=[],dirty=false,pending=false,operation=null,timer,serial=0,expanded=new Set(),dragged,refreshError=false,debugScanId=null,debugSerial=0,debugAbort;
+        let templates=null,templateFilter='',templateFlow=null,templateRevision=null,templatePreview=null,templateSerial=0,templateNote='';
         const prefix=`/api/flows/${flowId}/recordings`;
         const defaultWait=()=>Number.isInteger(data?.recording_wait_seconds)?data.recording_wait_seconds:10;
         const revision=()=>data?.revisions.find(r=>r.id===revisionId);
@@ -73,13 +74,15 @@ window.RecordedFlowEditor = (() => {
         }
         function shell() {
             body.innerHTML=`<div class="recording-toolbar"><div><h1>${h(settings?.name||data.flow.name)}</h1><span data-state role="status"></span></div><details><summary>More</summary><button class="btn-secondary" data-start>Record again</button> <button class="btn-secondary" data-history>Saved versions</button></details></div>
-                <div data-history-panel hidden></div><div class="recording-actions"><button class="btn-primary" data-test>Test recording</button> <button class="btn-secondary" data-save>Save draft</button><span data-save-state role="status"></span><p data-error role="alert"></p><div class="recording-session-result"><p data-session role="status"></p><button type="button" class="btn-secondary" data-debug-open hidden aria-expanded="false">Debug log</button></div><section data-debug-panel class="recording-debug" hidden aria-label="Debug log"><div class="recording-detail-heading"><h3 data-debug-title>Debug log</h3><button type="button" class="btn-secondary" data-debug-copy disabled>Copy debug log</button><button type="button" class="btn-secondary" data-debug-close>Close debug log</button></div><p data-debug-status role="status"></p><textarea data-debug-text aria-label="Debug log text" readonly rows="14" hidden></textarea><button type="button" class="btn-secondary" data-debug-retry hidden>Retry loading log</button></section><div data-session-actions></div></div><div data-editor></div>`;
+                <div data-history-panel hidden></div><section data-template-panel class="recording-templates" hidden aria-label="Choose from template"></section><div class="recording-actions"><button class="btn-primary" data-test>Test recording</button> <button class="btn-secondary" data-save>Save draft</button> <button class="btn-secondary" data-template aria-expanded="false">Choose from template</button> <button class="btn-secondary" data-undo data-undo-top hidden>Undo</button><span data-save-state role="status"></span><p data-error role="alert"></p><div class="recording-session-result"><p data-session role="status"></p><button type="button" class="btn-secondary" data-debug-open hidden aria-expanded="false">Debug log</button></div><section data-debug-panel class="recording-debug" hidden aria-label="Debug log"><div class="recording-detail-heading"><h3 data-debug-title>Debug log</h3><button type="button" class="btn-secondary" data-debug-copy disabled>Copy debug log</button><button type="button" class="btn-secondary" data-debug-close>Close debug log</button></div><p data-debug-status role="status"></p><textarea data-debug-text aria-label="Debug log text" readonly rows="14" hidden></textarea><button type="button" class="btn-secondary" data-debug-retry hidden>Retry loading log</button></section><div data-session-actions></div></div><div data-editor></div>`;
             error=body.querySelector('[data-error]');
             body.querySelector('[data-debug-close]').onclick=()=>{debugSerial++;debugAbort?.abort();body.querySelector('[data-debug-panel]').hidden=true;body.querySelector('[data-debug-open]').setAttribute('aria-expanded','false');};
             body.querySelector('[data-debug-retry]').onclick=()=>openDebug(debugScanId);
             body.querySelector('[data-debug-copy]').onclick=copyDebug;
             body.querySelector('[data-start]').onclick=()=>request(async()=>{remember();if(draft&&dirty){await save();if(!el.isConnected)return;}const r=await apiPost(`${prefix}/start`);if(r.worker?.status==='error')throw Error(r.worker.message);});
             body.querySelector('[data-history]').onclick=()=>{const panel=body.querySelector('[data-history-panel]');panel.hidden=!panel.hidden;renderHistory();};
+            body.querySelector('[data-template]').onclick=()=>{const panel=body.querySelector('[data-template-panel]');if(panel.hidden)openTemplates();else closeTemplates();};
+            body.querySelector('[data-undo-top]').onclick=()=>undoLast();
             body.querySelector('[data-save]').onclick=()=>request(save);
             body.querySelector('[data-test]').onclick=()=>{
                 request(async()=>{
@@ -112,15 +115,90 @@ window.RecordedFlowEditor = (() => {
             try {if(!navigator.clipboard?.writeText)throw Error('Clipboard unavailable');await navigator.clipboard.writeText(text.value);if(el.isConnected&&requestId===debugSerial)status.textContent='Debug log copied.';}
             catch {if(!el.isConnected||requestId!==debugSerial)return;text.focus();text.select();status.textContent='Copy unavailable. The log is selected; copy it with your keyboard.';}
         }
+        function undoLast() {
+            const previous=undo.pop();if(!previous)return;
+            draft=previous.draft;selected=previous.selected;dirty=JSON.stringify(draft)!==baseline;templateNote='';remember();renderEditor();
+            body.querySelector('[data-save-state]').textContent=dirty?'Unsaved changes':'';
+        }
+        async function openTemplates() {
+            const panel=body.querySelector('[data-template-panel]'),button=body.querySelector('[data-template]');
+            panel.hidden=false;button.setAttribute('aria-expanded','true');templateFlow=null;templateRevision=null;templatePreview=null;templateFilter='';
+            panel.innerHTML='<p role="status">Loading recordings…</p>';
+            const requestId=++templateSerial;
+            try {
+                const query=settings?.site_id?`?site_id=${encodeURIComponent(settings.site_id)}`:'';
+                const result=await api(`${prefix}/templates${query}`);
+                if(!el.isConnected||requestId!==templateSerial)return;
+                templates=result;renderTemplates();
+                panel.querySelector('[data-template-search]')?.focus();
+            }catch(e){if(el.isConnected&&requestId===templateSerial)panel.innerHTML=`<div class="recording-detail-heading"><h3>Choose from template</h3><button type="button" class="btn-secondary" data-template-close>Cancel</button></div><p role="alert">${h(e.message)}</p>`;bindTemplateClose();}
+        }
+        function closeTemplates() {
+            templateSerial++;const panel=body.querySelector('[data-template-panel]');panel.hidden=true;panel.innerHTML='';
+            body.querySelector('[data-template]').setAttribute('aria-expanded','false');body.querySelector('[data-template]').focus();
+        }
+        function bindTemplateClose(){body.querySelector('[data-template-close]')?.addEventListener('click',closeTemplates);}
+        function renderTemplates() {
+            const panel=body.querySelector('[data-template-panel]');if(!templates||panel.hidden)return;
+            const needle=templateFilter.trim().toLowerCase();
+            const visible=templates.templates.filter(t=>!needle||`${t.name} ${t.website}`.toLowerCase().includes(needle));
+            const status=t=>t.recording_status==='active'?'Active':t.recording_status==='validated'?'Tested':'Draft';
+            panel.innerHTML=`<div class="recording-detail-heading"><h3>Choose from template</h3><button type="button" class="btn-secondary" data-template-close>Cancel</button></div>
+                <p>Copy the complete recording of another ${h(templates.module_label)} Flow into this Flow as a new draft. Steps, date parameters, output settings, checks, waits and bookmark targets are copied; test evidence and activation are not. Your current steps stay in Saved versions and Undo.</p>
+                <input type="search" data-template-search aria-label="Search ${h(templates.module_label)} flows with recordings" placeholder="Search ${h(templates.module_label)} flows" value="${h(templateFilter)}">
+                ${templates.templates.length?visible.length?`<div class="recording-template-list" role="listbox" aria-label="Flows with saved recordings">${visible.map(t=>`<button type="button" role="option" class="recording-template-item" data-template-flow="${t.flow_id}" aria-selected="${templateFlow===t.flow_id}"><strong>${h(t.name)}</strong><span>${h(t.website)} · ${t.step_count} step${t.step_count===1?'':'s'}</span><span class="recording-badge">${status(t)}</span></button>`).join('')}</div>`:'<p class="recording-template-empty">No flow matches that search.</p>':`<p class="recording-template-empty">No other ${h(templates.module_label)} Flow has a saved recording yet. Record this Flow, or save a recording on another ${h(templates.module_label)} Flow first.</p>`}
+                <div data-template-detail ${templateFlow?'':'hidden'}></div><p data-template-status role="status"></p>`;
+            bindTemplateClose();
+            panel.querySelector('[data-template-search]').oninput=e=>{templateFilter=e.target.value;const list=panel.querySelector('.recording-template-list, .recording-template-empty');const active=document.activeElement===e.target;renderTemplates();if(active){const input=panel.querySelector('[data-template-search]');input.focus();input.setSelectionRange(input.value.length,input.value.length);}};
+            panel.querySelectorAll('[data-template-flow]').forEach(b=>b.onclick=()=>{const t=templates.templates.find(x=>x.flow_id===Number(b.dataset.templateFlow));if(!t)return;templateFlow=t.flow_id;templateRevision=t.default_revision_id;templatePreview=null;renderTemplates();loadTemplatePreview();});
+            renderTemplateDetail();
+        }
+        function renderTemplateDetail() {
+            const panel=body.querySelector('[data-template-panel]'),host=panel?.querySelector('[data-template-detail]');if(!host)return;
+            const t=templates.templates.find(x=>x.flow_id===templateFlow);if(!t){host.hidden=true;return;}host.hidden=false;
+            const versionLabel=r=>`${typeof formatDate==='function'?formatDate(r.created_at):r.created_at} · ${r.status==='active'?'active':r.status==='validated'?'tested':'draft'} · ${r.step_count} steps${r.id===t.default_revision_id?' · default':''}`;
+            host.innerHTML=`<h4>${h(t.name)}</h4><label>Version <select data-template-version aria-label="Template version">${t.revisions.map(r=>option(r.id,versionLabel(r),templateRevision)).join('')}</select></label>
+                ${templatePreview?`<p class="recording-template-summary">${templatePreview.step_count} steps${Object.keys(templatePreview.definition.parameters||{}).length?` · ${Object.keys(templatePreview.definition.parameters).length} date parameter(s)`:''}${(templatePreview.definition.steps||[]).some(s=>s.action==='download')?` · ${templatePreview.definition.steps.filter(s=>s.action==='download').length} download(s)`:''}${M.all(templatePreview.definition.steps||[]).some(s=>s.bookmark_target)?' · GSCM bookmark targets':''}</p><ol class="recording-template-steps" aria-label="Steps in this version">${(templatePreview.definition.steps||[]).map(s=>`<li>${h(M.describe(s))}${s.action==='download'?' <span class="recording-badge">Download</span>':''}</li>`).join('')}</ol>`:'<p role="status">Loading steps…</p>'}
+                <p class="recording-template-note">Applying replaces the steps shown in this editor with an independent copy. Undo restores what you had, and Saved versions keep every earlier draft. The copy must pass Test recording before it can be activated.</p>
+                <button type="button" class="btn-primary" data-template-apply ${templatePreview&&!pending?'':'disabled'}>Use this recording</button>`;
+            host.querySelector('[data-template-version]').onchange=e=>{templateRevision=Number(e.target.value);templatePreview=null;renderTemplateDetail();loadTemplatePreview();};
+            host.querySelector('[data-template-apply]').onclick=applyTemplate;
+        }
+        async function loadTemplatePreview() {
+            const requestId=++templateSerial;const query=settings?.site_id?`?site_id=${encodeURIComponent(settings.site_id)}`:'';
+            try {
+                const preview=await api(`${prefix}/templates/${templateFlow}/revisions/${templateRevision}${query}`);
+                if(!el.isConnected||requestId!==templateSerial)return;
+                templatePreview=preview;renderTemplateDetail();
+            }catch(e){if(!el.isConnected||requestId!==templateSerial)return;const status=body.querySelector('[data-template-status]');if(status)status.textContent=e.message;}
+        }
+        function applyTemplate() {
+            const source=templates?.templates.find(x=>x.flow_id===templateFlow);if(!source||!templateRevision)return;
+            request(async()=>{
+                operation='template';updateButtons();
+                // Unsaved edits are kept as their own saved version before the copy replaces them.
+                if(draft&&dirty){await save();if(!el.isConnected)return;}
+                const result=await apiPostJson(`${prefix}/revisions/copy`,{source_flow_id:templateFlow,source_revision_id:templateRevision,site_id:settings?.site_id||null});
+                if(!el.isConnected)return;
+                if(draft)undo.push({draft:M.clone(draft),selected});
+                if(undo.length>100)undo.shift();
+                draft=M.clone(result.definition);draft.version=2;draft.timezone='Asia/Dubai';
+                revisionId=result.revision_id;baseline=JSON.stringify(draft);dirty=false;selected=null;expanded=new Set();
+                if(settings)delete settings.recording_revision_id;window._flowRecordingSelections?.set(flowId,null);
+                templateNote=`Copied from ${source.name}. Test recording before activation.`;
+                remember();closeTemplates();renderEditor();
+                body.querySelector('[data-save-state]').textContent=templateNote;
+            });
+        }
         function renderHistory() {
             const panel=body.querySelector('[data-history-panel]');
             if(!panel || panel.hidden)return;
-            panel.innerHTML=`<p>${dirty?'Save your draft before opening another version.':'Opening a saved version keeps the active recording unchanged.'}</p>${data.revisions.map(r=>`<button class="btn-secondary" data-version="${r.id}">${h(typeof formatDate==='function'?formatDate(r.created_at):r.created_at)} · ${h(r.status)}${r.id===data.flow.recording_revision_id?' · active':''}</button>`).join(' ')}`;
+            panel.innerHTML=`<p>${dirty?'Save your draft before opening another version.':'Opening a saved version keeps the active recording unchanged.'}</p>${data.revisions.map(r=>`<button class="btn-secondary" data-version="${r.id}">${h(typeof formatDate==='function'?formatDate(r.created_at):r.created_at)} · ${h(r.status)}${r.id===data.flow.recording_revision_id?' · active':''}${r.template_source?` · from ${h(r.template_source.source_flow_name)}`:''}</button>`).join(' ')}`;
             panel.querySelectorAll('[data-version]').forEach(button=>{button.disabled=dirty||Boolean(active())||pending;button.onclick=()=>{load(data.revisions.find(r=>r.id===Number(button.dataset.version)));if(settings)delete settings.recording_revision_id;window._flowRecordingSelections?.set(flowId,null);renderEditor();};});
         }
         function renderEditor() {
             const host=body.querySelector('[data-editor]');
-            if(!draft){host.innerHTML='<p>Open your report, run it, then download the files.</p><button class="btn-primary" data-begin>Start recording</button>';host.querySelector('[data-begin]').onclick=()=>body.querySelector('[data-start]').click();updateButtons();return;}
+            if(!draft){host.innerHTML='<p>Open your report, run it, then download the files. Or start from another Flow’s saved recording with <strong>Choose from template</strong>.</p><button class="btn-primary" data-begin>Start recording</button> <button class="btn-secondary" data-begin-template>Choose from template</button>';host.querySelector('[data-begin]').onclick=()=>body.querySelector('[data-start]').click();host.querySelector('[data-begin-template]').onclick=()=>body.querySelector('[data-template]').click();updateButtons();return;}
             if('date_batch' in draft){
                 host.innerHTML='<form data-convert><p role="alert">Date batching has been removed. This schedule is paused. Enter one explicit range to create an ordinary recording, then test it.</p><label>Start date <input name="start" required placeholder="Recorded date format"></label><label>End date <input name="end" required placeholder="Recorded date format"></label><button class="btn-primary">Convert to one range</button></form>';
                 host.querySelector('form').onsubmit=e=>{e.preventDefault();request(async()=>{const r=await apiPostJson(`${prefix}/revisions/${revisionId}/convert-single-range`,{start:e.target.elements.start.value,end:e.target.elements.end.value});revisionId=r.revision_id;draft=null;});};updateButtons();return;
@@ -192,7 +270,7 @@ window.RecordedFlowEditor = (() => {
                 ${output?`<label>Download completion <select data-completion>${option('native','Browser download',output.completion||'native')}${option('staging','Verified staging fallback',output.completion)}</select></label>`:''}
                 ${valueActions.includes(action.action)?`<label>Date must not be after parameter <input data-not-after value="${h(parameter.not_after)}"></label>`:''}
                 </details>`;
-            panel.querySelector('[data-undo]')?.addEventListener('click',()=>{const previous=undo.pop();if(previous){draft=previous.draft;selected=previous.selected;dirty=JSON.stringify(draft)!==baseline;remember();renderEditor();}});
+            panel.querySelector('[data-undo]')?.addEventListener('click',undoLast);
             panel.querySelector('[data-done]').onclick=()=>{selected=null;renderDetails();updateCards();};
             placeDetails();
             bindDetails(panel,step,action,root,parameterName);
@@ -243,10 +321,15 @@ window.RecordedFlowEditor = (() => {
         }
         function updateButtons() {
             if(!data)return;const busy=pending||Boolean(active()),batch=draft&&'date_batch' in draft;
-            for(const [selector,disabled] of [['start',busy],['begin',busy],['save',busy||!draft||batch],['test',busy||!draft||batch],['enable',busy||dirty||revision()?.status!=='validated'||batch],['undo',busy||!undo.length]]) {const button=body.querySelector(`[data-${selector}]`);if(button)button.disabled=Boolean(disabled);}
+            for(const [selector,disabled] of [['start',busy],['begin',busy],['begin-template',busy],['template',busy||batch],['save',busy||!draft||batch],['test',busy||!draft||batch],['enable',busy||dirty||revision()?.status!=='validated'||batch],['undo',busy||!undo.length]]) {body.querySelectorAll(`[data-${selector}]`).forEach(button=>button.disabled=Boolean(disabled));}
+            // One visible Undo at a time: the selected step's panel owns it while open.
+            const topUndo=body.querySelector('[data-undo-top]');if(topUndo)topUndo.hidden=!undo.length||Boolean(draft&&M.owner(draft,selected));
+            body.querySelector('[data-template-apply]')?.toggleAttribute('disabled',busy||!templatePreview);
             body.querySelector('[data-state]').textContent=status();
             if(dirty)body.querySelector('[data-save-state]').textContent='Unsaved changes';
+            else if(templateNote&&!body.querySelector('[data-save-state]').textContent)body.querySelector('[data-save-state]').textContent=templateNote;
             body.querySelector('[data-save]').textContent=operation==='saving'?'Saving…':'Save draft';
+            body.querySelector('[data-template]').textContent=operation==='template'?'Copying…':'Choose from template';
             body.querySelector('[data-save]').hidden=!draft;body.querySelector('[data-test]').hidden=!draft;
             body.querySelector('[data-start]').textContent=draft?'Record again':'Start recording';
             body.querySelector('[data-test]').textContent=active()?.operation==='validate'?'Testing…':'Test recording';

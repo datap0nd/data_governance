@@ -26,7 +26,7 @@ def config_hash(job: dict) -> str:
 def freeze(job: dict) -> dict:
     frozen = copy.deepcopy(job)
     for key in list(frozen):
-        if key.startswith('_') or key in {'resume', 'sql_retry', 'source_receipt', 'job_type'}:
+        if key.startswith('_') or key in {'resume', 'sql_retry', 'view_retry', 'source_receipt', 'job_type'}:
             frozen.pop(key)
     # The launcher executes sequentially regardless of the server pool size.
     frozen.get('execution', {}).pop('worker_id', None)
@@ -142,9 +142,10 @@ def status(job: dict) -> dict:
         return {'state': 'missing_or_invalid'}
 
 
-def run(job: dict, *, sql: bool | None = None, headed: bool | None = None, no_transform: bool = False) -> dict:
+def run(job: dict, *, sql: bool | None = None, headed: bool | None = None, no_transform: bool = False,
+        retry_views: bool = False) -> dict:
     from contextlib import ExitStack
-    from app import flow_worker, flow_paths
+    from app import flow_worker, flow_paths, flow_view_refresh
     from app.flow_layout import _regular
     from app.flow_execution_lock import ExecutionLocks, resource_keys
     job = copy.deepcopy(job)
@@ -152,6 +153,21 @@ def run(job: dict, *, sql: bool | None = None, headed: bool | None = None, no_tr
         job['sql_handoff']['enabled'] = sql
     if no_transform:
         job['transformation']['enabled'] = False
+    refresh_plan = job.get('post_sql_refresh') or {}
+    if job['sql_handoff'].get('enabled') and refresh_plan.get('blocked'):
+        raise RuntimeError('Refresh materialized views is blocked in the saved configuration: ' + str(refresh_plan['blocked'])
+                           + ' Regenerate the script after fixing it, or run with --no-sql.')
+    job['_standalone'] = True
+    checkpoint = flow_view_refresh.checkpoint_path(job)
+    if retry_views:
+        if not flow_view_refresh.plan_views(job):
+            raise RuntimeError('This Flow has no materialized views to refresh.')
+        if not (checkpoint and checkpoint.is_file()):
+            raise RuntimeError('No local view-refresh checkpoint exists; run the Flow normally first.')
+        job['job_type'] = flow_view_refresh.RETRY_JOB_TYPE
+        job['view_retry'] = {'source_run_id': None, 'completed': flow_view_refresh.read_checkpoint(checkpoint)}
+    elif job['sql_handoff'].get('enabled') and flow_view_refresh.plan_views(job) and checkpoint and checkpoint.is_file():
+        raise RuntimeError('A previous local run left materialized views unfinished; run with --retry-views first or delete view-refresh-checkpoint.json.')
     if headed is None:
         headed = job.get('execution', {}).get('browser_mode') == 'headed'
     flow_paths.assert_job_paths(job)
@@ -174,7 +190,7 @@ def run(job: dict, *, sql: bool | None = None, headed: bool | None = None, no_tr
         register = lambda _folder: {'ops': []}
         try:
             page = staging = None
-            if job['flow'].get('source_type', 'portal') == 'portal' and job.get('job_type') != 'sql_retry':
+            if job['flow'].get('source_type', 'portal') == 'portal' and job.get('job_type') not in {'sql_retry', 'view_retry'}:
                 profile.mkdir(parents=True, exist_ok=True)
                 if not stack.enter_context(flow_worker._exclusive_worker_lock(profile)):
                     raise RuntimeError('The standalone browser profile is already in use.')
@@ -202,14 +218,22 @@ def offline_main(job: dict, argv=None) -> int:
     modes.add_argument('--headless', dest='headed', action='store_false')
     parser.add_argument('--no-transform', action='store_true')
     parser.add_argument('--no-sql', action='store_true')
+    parser.add_argument('--retry-views', action='store_true', help='Only refresh the materialized views a previous local run left unfinished; no download or SQL insertion.')
     args = parser.parse_args(argv)
     if args.dry_run:
+        from app import flow_view_refresh
+        plan = job.get('post_sql_refresh') or {}
+        sql = bool(job['sql_handoff']['enabled'] and not args.no_sql)
         print(json.dumps({'flow_id': job['flow']['id'], 'source': job['flow'].get('source_type'),
-                         'sql': bool(job['sql_handoff']['enabled'] and not args.no_sql),
-                         'transform': bool(job['transformation']['enabled'] and not args.no_transform)}))
+                         'sql': sql,
+                         'transform': bool(job['transformation']['enabled'] and not args.no_transform),
+                         'refresh_views': [flow_view_refresh.label(view) for view in flow_view_refresh.plan_views(job)] if sql else [],
+                         'refresh_mode': plan.get('mode', 'off'), 'refresh_frozen_at': plan.get('discovered_at'),
+                         'refresh_blocked': plan.get('blocked')}))
         return 0
     try:
-        result = run(job, sql=False if args.no_sql else None, headed=args.headed, no_transform=args.no_transform)
+        result = run(job, sql=False if args.no_sql else None, headed=args.headed, no_transform=args.no_transform,
+                     retry_views=args.retry_views)
         print(json.dumps({key: value for key, value in result.items() if key != 'artifacts'}))
         return 0
     except Exception as exc:

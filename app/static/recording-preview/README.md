@@ -1,6 +1,22 @@
 # Recording journey previews
 
-The current preview is [optional.html](optional.html): recording tests start
+The current preview is [templates-refresh.html](templates-refresh.html):
+reusable recordings (**Choose from template** in the recording editor and
+**Include its recording** when replicating a flow) and the **Refresh
+materialized views** step under SQL handoff, with run history and the
+production run-log page showing per-view outcomes and **Retry view refresh**.
+Production `app.js`, the recording editor and `flow_run_log.js` render every
+screen; only the API layer is fictional. The preview bar switches the
+discovery result (three views, verified empty, missing, incomplete, stale,
+cyclic) and the retry outcome. Serve `app` with
+`python -m http.server 8769 --bind 127.0.0.1 --directory app` and open
+`http://127.0.0.1:8769/static/recording-preview/templates-refresh.html`.
+`tests/test_templates_refresh_preview.py` walks every control at 1280×900 and
+390×844 and saves screenshots when `PREVIEW_EVIDENCE_DIR` is set. Owner
+feedback on this journey is recorded in the
+[release report](../../../docs/testing/releases/2026-09-07-reusable-recordings-view-refresh/test-report.md).
+
+The previous preview is [optional.html](optional.html): recording tests start
 directly, waits can be inserted, and downloaded-data checks are optional. It
 uses the production recording editor/model with fictional API responses.
 Select a download to add/remove a minimum-row check; the fixture has three

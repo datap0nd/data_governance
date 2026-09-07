@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Run log preview</title>
+    <link rel="stylesheet" href="/static/style.css?v=59">
+</head>
+<body class="flow-log-body">
+    <main class="flow-log-page" id="flow-run-log" aria-live="polite"><div class="loading">Loading fictional run…</div></main>
+    <script>
+    // The production run-log page reads the run ID from the URL and fetches it.
+    // The preview answers both from fictional data owned by the parent page.
+    window.previewRuns = {};
+    window.fetch = async (url, options) => {
+        const match = String(url).match(/\/api\/flows\/runs\/(\d+)(\/retry-views)?$/);
+        const run = match && window.previewRuns[match[1]];
+        if (match && match[2] && run) { window.parent.postMessage({ type: 'retry-views', runId: Number(match[1]) }, '*'); return { ok: true, json: async () => ({ id: 44 }) }; }
+        if (run) return { ok: true, json: async () => run };
+        return { ok: false, status: 404, json: async () => ({ detail: 'Preview only.' }) };
+    };
+    window.addEventListener('message', event => {
+        if (event.data?.type !== 'show-run') return;
+        window.previewRuns = event.data.runs;
+        render(window.previewRuns[event.data.runId]);
+        const retry = document.getElementById('flow-retry-views');
+        if (retry) retry.onclick = () => { window.parent.postMessage({ type: 'retry-views', runId: event.data.runId }, '*'); };
+    });
+    </script>
+    <script src="/static/flow_run_log.js?v=4"></script>
+</body>
+</html>

@@ -36,7 +36,7 @@ def profile_for(base, channel):
 
 
 def can_claim(job, capabilities):
-    if job.get('flow', {}).get('source_type') in {'file', 'outlook'} or job.get('job_type') == 'sql_retry':
+    if job.get('flow', {}).get('source_type') in {'file', 'outlook'} or job.get('job_type') in {'sql_retry', 'view_retry'}:
         return True
     channel = channel_for(job)
     return channel == 'msedge' or bool(capabilities.get(CAPABILITY))

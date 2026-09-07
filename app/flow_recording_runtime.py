@@ -423,13 +423,23 @@ def execute_recorded_flow(page, job, progress, profile_dir, download_staging_dir
                 transform['script_path'] = str(script)
                 sql_artifacts = flow_worker._run_transformations(artifacts, transform)
             artifacts.extend(sql_artifacts)
+        view_results = None
         if job.get('sql_handoff', {}).get('enabled'):
+            from app import flow_view_refresh
+            flow_view_refresh.precheck_before_sql(job, progress, artifacts, timings)
             state['sql_started'] = time.perf_counter()
             progress('running', {'stage': 'sql_insertion', 'message': 'Loading recorded-flow outputs into SQL.'}, artifacts, timings)
             state['sql_result'] = flow_sql.load_artifacts(sql_artifacts, job['sql_handoff'],
                 progress=lambda detail: progress('running', detail, artifacts, timings))
+            progress('running', {'stage': 'sql_insertion_complete',
+                'message': f"Inserted {state['sql_result']['rows_written']} row(s) from {state['sql_result']['files_loaded']} file(s).",
+                **state['sql_result']}, artifacts, timings)
+            # Only a confirmed commit reaches this point; the refresh keeps it.
+            view_results = flow_view_refresh.execute_after_sql(job, progress, artifacts, timings, state,
+                checkpoint=flow_view_refresh.checkpoint_path(job) if job.get('_standalone') else None)
         timings[0].update(status='succeeded', duration_ms=round((time.perf_counter() - started) * 1000))
-        progress('succeeded', {'stage': 'complete', 'message': f'Completed recorded flow with {len(artifacts)} artifacts.',
+        progress('succeeded', {'stage': 'complete', 'message': f'Completed recorded flow with {len(artifacts)} artifacts.'
+                             + (f' Refreshed {len(view_results)} materialized view(s).' if view_results else ''),
                              'recording_revision': job['recording']['revision']}, artifacts, timings)
     except Exception:
         timings[0].update(status='failed', duration_ms=round((time.perf_counter() - started) * 1000))
@@ -447,6 +457,7 @@ def standalone_main(job, argv=None):
     modes.add_argument('--headless', dest='headed', action='store_false')
     parser.add_argument('--no-transform', action='store_true')
     parser.add_argument('--no-sql', action='store_true')
+    parser.add_argument('--retry-views', action='store_true', help='Only refresh the materialized views a previous local run left unfinished; no download or SQL insertion.')
     parser.add_argument('--parameter', action='append', default=[], metavar='NAME=VALUE')
     parser.add_argument('--profile-dir', type=Path)
     parser.add_argument('--output-root', type=Path, help='Use a dedicated root for this portable Flow on this machine.')
@@ -460,11 +471,25 @@ def standalone_main(job, argv=None):
             job['transformation']['enabled'] = False
         if args.no_sql:
             job['sql_handoff']['enabled'] = False
+        from app import flow_view_refresh
+        refresh_plan = job.get('post_sql_refresh') or {}
+        refresh_views = flow_view_refresh.plan_views(job) if job['sql_handoff']['enabled'] else []
         if args.dry_run:
             print(json.dumps({'flow': job['flow']['name'], 'revision': job['recording']['revision'],
                 'parameters': job['recording_parameters'], 'sql': job['sql_handoff']['enabled'],
-                'transformation': job['transformation']['enabled']}))
+                'transformation': job['transformation']['enabled'],
+                'refresh_views': [flow_view_refresh.label(view) for view in refresh_views],
+                'refresh_mode': refresh_plan.get('mode', 'off'), 'refresh_frozen_at': refresh_plan.get('discovered_at'),
+                'refresh_blocked': refresh_plan.get('blocked')}))
             return 0
+        if refresh_plan.get('blocked') and job['sql_handoff']['enabled']:
+            raise RuntimeError('Refresh materialized views is blocked in the saved configuration: ' + str(refresh_plan['blocked'])
+                               + ' Regenerate the script after fixing it, or run with --no-sql.')
+        if args.retry_views:
+            if not refresh_views:
+                raise RuntimeError('This Flow has no materialized views to refresh.')
+            job['job_type'] = flow_view_refresh.RETRY_JOB_TYPE
+            job['_standalone'] = True
         if args.output_root:
             from app import flow_layout, flow_paths
             root = Path(flow_paths.clean_absolute(str(args.output_root.resolve())))
@@ -499,6 +524,14 @@ def standalone_main(job, argv=None):
             journal = logs / 'sql-outcome.json'
             if job['sql_handoff']['enabled'] and journal.exists():
                 raise RuntimeError('A previous standalone SQL outcome requires reconciliation; inspect sql-outcome.json before rerunning.')
+            checkpoint = flow_view_refresh.checkpoint_path(job)
+            if args.retry_views:
+                completed = flow_view_refresh.read_checkpoint(checkpoint)
+                if not completed and not (checkpoint and checkpoint.is_file()):
+                    raise RuntimeError('No local view-refresh checkpoint exists; run the Flow normally first.')
+                job['view_retry'] = {'source_run_id': None, 'completed': completed}
+            elif job['sql_handoff']['enabled'] and refresh_views and checkpoint and checkpoint.is_file():
+                raise RuntimeError('A previous local run left materialized views unfinished; run with --retry-views first or delete view-refresh-checkpoint.json.')
             with (logs / f'{run_id}.jsonl').open('x', encoding='utf-8') as log:
                 def progress(status, detail, artifacts=None, timings=None, **extra):
                     if detail.get('stage') == 'sql_insertion':
@@ -508,6 +541,12 @@ def standalone_main(job, argv=None):
                             os.fsync(marker.fileno())
                     log.write(json.dumps({'status': status, 'progress': detail, 'artifacts': artifacts or [], 'timings': timings or []}, default=str) + '\n')
                     log.flush()
+                if args.retry_views:
+                    job['_standalone'] = True
+                    flow_worker.execute_flow(None, job, progress, profile, None, run_id=run_id,
+                        register_folder=lambda folder: {'ops': []}, headed=False)
+                    return 0
+                job['_standalone'] = True
                 with flow_worker._exclusive_worker_lock(profile) as owned:
                     if not owned:
                         raise RuntimeError('The browser profile is already in use.')
