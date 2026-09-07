@@ -281,7 +281,9 @@ def validate_definition(definition, *, activation=True):
             validate_target(step)
         if activation and step.get('repair_reason'):
             raise ValueError(f"{step['id']}: {step['repair_reason']}")
-        if definition.get('adapter') == 'gscm_portal' and activation:
+        if definition.get('adapter') == 'gscm_portal' and activation and step.get('bookmark_target') is None:
+            # A bookmark-target click keeps its recorded locator only as page/
+            # frame context; playback resolves the bookmark by exact identity.
             from app.flow_recording_nexacro import validate_target
             validate_target(step)
         if action not in ACTIONS | {'new_page', 'goto', 'close', 'download', 'popup', 'assert', 'wait'}:

@@ -13,6 +13,6 @@
 | BK-05 live cancellation/wrong-frame/native partial effects | NOT RUN | Requires authenticated work-PC GSCM; synthetic coverage must not be treated as portal proof. |
 | Native qualification | NOT RUN | The published Luna investigation has no completed baseline/two-native-attempt evidence. Native selection remains disabled. |
 | Full local Python suite | PASS | `python -X utf8 -c "import _pytest.pathlib as p,pytest,tempfile,uuid;p._force_symlink=lambda *a,**k:None;raise SystemExit(pytest.main(['tests','-q','--basetemp='+tempfile.gettempdir()+'/gscm-bookmark-full-'+uuid.uuid4().hex,'--junitxml=TEMP/gscm-bookmark-full-workaround.xml']))"`: 1,717 passed in 812.54s. The host workaround avoids pytest's disabled Windows symlink cleanup. |
-| Final CI | PENDING | Record final run URL and final SHA in the PR before merge. |
+| Final CI | PASS | PR head `3f4b5247d2deeeafa3ddebab33aa3c2fd456766a`: [Tests run 34058267082](https://github.com/datap0nd/data_governance/actions/runs/34058267082), pytest (ubuntu-latest) and pytest (windows-latest) both succeeded; merged as `28f3d563f3dbdd479cf31c3eda054ab4c3ff346e` in [PR #82](https://github.com/datap0nd/data_governance/pull/82). Recorded after merge by the 2026-09-07 fallback follow-up. |
 
 Warnings: one existing Starlette/httpx TestClient deprecation and ten existing `timeout`-argument deprecations from `tests/test_flow_parallel.py`. No portal credentials, report data, private URLs, raw DOM traces, or downloads are included here.

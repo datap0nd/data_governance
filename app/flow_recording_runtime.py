@@ -191,8 +191,14 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
             if action == 'click' and definition.get('adapter', job.get('site', {}).get('adapter')) == 'gscm_portal':
                 from app.flow_recording_gscm_bookmark import is_target, select
                 if is_target(step):
+                    phases = {'gscm_bookmark_resolved': 'bookmark identity resolved; checking the rendered Favorite rows.',
+                              'gscm_bookmark_to_top': 'moving the Favorite list to its top with its own scrollbar.',
+                              'gscm_bookmark_sweep': 'sweeping the Favorite list downward with its own scrollbar.'}
+                    # The progress channel raises on cancellation, which stops
+                    # the helper before its next scrollbar movement.
                     result = select(pages[step['page']], step, lambda detail: notify(step,
-                        f"{label}: selecting exact GSCM Favorite bookmark.", outcome='running', diagnostic=detail))
+                        f"{label}: {phases.get(detail.get('phase'), 'selecting exact GSCM Favorite bookmark.')}",
+                        outcome='running', diagnostic=detail))
                     notify(step, 'GSCM Favorite bookmark selected.', outcome='completed', confirmation='exact_identity',
                            diagnostic={'phase': 'action_finished', 'timing': timing, 'bookmark': result})
                     previous_step = step

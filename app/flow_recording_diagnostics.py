@@ -197,6 +197,10 @@ def _locator(value, definition):
     return parts
 
 
+BOOKMARK_KEYS = {'strategy', 'movement', 'rendered', 'movements', 'presses', 'top_established',
+                 'collided', 'folder_confirmed', 'reason', 'scope'}
+
+
 def sanitize_diagnostic(detail, definition=None):
     if not isinstance(detail, dict):
         return {}
@@ -227,6 +231,10 @@ def sanitize_diagnostic(detail, definition=None):
         for key in ('before', 'after'):
             if isinstance(click.get(key), dict):
                 result['click'][key] = _fields(click[key], STATE_KEYS, definition)
+    if isinstance(detail.get('bookmark'), dict):
+        # GSCM Favorite bookmark selection: which strategy ran, whether the grid
+        # moved and rendered, and why resolution stopped. Names and IDs stay out.
+        result['bookmark'] = _fields(detail['bookmark'], BOOKMARK_KEYS, definition)
     if isinstance(detail.get('exception'), dict):
         error = detail['exception']
         result['exception'] = _fields(error, {'type', 'browser_api', 'summary', 'timeout_ms',
@@ -257,7 +265,7 @@ def _loads(value):
 
 def _merge_diagnostic(previous, current):
     result = {**previous, **current}
-    for key in ('target', 'timing', 'click', 'call', 'exception'):
+    for key in ('target', 'timing', 'click', 'call', 'exception', 'bookmark'):
         if key in previous or key in current:
             result[key] = {**previous.get(key, {}), **current.get(key, {})}
     if previous.get('click', {}).get('before'):
