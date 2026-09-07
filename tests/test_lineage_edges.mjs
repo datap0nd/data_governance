@@ -13,7 +13,7 @@ assert.notEqual(end, -1, "Pipeline edge routing helpers must sit before the rend
 const context = {};
 vm.createContext(context);
 vm.runInContext(
-    `${source.slice(start, end)}\nthis.edgePath = _linEdgePath; this.assignChannels = _linAssignChannels; this.assignPorts = _linAssignPorts; this.routeEdges = _linRouteEdges;`,
+    `${source.slice(start, end)}\nthis.edgePath = _linEdgePath; this.assignChannels = _linAssignChannels; this.assignPorts = _linAssignPorts; this.routeEdges = _linRouteEdges; this.columnBands = _linColumnBands;`,
     context,
 );
 
@@ -107,12 +107,58 @@ assert.equal(singleton[0].y2, 88, "A singleton target port must remain centered"
 
 // ── Pure router ──
 
+// Every column's free bands: the gaps between its stacked cards plus the open
+// space below the last card. The middle columns are dense at the top so a
+// straight line from "span" to "far" would cut through their cards.
 const colBounds = [
-    { left: 0, right: 150 },
-    { left: 206, right: 356 },
-    { left: 412, right: 562 },
-    { left: 618, right: 768 },
+    { left: 0, right: 150, bands: [{ top: 500, bottom: 520 }] },
+    { left: 206, right: 356, bands: [{ top: 102.5, bottom: 117.5 }, { top: 222.5, bottom: 237.5 }, { top: 402.5, bottom: 420 }] },
+    { left: 412, right: 562, bands: [{ top: 162.5, bottom: 177.5 }, { top: 282.5, bottom: 297.5 }, { top: 342.5, bottom: 360 }] },
+    { left: 618, right: 768, bands: [{ top: 700, bottom: 720 }] },
 ];
+const occupied = [
+    { col: 1, top: 0, bottom: 100 }, { col: 1, top: 120, bottom: 220 }, { col: 1, top: 240, bottom: 400 },
+    { col: 2, top: 0, bottom: 160 }, { col: 2, top: 180, bottom: 280 }, { col: 2, top: 300, bottom: 340 },
+];
+function pathPoints(d) {
+    return [...d.matchAll(/(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/g)].map(m => ({ x: Number(m[1]), y: Number(m[2]) }));
+}
+function assertClearOfCards(edge, label) {
+    // Sample the emitted cubic segments densely and refuse any point that
+    // lands inside a card of a column the edge merely passes through.
+    const d = context.edgePath(edge);
+    const segments = d.split(/(?=[MLC])/);
+    let cursor = null;
+    const samples = [];
+    for (const segment of segments) {
+        const pts = pathPoints(segment);
+        if (segment.startsWith("M") || segment.startsWith("L")) {
+            if (cursor && segment.startsWith("L")) {
+                for (let t = 0; t <= 1; t += 0.05) samples.push({ x: cursor.x + (pts[0].x - cursor.x) * t, y: cursor.y + (pts[0].y - cursor.y) * t });
+            }
+            cursor = pts[0];
+        } else if (segment.startsWith("C")) {
+            const [c1, c2, end] = pts;
+            for (let t = 0; t <= 1; t += 0.02) {
+                const u = 1 - t;
+                samples.push({
+                    x: u * u * u * cursor.x + 3 * u * u * t * c1.x + 3 * u * t * t * c2.x + t * t * t * end.x,
+                    y: u * u * u * cursor.y + 3 * u * u * t * c1.y + 3 * u * t * t * c2.y + t * t * t * end.y,
+                });
+            }
+            cursor = end;
+        }
+    }
+    for (const p of samples) {
+        for (const card of occupied) {
+            if (card.col <= edge.ci || card.col >= edge.cj) continue;
+            const b = colBounds[card.col];
+            assert.ok(!(p.x > b.left && p.x < b.right && p.y > card.top && p.y < card.bottom),
+                `${label} must not cross the card at column ${card.col} rows ${card.top}-${card.bottom} (hit ${p.x.toFixed(1)},${p.y.toFixed(1)})`);
+        }
+    }
+    return samples;
+}
 const routed = [
     { from: "span", to: "far", x1: 150, y1: 50, x2: 618, y2: 300, y1min: 40, y1max: 60, y2min: 290, y2max: 310, ci: 0, cj: 3 },
     { from: "adj", to: "next", x1: 356, y1: 100, x2: 412, y2: 200, y1min: 90, y1max: 110, y2min: 190, y2max: 210, ci: 1, cj: 2 },
@@ -120,14 +166,73 @@ const routed = [
     { from: "back", to: "behind", x1: 562, y1: 500, x2: 206, y2: 600, y1min: 490, y1max: 510, y2min: 590, y2max: 610, ci: 2, cj: 1 },
 ];
 context.routeEdges(routed, colBounds);
-for (const edge of routed.slice(0, 2)) {
-    assert.ok(edge.c1x > edge.x1 && edge.c1x <= edge.c2x && edge.c2x < edge.x2,
-        "Forward curve controls must stay ordered between their card endpoints");
-}
-assert.ok(routed[0].c1x - routed[0].x1 <= 96 && routed[0].x2 - routed[0].c2x <= 96,
-    "A multi-column curve must use bounded handles rather than one long shared rail");
+assert.ok(routed[1].c1x > routed[1].x1 && routed[1].c1x <= routed[1].c2x && routed[1].c2x < routed[1].x2,
+    "Forward curve controls must stay ordered between their card endpoints");
 assert.ok(routed[1].c1x > colBounds[1].right && routed[1].c2x < colBounds[2].left,
     "An adjacent-column curve must fan smoothly inside its sole gutter");
+
+// ── Multi-column crossings ──
+
+const span = routed[0];
+assert.equal(span.c1x, undefined, "A multi-column edge must not be one long curve through the columns in between");
+assert.equal(span.via?.length, 2, "A multi-column edge needs one crossing per column it passes through");
+span.via.forEach((v, i) => {
+    const column = colBounds[span.ci + 1 + i];
+    assert.equal(v.left, column.left);
+    assert.equal(v.right, column.right, "Each crossing must span the full column it passes");
+    assert.ok(column.bands.some(b => v.y >= b.top && v.y <= b.bottom),
+        `Crossing ${i} at y=${v.y} must sit inside a band that holds no card`);
+});
+assert.deepEqual(Array.from(span.via, v => Math.round(v.y * 10) / 10), [117.5, 177.5],
+    "Each crossing must take the free band nearest to where a straight line would pass");
+const spanPath = context.edgePath(span);
+assert.match(spanPath, /^M150,50 C/, "A multi-column edge must leave its card with a smooth curve");
+assert.ok(spanPath.includes(` L${colBounds[1].right},117.5`) && spanPath.includes(` L${colBounds[2].right},177.5`),
+    "Each intermediate column must be crossed flat, inside its chosen band");
+const spanSamples = assertClearOfCards(span, "A multi-column edge");
+assert.ok(spanSamples.every(p => p.x >= span.x1 - 0.01 && p.x <= span.x2 + 0.01),
+    "A multi-column edge must stay horizontally between its two cards");
+
+const sameGap = [
+    { from: "g1", to: "h1", x1: 150, y1: 108, x2: 412, y2: 100, y1min: 100, y1max: 116, y2min: 90, y2max: 110, ci: 0, cj: 2 },
+    { from: "g2", to: "h2", x1: 150, y1: 112, x2: 412, y2: 130, y1min: 104, y1max: 120, y2min: 120, y2max: 140, ci: 0, cj: 2 },
+    { from: "g3", to: "h3", x1: 150, y1: 116, x2: 412, y2: 160, y1min: 108, y1max: 124, y2min: 150, y2max: 170, ci: 0, cj: 2 },
+];
+context.routeEdges(sameGap, colBounds);
+const gapYs = sameGap.map(e => Math.round(e.via[0].y * 10) / 10);
+assert.equal(new Set(gapYs).size, 3, "Edges sharing one gap must spread onto distinct lanes");
+assert.ok(gapYs.every(y => y >= 102.5 && y <= 117.5), "Spread lanes must remain inside the gap");
+assert.deepEqual([...gapYs].sort((a, b) => a - b), gapYs,
+    "Lanes inside a gap must follow arrival order so they do not cross");
+for (const e of sameGap) assertClearOfCards(e, "A lane-spread crossing");
+
+const noBands = [
+    { from: "plain", to: "far", x1: 150, y1: 50, x2: 618, y2: 300, y1min: 40, y1max: 60, y2min: 290, y2max: 310, ci: 0, cj: 3 },
+];
+context.routeEdges(noBands, colBounds.map(c => ({ left: c.left, right: c.right })));
+assert.deepEqual(Array.from(noBands[0].via, v => Math.round(v.y)), [133, 217],
+    "Without band data a crossing falls back to the straight-line height");
+
+// ── Free bands ──
+
+// Results come from the vm realm; copy them so strict deepEqual compares plain objects.
+const plain = value => JSON.parse(JSON.stringify(value));
+const bands = plain(context.columnBands([
+    { top: 0, bottom: 20 },
+    { top: 32, bottom: 80 },
+    { top: 82, bottom: 120 },
+    { top: 90, bottom: 100 },
+    { top: 140, bottom: 200 },
+], 260));
+assert.deepEqual(bands, [
+    { top: 22.5, bottom: 29.5 },
+    { top: 122.5, bottom: 137.5 },
+    { top: 202.5, bottom: 260 },
+], "Bands must cover only real gaps between stacked children, then the space below the last one");
+assert.deepEqual(plain(context.columnBands([], 40)), [{ top: 2.5, bottom: 40 }],
+    "An empty column is one open band down to the drawing floor");
+assert.deepEqual(plain(context.columnBands([{ top: 0, bottom: 100 }], 60)), [{ top: 102.5, bottom: 102.5 }],
+    "A band below the floor collapses to a single line rather than leaving the drawing");
 assert.ok(routed[2].cx >= colBounds[1].right && routed[2].cx <= colBounds[2].left,
     "A same-column edge must loop through the gutter to its right");
 assert.ok(routed[3].bow >= Math.min(routed[3].x1, routed[3].x2) + 8
@@ -137,6 +242,7 @@ assert.ok(routed.slice(0, 2).every(e => e.cx == null && e.bow == null),
     "Forward edges must not receive curve routing controls");
 assert.ok(routed.slice(0, 2).every(e => e.xc == null),
     "Live forward edges must not collapse into shared orthogonal channels");
+assert.equal(routed[1].via, undefined, "An adjacent-column edge has no column to cross");
 
 // ── Path shape ──
 
@@ -210,6 +316,8 @@ assert.match(haloBlock, /stroke-width:\s*4(?:\.\d+)?/,
     "Edges need a surface-colored halo so crossings remain visually separable");
 assert.match(style, /\.lin-grid\s*\{[^}]*column-gap:/,
     "The grid must reserve a column gap wide enough to route edges through");
+const colGap = Number(style.match(/\.lin-col\s*\{[^}]*gap:\s*([\d.]+)rem/)?.[1]);
+assert.ok(colGap >= 0.7, `Cards need a row gap of at least 0.7rem for a crossing edge to pass between them (found ${colGap}rem)`);
 assert.match(style, /#lin-arrow path\s*\{[^}]*fill:/, "Traced edges must carry a direction arrow");
 
 console.log("lineage edge routing tests passed");

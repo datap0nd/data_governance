@@ -4273,7 +4273,10 @@ button.btn-danger-outline:hover {
     display: grid; gap: 2rem; column-gap: 3.5rem; min-width: 700px;
     align-items: start; position: relative; z-index: 1;
 }
-.lin-col { display: flex; flex-direction: column; gap: 0.35rem; min-width: 0; transition: opacity 0.3s ease; }
+.lin-col {
+    /* The row gap leaves room for a multi-column edge to pass between two cards. */
+    display: flex; flex-direction: column; gap: 0.75rem; min-width: 0; transition: opacity 0.3s ease;
+}
 .lin-col-hdr {
     font-size: 0.62rem; text-transform: uppercase;
     letter-spacing: 0.06em; color: var(--text-dim);
@@ -4589,6 +4592,10 @@ button.btn-danger-outline:hover {
     background: var(--surface);
     color: var(--text);
     box-shadow: 0 14px 38px rgba(0, 0, 0, 0.32);
+}
+.lin-edge-tooltip-meta {
+    margin-top: 0.45rem; padding-top: 0.35rem; border-top: 1px solid var(--border);
+    font-size: 0.66rem; color: var(--text-dim); white-space: normal;
 }
 .lin-edge-tooltip[hidden], .lin-sample-popover[hidden] { display: none; }
 .lin-sample-head {

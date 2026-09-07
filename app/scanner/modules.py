@@ -74,7 +74,10 @@ MODULE_DEFINITIONS = (
         "description": (
             "Uses the configured local Qwen model to explain the business purpose "
             "and exact joins, columns, filters, and transformations behind PostgreSQL "
-            "and Power BI lineage connections."
+            "and Power BI lineage connections. Each answer is checked against a "
+            "digest of the SQL or Power Query definition; generic answers are "
+            "retried once with the exact gaps and otherwise replaced by a "
+            "definition-derived description."
         ),
         "scans": "Pipeline dependency edges, SQL/TMDL definitions, schemas, and bounded row evidence.",
         "prerequisites": "Local AI mode, the Pipeline explanations feature, and read-only PostgreSQL access.",

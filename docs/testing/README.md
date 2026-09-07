@@ -9,6 +9,8 @@ This is a standing instruction from the repository owner, recorded in
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-09-07: Pipeline explanation quality gate | [Test plan](releases/2026-09-07-pipeline-explanation-quality/test-plan.md) | [Test report](releases/2026-09-07-pipeline-explanation-quality/test-report.md) |
+| 2026-09-07: Pipelines edges routed around cards | [Test plan](releases/2026-09-07-pipeline-edge-routing/test-plan.md) | [Test report](releases/2026-09-07-pipeline-edge-routing/test-report.md) |
 | 2026-09-07: GSCM bookmark fallback navigation and import suggestion | [Test plan](releases/2026-09-07-gscm-bookmark-fallback/test-plan.md) | [Test report](releases/2026-09-07-gscm-bookmark-fallback/test-report.md) |
 | 2026-09-06: GSCM bookmark recording | [Test plan](releases/2026-09-06-gscm-bookmark-recording/test-plan.md) | [Test report](releases/2026-09-06-gscm-bookmark-recording/test-report.md) |
 | 2026-09-06: Luna GSCM investigation prompt | [Test plan](releases/2026-09-06-luna-gscm-probe/test-plan.md) | [Test report](releases/2026-09-06-luna-gscm-probe/test-report.md) |

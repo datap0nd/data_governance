@@ -8599,18 +8599,24 @@ function _buildLinGraph(data, visualNodes, fieldsByTable, tableNodes, sourceNode
     const fwd = new Map(), bwd = new Map(), svgEdges = [];
     const sourceById = new Map((data.sources || []).map(item => [Number(item.id), item]));
     const upstreamById = new Map((data.upstreams || []).map(item => [Number(item.id), item]));
-    const edgeMeta = (a, b, insight, fallback) => ({
+    const insightsUnavailable = Boolean(data.edge_insights_unavailable);
+    const noInsightNote = insightsUnavailable
+        ? "The Pipeline Insights cache could not be read, so no explanation is available; review the server log."
+        : "No cached explanation exists for this connection; run Pipeline explanations from Scanner.";
+    const edgeMeta = (a, b, insight, fallback, explainable = false) => ({
         key: insight?.key || `${a}->${b}`,
+        explainable: Boolean(explainable || insight),
         text: insight?.text || fallback || `${a} supplies data to ${b}.`,
-        origin: insight?.origin || "fallback",
+        origin: insight?.origin || (insight ? "fallback" : "none"),
         confidence: insight?.confidence || null,
         generated_at: insight?.generated_at || null,
         stale: Boolean(insight?.stale),
+        error_code: insight?.error_code || null,
     });
-    function add(a, b, svg, tentative = false, insight = null, fallback = "") {
+    function add(a, b, svg, tentative = false, insight = null, fallback = "", explainable = false) {
         if (!fwd.has(a)) fwd.set(a, new Set()); fwd.get(a).add(b);
         if (!bwd.has(b)) bwd.set(b, new Set()); bwd.get(b).add(a);
-        if (svg) svgEdges.push({ from: a, to: b, tentative, ...edgeMeta(a, b, insight, fallback) });
+        if (svg) svgEdges.push({ from: a, to: b, tentative, ...edgeMeta(a, b, insight, fallback, explainable) });
     }
     // Field -> Visual (detail)
     for (const v of visualNodes) for (const fk of v.fields) add(`field-${fk}`, v.id, false);
@@ -8622,7 +8628,8 @@ function _buildLinGraph(data, visualNodes, fieldsByTable, tableNodes, sourceNode
         if (!ptDone.has(k)) {
             ptDone.add(k);
             add(`table-${tbl}`, `page-${v.page}`, true, false, null,
-                `${tbl} provides fields used on the ${v.page} report page.`);
+                `The ${tbl} table supplies the fields used by visuals on the ${v.page} page: `
+                + `${[...new Set(visualNodes.filter(x => x.page === v.page).flatMap(x => x.fields).filter(f => f.startsWith(`${tbl}.`)).map(f => f.split(".").slice(1).join(".")))].join(", ") || "no named fields"}.`);
         }
     }
     // Table -> Field (detail)
@@ -8631,14 +8638,16 @@ function _buildLinGraph(data, visualNodes, fieldsByTable, tableNodes, sourceNode
     for (const t of tableNodes) if (t.source_id) {
         const source = sourceById.get(Number(t.source_id));
         add(`source-${t.source_id}`, `table-${t.name}`, true, false, t.edge_insight,
-            `${source?.name || `Source ${t.source_id}`} supplies data to the ${t.name} Power BI table.`);
+            `The Power BI table ${t.name} is loaded from ${source?.name || `source ${t.source_id}`}`
+            + `${(fieldsByTable.get(t.name) || []).length ? ` and exposes ${(fieldsByTable.get(t.name) || []).map(f => f.field).join(", ")}` : ""}. ${noInsightNote}`, true);
     }
     // Upstream dependency -> target source (upstream table -> MV) (SVG)
     for (const d of (data.source_deps || [])) {
         const from = sourceById.get(Number(d.depends_on_id));
         const to = sourceById.get(Number(d.source_id));
         add(`source-${d.depends_on_id}`, `source-${d.source_id}`, true, false, d.edge_insight,
-            `${from?.name || d.depends_on_name || `Source ${d.depends_on_id}`} supplies data used to build ${to?.name || `source ${d.source_id}`}.`);
+            `PostgreSQL dependency discovery shows that ${to?.name || `source ${d.source_id}`} is built from `
+            + `${from?.name || d.depends_on_name || `source ${d.depends_on_id}`}. ${noInsightNote}`, true);
     }
     // Flow -> target source (SVG)
     for (const flow of (data.flows || [])) {
@@ -8651,7 +8660,12 @@ function _buildLinGraph(data, visualNodes, fieldsByTable, tableNodes, sourceNode
                     `flow-${flow.id}`,
                     `source-${sourceId}`,
                     null,
-                    `${flow.name || `Flow ${flow.id}`} loads data into ${target?.name || `source ${sourceId}`}.`,
+                    `The Flow ${flow.name || `Flow ${flow.id}`} ${flow.executable === false ? "may load" : "loads"} `
+                    + `${flow.target_kind === "file" ? `the file ${flow.target?.filename || flow.filename_template || "it produces"}` : `${[flow.sql_schema, flow.sql_table].filter(Boolean).join(".") || "its SQL output"}`}`
+                    + ` into ${target?.name || `source ${sourceId}`}`
+                    + `${flow.last_success_at ? `; last successful load ${timeAgo(flow.last_success_at)}` : "; it has never loaded successfully"}`
+                    + `${flow.last_status ? ` (latest run ${String(flow.last_status).replaceAll("_", " ")})` : ""}.`
+                    + `${flow.executable === false ? " This is a filename match only, not a confirmed link." : ""}`,
                 ),
             );
         }
@@ -8660,7 +8674,10 @@ function _buildLinGraph(data, visualNodes, fieldsByTable, tableNodes, sourceNode
     for (const s of sourceNodes) if (s.upstream_id) {
         const upstream = upstreamById.get(Number(s.upstream_id));
         add(`upstream-${s.upstream_id}`, `source-${s.id}`, true, false, null,
-            `${upstream?.name || `Upstream system ${s.upstream_id}`} provides data to ${s.name || `source ${s.id}`}.`);
+            `${s.name || `Source ${s.id}`} originates from the upstream system ${upstream?.name || `Upstream system ${s.upstream_id}`}`
+            + `${upstream?.refresh_day ? `, which refreshes on ${upstream.refresh_day}` : ""}`
+            + `${s.last_data_at ? `; the source last received data ${timeAgo(s.last_data_at)}` : ""}.`
+            + " Upstream links are recorded manually under Sources, so no SQL-level explanation applies.");
     }
 
     window._linFwd = fwd;
@@ -8676,6 +8693,9 @@ const LIN_EDGE_STUB = 8;      // keep channels clear of the column edges
 const LIN_EDGE_LANE_GAP = 6;  // vertical clearance before two runs share a lane
 const LIN_EDGE_LANE_MIN = 4;  // narrowest usable spacing between channels
 const LIN_EDGE_PORT_GAP = 6;  // preferred spacing between ports on one card
+const LIN_EDGE_BAND_PAD = 2.5; // clearance between a crossing and the cards beside it
+const LIN_EDGE_BAND_MIN = 4;   // narrowest card gap an edge may cross through
+const LIN_EDGE_BAND_FLOOR = 18; // how far below a column's last card crossings may fan out
 const LIN_EDGE_ARROW = '<defs><marker id="lin-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto"><path d="M1,1.2 L7,4 L1,6.8 Z"/></marker></defs>';
 
 let _linSettleTimer = null;
@@ -8714,6 +8734,18 @@ function _linClamp(n, min, max) { return Math.min(Math.max(n, min), max); }
 function _linEdgePath(e) {
     const x1 = _linRound(e.x1), y1 = _linRound(e.y1);
     const x2 = _linRound(e.x2), y2 = _linRound(e.y2);
+    if (e.via && e.via.length) {
+        // A multi-column edge fans through each gutter and crosses every
+        // intermediate column flat, inside a gap that holds no card.
+        let d = `M${x1},${y1}`;
+        let cx = x1, cy = y1;
+        for (const v of e.via) {
+            const left = _linRound(v.left), right = _linRound(v.right), y = _linRound(v.y);
+            d += _linGutterCurve(cx, cy, left, y) + ` L${right},${y}`;
+            cx = right; cy = y;
+        }
+        return d + _linGutterCurve(cx, cy, x2, y2);
+    }
     if (e.cx != null) {
         const cx = _linRound(e.cx);
         return `M${x1},${y1} C${cx},${y1} ${cx},${y2} ${x2},${y2}`;
@@ -8734,6 +8766,81 @@ function _linEdgePath(e) {
         + ` Q${xc},${y1} ${xc},${_linRound(y1 + dir * r)}`
         + ` L${xc},${_linRound(y2 - dir * r)}`
         + ` Q${xc},${y2} ${_linRound(xc + r)},${y2} L${x2},${y2}`;
+}
+
+/** Smooth monotone hop across one gutter. The curve leaves and arrives flat,
+ *  so it never strays outside the rectangle spanned by its two endpoints. */
+function _linGutterCurve(ax, ay, bx, by) {
+    const x2 = _linRound(bx), y2 = _linRound(by);
+    if (Math.abs(by - ay) < 1.5) return ` L${x2},${y2}`;
+    const span = Math.max(0, bx - ax);
+    const handle = _linClamp(span * 0.42, Math.min(18, span / 2), Math.min(96, span / 2));
+    return ` C${_linRound(ax + handle)},${_linRound(ay)} ${_linRound(bx - handle)},${y2} ${x2},${y2}`;
+}
+
+/** Horizontal bands of one column that hold no card: the gaps between its
+ *  stacked children and the open space below the last one. `floor` bounds
+ *  that last band so crossings never leave the drawing. */
+function _linColumnBands(rects, floor) {
+    const sorted = rects.filter(r => r.bottom - r.top >= 2).sort((a, b) => a.top - b.top);
+    const bands = [];
+    let occupied = null;
+    for (const r of sorted) {
+        if (occupied !== null) {
+            const top = occupied + LIN_EDGE_BAND_PAD, bottom = r.top - LIN_EDGE_BAND_PAD;
+            if (bottom - top >= LIN_EDGE_BAND_MIN) bands.push({ top, bottom });
+        }
+        occupied = occupied === null ? r.bottom : Math.max(occupied, r.bottom);
+    }
+    const open = (occupied === null ? 0 : occupied) + LIN_EDGE_BAND_PAD;
+    bands.push({ top: open, bottom: Math.max(open, floor == null ? open + LIN_EDGE_BAND_FLOOR : floor) });
+    return bands;
+}
+
+/** Choose, for every column a multi-column edge must cross, the free band
+ *  nearest to where a straight line would pass, then spread edges that share
+ *  a band so they stay distinguishable. */
+function _linAssignCrossings(edges, colBounds) {
+    const groups = new Map();
+    for (const e of edges) {
+        e.via = [];
+        for (let k = e.ci + 1; k < e.cj; k++) {
+            const column = colBounds[k];
+            if (!column) continue;
+            const bands = column.bands && column.bands.length ? column.bands : null;
+            const want = e.y1 + (e.y2 - e.y1) * (k - e.ci) / (e.cj - e.ci);
+            let pick = null, pickIndex = -1, best = Infinity;
+            (bands || []).forEach((band, index) => {
+                const dist = want < band.top ? band.top - want : want > band.bottom ? want - band.bottom : 0;
+                if (dist < best) { best = dist; pick = band; pickIndex = index; }
+            });
+            const y = pick ? _linClamp(want, pick.top, pick.bottom) : want;
+            const via = { left: column.left, right: column.right, y, band: pick, ci: k };
+            e.via.push(via);
+            if (pick) {
+                const key = `${k}:${pickIndex}`;
+                if (!groups.has(key)) groups.set(key, []);
+                groups.get(key).push({ edge: e, via, index: e.via.length - 1 });
+            }
+        }
+    }
+    for (const group of groups.values()) {
+        if (group.length < 2) continue;
+        // Order by the y each edge arrives from, so lanes do not cross inside the gap.
+        group.sort((a, b) => {
+            const ay = a.index ? a.edge.via[a.index - 1].y : a.edge.y1;
+            const by = b.index ? b.edge.via[b.index - 1].y : b.edge.y1;
+            return ay - by || a.edge.y2 - b.edge.y2 || String(a.edge.from).localeCompare(String(b.edge.from));
+        });
+        const band = group[0].via.band;
+        const center = group.reduce((sum, g) => sum + g.via.y, 0) / group.length;
+        const room = Math.max(0, Math.min(center - band.top, band.bottom - center));
+        const step = Math.min(LIN_EDGE_PORT_GAP, 2 * room / (group.length - 1));
+        group.forEach((g, i) => {
+            g.via.y = _linClamp(center + (i - (group.length - 1) / 2) * step, band.top, band.bottom);
+        });
+    }
+    return edges;
 }
 
 /** Give every vertical run in a gutter its own channel: greedily pack the runs
@@ -8820,6 +8927,7 @@ function _linRouteEdges(edges, colBounds) {
     _linAssignPorts(edges);
 
     const byCurvePair = new Map();
+    const crossing = [];
     for (const e of edges) {
         delete e.xc;
         delete e.cx;
@@ -8827,7 +8935,10 @@ function _linRouteEdges(edges, colBounds) {
         delete e.c1x;
         delete e.c2x;
         delete e.lane;
-        if (e.cj > e.ci) {
+        delete e.via;
+        if (e.cj > e.ci + 1) {
+            crossing.push(e);
+        } else if (e.cj > e.ci) {
             const span = Math.max(0, e.x2 - e.x1);
             const handle = _linClamp(
                 span * (e.cj === e.ci + 1 ? 0.42 : 0.24),
@@ -8842,6 +8953,8 @@ function _linRouteEdges(edges, colBounds) {
             byCurvePair.get(key).push(e);
         }
     }
+
+    _linAssignCrossings(crossing, colBounds);
 
     for (const group of byCurvePair.values()) {
         const lanes = _linAssignCurveLanes(group);
@@ -8883,10 +8996,14 @@ function _drawLinEdges() {
     // Column bounds define the routing gutters.
     const colEls = [...wrap.querySelectorAll(".lin-col")].filter(c => c.offsetParent !== null);
     const colIndex = new Map();
+    const floor = wrap.scrollHeight - LIN_EDGE_BAND_PAD;
     const colBounds = colEls.map((c, i) => {
         colIndex.set(c, i);
         const r = c.getBoundingClientRect();
-        return { left: r.left + ox, right: r.right + ox };
+        const rects = [...c.children].map(child => child.getBoundingClientRect())
+            .filter(cr => cr.width >= 2)
+            .map(cr => ({ top: cr.top + oy, bottom: cr.bottom + oy }));
+        return { left: r.left + ox, right: r.right + ox, bands: _linColumnBands(rects, floor) };
     });
 
     const highlighted = window._linHL || null;
@@ -8909,6 +9026,7 @@ function _drawLinEdges() {
             from: e.from, to: e.to, hl: !!highlighted, tentative: !!e.tentative,
             key: e.key, text: e.text, origin: e.origin,
             confidence: e.confidence, generated_at: e.generated_at, stale: e.stale,
+            error_code: e.error_code, explainable: e.explainable,
             x1: fr.right + ox, y1: fromBand.y + oy,
             x2: (ci === cj ? tr.right : tr.left) + ox, y2: toBand.y + oy,
             y1min: fromBand.top + oy, y1max: fromBand.bottom + oy,
@@ -8945,6 +9063,8 @@ function _drawLinEdges() {
         if (e.confidence) hit.dataset.edgeConfidence = e.confidence;
         if (e.generated_at) hit.dataset.edgeGeneratedAt = e.generated_at;
         hit.dataset.edgeStale = e.stale ? "true" : "false";
+        if (e.error_code) hit.dataset.edgeError = e.error_code;
+        hit.dataset.edgeExplainable = e.explainable ? "true" : "false";
         svg.appendChild(hit);
     }
 }
@@ -8965,10 +9085,33 @@ function _linPositionFloating(element, rect, pointer = null) {
     element.style.top = `${Math.max(margin, Math.min(desiredTop, window.innerHeight - element.offsetHeight - margin))}px`;
 }
 
+/** One-line provenance so an analyst can tell validated AI text from a
+ *  definition-derived fallback, and see why the AI text is missing. */
+function _linEdgeProvenance(dataset) {
+    const origin = dataset.edgeOrigin || "none";
+    if (origin === "ai") {
+        const when = dataset.edgeGeneratedAt ? `, generated ${timeAgo(dataset.edgeGeneratedAt)}` : "";
+        const stale = dataset.edgeStale === "true" ? " · definition changed since; rerun Pipeline explanations" : "";
+        return `Local AI explanation, ${dataset.edgeConfidence || "unrated"} confidence${when}${stale}`;
+    }
+    if (origin === "fallback") {
+        const reason = String(dataset.edgeError || "").replaceAll("_", " ");
+        return `Derived from the stored definition; no validated AI explanation${reason ? ` (${reason})` : ""}`;
+    }
+    if (dataset.edgeExplainable === "true") {
+        return "No cached explanation yet; run Pipeline explanations from Scanner to generate one";
+    }
+    return "Structural link only; this connection type has no SQL or Power Query definition to explain";
+}
+
 function _linShowEdgeTooltip(hit, event = null) {
     const tooltip = document.getElementById("lin-edge-tooltip");
     if (!tooltip || !hit?.dataset.edgeText) return;
     tooltip.textContent = hit.dataset.edgeText;
+    const meta = document.createElement("div");
+    meta.className = "lin-edge-tooltip-meta";
+    meta.textContent = _linEdgeProvenance(hit.dataset);
+    tooltip.appendChild(meta);
     tooltip.dataset.edgeKey = hit.dataset.edgeKey || "";
     tooltip.hidden = false;
     _linPositionFloating(tooltip, hit.getBoundingClientRect(), event);
@@ -9993,7 +10136,7 @@ async function renderAISettings() {
                         </label>
                         <label class="ai-feature-row">
                             <input id="ai-feature-pipeline-explanations" type="checkbox" ${checked(settings.pipeline_explanations_enabled)}>
-                            <span><strong>Pipeline connection explanations</strong><small>Explain the business purpose and exact joins, columns, filters, and transformations behind PostgreSQL dependency and semantic-model edges.</small></span>
+                            <span><strong>Pipeline connection explanations</strong><small>Explain the business purpose and exact joins, columns, filters, and transformations behind PostgreSQL dependency and semantic-model edges. Answers that skip an evidenced join, filter, or column are rejected and retried once; the fallback text is derived from the SQL definition itself.</small></span>
                         </label>
                     </div>
                 </section>

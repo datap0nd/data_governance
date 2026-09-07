@@ -513,3 +513,283 @@ def test_deterministic_explanation_is_two_paragraphs_and_discloses_missing_detai
     assert text.count("\n\n") == 1
     assert "PostgreSQL dependency discovery" in text
     assert "exact join columns" in text
+
+
+# ── Explanation quality gate ──
+
+from app import pipeline_insights_quality as quality  # noqa: E402
+
+
+_JOINED_SQL = """
+SELECT p.product_name, r.region_name, sum(s.amount) AS total_amount
+  FROM public.sales s
+  LEFT JOIN public.products p ON p.product_id = s.product_id
+  JOIN public.regions r USING (region_id)
+ WHERE s.is_active = true AND s.sale_date >= '2024-01-01'
+ GROUP BY p.product_name, r.region_name
+"""
+
+
+def _joined_candidate():
+    candidate = _candidate()
+    candidate["definition"] = _JOINED_SQL
+    candidate["to_name"] = "public.mv_sales_summary"
+    candidate["source_schema"] = [{"name": "product_id", "type": "integer"}, {"name": "product_name", "type": "text"}]
+    candidate["target_schema"] = [{"name": "product_name", "type": "text"}, {"name": "region_name", "type": "text"}, {"name": "total_amount", "type": "numeric"}]
+    candidate["related_relations"] = [
+        {"name": "public.sales", "columns": [{"name": "product_id", "type": "integer"}, {"name": "amount", "type": "numeric"}, {"name": "is_active", "type": "boolean"}, {"name": "sale_date", "type": "date"}, {"name": "region_id", "type": "integer"}]},
+        {"name": "public.regions", "columns": [{"name": "region_id", "type": "integer"}, {"name": "region_name", "type": "text"}]},
+    ]
+    candidate["evidence_digest"] = quality.evidence_digest(candidate)
+    return candidate
+
+
+def test_sql_facts_extract_joins_filters_grouping_and_columns():
+    facts = quality.sql_facts(_JOINED_SQL)
+    assert facts["base_relation"] == "public.sales"
+    assert [j["relation"] for j in facts["joins"]] == ["public.products", "public.regions"]
+    assert facts["joins"][0]["type"] == "LEFT JOIN"
+    assert facts["joins"][0]["columns"] == ["product_id"]
+    assert facts["joins"][1]["columns"] == ["region_id"]
+    assert facts["filters"][0]["columns"] == ["is_active", "sale_date"]
+    assert facts["group_by"] == ["product_name", "region_name"]
+    assert facts["aggregates"] == ["SUM"]
+    assert quality.sql_facts("")["has_definition"] is False
+
+
+def test_m_facts_extract_power_query_steps():
+    facts = quality.m_facts(
+        'let\n Source = PostgreSQL.Database("h", "d"),\n'
+        ' Rows = Table.SelectRows(Source, each [is_active] = true and [amount] > 0),\n'
+        ' Fewer = Table.RemoveColumns(Rows,{"note"}),\n'
+        ' Calc = Table.AddColumn(Fewer, "Margin", each [amount] - [cost])\nin Calc'
+    )
+    assert facts["filters"][0]["columns"] == ["is_active", "amount"]
+    assert facts["calculations"] == ["Margin"]
+    assert facts["column_selection"] is True
+
+
+def test_generic_feeds_answer_is_rejected_with_specific_reasons():
+    candidate = _joined_candidate()
+    generic = scanner.ExplanationItem(
+        edge_key=candidate["edge_key"],
+        business_context="public.products supplies data to public.mv_sales_summary for reporting purposes.",
+        technical_logic="public.products feeds public.mv_sales_summary.",
+        confidence="high",
+        evidence_columns=[],
+    )
+    reasons = quality.assess_explanation(generic, candidate)
+    joined = " ".join(reasons)
+    assert "restates that one object feeds another" in joined
+    assert "never describes a join" in joined
+    assert "does not state the filter predicate" in joined
+    assert "evidence_columns is empty" in joined
+
+
+def test_specific_answer_covering_every_evidenced_operation_is_accepted():
+    candidate = _joined_candidate()
+    specific = scanner.ExplanationItem(
+        edge_key=candidate["edge_key"],
+        business_context="The products relation appears to supply product names for the regional sales summary used in sales reporting.",
+        technical_logic=(
+            "The materialized view starts from public.sales and LEFT JOINs public.products on product_id, "
+            "then joins public.regions using region_id. Rows are filtered where is_active is true and "
+            "sale_date is on or after 2024-01-01, then grouped by product_name and region_name with SUM of amount as total_amount."
+        ),
+        confidence="high",
+        evidence_columns=["product_id", "product_name", "is_active", "sale_date", "amount", "region_id"],
+    )
+    assert quality.assess_explanation(specific, candidate) == []
+    # An answer that names a column it never discusses is also rejected.
+    padded = specific.model_copy(update={"evidence_columns": [*specific.evidence_columns, "currency"]})
+    assert any("currency" in reason for reason in quality.assess_explanation(padded, candidate))
+
+
+def test_fallback_text_describes_joins_filters_and_the_reason_ai_text_is_missing():
+    candidate = _joined_candidate()
+    text = scanner.deterministic_text(candidate, "generic_output")
+    first, second = text.split("\n\n")
+    assert "LEFT join on p.product_id = s.product_id" in first
+    assert "using region_id" in first
+    assert "WHERE s.is_active = true AND s.sale_date >= '2024-01-01'" in first
+    assert "grouped by product_name, region_name using SUM" in first
+    assert "PostgreSQL dependency discovery" in first
+    assert "rejected because it did not describe the exact join columns" in second
+    assert "feature_disabled" not in text
+    assert "System > AI" in scanner.deterministic_text(candidate, "feature_disabled")
+    assert "no SQL definition" in scanner.deterministic_text({**candidate, "definition": ""}, None)
+
+
+def test_prompt_and_evidence_carry_the_definition_digest_and_requirements():
+    candidate = _joined_candidate()
+    evidence = scanner._candidate_evidence(candidate, {})
+    assert evidence["definition_facts"]["joins"][0]["relation"] == "public.products"
+    assert any("LEFT JOIN to public.products" in item for item in evidence["requirements"])
+    assert any("WHERE s.is_active" in item for item in evidence["requirements"])
+    assert "Table A feeds materialized view B" in scanner.SYSTEM_PROMPT
+    assert "previous_rejection" in scanner.SYSTEM_PROMPT
+    assert "requirements" in scanner.SYSTEM_PROMPT
+
+
+class _RevisingProvider:
+    """Answers generically first, then specifically once feedback arrives."""
+
+    def __init__(self, edge_key, *, revise=True):
+        self.edge_key = edge_key
+        self.revise = revise
+        self.calls = 0
+        self.feedback_seen = []
+
+    def _payload(self, messages, tools):
+        return {"model": "Qwen/test", "messages": messages, "tools": tools}
+
+    def complete(self, messages, _tools, **_kwargs):
+        self.calls += 1
+        evidence = json.loads(messages[-1]["content"].split("\n", 1)[1])
+        rejection = evidence[0].get("previous_rejection")
+        if rejection:
+            self.feedback_seen.append(rejection)
+        if rejection and self.revise:
+            answer = {
+                "business_context": "The products relation appears to supply product names for the regional sales summary used in sales reporting.",
+                "technical_logic": (
+                    "The materialized view starts from public.sales and LEFT JOINs public.products on product_id, "
+                    "then joins public.regions using region_id. Rows are filtered where is_active is true and "
+                    "sale_date is on or after 2024-01-01, then grouped by product_name and region_name with SUM of amount as total_amount."
+                ),
+                "evidence_columns": ["product_id", "product_name", "is_active", "sale_date", "amount", "region_id"],
+            }
+        else:
+            answer = {
+                "business_context": "public.products supplies data to public.mv_sales_summary for reporting purposes.",
+                "technical_logic": "public.products feeds public.mv_sales_summary.",
+                "evidence_columns": [],
+            }
+        return AssistantTurn(tool_calls=(ToolCall(
+            "call-1", "submit_pipeline_explanations",
+            {"explanations": [{"edge_key": self.edge_key, "confidence": "high", **answer}]},
+        ),))
+
+
+def _explanation_settings():
+    return replace(
+        environment_settings(), mode="qwen", endpoint="http://qwen.test/v1/chat/completions",
+        model="Qwen/test", pipeline_explanations_enabled=True,
+    )
+
+
+def _wire_candidate(monkeypatch, candidate):
+    # current_edge_insights() recomputes structural hashes from the loaded
+    # settings, so the hover path must see the same settings as the run.
+    monkeypatch.setattr(scanner, "load_runtime_settings", _explanation_settings)
+    monkeypatch.setattr(scanner, "build_edge_candidates", lambda **_kw: [dict(candidate)])
+    monkeypatch.setattr(scanner, "relation_schemas", lambda: {})
+    monkeypatch.setattr(scanner, "save_relation_schema", lambda *_a, **_kw: None)
+    monkeypatch.setattr(scanner, "scanner_job_heartbeat", lambda *_a, **_kw: None)
+    monkeypatch.setattr(scanner, "extract_relation", lambda *_a, **_kw: {
+        "status": "completed", "columns": [{"name": "product_name", "type": "text"}], "rows": [["x"]], "truncated": False,
+    })
+
+
+def test_generic_answer_is_retried_once_with_feedback_and_then_accepted(insights_store, monkeypatch):
+    candidate = _joined_candidate()
+    _wire_candidate(monkeypatch, candidate)
+    provider = _RevisingProvider(candidate["edge_key"])
+    result = scanner.run_pipeline_explanations(settings=_explanation_settings(), provider=provider)
+    assert result["status"] == "completed"
+    assert result["generated"] == 1 and result["fallbacks"] == 0
+    assert provider.calls == 2
+    assert any("never describes a join" in reason for reason in provider.feedback_seen[0])
+    assert provider.calls <= result["max_provider_calls"]
+    insights = scanner.current_edge_insights()[candidate["edge_key"]]
+    assert insights["origin"] == "ai" and insights["error_code"] is None
+    assert "LEFT JOINs public.products on product_id" in insights["text"]
+
+
+def test_persistently_generic_answer_falls_back_with_reason_and_breakdown(insights_store, monkeypatch):
+    candidate = _joined_candidate()
+    _wire_candidate(monkeypatch, candidate)
+    provider = _RevisingProvider(candidate["edge_key"], revise=False)
+    result = scanner.run_pipeline_explanations(settings=_explanation_settings(), provider=provider)
+    assert result["status"] == "failed"
+    assert provider.calls == 2
+    assert result["error_breakdown"] == {"generic_output": 1}
+    assert "rejected as too generic" in result["message"]
+    insights = scanner.current_edge_insights()[candidate["edge_key"]]
+    assert insights["origin"] == "fallback" and insights["error_code"] == "generic_output"
+    assert "LEFT join on p.product_id = s.product_id" in insights["text"]
+    assert "rejected because it did not describe" in insights["text"]
+
+
+def test_missing_explanations_report_why_the_feature_did_not_run(insights_store, monkeypatch):
+    candidate = _joined_candidate()
+    monkeypatch.setattr(scanner, "build_edge_candidates", lambda **_kw: [dict(candidate)])
+    disabled = replace(_explanation_settings(), pipeline_explanations_enabled=False)
+    monkeypatch.setattr(scanner, "load_runtime_settings", lambda: disabled)
+    insight = scanner.current_edge_insights()[candidate["edge_key"]]
+    assert insight["origin"] == "fallback"
+    assert insight["error_code"] == "feature_disabled"
+    assert "System > AI" in insight["text"]
+    monkeypatch.setattr(scanner, "load_runtime_settings", lambda: replace(disabled, mode="preview"))
+    assert scanner.current_edge_insights()[candidate["edge_key"]]["error_code"] == "preview_mode"
+
+
+def test_run_reads_missing_view_definition_live_and_caches_it(insights_store, monkeypatch):
+    candidate = _joined_candidate()
+    candidate["definition"] = ""
+    candidate["definition_hash"] = ""
+    target_key = candidate["target_identity"]["identity_key"]
+    monkeypatch.setattr(scanner, "relation_schemas", lambda: {})
+    monkeypatch.setattr(scanner, "save_relation_schema", lambda *_a, **_kw: None)
+    monkeypatch.setattr(scanner, "scanner_job_heartbeat", lambda *_a, **_kw: None)
+    monkeypatch.setattr(scanner, "extract_relation", lambda *_a, **_kw: {
+        "status": "completed", "columns": [], "rows": [], "truncated": False,
+    })
+    fetched = []
+
+    def fetch(identity):
+        fetched.append(identity["identity_key"])
+        return _JOINED_SQL
+
+    monkeypatch.setattr(scanner, "fetch_relation_definition", fetch)
+
+    def build(**kwargs):
+        definitions = kwargs.get("definitions") or {}
+        item = dict(candidate)
+        cached = definitions.get(target_key)
+        if cached and cached.get("definition"):
+            item["definition"] = cached["definition"]
+            item["definition_hash"] = cached["hash"]
+        item["evidence_digest"] = quality.evidence_digest(item)
+        return [item]
+
+    monkeypatch.setattr(scanner, "build_edge_candidates", build)
+    provider = _RevisingProvider(candidate["edge_key"])
+    result = scanner.run_pipeline_explanations(settings=_explanation_settings(), provider=provider)
+    assert fetched == [target_key]
+    assert result["fetched_definitions"] == 1
+    assert result["generated"] == 1
+    assert pipeline_insights.cached_definitions()[target_key]["definition"] == _JOINED_SQL
+    assert "missing view definition" in result["message"]
+    # The definition is now cached: a second run must not read it again.
+    scanner.run_pipeline_explanations(settings=_explanation_settings(), provider=provider)
+    assert fetched == [target_key]
+
+
+def test_sql_facts_read_pg_get_viewdef_style_parentheses_and_casts():
+    viewdef = (
+        " SELECT p.product_name, sum(s.amount) AS total_amount\n"
+        "   FROM ((public.sales s\n"
+        "     LEFT JOIN public.products p ON ((p.product_id = s.product_id)))\n"
+        "     JOIN public.regions r ON ((r.region_id = s.region_id)))\n"
+        "  WHERE ((s.is_active = true) AND (s.sale_date >= '2024-01-01'::date) "
+        "AND (s.channel = ANY (ARRAY['web'::text, 'store'::text])))\n"
+        "  GROUP BY p.product_name;"
+    )
+    facts = quality.sql_facts(viewdef)
+    assert facts["base_relation"] == "public.sales"
+    assert facts["joins"][0]["condition"] == "p.product_id = s.product_id"
+    assert facts["joins"][1]["columns"] == ["region_id"]
+    assert facts["filters"][0]["columns"] == ["is_active", "sale_date", "channel"]
+    assert "'2024-01-01'::date" in facts["filters"][0]["predicate"]
+    assert facts["group_by"] == ["product_name"]
