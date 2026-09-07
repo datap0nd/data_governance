@@ -81,3 +81,38 @@ failures and retests, final CI run URL, tested head SHA and both OS job outcomes
 CI uses Python 3.13 on Ubuntu and Windows with Chromium, Chrome and Edge. Those
 results occur after this committed cutoff; the PR merge record supplies the
 actual main merge SHA. A successful merge is not a deployment or live test.
+
+## Follow-up evidence, 2026-09-07 20:43 UTC
+
+Final source revision: `642aa11f1e13a927074c9766b6e46a0dd656b0b1`.
+The original implementation/runtime is unchanged; three existing recording
+preview loaders now include `users.js` before `app.js`. The full local run
+continued while this fixture correction was made, so its initial failure and
+later focused retest are kept separate. Final CI will cover the complete final
+source tree. PR: [#87](https://github.com/datap0nd/data_governance/pull/87).
+
+- **Initial local failures, now resolved in the test environment:** two capacity
+  helper cases were blocked by the local Windows PowerShell script policy;
+  two XLSB cases failed because `pyxlsb` was absent. No source changes were
+  needed. Install the existing CI pin `pyxlsb==1.0.10`; pass
+  `PSExecutionPolicyPreference=Bypass` only to the test child process, without
+  changing registry or persistent policy. The two parameterized
+  `test_installer_slot_profiles_and_ids_match_server_without_running_services`
+  cases plus the XLSB nodes in `test_flow_excel_formats.py` and
+  `test_flow_local_file.py` then **passed: 4 in 2.05s**.
+- **Local browser prerequisite still unavailable:**
+  `test_same_portable_pipeline_runs_real_download_on_both_browsers[msedge]`
+  failed in **5.04s** because Playwright could not find the Edge distribution.
+  No new system browser was installed. CI installs Edge and must pass this case
+  before merge. Other skipped browser cases will be reported with full output.
+- **Introduced fixture issue, fixed:** the older managed-editor page omitted
+  the new Users module, producing `renderUsers is not defined`. Production
+  `index.html` already loaded it. All three existing recording-preview loaders
+  now include the dependency; the discarded dashboard preview remains absent.
+  `python -m pytest tests/test_managed_flow_editor.py::test_editor_method_output_and_failure_recovery tests/test_recording_playback_ui.py tests/test_templates_refresh_preview.py -q`
+  **passed: 11 in 22.28s** on the final source. `node --check` on those three
+  preview JavaScript files also passed.
+- All relative links in the feature inventory, backup discussion and release
+  plan/report resolve. Temporary test databases were not committed.
+- Full local aggregate results and final-head CI remain pending at this later
+  cutoff and must be added to the PR before merge.
