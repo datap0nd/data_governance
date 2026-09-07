@@ -8676,6 +8676,9 @@ const LIN_EDGE_STUB = 8;      // keep channels clear of the column edges
 const LIN_EDGE_LANE_GAP = 6;  // vertical clearance before two runs share a lane
 const LIN_EDGE_LANE_MIN = 4;  // narrowest usable spacing between channels
 const LIN_EDGE_PORT_GAP = 6;  // preferred spacing between ports on one card
+const LIN_EDGE_BAND_PAD = 2.5; // clearance between a crossing and the cards beside it
+const LIN_EDGE_BAND_MIN = 4;   // narrowest card gap an edge may cross through
+const LIN_EDGE_BAND_FLOOR = 18; // how far below a column's last card crossings may fan out
 const LIN_EDGE_ARROW = '<defs><marker id="lin-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto"><path d="M1,1.2 L7,4 L1,6.8 Z"/></marker></defs>';
 
 let _linSettleTimer = null;
@@ -8714,6 +8717,18 @@ function _linClamp(n, min, max) { return Math.min(Math.max(n, min), max); }
 function _linEdgePath(e) {
     const x1 = _linRound(e.x1), y1 = _linRound(e.y1);
     const x2 = _linRound(e.x2), y2 = _linRound(e.y2);
+    if (e.via && e.via.length) {
+        // A multi-column edge fans through each gutter and crosses every
+        // intermediate column flat, inside a gap that holds no card.
+        let d = `M${x1},${y1}`;
+        let cx = x1, cy = y1;
+        for (const v of e.via) {
+            const left = _linRound(v.left), right = _linRound(v.right), y = _linRound(v.y);
+            d += _linGutterCurve(cx, cy, left, y) + ` L${right},${y}`;
+            cx = right; cy = y;
+        }
+        return d + _linGutterCurve(cx, cy, x2, y2);
+    }
     if (e.cx != null) {
         const cx = _linRound(e.cx);
         return `M${x1},${y1} C${cx},${y1} ${cx},${y2} ${x2},${y2}`;
@@ -8734,6 +8749,81 @@ function _linEdgePath(e) {
         + ` Q${xc},${y1} ${xc},${_linRound(y1 + dir * r)}`
         + ` L${xc},${_linRound(y2 - dir * r)}`
         + ` Q${xc},${y2} ${_linRound(xc + r)},${y2} L${x2},${y2}`;
+}
+
+/** Smooth monotone hop across one gutter. The curve leaves and arrives flat,
+ *  so it never strays outside the rectangle spanned by its two endpoints. */
+function _linGutterCurve(ax, ay, bx, by) {
+    const x2 = _linRound(bx), y2 = _linRound(by);
+    if (Math.abs(by - ay) < 1.5) return ` L${x2},${y2}`;
+    const span = Math.max(0, bx - ax);
+    const handle = _linClamp(span * 0.42, Math.min(18, span / 2), Math.min(96, span / 2));
+    return ` C${_linRound(ax + handle)},${_linRound(ay)} ${_linRound(bx - handle)},${y2} ${x2},${y2}`;
+}
+
+/** Horizontal bands of one column that hold no card: the gaps between its
+ *  stacked children and the open space below the last one. `floor` bounds
+ *  that last band so crossings never leave the drawing. */
+function _linColumnBands(rects, floor) {
+    const sorted = rects.filter(r => r.bottom - r.top >= 2).sort((a, b) => a.top - b.top);
+    const bands = [];
+    let occupied = null;
+    for (const r of sorted) {
+        if (occupied !== null) {
+            const top = occupied + LIN_EDGE_BAND_PAD, bottom = r.top - LIN_EDGE_BAND_PAD;
+            if (bottom - top >= LIN_EDGE_BAND_MIN) bands.push({ top, bottom });
+        }
+        occupied = occupied === null ? r.bottom : Math.max(occupied, r.bottom);
+    }
+    const open = (occupied === null ? 0 : occupied) + LIN_EDGE_BAND_PAD;
+    bands.push({ top: open, bottom: Math.max(open, floor == null ? open + LIN_EDGE_BAND_FLOOR : floor) });
+    return bands;
+}
+
+/** Choose, for every column a multi-column edge must cross, the free band
+ *  nearest to where a straight line would pass, then spread edges that share
+ *  a band so they stay distinguishable. */
+function _linAssignCrossings(edges, colBounds) {
+    const groups = new Map();
+    for (const e of edges) {
+        e.via = [];
+        for (let k = e.ci + 1; k < e.cj; k++) {
+            const column = colBounds[k];
+            if (!column) continue;
+            const bands = column.bands && column.bands.length ? column.bands : null;
+            const want = e.y1 + (e.y2 - e.y1) * (k - e.ci) / (e.cj - e.ci);
+            let pick = null, pickIndex = -1, best = Infinity;
+            (bands || []).forEach((band, index) => {
+                const dist = want < band.top ? band.top - want : want > band.bottom ? want - band.bottom : 0;
+                if (dist < best) { best = dist; pick = band; pickIndex = index; }
+            });
+            const y = pick ? _linClamp(want, pick.top, pick.bottom) : want;
+            const via = { left: column.left, right: column.right, y, band: pick, ci: k };
+            e.via.push(via);
+            if (pick) {
+                const key = `${k}:${pickIndex}`;
+                if (!groups.has(key)) groups.set(key, []);
+                groups.get(key).push({ edge: e, via, index: e.via.length - 1 });
+            }
+        }
+    }
+    for (const group of groups.values()) {
+        if (group.length < 2) continue;
+        // Order by the y each edge arrives from, so lanes do not cross inside the gap.
+        group.sort((a, b) => {
+            const ay = a.index ? a.edge.via[a.index - 1].y : a.edge.y1;
+            const by = b.index ? b.edge.via[b.index - 1].y : b.edge.y1;
+            return ay - by || a.edge.y2 - b.edge.y2 || String(a.edge.from).localeCompare(String(b.edge.from));
+        });
+        const band = group[0].via.band;
+        const center = group.reduce((sum, g) => sum + g.via.y, 0) / group.length;
+        const room = Math.max(0, Math.min(center - band.top, band.bottom - center));
+        const step = Math.min(LIN_EDGE_PORT_GAP, 2 * room / (group.length - 1));
+        group.forEach((g, i) => {
+            g.via.y = _linClamp(center + (i - (group.length - 1) / 2) * step, band.top, band.bottom);
+        });
+    }
+    return edges;
 }
 
 /** Give every vertical run in a gutter its own channel: greedily pack the runs
@@ -8820,6 +8910,7 @@ function _linRouteEdges(edges, colBounds) {
     _linAssignPorts(edges);
 
     const byCurvePair = new Map();
+    const crossing = [];
     for (const e of edges) {
         delete e.xc;
         delete e.cx;
@@ -8827,7 +8918,10 @@ function _linRouteEdges(edges, colBounds) {
         delete e.c1x;
         delete e.c2x;
         delete e.lane;
-        if (e.cj > e.ci) {
+        delete e.via;
+        if (e.cj > e.ci + 1) {
+            crossing.push(e);
+        } else if (e.cj > e.ci) {
             const span = Math.max(0, e.x2 - e.x1);
             const handle = _linClamp(
                 span * (e.cj === e.ci + 1 ? 0.42 : 0.24),
@@ -8842,6 +8936,8 @@ function _linRouteEdges(edges, colBounds) {
             byCurvePair.get(key).push(e);
         }
     }
+
+    _linAssignCrossings(crossing, colBounds);
 
     for (const group of byCurvePair.values()) {
         const lanes = _linAssignCurveLanes(group);
@@ -8883,10 +8979,14 @@ function _drawLinEdges() {
     // Column bounds define the routing gutters.
     const colEls = [...wrap.querySelectorAll(".lin-col")].filter(c => c.offsetParent !== null);
     const colIndex = new Map();
+    const floor = wrap.scrollHeight - LIN_EDGE_BAND_PAD;
     const colBounds = colEls.map((c, i) => {
         colIndex.set(c, i);
         const r = c.getBoundingClientRect();
-        return { left: r.left + ox, right: r.right + ox };
+        const rects = [...c.children].map(child => child.getBoundingClientRect())
+            .filter(cr => cr.width >= 2)
+            .map(cr => ({ top: cr.top + oy, bottom: cr.bottom + oy }));
+        return { left: r.left + ox, right: r.right + ox, bands: _linColumnBands(rects, floor) };
     });
 
     const highlighted = window._linHL || null;

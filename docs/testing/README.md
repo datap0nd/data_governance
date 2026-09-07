@@ -9,6 +9,7 @@ This is a standing instruction from the repository owner, recorded in
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-09-07: Pipelines edges routed around cards | [Test plan](releases/2026-09-07-pipeline-edge-routing/test-plan.md) | [Test report](releases/2026-09-07-pipeline-edge-routing/test-report.md) |
 | 2026-09-06: GSCM bookmark recording | [Test plan](releases/2026-09-06-gscm-bookmark-recording/test-plan.md) | [Test report](releases/2026-09-06-gscm-bookmark-recording/test-report.md) |
 | 2026-09-06: Luna GSCM investigation prompt | [Test plan](releases/2026-09-06-luna-gscm-probe/test-plan.md) | [Test report](releases/2026-09-06-luna-gscm-probe/test-report.md) |
 | 2026-09-06: automatic Flow files | [Test plan](releases/2026-09-06-automatic-flow-files/test-plan.md) | [Test report](releases/2026-09-06-automatic-flow-files/test-report.md) |

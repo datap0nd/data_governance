@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>harness</title>
+<link rel="stylesheet" href="/static/style.css">
+<script>
+  window.fetch = async (url) => ({ ok: true, status: 200, json: async () => ({}), text: async () => "{}", headers: { get: () => "application/json" } });
+</script>
+</head>
+<body>
+<nav role="navigation"></nav>
+<main id="app"><div id="page-content"></div></main>
+<script src="/payload.js"></script>
+<script src="/static/app.js"></script>
+<script>
+  window.addEventListener("load", () => {
+    const cols = window.__cols || { upstreams: true, flows: true, mv_upstream: true, sources: true, tables: true, visuals: true };
+    sessionStorage.setItem("lineage_cols_v2", JSON.stringify(cols));
+    let c = document.getElementById("lineage-container");
+    if (!c) { c = document.createElement("div"); c.id = "lineage-container"; c.className = "lineage-container"; document.body.appendChild(c); }
+    document.querySelectorAll(".register-overlay").forEach(el => el.remove());
+    _renderLineageDiagram(window.__payload);
+  });
+</script>
+</body></html>
