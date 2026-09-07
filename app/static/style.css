@@ -4593,6 +4593,10 @@ button.btn-danger-outline:hover {
     color: var(--text);
     box-shadow: 0 14px 38px rgba(0, 0, 0, 0.32);
 }
+.lin-edge-tooltip-meta {
+    margin-top: 0.45rem; padding-top: 0.35rem; border-top: 1px solid var(--border);
+    font-size: 0.66rem; color: var(--text-dim); white-space: normal;
+}
 .lin-edge-tooltip[hidden], .lin-sample-popover[hidden] { display: none; }
 .lin-sample-head {
     display: flex;

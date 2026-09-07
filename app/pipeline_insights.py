@@ -22,7 +22,7 @@ AI_ROW_LIMIT = 100
 MAX_CELL_CHARS = 1024
 MAX_AI_CELL_CHARS = 512
 MAX_SAMPLE_BYTES = 128 * 1024
-PROMPT_VERSION = "pipeline-edge-v2-analyst"
+PROMPT_VERSION = "pipeline-edge-v3-grounded"
 RELATION_KINDS = frozenset({"table", "view", "materialized_view", "foreign_table"})
 
 
@@ -321,6 +321,66 @@ def relation_schemas() -> dict[str, list[dict]]:
             parsed = []
         result[row["identity_key"]] = parsed if isinstance(parsed, list) else []
     return result
+
+
+_MATVIEW_DEFINITION_SQL = """SELECT definition FROM pg_catalog.pg_matviews
+    WHERE schemaname=%s AND matviewname=%s"""
+_VIEW_DEFINITION_SQL = """SELECT pg_catalog.pg_get_viewdef(c.oid, true)
+      FROM pg_catalog.pg_class c
+      JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+     WHERE c.relkind='v' AND n.nspname=%s AND c.relname=%s"""
+
+
+def fetch_relation_definition(identity: dict) -> str | None:
+    """Read one view or materialized view definition through the read-only route.
+
+    Used only by the explanation run when the catalog scan has not stored a
+    definition yet, so an eligible connection is never explained from nothing.
+    """
+    kind = identity.get("relation_kind")
+    if kind not in {"view", "materialized_view"}:
+        return None
+    connection = _connection_for_relation(identity)
+    if connection is None:
+        return None
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            _MATVIEW_DEFINITION_SQL if kind == "materialized_view" else _VIEW_DEFINITION_SQL,
+            (identity["schema_name"], identity["relation_name"]),
+        )
+        row = cursor.fetchone()
+        text = str(row[0]).strip() if row and row[0] else ""
+        return text or None
+    except Exception:
+        return None
+    finally:
+        try:
+            connection.close()
+        except Exception:
+            pass
+
+
+def save_relation_definition(identity_key: str, definition: str, observed_at: str) -> str:
+    digest = hashlib.sha256(definition.encode("utf-8")).hexdigest()
+    with get_insights_db() as db:
+        db.execute(
+            """INSERT INTO relation_definitions(identity_key, definition, definition_hash, observed_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(identity_key) DO UPDATE SET
+                   definition=excluded.definition, definition_hash=excluded.definition_hash,
+                   observed_at=excluded.observed_at""",
+            (identity_key, definition, digest, observed_at),
+        )
+    return digest
+
+
+def cached_definitions() -> dict[str, dict]:
+    with get_insights_db() as db:
+        rows = db.execute(
+            "SELECT identity_key, definition, definition_hash FROM relation_definitions"
+        ).fetchall()
+    return {row["identity_key"]: {"definition": row["definition"], "hash": row["definition_hash"]} for row in rows}
 
 
 def cached_sample_for_source(source_id: int) -> dict | None:

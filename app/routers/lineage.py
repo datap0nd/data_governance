@@ -1,3 +1,4 @@
+import logging
 from fastapi import APIRouter, HTTPException
 from app.config import PBI_WORKSPACE, UPLOAD_PGHOST, UPLOAD_PGPORT
 from app.database import get_db
@@ -9,6 +10,8 @@ from app.flow_diagnostics import (
 from app.freshness_inheritance import source_freshness_payload
 from app.models import LineageEdge
 from app.source_identity import postgres_server_identity
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/lineage", tags=["lineage"])
 
@@ -354,11 +357,14 @@ def get_lineage_diagram(report_id: int):
 
         # Sidecar reads are local and bounded. If the rebuildable cache is
         # unavailable, deterministic UI descriptions remain sufficient.
+        insights_unavailable = False
         try:
             from app.scanner.pipeline_insights import current_edge_insights
             insights = current_edge_insights()
         except Exception:
+            logger.exception("Pipeline Insights cache could not be read for report %s", report_id)
             insights = {}
+            insights_unavailable = True
         by_report_table = {
             item.get("report_table_id"): item for item in insights.values()
             if item.get("report_table_id") is not None
@@ -374,7 +380,8 @@ def get_lineage_diagram(report_id: int):
             return {
                 key: item.get(key)
                 for key in (
-                    "key", "text", "origin", "confidence", "generated_at", "stale"
+                    "key", "text", "origin", "confidence", "generated_at", "stale",
+                    "error_code",
                 )
             }
         for table in tables:
@@ -402,6 +409,7 @@ def get_lineage_diagram(report_id: int):
         "tables": tables,
         "sources": sources,
         "source_deps": source_deps,
+        "edge_insights_unavailable": insights_unavailable,
         "flows": flows,
         "legacy_flow_suggestions": legacy_flow_suggestions,
         "flow_diagnostics": flow_diagnostics,

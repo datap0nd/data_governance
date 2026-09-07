@@ -44,6 +44,18 @@ assert.match(style, /\.lin-sample-scroll\s*\{[^}]*overflow:\s*auto/,
 assert.match(style, /\.lin-edge-tooltip\s*\{[^}]*white-space:\s*pre-line/,
     "analyst explanations must preserve their two-paragraph structure");
 
+assert.match(insightSource, /lin-edge-tooltip-meta/,
+    "the explanation tooltip must show its provenance line");
+assert.match(insightSource, /Derived from the stored definition; no validated AI explanation/,
+    "a fallback explanation must be labelled as definition-derived with its reason");
+assert.match(insightSource, /Local AI explanation, \$\{dataset\.edgeConfidence/,
+    "a validated AI explanation must show its confidence");
+assert.match(style, /\.lin-edge-tooltip-meta\s*\{/, "the provenance line needs its own muted style");
+assert.match(source, /run Pipeline explanations from Scanner/,
+    "connections without a cached explanation must say how to generate one");
+assert.doesNotMatch(source, /supplies data used to build \$\{/,
+    "the old one-line dependency description must not remain");
+
 assert.match(source, /Pipeline connection explanations/,
     "System AI settings must expose the independent feature toggle");
 assert.match(source, /exact joins, columns, filters, and transformations/,

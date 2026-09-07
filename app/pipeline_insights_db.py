@@ -45,6 +45,12 @@ CREATE TABLE IF NOT EXISTS relation_schemas (
     observed_at        TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS relation_definitions (
+    identity_key       TEXT PRIMARY KEY,
+    definition         TEXT NOT NULL,
+    definition_hash    TEXT NOT NULL,
+    observed_at        TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS edge_explanations (
     edge_key           TEXT PRIMARY KEY,
     edge_kind          TEXT NOT NULL,

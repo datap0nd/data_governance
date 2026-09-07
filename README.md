@@ -103,7 +103,12 @@ Pipeline Insights stores rebuildable 15-row PostgreSQL previews and validated
 two-paragraph, analyst-oriented connection explanations in `pipeline_insights.db`
 beside `governance.db`. Explanations describe the evidenced business purpose and
 the exact joins, columns, filters, and transformations; missing evidence is stated
-rather than guessed. Use
+rather than guessed. Every answer is checked against a mechanical digest of the
+SQL or Power Query definition (joins, join columns, WHERE predicates, grouping,
+calculated columns): an answer that skips any of them is sent back once with the
+exact gaps and, if still generic, replaced by a description derived from the
+definition itself that names the reason no AI text exists. Views whose SQL the
+catalog scan has not stored are read once through the read-only route. Use
 `DG_PIPELINE_INSIGHTS_DB_PATH` to place that non-backed-up sidecar elsewhere.
 The default weekly run is Sunday at 10:00 host time and is configurable under
 **System > Refresh Schedule**; both complete modules are also independently

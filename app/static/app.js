@@ -8599,18 +8599,24 @@ function _buildLinGraph(data, visualNodes, fieldsByTable, tableNodes, sourceNode
     const fwd = new Map(), bwd = new Map(), svgEdges = [];
     const sourceById = new Map((data.sources || []).map(item => [Number(item.id), item]));
     const upstreamById = new Map((data.upstreams || []).map(item => [Number(item.id), item]));
-    const edgeMeta = (a, b, insight, fallback) => ({
+    const insightsUnavailable = Boolean(data.edge_insights_unavailable);
+    const noInsightNote = insightsUnavailable
+        ? "The Pipeline Insights cache could not be read, so no explanation is available; review the server log."
+        : "No cached explanation exists for this connection; run Pipeline explanations from Scanner.";
+    const edgeMeta = (a, b, insight, fallback, explainable = false) => ({
         key: insight?.key || `${a}->${b}`,
+        explainable: Boolean(explainable || insight),
         text: insight?.text || fallback || `${a} supplies data to ${b}.`,
-        origin: insight?.origin || "fallback",
+        origin: insight?.origin || (insight ? "fallback" : "none"),
         confidence: insight?.confidence || null,
         generated_at: insight?.generated_at || null,
         stale: Boolean(insight?.stale),
+        error_code: insight?.error_code || null,
     });
-    function add(a, b, svg, tentative = false, insight = null, fallback = "") {
+    function add(a, b, svg, tentative = false, insight = null, fallback = "", explainable = false) {
         if (!fwd.has(a)) fwd.set(a, new Set()); fwd.get(a).add(b);
         if (!bwd.has(b)) bwd.set(b, new Set()); bwd.get(b).add(a);
-        if (svg) svgEdges.push({ from: a, to: b, tentative, ...edgeMeta(a, b, insight, fallback) });
+        if (svg) svgEdges.push({ from: a, to: b, tentative, ...edgeMeta(a, b, insight, fallback, explainable) });
     }
     // Field -> Visual (detail)
     for (const v of visualNodes) for (const fk of v.fields) add(`field-${fk}`, v.id, false);
@@ -8622,7 +8628,8 @@ function _buildLinGraph(data, visualNodes, fieldsByTable, tableNodes, sourceNode
         if (!ptDone.has(k)) {
             ptDone.add(k);
             add(`table-${tbl}`, `page-${v.page}`, true, false, null,
-                `${tbl} provides fields used on the ${v.page} report page.`);
+                `The ${tbl} table supplies the fields used by visuals on the ${v.page} page: `
+                + `${[...new Set(visualNodes.filter(x => x.page === v.page).flatMap(x => x.fields).filter(f => f.startsWith(`${tbl}.`)).map(f => f.split(".").slice(1).join(".")))].join(", ") || "no named fields"}.`);
         }
     }
     // Table -> Field (detail)
@@ -8631,14 +8638,16 @@ function _buildLinGraph(data, visualNodes, fieldsByTable, tableNodes, sourceNode
     for (const t of tableNodes) if (t.source_id) {
         const source = sourceById.get(Number(t.source_id));
         add(`source-${t.source_id}`, `table-${t.name}`, true, false, t.edge_insight,
-            `${source?.name || `Source ${t.source_id}`} supplies data to the ${t.name} Power BI table.`);
+            `The Power BI table ${t.name} is loaded from ${source?.name || `source ${t.source_id}`}`
+            + `${(fieldsByTable.get(t.name) || []).length ? ` and exposes ${(fieldsByTable.get(t.name) || []).map(f => f.field).join(", ")}` : ""}. ${noInsightNote}`, true);
     }
     // Upstream dependency -> target source (upstream table -> MV) (SVG)
     for (const d of (data.source_deps || [])) {
         const from = sourceById.get(Number(d.depends_on_id));
         const to = sourceById.get(Number(d.source_id));
         add(`source-${d.depends_on_id}`, `source-${d.source_id}`, true, false, d.edge_insight,
-            `${from?.name || d.depends_on_name || `Source ${d.depends_on_id}`} supplies data used to build ${to?.name || `source ${d.source_id}`}.`);
+            `PostgreSQL dependency discovery shows that ${to?.name || `source ${d.source_id}`} is built from `
+            + `${from?.name || d.depends_on_name || `source ${d.depends_on_id}`}. ${noInsightNote}`, true);
     }
     // Flow -> target source (SVG)
     for (const flow of (data.flows || [])) {
@@ -8651,7 +8660,12 @@ function _buildLinGraph(data, visualNodes, fieldsByTable, tableNodes, sourceNode
                     `flow-${flow.id}`,
                     `source-${sourceId}`,
                     null,
-                    `${flow.name || `Flow ${flow.id}`} loads data into ${target?.name || `source ${sourceId}`}.`,
+                    `The Flow ${flow.name || `Flow ${flow.id}`} ${flow.executable === false ? "may load" : "loads"} `
+                    + `${flow.target_kind === "file" ? `the file ${flow.target?.filename || flow.filename_template || "it produces"}` : `${[flow.sql_schema, flow.sql_table].filter(Boolean).join(".") || "its SQL output"}`}`
+                    + ` into ${target?.name || `source ${sourceId}`}`
+                    + `${flow.last_success_at ? `; last successful load ${timeAgo(flow.last_success_at)}` : "; it has never loaded successfully"}`
+                    + `${flow.last_status ? ` (latest run ${String(flow.last_status).replaceAll("_", " ")})` : ""}.`
+                    + `${flow.executable === false ? " This is a filename match only, not a confirmed link." : ""}`,
                 ),
             );
         }
@@ -8660,7 +8674,10 @@ function _buildLinGraph(data, visualNodes, fieldsByTable, tableNodes, sourceNode
     for (const s of sourceNodes) if (s.upstream_id) {
         const upstream = upstreamById.get(Number(s.upstream_id));
         add(`upstream-${s.upstream_id}`, `source-${s.id}`, true, false, null,
-            `${upstream?.name || `Upstream system ${s.upstream_id}`} provides data to ${s.name || `source ${s.id}`}.`);
+            `${s.name || `Source ${s.id}`} originates from the upstream system ${upstream?.name || `Upstream system ${s.upstream_id}`}`
+            + `${upstream?.refresh_day ? `, which refreshes on ${upstream.refresh_day}` : ""}`
+            + `${s.last_data_at ? `; the source last received data ${timeAgo(s.last_data_at)}` : ""}.`
+            + " Upstream links are recorded manually under Sources, so no SQL-level explanation applies.");
     }
 
     window._linFwd = fwd;
@@ -9009,6 +9026,7 @@ function _drawLinEdges() {
             from: e.from, to: e.to, hl: !!highlighted, tentative: !!e.tentative,
             key: e.key, text: e.text, origin: e.origin,
             confidence: e.confidence, generated_at: e.generated_at, stale: e.stale,
+            error_code: e.error_code, explainable: e.explainable,
             x1: fr.right + ox, y1: fromBand.y + oy,
             x2: (ci === cj ? tr.right : tr.left) + ox, y2: toBand.y + oy,
             y1min: fromBand.top + oy, y1max: fromBand.bottom + oy,
@@ -9045,6 +9063,8 @@ function _drawLinEdges() {
         if (e.confidence) hit.dataset.edgeConfidence = e.confidence;
         if (e.generated_at) hit.dataset.edgeGeneratedAt = e.generated_at;
         hit.dataset.edgeStale = e.stale ? "true" : "false";
+        if (e.error_code) hit.dataset.edgeError = e.error_code;
+        hit.dataset.edgeExplainable = e.explainable ? "true" : "false";
         svg.appendChild(hit);
     }
 }
@@ -9065,10 +9085,33 @@ function _linPositionFloating(element, rect, pointer = null) {
     element.style.top = `${Math.max(margin, Math.min(desiredTop, window.innerHeight - element.offsetHeight - margin))}px`;
 }
 
+/** One-line provenance so an analyst can tell validated AI text from a
+ *  definition-derived fallback, and see why the AI text is missing. */
+function _linEdgeProvenance(dataset) {
+    const origin = dataset.edgeOrigin || "none";
+    if (origin === "ai") {
+        const when = dataset.edgeGeneratedAt ? `, generated ${timeAgo(dataset.edgeGeneratedAt)}` : "";
+        const stale = dataset.edgeStale === "true" ? " · definition changed since; rerun Pipeline explanations" : "";
+        return `Local AI explanation, ${dataset.edgeConfidence || "unrated"} confidence${when}${stale}`;
+    }
+    if (origin === "fallback") {
+        const reason = String(dataset.edgeError || "").replaceAll("_", " ");
+        return `Derived from the stored definition; no validated AI explanation${reason ? ` (${reason})` : ""}`;
+    }
+    if (dataset.edgeExplainable === "true") {
+        return "No cached explanation yet; run Pipeline explanations from Scanner to generate one";
+    }
+    return "Structural link only; this connection type has no SQL or Power Query definition to explain";
+}
+
 function _linShowEdgeTooltip(hit, event = null) {
     const tooltip = document.getElementById("lin-edge-tooltip");
     if (!tooltip || !hit?.dataset.edgeText) return;
     tooltip.textContent = hit.dataset.edgeText;
+    const meta = document.createElement("div");
+    meta.className = "lin-edge-tooltip-meta";
+    meta.textContent = _linEdgeProvenance(hit.dataset);
+    tooltip.appendChild(meta);
     tooltip.dataset.edgeKey = hit.dataset.edgeKey || "";
     tooltip.hidden = false;
     _linPositionFloating(tooltip, hit.getBoundingClientRect(), event);
@@ -10093,7 +10136,7 @@ async function renderAISettings() {
                         </label>
                         <label class="ai-feature-row">
                             <input id="ai-feature-pipeline-explanations" type="checkbox" ${checked(settings.pipeline_explanations_enabled)}>
-                            <span><strong>Pipeline connection explanations</strong><small>Explain the business purpose and exact joins, columns, filters, and transformations behind PostgreSQL dependency and semantic-model edges.</small></span>
+                            <span><strong>Pipeline connection explanations</strong><small>Explain the business purpose and exact joins, columns, filters, and transformations behind PostgreSQL dependency and semantic-model edges. Answers that skip an evidenced join, filter, or column are rejected and retried once; the fallback text is derived from the SQL definition itself.</small></span>
                         </label>
                     </div>
                 </section>
