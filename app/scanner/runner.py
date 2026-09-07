@@ -1415,7 +1415,7 @@ def run_scan(
         scanner_jobs.heartbeat(
             operation_id,
             current_step="Evaluating governance checks",
-            message="Checking best practices, schedules, and documentation coverage.",
+            message="Checking schedules and documentation coverage.",
         )
         governance_results = {}
         governance_module_run_id = None
@@ -1423,13 +1423,6 @@ def run_scan(
             governance_module_run_id = scanner_modules.create_module_run(
                 "governance", scanner_job_id=operation_id, scan_run_id=scan_id
             )
-            try:
-                from app.routers.best_practices import run_best_practice_scan
-
-                governance_results["best_practices"] = run_best_practice_scan(persist=False)
-            except Exception as e:
-                governance_results["best_practices"] = {"status": "failed", "error": str(e)}
-                logger.exception("Best-practice scan failed: %s", e)
             try:
                 from app.routers.schedules import run_schedule_discrepancy_scan
 

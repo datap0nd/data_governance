@@ -18,7 +18,7 @@ def _fresh_database(monkeypatch):
 
 def _stub_scan_components(monkeypatch, pg_result, *, cron_result=None):
     from app import usage
-    from app.routers import best_practices, documentation, schedules
+    from app.routers import documentation, schedules
     from app.scanner import pg_cron, pg_deps
 
     observations = []
@@ -42,10 +42,6 @@ def _stub_scan_components(monkeypatch, pg_result, *, cron_result=None):
         observe("usage")
         return {"status": "completed"}
 
-    def best_practice_scan(persist=False):
-        observe("best_practices")
-        return {"status": "completed"}
-
     def schedule_scan(persist=True):
         observe("schedule_discrepancies")
         return {"status": "completed"}
@@ -60,7 +56,6 @@ def _stub_scan_components(monkeypatch, pg_result, *, cron_result=None):
     monkeypatch.setattr(pg_deps, "scan_pg_dependencies", scan_dependencies)
     monkeypatch.setattr(pg_cron, "scan_pg_cron", scan_schedules)
     monkeypatch.setattr(usage, "sync_usage_from_csv_if_configured", sync_usage)
-    monkeypatch.setattr(best_practices, "run_best_practice_scan", best_practice_scan)
     monkeypatch.setattr(schedules, "run_schedule_discrepancy_scan", schedule_scan)
     monkeypatch.setattr(
         documentation,

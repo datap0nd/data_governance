@@ -230,7 +230,25 @@ Metronome first calls the official JavaScript `visual.exportData` summarized exp
 
 The scheduler checks for due recurrences every minute and interprets the saved time in the Windows host's local timezone. Before every draft or send run, Metronome queries Power BI Service for the semantic model's latest refresh attempt using the same cached Microsoft account. The run continues only when the live status is `Completed`. A failed, cancelled, running, missing, or unavailable refresh check blocks the visual export and sends no alert data.
 
-Each recurrence has an alert owner. New recurrences default to the selected report's owner, and the owner's current email is resolved from Tools > Create Artifacts > People. The builder requires a valid People email before saving. When an actual send run fails before delivery is launched, Metronome sends that owner a separate failure email with the reason, latest refresh status when available, the report/page/visual, and a link to the Power BI report. Draft-test failures are recorded but do not notify the owner. Failure notifications use the same Outlook delivery path, so if Outlook itself is unavailable the notification attempt is recorded in the run detail but cannot be delivered by email.
+Each recurrence has an alert owner. New recurrences default to the selected report's owner, and the owner's current email is resolved from Users. The builder requires a valid user email before saving. When an actual send run fails before delivery is launched, Metronome sends that owner a separate failure email with the reason, latest refresh status when available, the report/page/visual, and a link to the Power BI report. Draft-test failures are recorded but do not notify the owner. Failure notifications use the same Outlook delivery path, so if Outlook itself is unavailable the notification attempt is recorded in the run detail but cannot be delivered by email.
+
+### Users and SQL identities
+
+Use **Users** in the main navigation to add, edit, search or delete BI and Business
+profiles. Name, role, email and an optional SQL username are managed together.
+Flows keep their existing owner-person association, so editing a profile updates
+the owner information without assigning the Flow to a new person. Deleting a
+user retains their Flows and makes those Flows unassigned.
+
+The SQL username is identity metadata for future table permissions. Saving it
+does not create a PostgreSQL role, connect as that user, or execute a GRANT.
+Create Artifacts now manages assets only. TMDL Checker is retired from navigation
+and scans; PBIX/TMDL parsing for report metadata and lineage remains active.
+The existing Dashboard is unchanged.
+
+See the [feature inventory](docs/metronome-feature-inventory.md),
+[release testing guide](docs/testing/releases/2026-09-08-users-refresh-reliability/test-plan.md),
+and [materialized-view backup discussion](docs/materialized-view-backup-options.md).
 
 `Create drafts` runs the complete refresh, export, and filtering path without sending alert emails, while `Run now` sends immediately after confirmation. Scheduled runs send automatically through the existing Outlook implementation.
 
@@ -255,6 +273,13 @@ direct-file output, but they are deliberately not run automatically.
 Executable Pipeline identity and governance for file-output Flows is a
 separate feature; this release does not change `included_flow_ids` or legacy
 source matching.
+
+Portable recorded-Flow recovery retains a confirmed SQL commit until every
+configured view finishes. `--retry-views` requires the matching SQL target and
+original ordered view list in both the journal and checkpoint. If a script was
+regenerated with a different plan, use the original script; missing, older or
+corrupt recovery records require reconciliation before rerunning. Do not delete
+them to bypass the SQL replay protection.
 
 ### 5. Run the scanner
 

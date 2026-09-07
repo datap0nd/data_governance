@@ -3158,7 +3158,7 @@ async function renderSources() {
         { key: "owner", label: "Owner", width: COL_W.md, render: s => {
             const knownOwner = people.some(p => p.name === s.owner);
             const currentOption = s.owner && !knownOwner
-                ? `<option value="${esc(s.owner)}" selected>${esc(s.owner)} (not in People)</option>`
+                ? `<option value="${esc(s.owner)}" selected>${esc(s.owner)} (not in Users)</option>`
                 : "";
             const opts = people.map(p => `<option value="${esc(p.name)}"${s.owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
             return `<select class="freq-select-inline source-owner-select" data-source-id="${s.id}" aria-label="Owner for ${esc(s._shortName)}"><option value="">--</option>${currentOption}${opts}</select>`;
@@ -4705,10 +4705,9 @@ async function _handleCreateSubmit(e) {
 }
 
 async function renderCreate() {
-    const [options, customEntries, people] = await Promise.all([
+    const [options, customEntries] = await Promise.all([
         api("/api/create/options"),
         api("/api/create/custom-entries"),
-        api("/api/people"),
     ]);
     window._createOptions = options;
 
@@ -4722,33 +4721,6 @@ async function renderCreate() {
             <button class="btn-sm btn-outline btn-danger-outline ce-delete-btn" data-id="${e.id}" data-type="${e.entity_type}">Delete</button>
         </div>` },
     ], customEntries) : '<div class="empty-state">No custom entries yet</div>';
-
-    const roles = ["BI", "Business"];
-    const roleOpts = roles.map(r => `<option value="${r}">${r}</option>`).join("");
-
-    const peopleRows = people.map(p => `<tr>
-        <td style="padding:0.35rem 0.5rem">${esc(p.name)}</td>
-        <td style="padding:0.35rem 0.5rem;color:var(--text-muted)">${esc(p.role)}</td>
-        <td style="padding:0.35rem 0.5rem"><button class="btn-sm btn-outline btn-danger-outline people-delete-btn" data-person-id="${p.id}">Delete</button></td>
-    </tr>`).join("");
-
-    const peopleContent = `
-        <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.75rem">
-            <input type="text" id="people-name-input" placeholder="Name" style="background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:0.3rem 0.5rem;font-size:0.82rem">
-            <select id="people-role-input" style="background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:0.3rem 0.5rem;font-size:0.82rem">
-                <option value="">Role...</option>${roleOpts}
-            </select>
-            <button id="btn-add-person" class="btn-sm">Add</button>
-        </div>
-        ${people.length > 0 ? `<table style="width:100%;border-collapse:collapse;font-size:0.82rem">
-            <thead><tr style="border-bottom:1px solid var(--border)">
-                <th style="text-align:left;padding:0.35rem 0.5rem;color:var(--text-dim);font-weight:500">Name</th>
-                <th style="text-align:left;padding:0.35rem 0.5rem;color:var(--text-dim);font-weight:500">Role</th>
-                <th style="padding:0.35rem 0.5rem;width:60px"></th>
-            </tr></thead>
-            <tbody>${peopleRows}</tbody>
-        </table>` : '<div style="color:var(--text-dim);font-size:0.82rem">No people added yet</div>'}
-    `;
 
     const assetsContent = `
         <div class="create-type-selector">
@@ -4778,31 +4750,14 @@ async function renderCreate() {
     return `
         <div class="page-header">
             <h1>Create Artifacts</h1>
-            <span class="subtitle">Manually add assets and people</span>
+            <span class="subtitle">Manually add reports, sources and upstream systems</span>
         </div>
 
-        <div class="create-tabs">
-            <button class="create-tab active" data-tab="assets">Assets</button>
-            <button class="create-tab" data-tab="people">People</button>
-        </div>
-
-        <div id="create-tab-assets" class="create-tab-content">${assetsContent}</div>
-        <div id="create-tab-people" class="create-tab-content" style="display:none">${peopleContent}</div>
+        ${assetsContent}
     `;
 }
 
 function bindCreatePage() {
-    // Tab switching
-    document.querySelectorAll('.create-tab').forEach(tab => {
-        tab.addEventListener('click', () => {
-            document.querySelectorAll('.create-tab').forEach(t => t.classList.remove('active'));
-            tab.classList.add('active');
-            document.querySelectorAll('.create-tab-content').forEach(c => c.style.display = 'none');
-            const target = document.getElementById('create-tab-' + tab.dataset.tab);
-            if (target) target.style.display = '';
-        });
-    });
-
     document.querySelectorAll('.create-type-btn').forEach(btn => {
         btn.addEventListener('click', () => {
             document.querySelectorAll('.create-type-btn').forEach(b => b.classList.remove('active'));
@@ -4823,40 +4778,6 @@ function bindCreatePage() {
                 container.innerHTML = '';
                 document.querySelectorAll('.create-type-btn').forEach(b => b.classList.remove('active'));
             });
-        });
-    });
-
-    // Add Person button
-    const addPersonBtn = document.getElementById('btn-add-person');
-    if (addPersonBtn) {
-        addPersonBtn.addEventListener('click', async () => {
-            const nameInput = document.getElementById('people-name-input');
-            const roleInput = document.getElementById('people-role-input');
-            const name = (nameInput.value || '').trim();
-            const role = roleInput.value;
-            if (!name) { toast('Name is required'); return; }
-            if (!role) { toast('Role is required'); return; }
-            try {
-                await apiPostJson('/api/people', { name, role });
-                toast('Person added');
-                navigate('create');
-            } catch (err) {
-                toast('Failed: ' + err.message);
-            }
-        });
-    }
-    // Delete person buttons
-    document.querySelectorAll('.people-delete-btn').forEach(btn => {
-        btn.addEventListener('click', async () => {
-            const personId = btn.dataset.personId;
-            if (!confirm('Delete this person?')) return;
-            try {
-                await fetch(`/api/people/${personId}`, { method: 'DELETE', headers: apiHeaders() });
-                toast('Person deleted');
-                navigate('create');
-            } catch (err) {
-                toast('Failed: ' + err.message);
-            }
         });
     });
 
@@ -5047,155 +4968,6 @@ function _showEditForm(type, id, entity) {
 }
 
 
-// ── Best Practices page ──
-
-function _bpSevBadge(sev) {
-    if (sev === "high") return '<span class="badge badge-red">high</span>';
-    if (sev === "medium") return '<span class="badge badge-yellow">medium</span>';
-    return '<span class="badge badge-muted">low</span>';
-}
-
-async function renderBestPractices() {
-    const [data, reports] = await Promise.all([
-        api("/api/best-practices"),
-        api("/api/reports"),
-    ]);
-    const findings = data.findings || [];
-
-    // Build report→owner lookup
-    const ownerMap = {};
-    const ownerSet = new Set();
-    reports.forEach(r => {
-        if (r.owner) { ownerMap[r.name] = r.owner; ownerSet.add(r.owner); }
-    });
-
-    // Enrich findings with owner
-    findings.forEach(f => { f.owner = ownerMap[f.report] || ""; });
-    window._bpFindings = findings;
-
-    const owners = [...ownerSet].sort();
-    const ownerOptions = owners.map(o => `<option value="${o}">${o}</option>`).join("");
-
-    // Severity counts
-    const counts = { high: 0, medium: 0, low: 0 };
-    findings.forEach(f => { counts[f.severity] = (counts[f.severity] || 0) + 1; });
-
-    const cols = [
-        { key: "severity", label: "Severity", width: COL_W.sm, render: f => _bpSevBadge(f.severity), sortVal: f => ({ high: "0_high", medium: "1_medium", low: "2_low" })[f.severity] || "3" },
-        { key: "report", label: "Report", width: COL_W.lg },
-        { key: "owner", label: "Owner", width: COL_W.md },
-        { key: "table", label: "Table", width: COL_W.lg },
-        { key: "rule", label: "Rule", width: COL_W.lg },
-        { key: "issue", label: "Issue", width: COL_W.xl, render: f => `<span style="white-space:normal;color:var(--text-secondary)">${f.issue}</span>` },
-    ];
-
-    const noIssues = findings.length === 0
-        ? '<p style="color:var(--green);margin:1rem 0">All reports pass TMDL checks.</p>'
-        : '';
-
-    return `
-    <div class="page-header">
-        <h1>TMDL Checker</h1>
-        <span class="subtitle">Automated checks against Power BI reports</span>
-        <button class="btn-export" onclick="exportTableCSV('dt-bp','tmdl_checker.csv')">Export CSV</button>
-    </div>
-    <div class="kanban-toolbar" style="margin-bottom:0.75rem">
-        <span class="owner-filter-label">Report Owner:</span>
-        <select id="bp-owner-filter">
-            <option value="">All Owners</option>
-            ${ownerOptions}
-        </select>
-    </div>
-    <div class="stat-row" style="margin-bottom:1.25rem" id="bp-stat-row">
-        <div class="stat-card bp-filter-card" data-bp-filter="high" style="border-left:3px solid var(--red);cursor:pointer">
-            <div class="stat-value" id="bp-count-high">${counts.high}</div>
-            <div class="stat-label">High</div>
-        </div>
-        <div class="stat-card bp-filter-card" data-bp-filter="medium" style="border-left:3px solid var(--yellow);cursor:pointer">
-            <div class="stat-value" id="bp-count-medium">${counts.medium}</div>
-            <div class="stat-label">Medium</div>
-        </div>
-        <div class="stat-card bp-filter-card" data-bp-filter="low" style="border-left:3px solid var(--text-dim);cursor:pointer">
-            <div class="stat-value" id="bp-count-low">${counts.low}</div>
-            <div class="stat-label">Low</div>
-        </div>
-        <div class="stat-card bp-filter-card" data-bp-filter="" style="cursor:pointer">
-            <div class="stat-value" id="bp-count-total">${findings.length}</div>
-            <div class="stat-label">Total Issues</div>
-        </div>
-    </div>
-    ${noIssues}
-    <div id="bp-table-container">
-        ${findings.length > 0 ? dataTable("dt-bp", cols, findings) : ''}
-    </div>
-    <div class="section-card" style="margin-top:1rem">
-        <h2 style="margin-bottom:0.5rem">Rules checked</h2>
-        <table class="mini-table">
-            <thead><tr><th>Severity</th><th>Rule</th><th>Description</th></tr></thead>
-            <tbody>
-                <tr><td>${_bpSevBadge("high")}</td><td>No local file sources</td><td>Data sources must not point to local drives (C:\\, D:\\). Use shared network paths or database connections.</td></tr>
-                <tr><td>${_bpSevBadge("medium")}</td><td>Report Owner required</td><td>Every report should include a Report Owner metadata table for accountability.</td></tr>
-                <tr><td>${_bpSevBadge("medium")}</td><td>Avoid DirectQuery mode</td><td>Tables should use Import mode for better performance. DirectQuery queries the source on every interaction.</td></tr>
-                <tr><td>${_bpSevBadge("low")}</td><td>Too many columns</td><td>Tables with more than 30 columns may hurt performance. Consider splitting or removing unused columns.</td></tr>
-                <tr><td>${_bpSevBadge("low")}</td><td>Duplicate data source</td><td>Multiple tables pulling from the same source should be consolidated into a single table or use reference queries.</td></tr>
-                <tr><td>${_bpSevBadge("medium")}</td><td>Measure bloat</td><td>Reports with 50+ measures slow refresh and are hard to maintain. 100+ is high severity. Consider a shared dataset.</td></tr>
-                <tr><td>${_bpSevBadge("low")}</td><td>Too many visuals on page</td><td>Pages with more than 15 visuals are slower to render and harder to read. Split into multiple pages.</td></tr>
-                <tr><td>${_bpSevBadge("medium")}</td><td>Hardcoded date in DAX</td><td>DAX measures should not contain hardcoded dates like DATE(2024,1,1). Use TODAY(), NOW(), or a date parameter table.</td></tr>
-            </tbody>
-        </table>
-    </div>`;
-}
-
-function _rebuildBpTable(filtered) {
-    const cols = [
-        { key: "severity", label: "Severity", width: COL_W.sm, render: f => _bpSevBadge(f.severity), sortVal: f => ({ high: "0_high", medium: "1_medium", low: "2_low" })[f.severity] || "3" },
-        { key: "report", label: "Report", width: COL_W.lg },
-        { key: "owner", label: "Owner", width: COL_W.md },
-        { key: "table", label: "Table", width: COL_W.lg },
-        { key: "rule", label: "Rule", width: COL_W.lg },
-        { key: "issue", label: "Issue", width: COL_W.xl, render: f => `<span style="white-space:normal;color:var(--text-secondary)">${f.issue}</span>` },
-    ];
-    const container = document.getElementById("bp-table-container");
-    if (container) {
-        container.innerHTML = filtered.length > 0 ? dataTable("dt-bp", cols, filtered) : '<p style="color:var(--green);margin:1rem 0">No issues for this owner.</p>';
-        bindDataTables();
-    }
-    // Update counts
-    const counts = { high: 0, medium: 0, low: 0 };
-    filtered.forEach(f => { counts[f.severity] = (counts[f.severity] || 0) + 1; });
-    const hEl = document.getElementById("bp-count-high"); if (hEl) hEl.textContent = counts.high;
-    const mEl = document.getElementById("bp-count-medium"); if (mEl) mEl.textContent = counts.medium;
-    const lEl = document.getElementById("bp-count-low"); if (lEl) lEl.textContent = counts.low;
-    const tEl = document.getElementById("bp-count-total"); if (tEl) tEl.textContent = filtered.length;
-}
-
-function bindBestPracticesPage() {
-    // Owner filter
-    const ownerFilter = document.getElementById("bp-owner-filter");
-    if (ownerFilter) {
-        ownerFilter.addEventListener("change", () => {
-            const owner = ownerFilter.value;
-            const all = window._bpFindings || [];
-            const filtered = owner ? all.filter(f => f.owner === owner) : all;
-            _rebuildBpTable(filtered);
-        });
-    }
-
-    // Severity card filters
-    document.querySelectorAll(".bp-filter-card[data-bp-filter]").forEach(card => {
-        card.addEventListener("click", () => {
-            const sev = card.dataset.bpFilter;
-            const dt = window._dt && window._dt["dt-bp"];
-            if (!dt) return;
-            dt.filters["severity"] = sev;
-            const filterInput = document.querySelector('tr.filter-row input[data-dt="dt-bp"][data-fcol="severity"]');
-            if (filterInput) filterInput.value = sev;
-            _refreshDT("dt-bp");
-        });
-    });
-}
-
-
 // ── Data Quality page ──
 
 const _DQ_TYPE_LABELS = {
@@ -5205,6 +4977,12 @@ const _DQ_TYPE_LABELS = {
     duplicate_key: "Duplicate key",
     value_range: "Value range",
 };
+
+function _dqSeverityBadge(severity) {
+    if (severity === "critical") return '<span class="badge badge-red">high</span>';
+    if (severity === "warning") return '<span class="badge badge-yellow">medium</span>';
+    return '<span class="badge badge-muted">low</span>';
+}
 
 function _dqStatusBadge(status) {
     if (status === "pass") return '<span class="badge badge-green">passed</span>';
@@ -5244,7 +5022,7 @@ async function renderDataQuality() {
         { key: "source_name", label: "Source", width: COL_W.lg },
         { key: "type", label: "Rule", width: COL_W.md, render: c => esc(_DQ_TYPE_LABELS[c.type] || c.type) },
         { key: "config", label: "Limits", width: COL_W.lg, render: c => `<span style="white-space:normal;color:var(--text-secondary)">${esc(_dqConfigSummary(c))}</span>`, sortVal: c => _dqConfigSummary(c) },
-        { key: "severity", label: "Severity", width: COL_W.sm, render: c => _bpSevBadge(c.severity === "critical" ? "high" : c.severity === "warning" ? "medium" : "low") },
+        { key: "severity", label: "Severity", width: COL_W.sm, render: c => _dqSeverityBadge(c.severity) },
         { key: "latest_value", label: "Value", width: COL_W.sm, render: c => c.latest_value == null ? "-" : esc(c.latest_value) },
         { key: "latest_ran_at", label: "Last run", width: COL_W.md, render: c => c.latest_ran_at ? `<span title="${esc(formatDate(c.latest_ran_at))}">${timeAgo(c.latest_ran_at)}</span>` : "-" },
         { key: "latest_message", label: "Result", width: COL_W.xl, render: c => `<span style="white-space:normal;color:var(--text-secondary)">${esc(c.latest_message || "Not run yet")}</span>` },
@@ -5564,7 +5342,7 @@ async function renderEmail() {
                         <thead><tr><th>BI Owner</th><th>Scope</th><th>Active Alerts</th><th>Email</th><th></th></tr></thead>
                         <tbody>${mappingRows}</tbody>
                     </table>
-                ` : '<div class="empty-state">Add BI people under Tools -> Create Artifacts -> People first.</div>'}
+                ` : '<div class="empty-state">Add BI people under Users first.</div>'}
             </section>
 
             <section class="email-section">
@@ -6153,7 +5931,7 @@ function _recStepFour(state) {
                         <option value="">Select an owner</option>
                         ${ownerOptions}
                     </select>
-                    <small>Defaults to the selected report owner. The owner's email comes from Tools &gt; Create Artifacts &gt; People.</small>
+                    <small>Defaults to the selected report owner. The owner's email comes from Users.</small>
                 </label>
                 <label class="rec-field full">Email subject
                     <input id="rec-subject" type="text" maxlength="500" value="${esc(config.subject_template)}">
@@ -6487,7 +6265,7 @@ function _recBindBuilder() {
         if (!state.config.owner_name) { state.error = "Choose an alert owner."; _recRenderBuilder(); return; }
         const alertOwner = state.people.find(person => person.name === state.config.owner_name);
         if (!alertOwner?.email) {
-            state.error = `Alert owner '${state.config.owner_name}' needs an email in Tools > Create Artifacts > People.`;
+            state.error = `Alert owner '${state.config.owner_name}' needs an email in Users.`;
             _recRenderBuilder();
             return;
         }
@@ -9599,15 +9377,11 @@ const FAQ_ITEMS = [
     },
     {
         q: "What are Report Owner and Business Owner?",
-        a: "These are metadata tables inside each Power BI report. Report Owner is typically the developer or analyst who maintains the report. Business Owner is the stakeholder accountable for the data. Both are extracted automatically during scans. You can also assign owners manually from the People list under Tools > Create Artifacts."
+        a: "These are metadata tables inside each Power BI report. Report Owner is typically the developer or analyst who maintains the report. Business Owner is the stakeholder accountable for the data. Both are extracted automatically during scans. You can also assign owners manually from Users."
     },
     {
         q: "How do alerts work?",
         a: "Alerts are auto-generated when sources become stale, go offline, have broken references, or have changed queries. Each alert can be assigned to an owner, acknowledged, or resolved with a reason."
-    },
-    {
-        q: "What is the TMDL Checker?",
-        a: "Under Tools, the TMDL Checker scans all reports against best-practice rules: no local file paths, required owner metadata, proper date types, avoiding DirectQuery mode, excessive columns, duplicate sources, unused measures, and visual density. Findings are shown by severity with filtering by report owner."
     },
     {
         q: "What is the Lineage view?",
@@ -9627,7 +9401,7 @@ const FAQ_ITEMS = [
     },
     {
         q: "Can I add sources and reports manually?",
-        a: "Yes. Under Tools, the Create Artifacts page has Assets and People tabs. Assets lets you add reports, sources, or upstream systems manually. People lets you manage team members who can be assigned as owners."
+        a: "Yes. Under Tools, Create Artifacts lets you add reports, sources or upstream systems manually. Users manages BI and Business team members, their emails and optional SQL usernames."
     },
     {
         q: "What is the Full Export?",
@@ -11296,9 +11070,14 @@ function _flowOwnerOptions(people, selectedId) {
 }
 
 function _flowOwnerHelp(owner) {
-    if (!owner) return "Choose a person from Tools > Create Artifacts > People. Without an owner, nobody is emailed when this flow fails.";
-    if (!owner.email) return `${esc(owner.name)} has no email mapped in People. Add one or no failure alert can be delivered.`;
-    return `Failure alerts are sent to ${esc(owner.email)} through Outlook on the app host.`;
+    if (!owner) return 'Choose a person managed in Users. Without an owner, nobody is emailed when this flow fails.';
+    const email = owner.email
+        ? `Failure alerts are sent to ${esc(owner.email)} through Outlook on the app host.`
+        : `${esc(owner.name)} has no email in Users. Add one so failure alerts can be delivered.`;
+    const sql = owner.sql_username
+        ? `SQL user: <code>${esc(owner.sql_username)}</code>. Saved for future table permissions; no access is granted yet.`
+        : 'An optional SQL username can be linked in Users for future table permissions.';
+    return `${email} ${sql}`;
 }
 
 function _flowOwnerSummary(owner) {
@@ -13204,7 +12983,7 @@ const pages = {
     scanner: renderScannerAdmin,
     changelog: renderChangelog,
     create: renderCreate,
-    bestpractices: renderBestPractices,
+    users: renderUsers,
     dataquality: renderDataQuality,
     email: renderEmail,
     recurrences: renderRecurrences,
@@ -13346,8 +13125,8 @@ async function navigate(page) {
         if (page === "reports") bindReportsPage();
         if (page === "flows") bindFlowsPage();
         if (page === "create") bindCreatePage();
+        if (page === "users") bindUsersPage();
         if (page === "changelog") bindChangelogPage();
-        if (page === "bestpractices") bindBestPracticesPage();
         if (page === "dataquality") bindDataQualityPage();
         if (page === "email") bindEmailPage();
         if (page === "recurrences") bindRecurrencesPage();

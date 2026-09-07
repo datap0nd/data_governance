@@ -4728,7 +4728,7 @@ def test_flow_owner_must_exist_in_people(flow_db):
             _flow(site["id"], report["id"], owner_person_id=9999), _request(),
         )
     assert excinfo.value.status_code == 400
-    assert "People" in excinfo.value.detail
+    assert "Users" in excinfo.value.detail
 
 
 def test_failed_run_emails_the_flow_owner(flow_db, monkeypatch):

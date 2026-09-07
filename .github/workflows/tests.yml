@@ -72,6 +72,8 @@ jobs:
         run: node tests/test_scanner_modules_display.mjs
       - name: Check frontend JavaScript syntax
         run: node --check app/static/app.js
+      - name: Check Users JavaScript syntax
+        run: node --check app/static/users.js
       - name: Check run log JavaScript syntax
         run: node --check app/static/flow_run_log.js
 

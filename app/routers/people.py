@@ -1,4 +1,4 @@
-"""People management - BI and Business roles."""
+"""User profiles - BI and Business roles with optional SQL identities."""
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -9,6 +9,20 @@ from app.models import PersonOut, PersonCreate, PersonUpdate
 router = APIRouter(prefix="/api/people", tags=["people"])
 
 VALID_ROLES = ["BI", "Business"]
+PERSON_COLUMNS = "id, name, role, email, sql_username, created_at"
+
+
+def _sql_username(value: str | None) -> str | None:
+    """Normalize profile metadata without interpreting it as SQL."""
+    value = (value or "").strip()
+    if not value:
+        return None
+    if any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise HTTPException(status_code=422, detail="SQL user cannot contain control characters")
+    # PostgreSQL identifiers are limited by bytes, including quoted names.
+    if len(value.encode("utf-8")) > 63:
+        raise HTTPException(status_code=422, detail="SQL user must be 63 UTF-8 bytes or fewer")
+    return value
 
 
 @router.get("/roles")
@@ -21,13 +35,15 @@ def get_roles():
 def list_people():
     """List all people ordered by name."""
     with get_db() as db:
-        rows = db.execute("SELECT id, name, role, email, created_at FROM people ORDER BY name").fetchall()
+        rows = db.execute(f"SELECT {PERSON_COLUMNS} FROM people ORDER BY name").fetchall()
     return [PersonOut(**dict(r)) for r in rows]
 
 
 @router.post("", response_model=PersonOut, status_code=201)
 def create_person(req: PersonCreate, request: Request):
     """Create a new person with a validated role."""
+    if not req.name.strip():
+        raise HTTPException(status_code=422, detail="Name cannot be empty")
     if req.role not in VALID_ROLES:
         raise HTTPException(
             status_code=422,
@@ -35,18 +51,18 @@ def create_person(req: PersonCreate, request: Request):
         )
     with get_db() as db:
         cursor = db.execute(
-            "INSERT INTO people (name, role, email) VALUES (?, ?, ?)",
-            (req.name.strip(), req.role, (req.email or "").strip() or None),
+            "INSERT INTO people (name, role, email, sql_username) VALUES (?, ?, ?, ?)",
+            (req.name.strip(), req.role, (req.email or "").strip() or None, _sql_username(req.sql_username)),
         )
         person_id = cursor.lastrowid
-        row = db.execute("SELECT id, name, role, email, created_at FROM people WHERE id = ?", (person_id,)).fetchone()
+        row = db.execute(f"SELECT {PERSON_COLUMNS} FROM people WHERE id = ?", (person_id,)).fetchone()
         log_event(db, "person", person_id, req.name, "created", f"role={req.role}", get_actor(request))
     return PersonOut(**dict(row))
 
 
 @router.patch("/{person_id}", response_model=PersonOut)
 def update_person(person_id: int, req: PersonUpdate, request: Request):
-    """Update a person profile, including the email used by Outlook summaries."""
+    """Update a profile; linking a SQL user does not grant permissions."""
     data = req.model_dump(exclude_unset=True)
     if not data:
         raise HTTPException(status_code=400, detail="No changes provided")
@@ -63,7 +79,7 @@ def update_person(person_id: int, req: PersonUpdate, request: Request):
 
         fields = []
         values = []
-        for field_name in ("name", "role", "email"):
+        for field_name in ("name", "role", "email", "sql_username"):
             if field_name not in data:
                 continue
             value = data[field_name]
@@ -71,6 +87,8 @@ def update_person(person_id: int, req: PersonUpdate, request: Request):
                 value = value.strip()
             if field_name == "email" and not value:
                 value = None
+            if field_name == "sql_username":
+                value = _sql_username(value)
             if field_name == "name" and not value:
                 raise HTTPException(status_code=400, detail="Name cannot be empty")
             fields.append(f"{field_name} = ?")
@@ -80,7 +98,7 @@ def update_person(person_id: int, req: PersonUpdate, request: Request):
             raise HTTPException(status_code=400, detail="No changes provided")
         values.append(person_id)
         db.execute(f"UPDATE people SET {', '.join(fields)} WHERE id = ?", values)
-        row = db.execute("SELECT id, name, role, email, created_at FROM people WHERE id = ?", (person_id,)).fetchone()
+        row = db.execute(f"SELECT {PERSON_COLUMNS} FROM people WHERE id = ?", (person_id,)).fetchone()
         log_event(db, "person", person_id, row["name"], "updated", ", ".join(data.keys()), get_actor(request))
     return PersonOut(**dict(row))
 

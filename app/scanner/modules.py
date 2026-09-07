@@ -98,10 +98,10 @@ MODULE_DEFINITIONS = (
         "key": "governance",
         "label": "Governance checks",
         "description": (
-            "Runs best-practice, schedule-discrepancy, and documentation-completeness "
+            "Runs schedule-discrepancy and documentation-completeness "
             "checks independently and names any failed sub-check."
         ),
-        "scans": "Report best practices, refresh-chain schedules, and documentation coverage.",
+        "scans": "Refresh-chain schedules and documentation coverage.",
         "prerequisites": "Uses the currently stored reports and sources.",
         "legacy_component": "governance",
     },

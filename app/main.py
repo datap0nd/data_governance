@@ -940,7 +940,7 @@ app.include_router(ai_router)
 app.include_router(changelog.router)
 app.include_router(schedules.router)
 app.include_router(create.router)
-app.include_router(best_practices.router)
+app.include_router(best_practices.router)  # Retired checker: compatibility 410 only.
 app.include_router(data_quality.router)
 app.include_router(tasks.router)
 app.include_router(eventlog.router)

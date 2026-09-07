@@ -315,9 +315,13 @@ def refresh_views(views: list[dict], progress, *, completed: list[str] | None = 
             continue
         item.update(status='running', started_at=_now())
         emit('view_refresh', f"{prefix}Refreshing materialized views ({index + 1} of {total}): {label(item)}", item['key'])
-        engine = factory(item['database'])
+        engine = None
         started = time.perf_counter()
         try:
+            # Creating the engine can itself fail (missing configuration or
+            # driver). SQL is already committed, so retain the same checkpoint
+            # and refresh-only recovery as a connection/statement failure.
+            engine = factory(item['database'])
             with engine.begin() as connection:
                 connection.execute(text(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT_MS}ms'"))
                 connection.execute(text(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT_MS}ms'"))
@@ -340,7 +344,8 @@ def refresh_views(views: list[dict], progress, *, completed: list[str] | None = 
             emit('view_refresh_failed', message, item['key'])
             raise ViewRefreshError(message.strip(), results) from exc
         finally:
-            engine.dispose()
+            if engine is not None:
+                engine.dispose()
     emit('view_refresh_complete', f'Refreshed {total} materialized view(s) after SQL insertion.')
     if checkpoint is not None:
         try:
