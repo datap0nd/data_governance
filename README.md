@@ -204,6 +204,8 @@ Metronome queues each run for a browser worker on the BI desktop. Website flows 
 
 ASAP credentials are enrolled once in the website dialog and stored only on the BI desktop as a Windows DPAPI-encrypted blob beside the default automation browser profile. The API reports only whether a credential is configured and never returns its values. When ASAP redirects to SSO because a session expired, the worker detects the password form, fills it with Playwright DOM APIs, signs in, and resumes the scan or download. Credentials are not stored in SQLite, logs, or the repository.
 
+When `DG_SVC_PASSWORD` is supplied to `setup.ps1`, setup also refreshes the saved ASAP/GSCM SSO password before browser authentication, preserving the enrolled portal user ID. This applies to interactive and unattended setup; unattended setup still does not open browsers. The password stays in the inherited process environment and encrypted credential file, and is not passed to the helper on its command line or printed. If no portal user ID is enrolled, setup asks you to enroll it once through Flows > Catalog > ASAP. Without the variable, the saved portal credential is unchanged. A credential read/write failure stops setup before portal sign-in; repair the saved credential through the same website dialog and rerun setup.
+
 The two workers use separate persistent browser profiles to prevent Edge profile contention. Both read the same Windows DPAPI-protected ASAP credential stored locally for the BI desktop account. Headed runs require that account to be signed in to the desktop. No website credentials or flow configuration are committed to GitHub.
 
 For diagnostics, the same worker can still be started manually:

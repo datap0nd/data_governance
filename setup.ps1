@@ -654,6 +654,18 @@ if (Test-Path "$CodeDir\tools\install_rdp_console_guard.ps1") {
     }
 }
 
+# Sync the shared portal password before any browser authentication. Both ASAP
+# and GSCM reuse the enrolled portal user ID, which may differ from Windows.
+# The helper reads the password from its inherited environment, never argv.
+# This also refreshes the encrypted credential during unattended setup when an
+# explicit DG_SVC_PASSWORD is supplied, without opening a browser.
+if ($env:DG_SVC_PASSWORD) {
+    & $PyExe "$CodeDir\tools\sync_flow_sso_password.py" $FlowProfile
+    if ($LASTEXITCODE -ne 0) {
+        throw "ASAP/GSCM password refresh failed. Portal authentication was not started; repair the saved credential and rerun setup."
+    }
+}
+
 # Bootstrap the dedicated automation browser profile once. The website URL is
 # read from this machine's SQLite configuration and is never stored in source.
 # Do not block setup on a visible login. Once the local DPAPI credential is
