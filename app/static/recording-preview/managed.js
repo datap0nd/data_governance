@@ -1,6 +1,6 @@
 // Load after DOMContentLoaded so the application bootstrap cannot run.
 if (document.readyState === 'loading') await new Promise(resolve => document.addEventListener('DOMContentLoaded', resolve, {once:true}));
-for (const src of ['/static/app.js', '/static/flow_recordings.js']) {
+for (const src of ['/static/users.js?v=1', '/static/app.js', '/static/flow_recordings.js']) {
     await new Promise((resolve, reject) => {const script=document.createElement('script');script.src=src;script.onload=resolve;script.onerror=reject;document.head.append(script);});
 }
 const catalog={sites:[{id:1,name:'GSCM',adapter:'gscm_portal',enabled:true},{id:2,name:'ASAP',adapter:'asap_portal',enabled:true}],reports:[{id:1,site_id:1,name:'Regional Orders',enabled:true,filters:[],automation:{},report_url:'https://example.test/report'}],asap_download_types:[{key:'excel',file_format:'xlsx',preferred_suffix:'.xlsx',label:'Excel workbook'}]};
