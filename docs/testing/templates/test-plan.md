@@ -3,12 +3,12 @@
 - Change/PR: <link; scope and user-visible behavior>
 - Code baseline: <SHA; deployed app and worker versions to check>
 - Related report: [test-report.md](test-report.md)
-- Intended environments: <OS, runtime, browser, portal or fixture>
+- Intended environments: <OS, runtime, browser or synthetic fixture; include a live environment only when explicitly requested>
 
 ## Prerequisites and test data
 
-<How to update, authenticate, prepare isolated inputs/destinations and capture
-the original settings. Identify safe fixture data and external prerequisites.>
+<How to prepare isolated fixtures and capture relevant settings. Include live
+authentication or hardware prerequisites only when explicitly requested.>
 
 ## Test cases
 
@@ -17,7 +17,7 @@ the original settings. Identify safe fixture data and external prerequisites.>
 | T-01 | <UI labels or copyable command; concrete inputs> | <Observable result, including data checks> | <Run ID, log summary or protected reference> |
 
 <Cover changed behavior, negative/recovery paths and affected regressions.
-State which cases require live access and which can run locally.>
+Live cases are omitted unless explicitly requested.>
 
 ## Automated checks
 
