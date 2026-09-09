@@ -1,6 +1,6 @@
 /* Uses production components with fictional, in-memory settings and playback. */
 if(document.readyState==='loading')await new Promise(resolve=>document.addEventListener('DOMContentLoaded',resolve,{once:true}));
-for(const src of ['/static/users.js?v=1','/static/app.js?v=69','/static/flow_recording_model.js?v=5','/static/flow_recording_editor.js?v=10']){
+for(const src of ['/static/users.js?v=1','/static/app.js?v=69','/static/flow_recording_model.js?v=6','/static/flow_recording_editor.js?v=11']){
     await new Promise((resolve,reject)=>{const script=document.createElement('script');script.src=src;script.onload=resolve;script.onerror=reject;document.head.append(script);});
 }
 const button=name=>[{method:'get_by_role',args:['button'],kwargs:{name}}];

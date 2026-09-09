@@ -195,7 +195,7 @@ def report_server(request):
 
 
 @pytest.mark.parametrize('report_server', [{'content': b'Protected\x00report\xff\x10bytes', 'filename': 'report.xlsx'}], indirect=True)
-def test_portable_unchecked_recording_preserves_binary_browser_download(flow_db, tmp_path, report_server):
+def test_portable_unchecked_recording_rejects_binary_mislabeled_as_xlsx(flow_db, tmp_path, report_server):
     _, job = draft_job(report_server)
     job['execution']['browser_channel'] = 'chrome'
     for step in flow_recording.walk_steps(job['recording']['definition']['steps']):
@@ -206,11 +206,9 @@ def test_portable_unchecked_recording_preserves_binary_browser_download(flow_db,
     root = tmp_path / 'portable-output'
     result = subprocess.run([sys.executable, '-I', str(file), '--headless', '--output-root', str(root)],
         cwd=tmp_path, capture_output=True, text=True, timeout=90)
-    assert result.returncode == 0, result.stderr
-    files = list(root.rglob('*.xlsx'))
-    assert files and all(p.read_bytes() == b'Protected\x00report\xff\x10bytes' for p in files)
-    events = [json.loads(line) for line in next(root.rglob('*.jsonl')).read_text().splitlines()]
-    assert events[-1]['status'] == 'succeeded'
+    assert result.returncode == 1
+    assert 'not a complete XLSX ZIP container' in result.stderr
+    assert not [path for path in root.rglob('*.xlsx') if '.metronome' not in path.parts]
     assert not list(root.rglob('*.csv'))
 
 
@@ -285,7 +283,7 @@ def test_recording_uses_capacity_and_requires_capable_visible_worker(flow_db,mon
     started=routes.start_recording(saved['id'],_request())
     def register(identity,recorder=False):
         flows.register_worker(flows.WorkerRegister(worker_id=identity,display_name=identity,
-            capabilities={'headed':True,'browser_switch_v1':True,'flow_recorder_v1':recorder,'recorded_flows_v2':recorder,'recorded_validation_engine_v1':recorder,'flow_recorder_controls_v1':recorder,'process_id':123}))
+            capabilities={'headed':True,'browser_switch_v1':True,'flow_recorder_v1':recorder,'recorded_flows_v2':recorder,'recorded_flows_v3':recorder,'recorded_validation_engine_v1':recorder,'flow_recorder_controls_v1':recorder,'process_id':123}))
     register('old')
     assert flows.claim_run('old')['scan'] is None
     register('new',True)
@@ -301,7 +299,7 @@ def test_cancellation_preserves_catalog_status_and_fences_late_worker(flow_db,mo
     saved,job=draft_job()
     started=routes.start_recording(saved['id'],_request())
     flows.register_worker(flows.WorkerRegister(worker_id='new',display_name='new',capabilities={
-        'headed':True,'browser_switch_v1':True,'flow_recorder_v1':True,'recorded_flows_v2':True,'recorded_validation_engine_v1':True,'flow_recorder_controls_v1':True,'process_id':123}))
+        'headed':True,'browser_switch_v1':True,'flow_recorder_v1':True,'recorded_flows_v2':True,'recorded_flows_v3':True,'recorded_validation_engine_v1':True,'flow_recorder_controls_v1':True,'process_id':123}))
     flows.claim_run('new')
     with database.get_db() as db:
         before=dict(db.execute('SELECT * FROM flow_sites WHERE id=?',(job['site']['id'],)).fetchone())
@@ -426,7 +424,7 @@ def test_worker_restart_expires_recording_and_late_results_cannot_activate(flow_
     saved,job=draft_job()
     started=routes.start_recording(saved['id'],_request())
     flows.register_worker(flows.WorkerRegister(worker_id='new',display_name='new',capabilities={
-        'headed':True,'browser_switch_v1':True,'flow_recorder_v1':True,'recorded_flows_v2':True,'recorded_validation_engine_v1':True,'flow_recorder_controls_v1':True,'process_id':123}))
+        'headed':True,'browser_switch_v1':True,'flow_recorder_v1':True,'recorded_flows_v2':True,'recorded_flows_v3':True,'recorded_validation_engine_v1':True,'flow_recorder_controls_v1':True,'process_id':123}))
     flows.claim_run('new')
     with database.get_db() as db:
         flow_recordings.reap(db,restarted_worker='new')
@@ -493,7 +491,7 @@ def test_recording_lease_expiry_accepts_utc_and_offset_timestamps(flow_db,monkey
     saved,job=draft_job()
     started=routes.start_recording(saved['id'],_request())
     flows.register_worker(flows.WorkerRegister(worker_id='lease',display_name='lease',capabilities={
-        'headed':True,'browser_switch_v1':True,'flow_recorder_v1':True,'recorded_flows_v2':True,'recorded_validation_engine_v1':True,'flow_recorder_controls_v1':True,'process_id':123}))
+        'headed':True,'browser_switch_v1':True,'flow_recorder_v1':True,'recorded_flows_v2':True,'recorded_flows_v3':True,'recorded_validation_engine_v1':True,'flow_recorder_controls_v1':True,'process_id':123}))
     flows.claim_run('lease')
     stamp=(datetime.now(timezone(timedelta(hours=5))) if aware else datetime.now(timezone.utc).replace(tzinfo=None))-timedelta(minutes=4)
     with database.get_db() as db:

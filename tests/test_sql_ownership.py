@@ -75,7 +75,7 @@ def test_recording_validation_claim_requires_ownership_capability(flow_db):
         db.execute('UPDATE flow_catalog_scans SET job_json=? WHERE id=?', (json.dumps(queued), scan_id))
     for capable in [False, True]:
         flows.register_worker(flows.WorkerRegister(worker_id='recorder', display_name='Recorder', capabilities={
-            'headed': True, 'browser_switch_v1': True, 'flow_recorder_v1': True, 'recorded_flows_v2': True,
+            'headed': True, 'browser_switch_v1': True, 'flow_recorder_v1': True, 'recorded_flows_v2': True, 'recorded_flows_v3': True,
             'recorded_validation_engine_v1': True, 'flow_recorder_controls_v1': True,
             flow_sql.OWNERSHIP_CAPABILITY: capable}))
         claimed = flows.claim_run('recorder')['scan']

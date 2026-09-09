@@ -15,6 +15,12 @@ window.RecordedFlowModel = (() => {
         const part = [...(step.locator || [])].reverse().find(p => p.kwargs?.name || ['get_by_text','get_by_label','get_by_title','get_by_placeholder','get_by_alt_text','get_by_test_id'].includes(p.method));
         return part?.kwargs?.name || part?.args?.[0] || (step.locator?.length ? 'recorded element' : '');
     };
+    const isoWeek = value => {
+        const text=String(value??'');
+        const match=text.match(/(?:^|\D)(20\d{2})\s*[-/ ]?\s*[Ww]?\s*(0?[1-9]|[1-4]\d|5[0-3])(?:\D|$)/);
+        if(!match)return null;
+        return `${match[1]}-W${String(Number(match[2])).padStart(2,'0')}`;
+    };
     const editableTarget = step => {
         const locator=step?.locator || [];
         for(let index=locator.length-1;index>=0;index--){
@@ -37,6 +43,7 @@ window.RecordedFlowModel = (() => {
         if (action.label) return action.label;
         if (action.action === 'assert' && typeof action.args?.[0] === 'string') return `Check “${action.args[0]}”`;
         if (action.action === 'wait') return `Wait ${action.seconds} seconds`;
+        if (action.action === 'select_range') return `Select week range from ${action.range?.start || 'recorded start'}`;
         if (action.action === 'goto') { try { return `Open ${new URL(action.args[0]).hostname}`; } catch { return 'Open report page'; } }
         const verbs = {new_page:'Open browser page',click:'Click',dblclick:'Double click',fill:'Enter value in',press:'Press key in',select_option:'Select value in',check:'Check',uncheck:'Uncheck',set_checked:'Set checkbox',hover:'Hover over',clear:'Clear',press_sequentially:'Type in',assert:'Check',popup:'Open popup',download:'Download files',close:'Close page'};
         const text = name(action);
@@ -93,5 +100,46 @@ window.RecordedFlowModel = (() => {
         return validatePages(next);
     }
     function owner(definition,id) { return definition.steps.find(s=>all([s]).some(child=>child.id===id)); }
-    return {all,clone,target,frame,name,editableTarget,renameTarget,describe,triggering,canDelay,validatePages,move,remove,owner};
+    function rangeCandidate(definition,id) {
+        const index=definition.steps.findIndex(step=>step.id===id);
+        if(index<0||definition.steps[index].action!=='click')return null;
+        const page=definition.steps[index].page;
+        const family=step=>JSON.stringify((step.locator||[]).slice(0,-1));
+        const recordedFamily=family(definition.steps[index]);
+        const eligible=step=>step.action==='click'&&step.page===page&&isoWeek(name(step))&&family(step)===recordedFamily;
+        let first=index,last=index;
+        while(first>0&&eligible(definition.steps[first-1]))first--;
+        while(last+1<definition.steps.length&&eligible(definition.steps[last+1]))last++;
+        const steps=definition.steps.slice(first,last+1),weeks=steps.map(step=>isoWeek(name(step)));
+        if(steps.length<2||new Set(weeks).size!==weeks.length)return null;
+        return {first,last,steps,weeks,start:[...weeks].sort()[0]};
+    }
+    function rangeLocator(anchor,levels) {
+        const prefix=anchor.slice(0,-1);
+        const usablePrefix=prefix.length&&prefix[prefix.length-1].method!=='frame_locator';
+        const locator=clone(usablePrefix?prefix:anchor);
+        const parentCount=usablePrefix?levels-1:levels;
+        for(let index=0;index<parentCount;index++)locator.push({method:'locator',args:['xpath=..'],kwargs:{}});
+        return locator;
+    }
+    function makeRange(definition,id,levels=1) {
+        const candidate=rangeCandidate(definition,id);
+        if(!candidate)throw Error('Record at least two consecutive week-cell clicks first.');
+        const next=clone(definition),anchor=clone(candidate.steps[0].locator || []);
+        if(!anchor.length)throw Error('The recorded weeks do not identify a stable element box.');
+        const replacement={id:candidate.steps[0].id,action:'select_range',page:candidate.steps[0].page,
+            locator:rangeLocator(anchor,levels),range:{unit:'week',start:candidate.start,end:'latest_selectable',selection:'inclusive',
+                cell_selector:'button,[role="gridcell"],[role="option"],[role="checkbox"],input[type="checkbox"]',
+                selected_state:'auto',navigation:{kind:'scroll'},anchor_locator:anchor,container_ancestor_levels:levels,
+                recorded_weeks:candidate.weeks}};
+        next.steps.splice(candidate.first,candidate.steps.length,replacement);next.version=3;
+        return validatePages(next);
+    }
+    function setRangeAncestor(step,levels) {
+        if(step.action!=='select_range'||!Number.isInteger(levels)||levels<1||levels>6)throw Error('Choose 1–6 parent levels for the element box.');
+        step.range.container_ancestor_levels=levels;
+        step.locator=rangeLocator(step.range.anchor_locator,levels);
+        return step;
+    }
+    return {all,clone,target,frame,name,editableTarget,renameTarget,describe,triggering,canDelay,validatePages,move,remove,owner,rangeCandidate,makeRange,setRangeAncestor};
 })();

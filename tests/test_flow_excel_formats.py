@@ -75,6 +75,86 @@ def test_modern_excel_extensions_keep_the_original_name_and_normalize(tmp_path, 
     assert metadata["row_count"] == 1
 
 
+@pytest.mark.parametrize("suffix", [".xls", ".xlsx", ".xlsm", ".xlsb", ".xlt", ".xltx", ".xltm"])
+def test_recorded_excel_family_preserves_the_browser_extension(tmp_path, suffix):
+    payload = tmp_path / f"browser-download{suffix}"
+    fixture = "xlsb" if suffix == ".xlsb" else "xls" if suffix in {".xls", ".xlt"} else None
+    if fixture:
+        payload.write_bytes(_excel_fixture(fixture))
+    else:
+        from openpyxl import Workbook
+        workbook = Workbook()
+        workbook.active.append(["Code", "Units"])
+        workbook.active.append(["A", 7])
+        workbook.save(payload)
+
+    metadata = flow_worker._store_completed_download(
+        payload, tmp_path / "configured.xlsx", file_format="xlsx",
+        recorded_output=True, require_normalized_csv=False,
+    )
+
+    assert Path(metadata["file_path"]).suffix == suffix
+    assert metadata["detected_format"] == suffix.lstrip(".")
+
+
+def test_excel_addins_are_rejected_without_execution(tmp_path):
+    source = tmp_path / "unsafe.xlam"
+    source.write_bytes(b"PK\x03\x04not-a-workbook")
+    with pytest.raises(RuntimeError, match="Excel add-ins are not supported"):
+        flow_worker._detect_download_format(source)
+
+
+def test_excel_named_sign_in_page_has_a_precise_diagnostic(tmp_path):
+    source = tmp_path / "session-expired.xlsx"
+    source.write_text("<html><title>Sign in</title><form><input type=password></form></html>", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="sign-in"):
+        flow_worker._store_completed_download(source, tmp_path / "report.xlsx", file_format="xlsx")
+
+
+def test_ooxml_with_a_transport_prefix_is_still_opened_as_excel(tmp_path):
+    from io import BytesIO
+    from openpyxl import Workbook
+
+    buffer = BytesIO()
+    workbook = Workbook()
+    workbook.active.append(["Code", "Units"])
+    workbook.active.append(["A", 7])
+    workbook.save(buffer)
+    source = tmp_path / "prefixed.xlsx"
+    source.write_bytes(b"transport-prefix\x00\x01" + buffer.getvalue())
+
+    assert flow_worker._detect_download_format(source) == "xlsx"
+    metadata = flow_worker._store_completed_download(
+        source, tmp_path / "configured.xlsx", file_format="xlsx",
+        csv_preamble="none", strict_headers=True,
+    )
+    assert metadata["columns"] == ["Code", "Units"]
+    assert metadata["row_count"] == 1
+
+
+@pytest.mark.parametrize(
+    ("suffix", "message"),
+    [
+        (".xls", "legacy Excel workbook could not be opened"),
+        (".xlt", "legacy Excel workbook could not be opened"),
+        (".xlsb", "binary Excel workbook could not be opened"),
+        (".xlsx", "modern Excel workbook could not be opened"),
+        (".xlsm", "modern Excel workbook could not be opened"),
+        (".xltx", "modern Excel workbook could not be opened"),
+        (".xltm", "modern Excel workbook could not be opened"),
+    ],
+)
+def test_excel_suffixes_route_opaque_bytes_to_a_precise_reader_error(tmp_path, suffix, message):
+    source = tmp_path / f"opaque{suffix}"
+    source.write_bytes(b"opaque\x00workbook\x01payload")
+
+    with pytest.raises(RuntimeError, match=message):
+        flow_worker._store_completed_download(
+            source, tmp_path / f"configured{suffix}", file_format="xlsx",
+            csv_preamble="none", strict_headers=True,
+        )
+
+
 def test_salesforce_html_xls_is_preserved_and_normalizes_a_large_table(tmp_path):
     data_rows = "".join(
         f"<tr><td>SF-{index}</td><td>{index}</td></tr>"

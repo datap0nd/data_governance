@@ -16,8 +16,9 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 from app.flow_clock import TIMEZONE
 
-VERSION = 2
+VERSION = 3
 V2_CAPABILITY = 'recorded_flows_v2'
+V3_CAPABILITY = 'recorded_flows_v3'
 CAPABILITY = 'recorded_flows_v1'
 GSCM_BOOKMARK_CAPABILITY = 'gscm_bookmark_targets_v1'
 RECORD_CAPABILITY = 'flow_recorder_v1'
@@ -262,7 +263,7 @@ def import_codegen(source, *, timezone=TIMEZONE):
 
 
 def validate_definition(definition, *, activation=True):
-    if not isinstance(definition, dict) or definition.get('version') not in {1, VERSION}:
+    if not isinstance(definition, dict) or definition.get('version') not in {1, 2, VERSION}:
         raise ValueError('Unsupported recording version.')
     if 'date_batch' in definition:
         raise ValueError('Date batching has been removed. Convert this recording to a single range and test it.')
@@ -296,7 +297,7 @@ def validate_definition(definition, *, activation=True):
             # frame context; playback resolves the bookmark by exact identity.
             from app.flow_recording_nexacro import validate_target
             validate_target(step)
-        if action not in ACTIONS | {'new_page', 'goto', 'close', 'download', 'popup', 'assert', 'wait'}:
+        if action not in ACTIONS | {'new_page', 'goto', 'close', 'download', 'popup', 'assert', 'wait', 'select_range'}:
             raise ValueError(f'Unsupported recorded action: {action}.')
         if 'delay_before_seconds' in step:
             delay = step['delay_before_seconds']
@@ -309,6 +310,35 @@ def validate_definition(definition, *, activation=True):
                 raise ValueError('Wait steps need version 2 and a whole number of seconds from 1 to 600.')
             if step.get('locator') or step.get('args') or step.get('kwargs'):
                 raise ValueError('Wait steps cannot target an element or contain browser arguments.')
+        if action == 'select_range':
+            if definition['version'] < 3:
+                raise ValueError('Range steps require recording version 3.')
+            contract = step.get('range')
+            if not isinstance(contract, dict) or contract.get('unit') != 'week':
+                raise ValueError('A range step must select weeks.')
+            if not re.fullmatch(r'20\d{2}-W(?:0[1-9]|[1-4]\d|5[0-3])', str(contract.get('start') or '')):
+                raise ValueError('A week range needs an ISO start such as 2026-W01.')
+            if contract.get('end') != 'latest_selectable' or contract.get('selection') != 'inclusive':
+                raise ValueError('A week range must include its start through the latest selectable week.')
+            selector = contract.get('cell_selector')
+            if not isinstance(selector, str) or not selector.strip() or len(selector) > 500:
+                raise ValueError('A week range needs a bounded cell selector.')
+            state = contract.get('selected_state', 'auto')
+            if state not in {'auto', 'checked', 'aria-checked', 'aria-selected', 'aria-pressed'} and not re.fullmatch(r'class:[A-Za-z_-][\w-]{0,79}', str(state)):
+                raise ValueError('A week range needs a supported selected-state signal.')
+            navigation = contract.get('navigation', {'kind': 'scroll'})
+            if not isinstance(navigation, dict) or navigation.get('kind', 'scroll') not in {'scroll', 'none', 'controls'}:
+                raise ValueError('A week range needs scroll, controls, or no-navigation behavior.')
+            if navigation.get('kind') == 'controls':
+                for name in ('next_selector', 'previous_selector'):
+                    value = navigation.get(name)
+                    if not isinstance(value, str) or not value.strip() or len(value) > 500:
+                        raise ValueError('Range navigation controls need bounded next and previous selectors.')
+            select_all = contract.get('select_all_selector')
+            if select_all is not None and (not isinstance(select_all, str) or not select_all.strip() or len(select_all) > 500):
+                raise ValueError('A range Select all target needs a bounded selector.')
+            if not step.get('locator'):
+                raise ValueError('A week range must identify its containing element box.')
         if action == 'assert' and step.get('assertion') not in ASSERTIONS:
             raise ValueError('Unsupported assertion.')
         if step.get('kwargs', {}).get('force') or step.get('kwargs', {}).get('position') or step.get('kwargs', {}).get('trial'):
