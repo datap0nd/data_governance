@@ -6,7 +6,7 @@
     ],args:[],kwargs:{}});
     const initial={version:2,timezone:'Asia/Dubai',parameters:{},steps:[
         {id:'open',action:'goto',page:'page',locator:[],args:['https://reports.example.test/orders'],kwargs:{}},
-        week('2026-W32'),week('2026-W33'),week('2026-W34'),
+        week('2026-W33'),
         {id:'download',action:'download',page:'page',locator:[],steps:[{id:'export',action:'click',page:'page',locator:[{method:'get_by_role',args:['button'],kwargs:{name:'Download Excel'}}],args:[],kwargs:{}}],output:{format:'xlsx'}}
     ]};
     const data={flow:{id:9100,name:'Weekly orders',source_adapter:'gscm_portal',enabled:false},sessions:[],

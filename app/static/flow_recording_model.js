@@ -102,17 +102,11 @@ window.RecordedFlowModel = (() => {
     function owner(definition,id) { return definition.steps.find(s=>all([s]).some(child=>child.id===id)); }
     function rangeCandidate(definition,id) {
         const index=definition.steps.findIndex(step=>step.id===id);
-        if(index<0||definition.steps[index].action!=='click')return null;
-        const page=definition.steps[index].page;
-        const family=step=>JSON.stringify((step.locator||[]).slice(0,-1));
-        const recordedFamily=family(definition.steps[index]);
-        const eligible=step=>step.action==='click'&&step.page===page&&isoWeek(name(step))&&family(step)===recordedFamily;
-        let first=index,last=index;
-        while(first>0&&eligible(definition.steps[first-1]))first--;
-        while(last+1<definition.steps.length&&eligible(definition.steps[last+1]))last++;
-        const steps=definition.steps.slice(first,last+1),weeks=steps.map(step=>isoWeek(name(step)));
-        if(steps.length<2||new Set(weeks).size!==weeks.length)return null;
-        return {first,last,steps,weeks,start:[...weeks].sort()[0]};
+        if(index<0)return null;
+        const step=definition.steps[index],action=triggering(step);
+        if(['download','popup'].includes(step.action)||!action.locator?.length||action.action==='select_range')return null;
+        const start=isoWeek(name(action)) || '';
+        return {first:index,last:index,steps:[step],weeks:start?[start]:[],start,anchor:action};
     }
     function rangeLocator(anchor,levels) {
         const prefix=anchor.slice(0,-1);
@@ -124,15 +118,20 @@ window.RecordedFlowModel = (() => {
     }
     function makeRange(definition,id,levels=1) {
         const candidate=rangeCandidate(definition,id);
-        if(!candidate)throw Error('Record at least two consecutive week-cell clicks first.');
-        const next=clone(definition),anchor=clone(candidate.steps[0].locator || []);
-        if(!anchor.length)throw Error('The recorded weeks do not identify a stable element box.');
-        const replacement={id:candidate.steps[0].id,action:'select_range',page:candidate.steps[0].page,
+        if(!candidate)throw Error('This step needs a recorded element target before it can become a range step.');
+        const next=clone(definition),anchor=clone(candidate.anchor.locator || []),source=clone(candidate.steps[0]);
+        const replacement={id:source.id,action:'select_range',page:candidate.anchor.page,
             locator:rangeLocator(anchor,levels),range:{unit:'week',start:candidate.start,end:'latest_selectable',selection:'inclusive',
                 cell_selector:'button,[role="gridcell"],[role="option"],[role="checkbox"],input[type="checkbox"]',
                 selected_state:'auto',navigation:{kind:'scroll'},anchor_locator:anchor,container_ancestor_levels:levels,
-                recorded_weeks:candidate.weeks}};
-        next.steps.splice(candidate.first,candidate.steps.length,replacement);next.version=3;
+                recorded_weeks:candidate.weeks,source_step:source}};
+        next.steps.splice(candidate.first,1,replacement);next.version=3;
+        return validatePages(next);
+    }
+    function restoreRange(definition,id) {
+        const next=clone(definition),index=next.steps.findIndex(step=>step.id===id),step=next.steps[index];
+        if(index<0||step.action!=='select_range'||!step.range?.source_step)throw Error('This range step has no recorded action to restore.');
+        next.steps.splice(index,1,clone(step.range.source_step));
         return validatePages(next);
     }
     function setRangeAncestor(step,levels) {
@@ -141,5 +140,5 @@ window.RecordedFlowModel = (() => {
         step.locator=rangeLocator(step.range.anchor_locator,levels);
         return step;
     }
-    return {all,clone,target,frame,name,editableTarget,renameTarget,describe,triggering,canDelay,validatePages,move,remove,owner,rangeCandidate,makeRange,setRangeAncestor};
+    return {all,clone,target,frame,name,editableTarget,renameTarget,describe,triggering,canDelay,validatePages,move,remove,owner,rangeCandidate,makeRange,restoreRange,setRangeAncestor};
 })();

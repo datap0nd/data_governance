@@ -65,18 +65,19 @@ const weekClick=value=>({id:`week-${value}`,action:'click',page:'page',locator:[
     {method:'locator',args:['#week-box'],kwargs:{}},
     {method:'get_by_role',args:['button'],kwargs:{name:value,exact:true}}
 ],args:[],kwargs:{}});
-const weekly={version:2,steps:[weekClick('2026-W32'),weekClick('2026-W33'),weekClick('2026-W34'),event],parameters:{}};
-assert.equal(M.rangeCandidate(weekly,'week-2026-W33').steps.length,3);
+const weekly={version:2,steps:[weekClick('2026-W33'),event],parameters:{}};
+assert.equal(M.rangeCandidate(weekly,'week-2026-W33').steps.length,1);
 const ranged=M.makeRange(weekly,'week-2026-W33');
 assert.equal(ranged.version,3);assert.equal(ranged.steps.length,2);
 assert.equal(ranged.steps[0].action,'select_range');
-assert.equal(ranged.steps[0].range.start,'2026-W32');
+assert.equal(ranged.steps[0].range.start,'2026-W33');
 assert.equal(ranged.steps[0].range.end,'latest_selectable');
-assert.match(M.describe(ranged.steps[0]),/2026-W32/);
+assert.match(M.describe(ranged.steps[0]),/2026-W33/);
 assert.deepEqual(ranged.steps[0].locator,[{method:'locator',args:['#week-box'],kwargs:{}}]);
-assert.doesNotMatch(JSON.stringify(ranged.steps[0].locator),/2026-W32/);
-const unrelated=structuredClone(weekly);unrelated.steps[1].locator[0].args[0]='#other-week-box';
-assert.equal(M.rangeCandidate(unrelated,'week-2026-W33'),null);
+assert.doesNotMatch(JSON.stringify(ranged.steps[0].locator),/2026-W33/);
+assert.equal(ranged.steps[0].range.source_step.action,'click');
+assert.deepEqual(M.restoreRange(ranged,'week-2026-W33').steps[0],weekly.steps[0]);
+assert.equal(M.rangeCandidate({version:2,steps:[{id:'open',action:'goto',page:'page',locator:[],args:['https://example.test']}],parameters:{}},'open'),null);
 M.setRangeAncestor(ranged.steps[0],3);
 assert.equal(ranged.steps[0].range.container_ancestor_levels,3);
 assert.deepEqual(ranged.steps[0].locator.slice(-2).map(part=>part.args[0]),['xpath=..','xpath=..']);
