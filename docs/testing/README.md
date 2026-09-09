@@ -9,7 +9,7 @@ This is a standing instruction from the repository owner, recorded in
 
 | Release | What to test | Results |
 | --- | --- | --- |
-| Draft: SQL table ownership preview | [Test plan](releases/2026-09-09-sql-table-owner/test-plan.md) | [Preview evidence; implementation pending](releases/2026-09-09-sql-table-owner/test-report.md) |
+| 2026-09-09: SQL table ownership and binary recordings | [Test plan](releases/2026-09-09-sql-table-owner/test-plan.md) | [Test report](releases/2026-09-09-sql-table-owner/test-report.md) |
 | 2026-09-09: recording dialog import | [Test plan](releases/2026-09-09-recording-dialog-import/test-plan.md) | [Test report](releases/2026-09-09-recording-dialog-import/test-report.md) |
 | 2026-09-08: Users, TMDL Checker retirement and refresh recovery | [Test plan](releases/2026-09-08-users-refresh-reliability/test-plan.md) | [Test report](releases/2026-09-08-users-refresh-reliability/test-report.md) |
 | 2026-09-07: Reusable recordings and downstream view refresh | [Test plan](releases/2026-09-07-reusable-recordings-view-refresh/test-plan.md) | [Test report](releases/2026-09-07-reusable-recordings-view-refresh/test-report.md) |
