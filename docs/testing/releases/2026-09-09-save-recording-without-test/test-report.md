@@ -2,10 +2,10 @@
 
 - Plan: [test-plan.md](test-plan.md)
 - Change/PR: pending
-- Evidence cutoff (UTC): 2026-09-09 before final-head commit and CI
-- Tested code revision: uncommitted changes over `33619375f4b9db6eb2058f12e4e2b461ba0c0227`; final tested SHA will be recorded in the PR.
+- Evidence cutoff (UTC): 2026-09-09 after local final-code checks and before GitHub CI
+- Tested code revision: `018e759919a6c2e045278dda0fb800cec8f38e38` for the final full Python run; the subsequent commit updates this report only.
 - Environment: Microsoft Windows 11 Home, Python 3.13.15 ARM64, Node v24.19.0, Playwright 1.62.0/Chrome headless fixture.
-- Overall finding: changed behavior and frontend regressions pass locally. The first full Python run found one wording compatibility failure and one transient shared process-lock collision; both were corrected/cleared and passed targeted retest. Final-head full Python and GitHub CI are pending. Work-PC portal checks are BLOCKED.
+- Overall finding: changed behavior and frontend regressions pass locally. The first full Python run found one wording compatibility failure and one transient shared process-lock collision; both were corrected/cleared and passed targeted retest. The final committed-code full suite passed. GitHub CI is pending and work-PC portal checks are BLOCKED.
 
 ## Executed checks
 
@@ -16,6 +16,7 @@
 | API-01–API-03, REG-01 | Targeted new API tests during development. | Uncommitted implementation | PASS: 2 tests. The same Windows pytest cleanup error occurred after results. | Local output. |
 | REG-02 | Full Python suite with only pytest dead-symlink cleanup hooks disabled. | Uncommitted implementation | FAIL: 2 failed, 1,846 passed, 11 warnings in 950.81 s. One failure required retaining the word `validate` in a compatibility error; one portable optional-check case collided with an existing Flow process lock. | Local full-suite output. |
 | REG-02 retest | Reran the failed recording lifecycle test and all parametrizations selected by `test_portable_replays_without_page_questions_and_honors_optional_rows`; local preview server stopped first. | Corrected uncommitted implementation | PASS: 4 passed in 36.18 s. | Local output. |
+| REG-02 final-code full Python | Full suite with only pytest dead-symlink cleanup hooks disabled: `pytest.main(['tests','-q','--tb=short'])`. | `018e759919a6c2e045278dda0fb800cec8f38e38`, Windows/Python 3.13.15 | PASS: 1,848 passed, 11 deprecation warnings in 832.91 s (13:52). | Local final-code output. |
 | UI-01–UI-03, frontend regressions | Ran every `tests/test_*.mjs` file. | Corrected uncommitted implementation, Node v24.19.0 | PASS: 23 files. | Local output. |
 | Frontend syntax | `node --check` for `app.js`, `users.js`, `flow_run_log.js`, `flow_recordings.js`, `flow_recording_editor.js`, and `flow_recording_model.js`. | Corrected uncommitted implementation | PASS: 6 files. | Local output. |
 
@@ -23,7 +24,6 @@
 
 | IDs | Status | Reason | Next action |
 | --- | --- | --- | --- |
-| REG-02 final-head full Python | NOT RUN | Final commit did not exist at this report cutoff. | Run the full suite on the committed head and record the result in the PR before merge. |
 | GitHub Windows/Ubuntu CI | NOT RUN | PR not yet opened at this report cutoff. | Wait for required checks on final head and record run URL/SHA in the PR. |
 | LIVE-01–LIVE-02 | BLOCKED | The UGREEN-25854 capture device was detected, but the required local capture page reported **Unable to play media** after reload, so no reliable work-PC screen evidence was available. Portal authentication/output checks were not attempted. | After merge/deployment, restore the capture feed and execute both ASAP and GSCM cases with protected evidence. |
 
@@ -31,7 +31,7 @@
 
 The owner explicitly requested that testing not be mandatory when creating many Flows. The reviewed journey therefore uses one contextual confirmation at Save and makes the selected recording runnable. It does not silently waive testing: the client sends an explicit flag only after confirmation, while the server still performs structural safety validation and freezes the current configuration, transformation, and execution-core identity.
 
-The original full-suite failures are retained above. The wording failure was fixed by preserving the existing `validate` compatibility term while adding the new approval path. The portable lock failure was transient environmental contention; it passed after stopping the local preview server and rerunning every selected parametrization. Final full-suite evidence is still required on the committed SHA.
+The original full-suite failures are retained above. The wording failure was fixed by preserving the existing `validate` compatibility term while adding the new approval path. The portable lock failure was transient environmental contention; it passed after stopping the local preview server and rerunning every selected parametrization, then also passed in the clean final-code full suite.
 
 Synthetic tests prove state handling, transactionality, and job construction but do not prove live SSO, portal navigation, report correctness, or downloadable output. Those checks remain BLOCKED rather than inferred.
 
