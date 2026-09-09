@@ -9,6 +9,7 @@
 - Download scope: preserve opaque binary/PDF bytes for recordings without table
   checks or processing, and recognize BOM-less UTF-16 tabular exports. True
   binary content remains unsupported for CSV processing/SQL insertion.
+- Current-main integration: `c66a6fa4d964b4ea0da0194b29a59f28e7bd9b2b`, including PR #89.
 - Related report: [test-report.md](test-report.md).
 - Preview: run `python -m http.server 8768 --bind 127.0.0.1 --directory app`, then
   open `http://127.0.0.1:8768/static/recording-preview/sql-owner.html`.

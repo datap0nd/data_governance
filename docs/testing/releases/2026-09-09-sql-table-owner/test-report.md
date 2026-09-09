@@ -1,6 +1,7 @@
 # SQL table ownership and binary recordings: test report
 
-Current implementation: `7574a0d43441eff3eef926fcb9590845ffd65b3a`.
+Ownership/download code: `7574a0d43441eff3eef926fcb9590845ffd65b3a`.
+Latest main integration: `c66a6fa4d964b4ea0da0194b29a59f28e7bd9b2b` (see final integration evidence below).
 Owner approved the preview and requested implementation/merge. Focused tests,
 production UI checks and all 13 PostgreSQL 18.6 transaction cases pass.
 The full local suite completed with one stale test assertion; the correction
@@ -206,3 +207,21 @@ browser walkthrough. Relative documentation links were checked: 3 documents,
 Final CI/merge evidence is intentionally outside this committed report's
 cutoff and must be completed in the PR testing section. SO-13 and BD-04 remain
 **NOT RUN**; portable SQL against an external/live database is **NOT RUN**.
+
+
+### Latest main integration — 2026-09-09
+
+While this PR was being prepared, PR #89 merged as
+`cc9ddacb92e2246b13e60ef90cb83b81c790ea37`. Integrated that current `main`
+without discarding its save-without-testing behavior. The only textual
+conflict was the testing index; both release entries were retained.
+Combined tested revision: `c66a6fa4d964b4ea0da0194b29a59f28e7bd9b2b`.
+
+Ran the Windows pytest wrapper with `tests/test_sql_ownership.py`,
+`tests/test_recording_journey.py`, `tests/test_recording_visual_editor.py`,
+`tests/test_recorded_output_storage.py`, `tests/test_users_browser.py`, `-q`.
+**52 passed, 1 existing Starlette/httpx deprecation warning in 135.43s**.
+All **23** Node suites and **4** syntax checks (`app.js`, `users.js`,
+`flow_run_log.js`, `flow_recording_editor.js`) also passed. No unresolved
+conflicts remain. Final-head full CI on the combined code is required and
+will be recorded in PR #90 before merging.
