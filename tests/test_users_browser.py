@@ -335,7 +335,7 @@ def test_sql_owner_help_and_run_log_confirm_only_committed_changes(users_browser
     assert 'unchanged' in page.evaluate('_flowOwnerHelp(null)')
     assert 'will not be changed' in page.evaluate('_flowOwnerHelp({name:"Maya"})')
     page.goto('about:blank')
-    page.set_content('<body class="flow-log-body"><main class="flow-log-page" id="flow-run-log"></main></body>')
+    page.set_content(f'<base href="{_base}"><body class="flow-log-body"><main class="flow-log-page" id="flow-run-log"></main></body>')
     page.add_style_tag(path=str(ROOT / 'app/static/style.css'))
     page.add_script_tag(path=str(ROOT / 'app/static/flow_run_log.js'))
     run = {'id': 42, 'flow_name': 'Fictional sales', 'status': 'failed',

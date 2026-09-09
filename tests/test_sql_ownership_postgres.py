@@ -25,9 +25,9 @@ def pg(tmp_path, monkeypatch):
     qualified = f'{quote(schema)}."target"'
     roles = [loader, owner, reader, other]
 
-    def sql(statement, params=()):
+    def sql(statement, params=None):
         with admin.begin() as connection:
-            result = connection.exec_driver_sql(statement, params)
+            result = connection.exec_driver_sql(statement, params, execution_options={'no_parameters': params is None})
             return result.fetchall() if result.returns_rows else None
 
     sql(f'CREATE ROLE {quote(loader)} LOGIN INHERIT')
@@ -156,7 +156,7 @@ def test_actual_transaction_rolls_back_rows_and_ownership(pg, monkeypatch, failu
 def test_quoted_owner_and_reassignment_do_not_change_unrelated_tables(pg):
     pg.seed()
     pg.sql(f'CREATE TABLE {pg.quote(pg.schema)}.unrelated (code TEXT)')
-    odd = pg.prefix + ' "Owner"; -- :value'
+    odd = pg.prefix + ' "Owner"; -- :value %(odd)s'
     pg.sql(f'CREATE ROLE {pg.quote(odd)} NOLOGIN')
     pg.roles.append(odd)
     pg.sql(f'GRANT {pg.quote(odd)} TO {pg.quote(pg.loader)}')

@@ -207,7 +207,6 @@ def test_portable_unchecked_recording_preserves_binary_browser_download(flow_db,
     result = subprocess.run([sys.executable, '-I', str(file), '--headless', '--output-root', str(root)],
         cwd=tmp_path, capture_output=True, text=True, timeout=90)
     assert result.returncode == 0, result.stderr
-    from pathlib import Path
     files = list(root.rglob('*.xlsx'))
     assert files and all(p.read_bytes() == b'Protected\x00report\xff\x10bytes' for p in files)
     events = [json.loads(line) for line in next(root.rglob('*.jsonl')).read_text().splitlines()]

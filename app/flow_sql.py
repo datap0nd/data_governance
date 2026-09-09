@@ -85,8 +85,8 @@ def _ownership_preflight(connection, schema: str, table: str, owner: str) -> str
     # Probe it on all supported versions and restore the exact original role.
     # Driver SQL keeps colons and punctuation inside quoted identifiers literal.
     try:
-        connection.exec_driver_sql(f'SET LOCAL ROLE {_quote_identifier(owner)}')
-        connection.exec_driver_sql(f'SET LOCAL ROLE {_quote_identifier(actor)}')
+        connection.exec_driver_sql(f'SET LOCAL ROLE {_quote_identifier(owner)}', execution_options={'no_parameters': True})
+        connection.exec_driver_sql(f'SET LOCAL ROLE {_quote_identifier(actor)}', execution_options={'no_parameters': True})
     except Exception as exc:
         raise RuntimeError('The Metronome SQL account needs SET ROLE permission for the selected owner. Ask your database administrator to grant it.') from exc
     return previous
@@ -95,7 +95,7 @@ def _ownership_preflight(connection, schema: str, table: str, owner: str) -> str
 def _apply_ownership(connection, schema: str, table: str, owner: str) -> None:
     from sqlalchemy import text
     qualified = f'{_quote_identifier(schema)}.{_quote_identifier(table)}'
-    connection.exec_driver_sql(f'ALTER TABLE ONLY {qualified} OWNER TO {_quote_identifier(owner)}')
+    connection.exec_driver_sql(f'ALTER TABLE ONLY {qualified} OWNER TO {_quote_identifier(owner)}', execution_options={'no_parameters': True})
     actual = connection.execute(text(
         'SELECT pg_get_userbyid(c.relowner) FROM pg_class c '
         'JOIN pg_namespace n ON n.oid=c.relnamespace '
