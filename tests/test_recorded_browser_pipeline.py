@@ -21,7 +21,7 @@ def popup_server():
                 self.send_header('Content-Disposition', 'attachment; filename="report.csv"')
             else:
                 if self.path == '/popup':
-                    content = b'<h1>Sales Report</h1><a href="/export">Download</a>'
+                    content = b'<h1>Sales Report</h1><a href="/export" onclick="alert(\'Export ready\')">Download</a>'
                 elif self.path == '/frame':
                     content = b'<button onclick="window.open(\'/popup\')">Export window</button>'
                 else:
@@ -61,9 +61,11 @@ def run(playwright: Playwright):
         page.locator("#report").content_frame.get_by_role("button", name="Export window").click()
     page1 = popup_info.value
     expect(page1.get_by_role("heading")).to_have_text("Sales Report")
+    page1.once("dialog", lambda dialog: dialog.dismiss())
     with page1.expect_download() as info:
         page1.get_by_role("link", name="Download").click()
     download = info.value
+    page1.once("dialog", lambda dialog: dialog.dismiss())
     with page1.expect_download() as info2:
         page1.get_by_role("link", name="Download").click()
     download2 = info2.value

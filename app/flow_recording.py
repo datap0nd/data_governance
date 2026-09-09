@@ -212,6 +212,16 @@ def import_codegen(source, *, timezone=TIMEZONE):
             if not isinstance(call.func, ast.Attribute):
                 raise ValueError('Only recorded browser interactions are supported.')
             method, receiver = call.func.attr, call.func.value
+            if (method == 'once' and isinstance(receiver, ast.Name) and receiver.id in pages
+                    and len(call.args) == 2 and not call.keywords
+                    and isinstance(call.args[0], ast.Constant) and call.args[0].value == 'dialog'
+                    and isinstance(call.args[1], ast.Lambda)
+                    and ast.unparse(call.args[1]) == 'lambda dialog: dialog.dismiss()'):
+                # Playwright codegen adds this when an action opens a native
+                # dialog. Playback already uses Playwright's automatic dialog
+                # handling. Drop only this exact generated callback; never
+                # evaluate source callbacks or accept arbitrary event handlers.
+                continue
             if method == 'close' and isinstance(receiver, ast.Name) and receiver.id in {'browser', 'context'}:
                 if call.args or call.keywords:
                     raise ValueError('Unsupported close arguments.')

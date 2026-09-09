@@ -149,7 +149,7 @@ def test_unresponsive_recorder_can_be_force_closed_after_grace_period(flow_db, m
     assert routes.list_recordings(flow_id)['sessions'][0]['status'] == 'cancelled'
 
 
-@pytest.mark.parametrize('control', ['finish_requested', 'cancel_requested', 'missing_download', 'crashed'])
+@pytest.mark.parametrize('control', ['finish_requested', 'dialog_download', 'cancel_requested', 'missing_download', 'crashed'])
 def test_cli_finish_cancel_and_auth_cleanup(tmp_path, monkeypatch, control):
     from app import flow_worker, flow_browser_state
     events = []
@@ -162,6 +162,9 @@ def test_cli_finish_cancel_and_auth_cleanup(tmp_path, monkeypatch, control):
             self.pid = 12345
             assert events == ['auth_closed']
             source = CODEGEN.replace('    context.close()', '    context.storage_state(path="private-auth.json")\n    context.close()')
+            if control == 'dialog_download':
+                source = source.replace('    with page.expect_download()',
+                    '    page.once("dialog", lambda dialog: dialog.dismiss())\n    with page.expect_download()')
             if control == 'missing_download':
                 start = source.index('    with page.expect_download()')
                 end = source.index('    context.storage_state(')
@@ -178,12 +181,12 @@ def test_cli_finish_cancel_and_auth_cleanup(tmp_path, monkeypatch, control):
     monkeypatch.setattr(recorder.time, 'sleep', lambda seconds: None)
     monkeypatch.setattr(flow_browser_state, 'protect_temporary_folder', lambda path: None)
     monkeypatch.setattr(flow_worker, '_api', lambda *a, **k: {'status': 'running',
-        'finish_requested': control in {'finish_requested', 'missing_download'}, 'cancel_requested': control == 'cancel_requested'})
+        'finish_requested': control in {'finish_requested', 'dialog_download', 'missing_download'}, 'cancel_requested': control == 'cancel_requested'})
     args = (None, 'worker', {'id': 12, 'job': {'site': {'adapter': 'asap_portal'}, 'browser_channel': 'chrome', 'report_url': 'http://localhost/report'}},
         None, Context(), tmp_path, lambda *a, **k: None)
-    if control in {'finish_requested', 'missing_download'}:
+    if control in {'finish_requested', 'dialog_download', 'missing_download'}:
         result = recorder.record(*args)
-        assert any(step['action'] == 'download' for step in result['definition']['steps']) == (control == 'finish_requested')
+        assert any(step['action'] == 'download' for step in result['definition']['steps']) == (control != 'missing_download')
         assert 'private-auth.json' not in json.dumps(result)
         if control == 'missing_download':
             from app import flow_recording
