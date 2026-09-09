@@ -79,11 +79,32 @@ portable scripts remain historical evidence. Use **Convert to one range** with
 explicit start/end values to create a new draft, then test it before enabling.
 Conversion never turns the old whole batch into an automatic large export.
 
-Definition version 2 supports readable labels and Wait actions of 1-600 whole
-seconds. Waits send progress/heartbeats and remain cancellable. They supplement
-report completion checks. Workers advertise `recorded_flows_v2`; older workers
-cannot claim new recording or validation jobs. Existing non-batched version 1
-definitions remain readable. Edited definitions are saved as version 2.
+Definition version 3 adds semantic week ranges. In Review recording, select one
+of two or more consecutive recorded week-cell clicks and choose **This is a
+range**. Confirm the fixed ISO start week and the containing element box. The
+saved action identifies that container rather than screen coordinates or a
+fixed list of weeks. Playback re-reads eligible cells after every scroll or
+calendar-page repaint, selects only unselected cells from the fixed start
+through the newest enabled week, and verifies a complete, duplicate-free range
+before allowing the download. Disabled future weeks are ignored. Ambiguous
+dates, missing weeks, unexpected selections, unreadable selected state, or
+stalled navigation fail before download.
+
+Version 2 continues to support readable labels and cancellable Wait actions of
+1-600 whole seconds. Workers advertise `recorded_flows_v3` before claiming new
+recording or validation jobs. Existing non-batched version 1 and version 2
+definitions remain readable and unchanged. New recordings use version 3; an
+existing draft is upgraded when a range step is saved.
+
+Recorded outputs keep `output.format: "xlsx"` as the semantic Excel-family
+choice. Metronome recognizes `.xls`, `.xlsx`, `.xlsm`, `.xlsb`, `.xlt`, `.xltx`
+and `.xltm`, preserves the compatible extension supplied by the browser, and
+normalizes worksheet values to CSV only when downstream processing or data
+checks require it. Legacy OLE/BIFF files and OOXML/XLSB ZIP containers are
+validated from their contents, including ZIP packages with leading transport
+bytes. Corrupt or encrypted workbooks, executable Excel add-ins, arbitrary
+binary files, and sign-in pages fail with format-specific diagnostics. Workbook
+macros are never executed.
 
 Recordings are parsed as Python syntax, never executed as imported code. Only
 the supported action/locator model can activate. Coordinate/forced actions,

@@ -37,7 +37,7 @@ def register(identity):
     flows.register_worker(flows.WorkerRegister(worker_id=identity, display_name=identity, capabilities={
         'headed': True, 'process_id': 123, 'browser_switch_v1': True,
         'flow_recorder_v1': True, 'flow_recorder_controls_v1': True,
-        'recorded_flows_v2': True, 'recorded_validation_engine_v1': True}))
+        'recorded_flows_v2': True, 'recorded_flows_v3': True, 'recorded_validation_engine_v1': True}))
 
 
 def test_task_start_success_without_worker_fails_and_retry_preserves_actions(startup):

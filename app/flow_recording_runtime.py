@@ -12,7 +12,7 @@ import sys
 import tempfile
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from app import flow_recording
@@ -82,6 +82,287 @@ def observe_target(node, step):
     except Exception as exc:
         result['probe_error'] = type(exc).__name__  # Probe failures never replace dispatch failures.
     return result
+
+
+_WEEK_WITH_YEAR = re.compile(r'(?<!\d)(20\d{2})\s*[-/ ]?\s*[Ww]?\s*(0?[1-9]|[1-4]\d|5[0-3])(?!\d)')
+_WEEK_ONLY = re.compile(r'(?<!\w)[Ww]\s*(0?[1-9]|[1-4]\d|5[0-3])(?!\d)')
+_ISO_DATE = re.compile(r'(?<!\d)(20\d{2})[-/](0[1-9]|1[0-2])[-/](0[1-9]|[12]\d|3[01])(?!\d)')
+_RANGE_REPAINT_TIMEOUT_SECONDS = 10
+
+
+def _range_week(label: str, container_years: set[int]) -> tuple[int, int] | None:
+    """Resolve a range cell's accessible text to one unambiguous ISO week."""
+    text = ' '.join(str(label or '').split())
+    matches = {(int(year), int(week)) for year, week in _WEEK_WITH_YEAR.findall(text)}
+    for year, month, day in _ISO_DATE.findall(text):
+        try:
+            iso = date(int(year), int(month), int(day)).isocalendar()
+        except ValueError:
+            continue
+        matches.add((iso.year, iso.week))
+    if not matches:
+        week_only = {int(value) for value in _WEEK_ONLY.findall(text)}
+        if len(week_only) == 1 and len(container_years) == 1:
+            matches.add((next(iter(container_years)), next(iter(week_only))))
+        elif week_only and len(container_years) != 1:
+            raise RuntimeError(
+                f'Week range cell {text[:120]!r} has no unambiguous nearby year heading.'
+            )
+    valid = set()
+    for year, week in matches:
+        try:
+            date.fromisocalendar(year, week, 1)
+        except ValueError:
+            continue
+        valid.add((year, week))
+    if len(valid) > 1:
+        raise RuntimeError(f'Week range cell contains more than one date identity: {text[:120]!r}.')
+    return next(iter(valid), None)
+
+
+def _week_name(value: tuple[int, int]) -> str:
+    return f'{value[0]:04d}-W{value[1]:02d}'
+
+
+def _week_span(start: tuple[int, int], end: tuple[int, int]) -> list[tuple[int, int]]:
+    first, last = date.fromisocalendar(*start, 1), date.fromisocalendar(*end, 1)
+    if first > last:
+        raise RuntimeError('The newest selectable week is before the range start.')
+    result = []
+    while first <= last:
+        iso = first.isocalendar()
+        result.append((iso.year, iso.week))
+        first += timedelta(days=7)
+    return result
+
+
+def _range_cell_snapshots(container, selector: str, selected_state: str = 'auto') -> tuple[object, list[dict], set[int]]:
+    cells = container.locator(selector)
+    snapshots = cells.evaluate_all('''nodes => nodes.map((el, index) => {
+        const style = el.ownerDocument.defaultView.getComputedStyle(el);
+        const box = el.getBoundingClientRect();
+        const control = el.matches('input[type=checkbox],input[type=radio]') ? el
+            : el.querySelector('input[type=checkbox],input[type=radio]');
+        const attributes = ['aria-checked', 'aria-selected', 'aria-pressed'];
+        let signal = null, selected = null;
+        if (control && typeof control.checked === 'boolean') {
+            signal = 'checked'; selected = Boolean(control.checked);
+        } else {
+            for (const name of attributes) {
+                const value = el.getAttribute(name);
+                if (value !== null) { signal = name; selected = value === 'true'; break; }
+            }
+        }
+        let enabled = !el.disabled && el.getAttribute('aria-disabled') !== 'true';
+        for (let parent = el.parentElement; parent; parent = parent.parentElement) {
+            if (parent.disabled || parent.getAttribute('aria-disabled') === 'true') enabled = false;
+        }
+        return {index, label: [el.getAttribute('aria-label'), el.getAttribute('title'),
+                el.innerText, el.textContent, el.value].filter(Boolean).join(' '),
+            signal, selected, classes: [...el.classList], enabled, visible: box.width > 0 && box.height > 0
+                && style.visibility !== 'hidden' && style.display !== 'none'};
+    })''')
+    container_text = container.evaluate("el => [el.getAttribute('aria-label'), el.innerText, el.textContent].filter(Boolean).join(' ')")
+    years = {int(value) for value in re.findall(r'(?<!\d)20\d{2}(?!\d)', str(container_text or ''))}
+    visible = [item for item in snapshots if item.get('visible')]
+    if selected_state.startswith('class:'):
+        token = selected_state.split(':', 1)[1]
+        for item in visible:
+            item['signal'] = selected_state
+            item['selected'] = token in item.pop('classes', [])
+    return cells, visible, years
+
+
+def _range_control(container, selector: str, label: str):
+    control = container.locator(selector)
+    count = control.count()
+    if count != 1:
+        raise RuntimeError(f'The range box must expose exactly one {label} control; found {count}.')
+    return control
+
+
+def _range_control_enabled(control) -> bool:
+    return not control.is_disabled() and control.get_attribute('aria-disabled') != 'true'
+
+
+def _range_page_fingerprint(container, selector: str, selected_state: str) -> tuple:
+    _cells, snapshots, years = _range_cell_snapshots(container, selector, selected_state)
+    return tuple(sorted((_range_week(item.get('label', ''), years), item.get('enabled')) for item in snapshots))
+
+
+def _range_click_and_wait_for_page(container, control, selector: str, selected_state: str, direction: str) -> None:
+    before = _range_page_fingerprint(container, selector, selected_state)
+    control.click(timeout=30_000)
+    deadline = time.monotonic() + _RANGE_REPAINT_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        after = _range_page_fingerprint(container, selector, selected_state)
+        if after and after != before:
+            return
+        time.sleep(.1)
+    raise RuntimeError(f'The range {direction} control did not reveal a different set of weeks.')
+
+
+def _range_click_week(container, selector: str, selected_state: str, week: tuple[int, int]) -> None:
+    """Click one logical week without letting a virtual list retarget an nth locator."""
+    deadline = time.monotonic() + _RANGE_REPAINT_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        cells, snapshots, years = _range_cell_snapshots(container, selector, selected_state)
+        matches = [item for item in snapshots
+                   if _range_week(item.get('label', ''), years) == week]
+        if len(matches) != 1:
+            time.sleep(.1)
+            continue
+        item = matches[0]
+        if not item.get('enabled'):
+            raise RuntimeError(f'{_week_name(week)} became disabled before it could be selected.')
+        try:
+            # A Playwright action scrolls its target first. Virtual calendars can
+            # repaint on that scroll and silently retarget locator.nth(). This
+            # atomic identity check plus DOM click acts only on the visible,
+            # enabled element that produced this snapshot; state is still proven
+            # separately below.
+            cells.nth(item['index']).evaluate('''(el, expected) => {
+                const label = [el.getAttribute('aria-label'), el.getAttribute('title'),
+                    el.innerText, el.textContent, el.value].filter(Boolean).join(' ');
+                if (label !== expected) throw new Error('range cell repainted');
+                el.click();
+            }''', item['label'])
+        except Exception:
+            time.sleep(.1)
+            continue
+        while time.monotonic() < deadline:
+            _cells, refreshed, refreshed_years = _range_cell_snapshots(container, selector, selected_state)
+            refreshed_matches = [candidate for candidate in refreshed
+                                 if _range_week(candidate.get('label', ''), refreshed_years) == week]
+            if len(refreshed_matches) == 1 and bool(refreshed_matches[0].get('selected')):
+                return
+            time.sleep(.1)
+    raise RuntimeError(f'The range box did not confirm {_week_name(week)} selection after repainting.')
+
+
+def _select_week_range(container, step, update) -> dict:
+    """Select an exact, expanding ISO-week range inside one recorded box."""
+    contract = step['range']
+    selector = contract['cell_selector']
+    required_signal = contract.get('selected_state', 'auto')
+    start_match = re.fullmatch(r'(20\d{2})-W(\d{2})', contract['start'])
+    start = (int(start_match.group(1)), int(start_match.group(2)))
+    navigation = contract.get('navigation', {'kind': 'scroll'}).get('kind', 'scroll')
+    container.wait_for(state='visible', timeout=120_000)
+    if navigation == 'scroll':
+        container.evaluate('el => { el.scrollTop = 0; }')
+    elif navigation == 'controls':
+        previous_selector = contract['navigation']['previous_selector']
+        for _movement in range(100):
+            previous = _range_control(container, previous_selector, 'previous')
+            if not _range_control_enabled(previous):
+                break
+            _range_click_and_wait_for_page(container, previous, selector, required_signal, 'previous')
+        else:
+            raise RuntimeError('The range previous control did not reach a disabled boundary.')
+
+    select_all_selector = contract.get('select_all_selector')
+    if select_all_selector:
+        select_all = _range_control(container, select_all_selector, 'Select all')
+        state = select_all.get_attribute('aria-checked')
+        if state not in {'true', 'false'}:
+            raise RuntimeError('The range Select all control does not expose aria-checked state.')
+        if state == 'false' and _range_control_enabled(select_all):
+            select_all.click(timeout=30_000)
+
+    seen: dict[tuple[int, int], dict] = {}
+    selected_signals: set[str] = set()
+    viewport_fingerprints: set[tuple] = set()
+    movements = 0
+    clicks = 0
+    for _iteration in range(200):
+        cells, snapshots, years = _range_cell_snapshots(container, selector, required_signal)
+        current: dict[tuple[int, int], dict] = {}
+        for item in snapshots:
+            week = _range_week(item.get('label', ''), years)
+            if week is None:
+                continue
+            if week in current:
+                raise RuntimeError(f'The range box exposes {_week_name(week)} more than once.')
+            if item.get('selected') is None or not item.get('signal'):
+                raise RuntimeError(
+                    f'The range box does not expose a readable selected state for {_week_name(week)}.'
+                )
+            if required_signal != 'auto' and item['signal'] != required_signal:
+                raise RuntimeError(
+                    f'{_week_name(week)} exposes {item["signal"]}, not the validated '
+                    f'{required_signal} selected-state signal.'
+                )
+            selected_signals.add(item['signal'])
+            current[week] = item
+            seen[week] = {key: item[key] for key in ('enabled', 'selected', 'signal')}
+
+        fingerprint = tuple(sorted((week, item['enabled'], item['selected']) for week, item in current.items()))
+        position = container.evaluate('el => ({top:el.scrollTop,height:el.scrollHeight,client:el.clientHeight})')
+        viewport = (fingerprint, round(float(position['top'])))
+        if viewport in viewport_fingerprints:
+            break
+        viewport_fingerprints.add(viewport)
+
+        for week, item in sorted(current.items()):
+            should_select = week >= start and item['enabled']
+            if not should_select or bool(item['selected']):
+                continue
+            update(
+                f'Selecting {_week_name(week)} in the range box.',
+                {'range_week': _week_name(week), 'range_operation': 'select'},
+            )
+            _range_click_week(container, selector, required_signal, week)
+            seen[week]['selected'] = True
+            clicks += 1
+
+        if navigation == 'controls':
+            next_control = _range_control(container, contract['navigation']['next_selector'], 'next')
+            if not _range_control_enabled(next_control):
+                break
+            _range_click_and_wait_for_page(container, next_control, selector, required_signal, 'next')
+            movements += 1
+            update('Scanning the next calendar page in the range box.', {'range_movement': movements})
+            continue
+        if navigation != 'scroll' or position['height'] <= position['client']:
+            break
+        moved = container.evaluate('''el => {
+            const before = el.scrollTop;
+            el.scrollTop = Math.min(el.scrollHeight, before + Math.max(1, el.clientHeight * .8));
+            return {before, after:el.scrollTop};
+        }''')
+        if moved['after'] == moved['before']:
+            break
+        movements += 1
+        update('Scanning the next weeks inside the range box.', {'range_movement': movements})
+
+    enabled = sorted(week for week, item in seen.items() if week >= start and item['enabled'])
+    if not enabled:
+        raise RuntimeError(f'The range box did not expose {_week_name(start)} or a later selectable week.')
+    latest = enabled[-1]
+    expected = _week_span(start, latest)
+    missing = [week for week in expected if week not in seen or not seen[week]['enabled']]
+    if missing:
+        raise RuntimeError(
+            'The range box is missing selectable weeks: '
+            + ', '.join(_week_name(week) for week in missing[:12])
+            + ('…' if len(missing) > 12 else '')
+        )
+    not_selected = [week for week in expected if not seen[week].get('selected')]
+    outside = [week for week, item in seen.items()
+               if item.get('selected') and (week < start or week > latest)]
+    if not_selected or outside:
+        detail = []
+        if not_selected:
+            detail.append('not selected: ' + ', '.join(_week_name(value) for value in not_selected[:12]))
+        if outside:
+            detail.append('outside range: ' + ', '.join(_week_name(value) for value in outside[:12]))
+        raise RuntimeError('The range box could not verify the exact week selection; ' + '; '.join(detail) + '.')
+    return {
+        'start_week': _week_name(start), 'end_week': _week_name(latest),
+        'selected_weeks': len(expected), 'selection_clicks': clicks,
+        'navigation_movements': movements, 'selected_state_signals': sorted(selected_signals),
+    }
 
 
 def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifacts):
@@ -203,6 +484,24 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
                            diagnostic={'phase': 'action_finished', 'timing': timing, 'bookmark': result})
                     previous_step = step
                     continue
+            if action == 'select_range':
+                container = locate(pages, step)
+                result = _select_week_range(
+                    container, step,
+                    lambda message, detail: notify(
+                        step, message, outcome='running',
+                        diagnostic={'phase': 'range_selection', **detail},
+                    ),
+                )
+                notify(
+                    step,
+                    f"Selected {result['start_week']} through {result['end_week']} "
+                    f"({result['selected_weeks']} weeks).",
+                    outcome='completed', confirmation='exact_range',
+                    diagnostic={'phase': 'action_finished', 'range': result},
+                )
+                previous_step = step
+                continue
             node = locate(pages, step)
             if timing:
                 notify(step, f'{label}: sending action.', outcome='running', diagnostic={

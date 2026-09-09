@@ -125,6 +125,7 @@ REQUESTED_WEEK = re.compile(r"^(20\d{2})-W(\d{2})$", re.IGNORECASE)
 OOXML_EXCEL_EXTENSIONS = frozenset({".xlsx", ".xlsm", ".xltx", ".xltm"})
 LEGACY_EXCEL_EXTENSIONS = frozenset({".xls", ".xlt"})
 XLSB_EXCEL_EXTENSIONS = frozenset({".xlsb"})
+EXECUTABLE_EXCEL_ADDIN_EXTENSIONS = frozenset({".xla", ".xlam", ".xll"})
 EXCEL_EXTENSIONS_BY_FORMAT = {
     "xlsx": OOXML_EXCEL_EXTENSIONS,
     "xls": LEGACY_EXCEL_EXTENSIONS,
@@ -5355,7 +5356,10 @@ def _detect_download_format(path: Path) -> str:
         head = handle.read(4096)
     if not head:
         raise RuntimeError(f"The downloaded file is empty: {path.name}")
-    if head.startswith(b"PK"):
+    suffix = path.suffix.casefold()
+    if suffix in EXECUTABLE_EXCEL_ADDIN_EXTENSIONS:
+        raise RuntimeError(f"Executable Excel add-ins are not supported: {path.name}")
+    if head.startswith(b"PK") or suffix in (OOXML_EXCEL_EXTENSIONS | XLSB_EXCEL_EXTENSIONS):
         # OOXML and XLSB are both ZIP packages. workbook.bin is the decisive
         # XLSB marker; corrupt ZIPs retain the suffix-based family only so the
         # later container check can issue the useful integrity error.
@@ -5366,7 +5370,7 @@ def _detect_download_format(path: Path) -> str:
                 return "xlsb"
             return "xlsx"
         except (OSError, zipfile.BadZipFile, NotImplementedError, RuntimeError):
-            return "xlsb" if path.suffix.casefold() in XLSB_EXCEL_EXTENSIONS else "xlsx"
+            pass
     for signature, kind in DOWNLOAD_SIGNATURES:
         if head.startswith(signature):
             return kind
@@ -5380,6 +5384,14 @@ def _detect_download_format(path: Path) -> str:
         stripped_text,
     ):
         return "html"
+    if suffix in OOXML_EXCEL_EXTENSIONS:
+        return "xlsx"
+    if suffix in XLSB_EXCEL_EXTENSIONS:
+        return "xlsb"
+    if suffix in LEGACY_EXCEL_EXTENSIONS:
+        # The extension is only a routing hint. The legacy reader still has
+        # to prove the workbook before any file is published or loaded.
+        return "xls"
     if b"\x00" in head and not head.startswith((b"\xff\xfe", b"\xfe\xff")) and not _bomless_utf16_encoding(head):
         return "binary"
     return "csv"
@@ -5388,7 +5400,7 @@ def _detect_download_format(path: Path) -> str:
 def _excel_output_suffix(local_path: Path, output: Path, workbook_format: str) -> str:
     """Preserve a compatible original Excel extension, otherwise correct it."""
     compatible = EXCEL_EXTENSIONS_BY_FORMAT[workbook_format]
-    for candidate in (output.suffix.casefold(), local_path.suffix.casefold()):
+    for candidate in (local_path.suffix.casefold(), output.suffix.casefold()):
         if candidate in compatible:
             return candidate
     return {"xlsx": ".xlsx", "xls": ".xls", "xlsb": ".xlsb"}[workbook_format]
@@ -5550,7 +5562,7 @@ def _store_completed_download(
     if detected == "html" and not html_excel:
         raise RuntimeError(
             f"The download is an HTML page, not data: {local_path.name}. The "
-            "portal most likely returned an error or a login page instead of "
+            "portal most likely returned an error or a sign-in/login page instead of "
             "the export."
         )
     if html_excel:
@@ -7241,6 +7253,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
         registration['capabilities'][flow_browser.CAPABILITY] = True
         registration['capabilities']['recorded_flows_v1'] = True
         registration['capabilities']['recorded_flows_v2'] = True
+        registration['capabilities']['recorded_flows_v3'] = True
         registration['capabilities']['gscm_bookmark_targets_v1'] = True
         registration['capabilities']['recorded_validation_engine_v1'] = True
         # Older workers lack this key and are never given a job whose frozen
