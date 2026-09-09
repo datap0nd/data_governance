@@ -160,24 +160,68 @@ def attach_job(db, flow, job, *, allow_draft=False):
         return
     revision = db.execute('SELECT * FROM flow_recording_revisions WHERE id=? AND flow_id=?',
                           (flow.get('recording_revision_id'), flow['id'])).fetchone()
-    if not revision or revision['status'] != 'validated' or revision['config_hash'] not in {config_hash(job), config_hash(job, legacy=True)}:
-        raise HTTPException(409, 'Record and validate this Flow configuration before running or enabling it.')
+    if not revision or revision['status'] not in {'validated', 'approved'} or revision['config_hash'] not in {config_hash(job), config_hash(job, legacy=True)}:
+        raise HTTPException(409, 'Record and validate this Flow configuration, or approve saving without testing, before running or enabling it.')
     from app.flow_portable import freeze_transformation
     try:
         source = freeze_transformation(job)
     except (OSError, ValueError) as exc:
         raise HTTPException(409, str(exc)) from exc
     if revision['transformation_source'] != source:
-        raise HTTPException(409, 'The transformation changed. Test this recording again before saving.')
+        raise HTTPException(409, 'The transformation changed. Test it or approve saving without testing again.')
     definition = flow_recording.validate_definition(json.loads(revision['definition_json']))
     from app.flow_portable import execution_hash
     engine_hash = json.loads(revision['evidence_json'] or '{}').get('engine_hash')
     if engine_hash != execution_hash():
-        raise HTTPException(409, 'The recorded execution core changed; validate a new revision before running.')
+        raise HTTPException(409, 'The recorded execution core changed; test it or approve saving without testing again.')
     job['recording'] = {'revision': revision['id'], 'definition': definition,
                         'transformation_source': revision['transformation_source'],
                         'definition_hash': flow_recording.digest(definition), 'engine_hash': engine_hash}
     job['recording_parameters'] = flow_recording.resolve_parameters(definition)
+
+
+def approve_without_test(db, flow_id, revision_id):
+    """Bind a structurally valid draft to current settings after explicit UI consent."""
+    row = db.execute(
+        "SELECT * FROM flow_recording_revisions WHERE id=? AND flow_id=?",
+        (revision_id, flow_id),
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, 'Recording revision not found.')
+    try:
+        definition = flow_recording.validate_definition(json.loads(row['definition_json']))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    from app.routers import flows
+    snapshot = flows._build_job(db, flow_id, recording_draft=True)
+    snapshot['flow']['execution_method'] = 'recorded'
+    snapshot['execution']['download_parallelism'] = 1
+    snapshot['execution']['recording_wait_seconds'] = flow_recording_timing.configured(db)
+    snapshot['downloads']['network_replay'] = False
+    for key in ('asap_download_type', 'export_report_title', 'export_filter_details'):
+        snapshot['downloads'].pop(key, None)
+    from app.flow_portable import freeze_transformation, execution_hash
+    transformation_source = freeze_transformation(snapshot)
+    snapshot['recording'] = {
+        'revision': revision_id,
+        'definition': definition,
+        'definition_hash': flow_recording.digest(definition),
+        'transformation_source': transformation_source,
+        'engine_hash': execution_hash(),
+    }
+    snapshot['recording_parameters'] = flow_recording.resolve_parameters(definition)
+    db.execute(
+        """UPDATE flow_recording_revisions
+           SET status='approved', config_hash=?, transformation_source=?,
+               evidence_json=?, validated_at=NULL
+           WHERE id=?""",
+        (
+            config_hash(snapshot),
+            transformation_source,
+            json.dumps({'engine_hash': execution_hash(), 'testing_waived': True}),
+            revision_id,
+        ),
+    )
 
 
 def queue_operation(db, flow_id, operation, actor, *, revision_id=None, pending_settings=None):
@@ -215,7 +259,7 @@ def queue_operation(db, flow_id, operation, actor, *, revision_id=None, pending_
         for key in ('asap_download_type', 'export_report_title', 'export_filter_details'):
             snapshot['downloads'].pop(key, None)
         transform = freeze_transformation(snapshot)
-        if row['status'] == 'validated':
+        if row['status'] in {'validated', 'approved'}:
             # Never invalidate evidence held by an active/running version.
             cursor = db.execute("""INSERT INTO flow_recording_revisions
                 (flow_id,definition_json,status,created_at) VALUES (?,?,'draft',?)""",

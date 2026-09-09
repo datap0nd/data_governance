@@ -670,6 +670,7 @@ class FlowWrite(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     execution_method: Literal['catalog', 'recorded'] | None = None
     recording_revision_id: int | None = Field(default=None, ge=1)
+    allow_untested_recording: bool = False
     source_type: str = "portal"
     site_id: int | None = Field(default=None, ge=1)
     report_id: int | None = Field(default=None, ge=1)
@@ -720,6 +721,10 @@ class FlowWrite(BaseModel):
     @model_validator(mode="after")
     def validate_flow(self):
         self.name = self.name.strip()
+        if self.allow_untested_recording and (
+            self.execution_method != 'recorded' or self.recording_revision_id is None
+        ):
+            raise ValueError('Saving without testing requires a selected recorded revision.')
         if self.post_sql_refresh is not None:
             from app.flow_view_refresh import normalize_config
             self.post_sql_refresh = normalize_config(self.post_sql_refresh)
@@ -3391,7 +3396,9 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
             raise HTTPException(409, f'Could not prepare the flow folder: {exc}') from exc
         existing = {**dict(existing), 'flow_folder': managed['flow_folder'], 'target_folder': managed['target_folder']}
         body.target_folder = existing['target_folder']
-        if body.execution_method == 'recorded' and (body.recording_revision_id or existing['recording_revision_id']):
+        if (body.execution_method == 'recorded'
+                and (body.recording_revision_id or existing['recording_revision_id'])
+                and not body.allow_untested_recording):
             # Reject stale settings/evidence before importing files or changing settings.
             _build_job(db, flow_id, pending_settings=body)
         if existing["flow_folder"]:
@@ -3488,6 +3495,9 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
                 raise HTTPException(422, 'A recording can only be selected for a recorded Flow.')
             if db.execute("SELECT 1 FROM flow_runs WHERE flow_id=? AND status IN ('queued','claimed','running')", (flow_id,)).fetchone():
                 raise HTTPException(409, 'Wait for the active Flow run to finish.')
+            if body.allow_untested_recording:
+                from app.flow_recordings import approve_without_test
+                approve_without_test(db, flow_id, body.recording_revision_id)
             db.execute('UPDATE flows SET recording_revision_id=?,recording_review_reason=NULL WHERE id=?', (body.recording_revision_id, flow_id))
             # Same transaction as settings: a mismatch rolls back both changes.
             _build_job(db, flow_id)

@@ -21,6 +21,7 @@ def editor_page():
         page.set_content('<main>Visual recording fixture</main>')
         page.add_style_tag(path=str(root/'app/static/style.css'))
         page.evaluate('''data=>{window.data=data;window.calls=[];
+            window._flowRecordingSelections=new Map();window._flowUntestedRecordingSelections=new Map();
             window.api=async()=>structuredClone(data);
             window.apiPostJson=async(path,body)=>{calls.push({path,body});if(path.endsWith('/validate')){data.revisions[0].status='validated';return {};}const id=data.revisions.length+1;data.revisions.unshift({id,status:'draft',definition:structuredClone(body.definition)});return {revision_id:id};};
             window.apiPost=async path=>{calls.push({path});if(path.endsWith('/validate'))data.revisions[0].status='validated';if(path.endsWith('/activate'))data.flow.recording_revision_id=data.revisions[0].id;return {};};
@@ -45,6 +46,7 @@ def test_one_download_card_and_consistent_options(editor_page):
     page.get_by_role('button',name='Save draft',exact=True).click()
     saved=page.evaluate('()=>calls[0].body.definition')
     validate_definition(saved)
+    assert page.evaluate('()=>window._flowUntestedRecordingSelections.get(1)')==2
     assert saved['steps'][-1]['steps'][0]['id']==value['steps'][-1]['steps'][0]['id']
     assert not page.get_by_text('Revision 1',exact=False).count()
 
@@ -213,7 +215,7 @@ def test_opening_history_clears_previous_pending_selection(editor_page):
     page,_=editor_page
     page.locator('[data-close]').click()
     page.evaluate('''()=>{data.revisions.push({...structuredClone(data.revisions[0]),id:2});
-      window._flowRecordingSelections=new Map([[1,1]]);window.accepted=null;
+      window._flowRecordingSelections=new Map([[1,1]]);window._flowUntestedRecordingSelections=new Map();window.accepted=null;
       window._flowAcceptRecording=(id,r)=>window.accepted=r;}''')
     page.evaluate('()=>FlowRecordings.open(1,{recording_revision_id:1})')
     page.get_by_text('More',exact=True).click()
@@ -221,6 +223,7 @@ def test_opening_history_clears_previous_pending_selection(editor_page):
     page.locator('[data-version="2"]').click()
     page.locator('[data-close]').click()
     assert page.evaluate('()=>window._flowRecordingSelections.get(1)') is None
+    assert page.evaluate('()=>window._flowUntestedRecordingSelections.get(1)')==2
     assert page.evaluate('()=>window.accepted') is None
 
 
