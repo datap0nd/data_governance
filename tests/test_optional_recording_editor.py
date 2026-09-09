@@ -64,14 +64,14 @@ def test_optional_download_check_failure_remove_recovery_and_undo(optional_edito
     assert page.get_by_label('Minimum data rows', exact=True).count() == 0
     page.get_by_role('button', name='Add data check', exact=True).click()
     assert page.get_by_label('Minimum data rows', exact=True).input_value() == '4'
-    page.get_by_label('Step name', exact=True).fill('Orders workbook')
+    page.get_by_label('Step name (display only)', exact=True).fill('Orders workbook')
     page.get_by_role('button', name='Test recording', exact=True).click()
     page.locator('[data-session]').filter(has_text='Downloaded 3 data rows; this check requires at least 4.').wait_for()
     assert latest_definition(page)['steps'][-1]['output']['min_rows'] == 4
-    assert page.get_by_label('Step name', exact=True).input_value() == 'Orders workbook'
+    assert page.get_by_label('Step name (display only)', exact=True).input_value() == 'Orders workbook'
     page.get_by_role('button', name='Remove data check', exact=True).click()
     assert page.get_by_label('Minimum data rows', exact=True).count() == 0
-    assert page.get_by_label('Step name', exact=True).input_value() == 'Orders workbook'
+    assert page.get_by_label('Step name (display only)', exact=True).input_value() == 'Orders workbook'
     page.get_by_role('button', name='Test recording', exact=True).click()
     page.get_by_text('Test passed. Back to Edit Flow, then Save.', exact=True).wait_for()
     assert 'min_rows' not in latest_definition(page)['steps'][-1]['output']
@@ -108,13 +108,13 @@ def test_non_tabular_formats_do_not_offer_data_checks_and_changes_are_recoverabl
     validate_definition(latest_definition(page))
     page.get_by_label('Output format').select_option('csv')
     page.get_by_role('button', name='Add data check', exact=True).click()
-    page.get_by_label('Step name', exact=True).fill('Saved download action')
+    page.get_by_label('Step name (display only)', exact=True).fill('Saved download action')
     page.get_by_label('Output format').select_option(output_format)
     assert page.get_by_label('Minimum data rows', exact=True).count() == 0
     page.get_by_text('Data checks require XLSX or CSV. Change the format or remove this check.', exact=True).wait_for()
     page.get_by_role('button', name='Remove data check', exact=True).click()
     assert page.get_by_role('button', name='Add data check', exact=True).count() == 0
-    assert page.get_by_label('Step name', exact=True).input_value() == 'Saved download action'
+    assert page.get_by_label('Step name (display only)', exact=True).input_value() == 'Saved download action'
     page.get_by_role('button', name='Test recording', exact=True).click()
     page.get_by_text('Test passed. Back to Edit Flow, then Save.', exact=True).wait_for()
     validate_definition(latest_definition(page))

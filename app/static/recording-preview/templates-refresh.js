@@ -2,7 +2,7 @@
 // Production app.js, recording editor and run-log page render every screen;
 // only the API layer is replaced. No worker, portal, PostgreSQL or file access.
 if (document.readyState === 'loading') await new Promise(resolve => document.addEventListener('DOMContentLoaded', resolve, {once:true}));
-for (const src of ['/static/users.js?v=1', '/static/app.js?v=71', '/static/flow_recording_editor.js?v=9', '/static/flow_recordings.js?v=4']) {
+for (const src of ['/static/users.js?v=1', '/static/app.js?v=71', '/static/flow_recording_editor.js?v=10', '/static/flow_recordings.js?v=4']) {
     await new Promise((resolve, reject) => {const script=document.createElement('script');script.src=src;script.onload=resolve;script.onerror=reject;document.head.append(script);});
 }
 const status=message=>{document.getElementById('preview-status').textContent=message;};

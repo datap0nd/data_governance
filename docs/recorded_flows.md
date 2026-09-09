@@ -30,9 +30,12 @@ controls** remains available. Existing flows retain their method.
    visible worker. Complete sign-in, open the report, run it and download the
    required files. **Finish recording** imports the actions. Playwright's red
    square only pauses capture.
-3. Review the short step list. Click a step to edit it inline. Undo and movement
-   controls stay with the selected step; selectors and frame diagnostics remain
-   under Advanced. Date and download options use the existing execution engine.
+3. Review the short step list. Click a step to edit it inline. **Step name
+   (display only)** changes its Metronome label; **Target name (used during
+   playback)** retargets a semantic portal element, such as changing a copied
+   button from Country to Main, without changing its selector structure. Raw
+   selectors expose their repair controls beside the target. Undo and movement
+   controls stay with the selected step; frame diagnostics remain under Advanced.
 4. **Save draft** preserves incomplete recordings. **Test recording** is optional:
    it asks only for missing essential report/ready information, then saves and tests
    the exact recording with the pending Edit Flow settings. Progress and errors
@@ -43,8 +46,9 @@ controls** remains available. Existing flows retain their method.
    Cancelling the confirmation preserves the form and recording draft. A tested
    save still applies normally, and testing alone neither activates the recording
    nor enables scheduling.
-6. **More → Saved versions** opens preserved revisions; **Record again** creates
-   a replacement draft. Failed tests and abandoned edits keep the active version.
+6. **Record again** in the main action row immediately starts a replacement;
+   unsaved editor-only changes are not saved first. **More → Saved versions**
+   opens preserved revisions. Failed tests and abandoned edits keep the active version.
    An identical draft save preserves existing evidence. Retesting a validated
    version uses a new revision so failure cannot invalidate its active evidence.
 

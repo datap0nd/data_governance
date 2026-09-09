@@ -51,6 +51,67 @@ def test_one_download_card_and_consistent_options(editor_page):
     assert not page.get_by_text('Revision 1',exact=False).count()
 
 
+def test_semantic_click_target_can_be_renamed_without_changing_selector_structure(editor_page):
+    page,value=editor_page
+    download=next(s for s in value['steps'] if s['action']=='download')
+    trigger=download['steps'][0]
+    original=copy.deepcopy(trigger['locator'])
+    page.get_by_role('button',name='Click “Excel down”',exact=True).click()
+    assert page.locator('[data-target-kind]').input_value()=='recorded'
+    target=page.locator('[data-target-name]')
+    assert target.input_value()=='Excel down'
+    page.get_by_label('Step name (display only)',exact=True).fill('Download the Main report')
+    target.fill('')
+    page.get_by_role('button',name='Save draft',exact=True).click()
+    assert page.evaluate('()=>calls.length')==0
+    target.fill('Main')
+    page.get_by_role('button',name='Save draft',exact=True).click()
+    page.wait_for_function('()=>calls.length===1')
+    saved=page.evaluate('()=>calls[0].body.definition')
+    saved_download=next(s for s in saved['steps'] if s['id']==download['id'])
+    saved_trigger=saved_download['steps'][0]
+    assert saved_download['label']=='Download the Main report'
+    assert saved_trigger.get('label') is None
+    assert saved_trigger['locator'][:-1]==original[:-1]
+    assert saved_trigger['locator'][-1]['method']==original[-1]['method']=='get_by_role'
+    assert saved_trigger['locator'][-1]['args']==original[-1]['args']
+    assert saved_trigger['locator'][-1]['kwargs']=={**original[-1]['kwargs'],'name':'Main'}
+
+
+def test_unnamed_click_exposes_target_repair_beside_the_target(editor_page):
+    page,value=editor_page
+    download=next(s for s in value['steps'] if s['action']=='download')
+    download['steps'][0]['locator']=[{'method':'locator','args':['.country-button'],'kwargs':{}}]
+    page.locator('[data-close]').click()
+    page.evaluate('v=>data.revisions[0].definition=v',value)
+    page.add_script_tag(path=str(Path(__file__).resolve().parents[1]/'app/static/flow_recording_editor.js'))
+    page.evaluate('()=>FlowRecordings.open(1)')
+    page.locator(f'[data-card="{download["id"]}"] [data-select]').click()
+    assert page.locator('[data-target-kind]').input_value()=='recorded'
+    assert page.locator('[data-target-name]').count()==0
+    repair=page.locator('[data-repair-kind]')
+    assert repair.is_visible()
+    repair.select_option('text')
+    page.get_by_role('button',name='Apply target repair',exact=True).click()
+    assert 'enter its value' in page.locator('[data-error]').inner_text()
+    page.get_by_label('Replacement target',exact=True).fill('Main')
+    page.get_by_role('button',name='Apply target repair',exact=True).click()
+    assert page.locator('[data-target-name]').input_value()=='Main'
+
+
+def test_record_again_is_visible_and_does_not_save_unsaved_edits(editor_page):
+    page,_=editor_page
+    labels=page.locator('.recording-actions > button').all_text_contents()
+    assert labels[:4]==['Test recording','Save draft','Record again','Choose from template']
+    assert page.locator('.recording-toolbar details [data-start]').count()==0
+    page.locator('[data-card]').first.locator('[data-select]').click()
+    page.get_by_label('Step name (display only)',exact=True).fill('Unsaved label')
+    page.get_by_role('button',name='Record again',exact=True).click()
+    page.wait_for_function('()=>calls.length===1')
+    assert page.evaluate('()=>calls')==[{'path':'/api/flows/1/recordings/start'}]
+    assert page.evaluate('()=>data.revisions.length')==1
+
+
 def test_wait_undo_move_and_remove_preserve_ids(editor_page):
     page,value=editor_page
     original_ids=[s['id'] for s in value['steps']]
@@ -78,10 +139,10 @@ def test_wait_undo_move_and_remove_preserve_ids(editor_page):
 def test_polling_preserves_selection_dirty_fields_and_collapsed_details(editor_page):
     page,value=editor_page
     page.get_by_role('button',name='Click “Excel down”',exact=True).click()
-    page.get_by_label('Step name',exact=True).fill('Download sales workbook')
+    page.get_by_label('Step name (display only)',exact=True).fill('Download sales workbook')
     page.evaluate('()=>window.selectedPanel=document.querySelector(".recording-details")')
     page.wait_for_timeout(3300)
-    assert page.get_by_label('Step name',exact=True).input_value()=='Download sales workbook'
+    assert page.get_by_label('Step name (display only)',exact=True).input_value()=='Download sales workbook'
     assert page.evaluate('()=>selectedPanel===document.querySelector(".recording-details")')
     assert not page.locator('[data-headers]').is_visible()
     assert page.get_by_role('button',name='Enable schedule',exact=True).count()==0
@@ -89,7 +150,7 @@ def test_polling_preserves_selection_dirty_fields_and_collapsed_details(editor_p
     page.wait_for_function('()=>calls.length>=2')
     assert page.evaluate('()=>calls.map(c=>c.path)')==['/api/flows/1/recordings/revisions','/api/flows/1/recordings/revisions/2/validate']
     assert page.get_by_role('button',name='Enable schedule',exact=True).count()==0
-    page.get_by_label('Step name',exact=True).fill('Changed after testing')
+    page.get_by_label('Step name (display only)',exact=True).fill('Changed after testing')
     assert page.get_by_role('button',name='Enable schedule',exact=True).count()==0
 
 
@@ -192,11 +253,11 @@ def test_drag_and_invalid_page_move(editor_page):
 def test_failed_save_keeps_edits_and_places_error_by_actions(editor_page):
     page,_=editor_page
     page.get_by_role('button',name='Click “Excel down”',exact=True).click()
-    page.get_by_label('Step name',exact=True).fill('My pending download')
+    page.get_by_label('Step name (display only)',exact=True).fill('My pending download')
     page.evaluate("()=>apiPostJson=async()=>{throw Error('Connection lost. Retry Save draft.');}")
     page.get_by_role('button',name='Save draft',exact=True).click()
     page.get_by_text('Connection lost. Retry Save draft.',exact=True).wait_for()
-    assert page.get_by_label('Step name',exact=True).input_value()=='My pending download'
+    assert page.get_by_label('Step name (display only)',exact=True).input_value()=='My pending download'
     assert page.locator('[data-error]').bounding_box()['y']<page.viewport_size['height']
     assert page.get_by_role('button',name='Save draft',exact=True).is_enabled()
 

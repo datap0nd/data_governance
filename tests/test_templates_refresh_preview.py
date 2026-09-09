@@ -184,11 +184,29 @@ def test_template_picker_search_versions_preview_apply_undo_and_module_rules(pre
     assert calls[-1]['body'] == {'source_flow_id': 7, 'source_revision_id': 3, 'site_id': 1}
     revisions = page.evaluate('previewData.revisions[11]')
     assert revisions[0]['status'] == 'draft' and revisions[0]['template_source']['source_flow_name'] == 'Regional orders'
+    # The copied semantic target is editable independently from its display-only step name.
+    page.get_by_role('button', name='Click “Setting”', exact=True).click()
+    expect(page.get_by_label('Step name (display only)', exact=True)).to_be_visible()
+    target_name = page.get_by_label('Target name (used during playback)', exact=True)
+    expect(target_name).to_have_value('Setting')
+    target_name.fill('Main')
+    expect(page.get_by_role('button', name='Click “Main”', exact=True)).to_be_visible()
     shot(page, evidence, 'recording-template-applied')
     # Test recording is required before activation and stays free of SQL work.
     page.get_by_role('button', name='Test recording', exact=True).click()
     page.wait_for_function('previewCalls.some(c=>c.path.endsWith("/validate"))')
     expect(page.locator('p[data-session]')).to_contain_text('Test passed')
+    saved = page.evaluate('previewCalls.filter(c=>c.path.endsWith("/recordings/revisions")).at(-1).body.definition')
+    main = next(s for s in saved['steps'] if s['id'] == 'regional-setting')
+    assert main['locator'] == [{'method': 'get_by_role', 'args': ['button'], 'kwargs': {'name': 'Main'}}]
+    # Record again is a visible one-click action and does not create another saved revision.
+    before_record_again = page.evaluate('previewData.revisions[11].length')
+    page.get_by_role('button', name='Record again', exact=True).click()
+    expect(page.get_by_role('button', name='Finish recording', exact=True)).to_be_visible()
+    assert page.evaluate('previewData.revisions[11].length') == before_record_again
+    assert page.evaluate('previewCalls.filter(c=>c.method==="POST").at(-1).path').endswith('/recordings/start')
+    page.get_by_role('button', name='Cancel recording', exact=True).click()
+    page.wait_for_function('previewData.sessions[11][0].status === "cancelled"')
     # Replacing an existing recording keeps the previous steps through Undo and saved versions.
     page.evaluate("previewShow('recording', 7)")
     page.wait_for_function("document.querySelectorAll('[data-card]').length === 7")

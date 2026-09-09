@@ -8,6 +8,14 @@ const click={id:'click',action:'click',page:'page',locator:[{method:'get_by_role
 const event={id:'event',action:'download',page:'page',steps:[click],output:{format:'xlsx'}};
 assert.equal(M.describe(event),'Click “Excel down”');
 assert.equal(M.triggering(event).id,'click');
+const renamed=structuredClone(click),originalLocator=structuredClone(click.locator);
+assert.deepEqual({...M.editableTarget(renamed)}, {index:0,field:'name',value:'Excel down'});
+M.renameTarget(renamed,'Main');
+assert.equal(renamed.locator[0].kwargs.name,'Main');
+assert.deepEqual(renamed.locator[0].args,originalLocator[0].args);
+assert.equal(renamed.locator[0].method,originalLocator[0].method);
+assert.equal(M.editableTarget({locator:[{method:'locator',args:['.country-button'],kwargs:{}}]}),null);
+assert.throws(()=>M.renameTarget({locator:[{method:'locator',args:['.country-button'],kwargs:{}}]},'Main'),/visible-text/);
 const def={steps:[{id:'open',action:'goto',page:'page'},event,{id:'wait',action:'wait',page:'page',seconds:5}]};
 const moved=M.move(def,'event',2);
 assert.equal(moved.steps[2].id,'event');assert.equal(moved.steps[2].steps[0].id,'click');
