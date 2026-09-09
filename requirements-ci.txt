@@ -1,0 +1,18 @@
+# Dependencies used by the GitHub Actions test suite.
+pytest
+fastapi
+uvicorn
+pydantic
+httpx
+playwright==1.62.0
+tzdata
+tzlocal
+openpyxl==3.1.5
+xlrd==2.0.2
+pyxlsb==1.0.10
+python-multipart
+apscheduler
+sqlalchemy
+psycopg2-binary
+truststore
+ecdsa==0.19.1

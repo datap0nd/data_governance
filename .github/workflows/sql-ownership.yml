@@ -1,0 +1,57 @@
+name: SQL ownership
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - app/flow_sql.py
+      - requirements-ci.txt
+      - tests/test_sql_ownership_postgres.py
+      - .github/workflows/sql-ownership.yml
+  pull_request:
+    paths:
+      - app/flow_sql.py
+      - requirements-ci.txt
+      - tests/test_sql_ownership_postgres.py
+      - .github/workflows/sql-ownership.yml
+  schedule:
+    - cron: "47 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: sql-ownership-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  postgres:
+    name: PostgreSQL ${{ matrix.postgres }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: ['14', '18']
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres }}
+        env:
+          POSTGRES_DB: metronome_test_ownership
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d metronome_test_ownership"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-ci.txt
+      - name: Install PostgreSQL test dependencies
+        run: pip install pytest sqlalchemy psycopg2-binary tzdata
+      - name: Test SQL ownership on disposable PostgreSQL
+        env:
+          METRONOME_TEST_POSTGRES_DSN: postgresql+psycopg2://postgres@127.0.0.1:5432/metronome_test_ownership
+        run: python -m pytest tests/test_sql_ownership_postgres.py -q -ra
