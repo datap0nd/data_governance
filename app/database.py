@@ -560,6 +560,7 @@ CREATE TABLE IF NOT EXISTS flows (
     export_views_json   TEXT NOT NULL DEFAULT '[]',
     download_links_json TEXT NOT NULL DEFAULT '[]',
     enabled             INTEGER DEFAULT 0,
+    classification      TEXT NOT NULL DEFAULT 'production',
     selections_json     TEXT NOT NULL DEFAULT '{}',
     download_mode       TEXT NOT NULL DEFAULT 'single',
     period_strategy     TEXT NOT NULL DEFAULT 'fixed',
@@ -868,6 +869,7 @@ MIGRATIONS = [
     "ALTER TABLE flows ADD COLUMN folder_slug TEXT",
     "ALTER TABLE flows ADD COLUMN download_parallelism INTEGER NOT NULL DEFAULT 1",
     "ALTER TABLE flows ADD COLUMN sql_reconciliation_required INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE flows ADD COLUMN classification TEXT NOT NULL DEFAULT 'production'",
     """CREATE TRIGGER IF NOT EXISTS recorded_flow_unknown_sql_commit
         AFTER UPDATE OF status ON flow_runs
         WHEN NEW.status IN ('failed','cancelled')
@@ -1938,6 +1940,23 @@ MIGRATIONS = [
           AND EXISTS (SELECT 1 FROM flow_run_events WHERE run_id=NEW.id AND stage='sql_insertion')
           AND NOT EXISTS (SELECT 1 FROM flow_run_events WHERE run_id=NEW.id AND stage='sql_insertion_complete')
         BEGIN UPDATE flows SET sql_reconciliation_required=1 WHERE id=NEW.flow_id; END""",
+    # Replace-mode loads truncate and refill the table in one PostgreSQL
+    # transaction. Repeating that transaction is the recovery path, so an
+    # interrupted result must never permanently block the Flow. Keep the
+    # reconciliation fence only for append mode, where a replay could duplicate
+    # rows, and clear historical replace-mode flags created by older releases.
+    "DROP TRIGGER IF EXISTS recorded_flow_unknown_sql_commit_v2",
+    """CREATE TRIGGER IF NOT EXISTS recorded_flow_unknown_sql_commit_v3
+        AFTER UPDATE OF status ON flow_runs
+        WHEN NEW.status IN ('failed','cancelled')
+          AND json_extract(NEW.job_json, '$.flow.execution_method') = 'recorded'
+          AND json_extract(NEW.job_json, '$.sql_handoff.enabled') = 1
+          AND json_extract(NEW.job_json, '$.sql_handoff.mode') = 'append'
+          AND json_extract(NEW.job_json, '$.job_type') IS NOT 'view_retry'
+          AND EXISTS (SELECT 1 FROM flow_run_events WHERE run_id=NEW.id AND stage='sql_insertion')
+          AND NOT EXISTS (SELECT 1 FROM flow_run_events WHERE run_id=NEW.id AND stage='sql_insertion_complete')
+        BEGIN UPDATE flows SET sql_reconciliation_required=1 WHERE id=NEW.flow_id; END""",
+    "UPDATE flows SET sql_reconciliation_required=0 WHERE sql_reconciliation_required=1 AND LOWER(COALESCE(sql_mode,''))='replace'",
 ]
 
 

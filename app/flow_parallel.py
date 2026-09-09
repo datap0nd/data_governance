@@ -270,7 +270,7 @@ def abort(db, run_id, message, *, terminal='failed', coordinator_stopped=False):
     parent = _fanout(db, run_id)
     if not parent or parent['state'] == 'complete':
         return
-    if parent['sql_started'] and not sql_committed(db, run_id):
+    if parent['sql_started'] and sql_reconciliation_required(db, run_id):
         db.execute('UPDATE flows SET sql_reconciliation_required=1 WHERE id=(SELECT flow_id FROM flow_runs WHERE id=?)', (run_id,))
         message += ' SQL may have committed; reconcile the target before another run.'
     now = timestamp()
@@ -350,6 +350,18 @@ def sql_committed(db, run_id):
     return bool(db.execute("SELECT 1 FROM flow_run_events WHERE run_id=? AND stage='sql_insertion_complete' LIMIT 1", (run_id,)).fetchone())
 
 
+def sql_reconciliation_required(db, run_id):
+    """Only append-mode uncertainty needs a replay fence.
+
+    Replace mode truncates and refills inside one PostgreSQL transaction, so a
+    fresh replace is safe whether the interrupted transaction committed or
+    rolled back.
+    """
+    row = db.execute('SELECT job_json FROM flow_runs WHERE id=?', (run_id,)).fetchone()
+    job = _job(row) if row else {}
+    return job.get('sql_handoff', {}).get('mode') == 'append' and not sql_committed(db, run_id)
+
+
 def guard_progress(db, worker_id, run_id, status, token, stage):
     parent = _fanout(db, run_id)
     if not parent:
@@ -367,7 +379,7 @@ def guard_progress(db, worker_id, run_id, status, token, stage):
             raise HTTPException(409, 'The finalizer token is stale.')
         if stage == 'sql_insertion':
             db.execute('UPDATE flow_run_fanout SET sql_started=1 WHERE run_id=?', (run_id,))
-        if status in {'failed','cancelled'} and parent['sql_started'] and not sql_committed(db, run_id):
+        if status in {'failed','cancelled'} and parent['sql_started'] and sql_reconciliation_required(db, run_id):
             db.execute('UPDATE flows SET sql_reconciliation_required=1 WHERE id=(SELECT flow_id FROM flow_runs WHERE id=?)', (run_id,))
     elif status == 'succeeded' or stage in POST_DOWNLOAD_STAGES:
         raise HTTPException(409, 'The complete bundle has not acquired finalization.')
@@ -392,7 +404,7 @@ def recover_worker(db, worker, replacement_pid):
     if parent and parent['state'] != 'complete':
         job = _job(db.execute('SELECT job_json FROM flow_runs WHERE id=?', (parent['run_id'],)).fetchone())
         message = 'The coordinator restarted; the run was not replayed automatically.'
-        if parent['sql_started'] and job.get('sql_handoff', {}).get('enabled'):
+        if parent['sql_started'] and job.get('sql_handoff', {}).get('mode') == 'append':
             message += ' The SQL commit outcome is unknown. Reconcile the target before retrying.'
         abort(db, parent['run_id'], message, coordinator_stopped=True)
         db.execute('UPDATE flow_workers SET current_run_id=NULL WHERE worker_id=?', (worker['worker_id'],))
@@ -460,7 +472,7 @@ def request_stop(run_id):
         run = db.execute('SELECT job_json,status FROM flow_runs WHERE id=?', (run_id,)).fetchone()
         if not parent or parent['state'] == 'complete':
             return {'run_id': run_id, 'status': run['status'], 'message': 'The run already finished.', 'workers': []}
-        if parent['sql_started'] and _job(run).get('sql_handoff', {}).get('enabled'):
+        if parent['sql_started'] and _job(run).get('sql_handoff', {}).get('mode') == 'append':
             message += ' The SQL commit outcome may be unknown; reconcile the target before retrying.'
         abort(db, run_id, message, terminal='cancelled')
         _event(db, run_id, 'cancelling', message)

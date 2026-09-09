@@ -263,20 +263,26 @@ def test_restart_fences_download_lease_without_replaying(bundle):
     assert claim('worker-2') is None
 
 
-def test_unknown_sql_blocks_future_runs_until_operator_acknowledges(bundle):
+@pytest.mark.parametrize('sql_mode,blocked', [('replace', False), ('append', True)])
+def test_only_unknown_append_blocks_future_runs(bundle, sql_mode, blocked):
     state=complete_all(bundle)
     token=state['finalizer_token']
+    with database.get_db() as db:
+        row=db.execute('SELECT job_json FROM flow_runs WHERE id=?',(bundle['run']['id'],)).fetchone()
+        job=json.loads(row['job_json']); job['sql_handoff'].update(enabled=True,mode=sql_mode)
+        db.execute('UPDATE flow_runs SET job_json=? WHERE id=?',(json.dumps(job),bundle['run']['id']))
+        db.execute('UPDATE flows SET sql_mode=? WHERE id=?',(sql_mode,bundle['saved']['id']))
     flows.update_run('worker-1',bundle['run']['id'],flows.WorkerProgress(status='running',progress={'stage':'sql_insertion'},finalizer_token=token))
     flows.update_run('worker-1',bundle['run']['id'],flows.WorkerProgress(status='failed',error='connection lost after commit',finalizer_token=token))
-    with pytest.raises(HTTPException,match='Reconcile'):
-        with database.get_db() as db:
+    with database.get_db() as db:
+        assert bool(db.execute('SELECT sql_reconciliation_required FROM flows WHERE id=?',(bundle['saved']['id'],)).fetchone()[0]) is blocked
+        if blocked:
+            with pytest.raises(HTTPException,match='Reconcile'):
+                flows._build_job(db,bundle['saved']['id'])
+            assert flows.inspect_sql_retry_eligibility(db,bundle['run']['id'])['reason_code']=='sql_reconciliation_required'
+            assert flows.inspect_resume_eligibility(db,bundle['run']['id'])['reason_code']=='sql_reconciliation_required'
+        else:
             flows._build_job(db,bundle['saved']['id'])
-    with database.get_db() as db:
-        assert flows.inspect_sql_retry_eligibility(db,bundle['run']['id'])['reason_code']=='sql_reconciliation_required'
-        assert flows.inspect_resume_eligibility(db,bundle['run']['id'])['reason_code']=='sql_reconciliation_required'
-    flows.acknowledge_sql_reconciliation(bundle['saved']['id'],flows.SQLReconciled(acknowledged=True),_request())
-    with database.get_db() as db:
-        assert flows._build_job(db,bundle['saved']['id'])
 
 
 def test_actual_task_download_keeps_full_index_and_never_finalizes(bundle,tmp_path,monkeypatch):
@@ -384,6 +390,10 @@ def test_late_cancel_ack_cannot_clear_a_new_stop_latch(bundle):
 
 def test_coordinator_restart_during_sql_is_fenced_and_never_replayed(bundle):
     state=complete_all(bundle)
+    with database.get_db() as db:
+        row=db.execute('SELECT job_json FROM flow_runs WHERE id=?',(bundle['run']['id'],)).fetchone()
+        job=json.loads(row['job_json']); job['sql_handoff'].update(enabled=True,mode='append')
+        db.execute('UPDATE flow_runs SET job_json=? WHERE id=?',(json.dumps(job),bundle['run']['id']))
     flows.update_run('worker-1',bundle['run']['id'],flows.WorkerProgress(status='running',progress={'stage':'sql_insertion'},finalizer_token=state['finalizer_token']))
     register('worker-1',bundle['store'],pid=9999)
     with database.get_db() as db:

@@ -1594,7 +1594,7 @@ def _build_job(db, flow_id: int, *, force_reprocess: bool = False, recording_dra
             flow['post_sql_refresh'] = body.post_sql_refresh
         if body.recording_revision_id is not None:
             flow['recording_revision_id'] = body.recording_revision_id
-    if flow.get('sql_reconciliation_required'):
+    if flow.get('sql_reconciliation_required') and flow.get('sql_mode') == 'append':
         raise HTTPException(409, 'A prior SQL commit may have completed. Reconcile the target and acknowledge it before another run.')
     paths = flow_paths.policy(db, flow)
     try:
@@ -2294,7 +2294,7 @@ def inspect_view_retry_eligibility(db, run_id: int) -> dict:
     if not planned:
         return _recovery_result("not_applicable", "no_view_refresh", "This run has no materialized views to refresh.",
                                 http_status=400, _source=source)
-    if source["sql_reconciliation_required"]:
+    if source["sql_reconciliation_required"] and source_job.get("sql_handoff", {}).get("mode") == "append":
         return _recovery_result("blocked", "sql_reconciliation_required",
                                 "Reconcile the uncertain SQL commit and acknowledge it before retrying.", _source=source)
     outcome = _loads(source["sql_outcome_json"], None)
@@ -2401,7 +2401,7 @@ def inspect_sql_retry_eligibility(
             "blocked", "run_active", "Wait for the source run to finish before retrying SQL.",
             _source=source,
         )
-    if source['sql_reconciliation_required']:
+    if source['sql_reconciliation_required'] and _loads(source["job_json"], {}).get("sql_handoff", {}).get("mode") == "append":
         return _recovery_result('blocked', 'sql_reconciliation_required',
             'Reconcile the uncertain SQL commit and acknowledge it before retrying.', _source=source)
     downloads = flow_parallel.snapshot(db, run_id)
@@ -2608,7 +2608,7 @@ def inspect_resume_eligibility(db, run_id: int) -> dict:
             "not_applicable", "status_not_resumable", "Only a failed or cancelled run can be resumed.",
             _source=source,
         )
-    if source['sql_reconciliation_required']:
+    if source['sql_reconciliation_required'] and _loads(source["job_json"], {}).get("sql_handoff", {}).get("mode") == "append":
         return _recovery_result('blocked', 'sql_reconciliation_required',
             'Reconcile the uncertain SQL commit and acknowledge it before resuming.', _source=source)
     if (source["source_type"] or "portal") in {"outlook", "file"}:
@@ -3522,13 +3522,16 @@ class FlowInlineWrite(BaseModel):
     model_config = {"extra": "forbid"}
     owner_person_id: int | None = Field(default=None, ge=1, strict=True)
     browser_mode: Literal["headless", "headed"] | None = None
+    classification: Literal["production", "draft"] | None = None
 
     @model_validator(mode="after")
     def validate_changes(self):
         if not self.model_fields_set:
-            raise ValueError("Provide owner_person_id or browser_mode.")
+            raise ValueError("Provide owner_person_id, browser_mode, or classification.")
         if "browser_mode" in self.model_fields_set and self.browser_mode is None:
             raise ValueError("browser_mode must be headless or headed.")
+        if "classification" in self.model_fields_set and self.classification is None:
+            raise ValueError("classification must be production or draft.")
         return self
 
 

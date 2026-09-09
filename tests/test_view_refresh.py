@@ -381,12 +381,13 @@ def test_retry_is_rejected_without_a_confirmed_commit_or_after_a_newer_sql_write
         assert flows.inspect_view_retry_eligibility(db, third["id"])["reason_code"] == "views_complete"
 
 
-def test_uncertain_commit_keeps_reconciliation_but_a_confirmed_commit_with_failed_view_does_not(flow_db, monkeypatch):
+def test_replace_mode_never_sets_reconciliation_even_when_commit_status_is_uncertain(flow_db, monkeypatch):
     from test_flow_recordings import draft_job
     saved, job = draft_job()
     job["sql_handoff"]["enabled"] = True
     with database.get_db() as db:
-        for events, expected in ((["sql_insertion"], 1), (["sql_insertion", "sql_insertion_complete", "view_refresh_failed"], 0)):
+        job["sql_handoff"]["mode"] = "replace"
+        for events, expected in ((["sql_insertion"], 0), (["sql_insertion", "sql_insertion_complete", "view_refresh_failed"], 0)):
             db.execute("UPDATE flows SET sql_reconciliation_required=0 WHERE id=?", (saved["id"],))
             run = db.execute("INSERT INTO flow_runs(flow_id,trigger_type,status,job_json,created_at) VALUES (?,'manual','running',?,'2026-09-07')", (saved["id"], json.dumps(job))).lastrowid
             for stage in events:

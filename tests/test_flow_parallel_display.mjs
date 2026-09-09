@@ -28,9 +28,14 @@ run.downloads.completed = 3;
 log.render(run);
 assert.match(container.innerHTML, /id="flow-retry-sql"/);
 run.sql_reconciliation_required = true;
+run.job.sql_handoff.mode = 'append';
 log.render(run);
 assert.doesNotMatch(container.innerHTML, /id="flow-retry-sql"/);
 assert.match(container.innerHTML, /SQL reconciliation required/);
+run.job.sql_handoff.mode = 'replace';
+log.render(run);
+assert.match(container.innerHTML, /id="flow-retry-sql"/);
+assert.doesNotMatch(container.innerHTML, /SQL reconciliation required/);
 console.log('Parallel download display tests passed');
 
 // Folder allocation is automatic, so parallelism needs no adoption control.

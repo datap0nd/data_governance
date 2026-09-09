@@ -10674,18 +10674,27 @@ function _flowSourcePickerHtml(catalog) {
 
 function _flowListHtml(flows, workers, catalog, runs = []) {
     if (!flows.length) return _flowEmptyState(catalog);
+    const classification = window._flowsState?.classification === "draft" ? "draft" : "production";
+    const classified = flows.filter(flow => (flow.classification || "production") === classification);
+    const productionCount = flows.filter(flow => (flow.classification || "production") === "production").length;
+    const draftCount = flows.length - productionCount;
+    const classificationTabs = `<div class="flow-classification-tabs" role="tablist" aria-label="Flow classification">
+        <button type="button" role="tab" data-flow-classification="production" aria-selected="${classification === "production"}" class="${classification === "production" ? "active" : ""}">Production <span>${productionCount}</span></button>
+        <button type="button" role="tab" data-flow-classification="draft" aria-selected="${classification === "draft"}" class="${classification === "draft" ? "active" : ""}">Draft flows <span>${draftCount}</span></button>
+    </div>`;
+    if (!classified.length) return `${classificationTabs}<div class="flow-empty"><h2>No ${classification === "draft" ? "draft" : "production"} flows</h2><p>Move a Flow here from its More menu.</p></div>`;
     const opened = _flowOpenGroups();
-    const rows = flows.map(flow => _flowRowModel(flow, runs, catalog));
+    const rows = classified.map(flow => _flowRowModel(flow, runs, catalog));
     const online = workers.filter(worker => worker.status !== "offline").length;
     const executing = rows.filter(row => row.activeRun);
-    return `<section id="flow-execution-pane" class="flow-execution-pane" aria-labelledby="flow-execution-heading" ${executing.length ? "" : "hidden"}>
+    return `${classificationTabs}<section id="flow-execution-pane" class="flow-execution-pane" aria-labelledby="flow-execution-heading" ${executing.length ? "" : "hidden"}>
             <div class="flow-execution-heading"><h2 id="flow-execution-heading">Flows in execution</h2><span id="flow-execution-count">${executing.length} active</span></div>
             <div id="flow-execution-scroll" class="flow-table-wrap flow-execution-scroll" role="region" aria-label="Flows in execution" tabindex="0">
                 <table class="flow-table flow-execution-table"><thead><tr>${_flowSortColumns().map(([,label]) => `<th scope="col">${label}</th>`).join("")}<th scope="col">Actions</th></tr></thead>
                 <tbody id="flow-execution-rows">${executing.map(_flowRowHtml).join("")}</tbody></table>
             </div>
         </section>
-        <div class="flow-status-strip"><span><strong>${flows.length}</strong> configured flows</span><span id="flow-worker-count"><strong>${online}</strong> online workers</span><span>Newest 3 producing runs retained; active recovery files stay protected.</span><span id="flow-activity-connection" role="status"></span></div>
+        <div class="flow-status-strip"><span><strong>${classified.length}</strong> ${classification} flow${classified.length === 1 ? "" : "s"}</span><span id="flow-worker-count"><strong>${online}</strong> online workers</span><span>Newest 3 producing runs retained; active recovery files stay protected.</span><span id="flow-activity-connection" role="status"></span></div>
         <div class="flow-table-wrap"><table class="flow-table flow-grouped-table">
         <thead><tr>${_flowSortHeaders()}</tr></thead>
         ${_flowGroups().map(group => {
@@ -10779,8 +10788,8 @@ function _flowRowHtml(row) {
         <td>${flow.source_type === "outlook" ? `CSV or Excel attachment<small>Original filename · default Inbox</small>` : flow.source_type === "file" ? `CSV or Excel file<small>${flow.local_file_worksheet ? `Worksheet: ${esc(flow.local_file_worksheet)} · ` : ""}Private snapshots · latest 3</small>` : `${esc(flow.download_mode === "one_per_period" || flow.download_mode === "one_per_week" ? `One ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} every ${flow.window_weeks || 1} week(s)` : `${flow.export_views?.length || 1} ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} export(s)`)}<small>${flow.period_strategy === "none" ? "No period prompt" : flow.period_strategy === "latest" ? "Start to latest available" : flow.period_strategy === "rolling" ? "Rolling window" : "Fixed start + end"}</small>`}<small>${flow.output_mode === "direct_replace" ? "Direct files · exact-name replacement" : "Run folders · newest 3"}</small><small>${esc(row.to || "")}${flow.sql_handoff_enabled ? ` · SQL ${esc(flow.sql_mode)}` : ""}</small></td>
         <td>${["outlook", "file"].includes(flow.source_type) ? "—" : `<select class="flow-inline-edit" data-id="${flow.id}" data-field="browser_mode" data-flow-focus="browser-${flow.id}" aria-label="Browser: ${esc(flow.name)}"><option value="headless" ${flow.browser_mode !== "headed" ? "selected" : ""}>Headless</option><option value="headed" ${flow.browser_mode === "headed" ? "selected" : ""}>Headed</option></select>`}</td>
         <td>${esc(_flowScheduleLabel(flow))}</td>
-        <td><div class="flow-last-run">${_flowLastRunHtml(activeRun || { status: flow.last_status, created_at: flow.last_run_at })}</div>${flow.sql_reconciliation_required ? '<small class="flow-error">SQL reconciliation required</small>' : ""}</td>
-        <td class="flow-row-actions">${button("flow-run", activeRun?.status === "queued" ? "Start now" : activeRun ? "Running" : "Run", activeRun && activeRun.status !== "queued" ? "disabled" : "")}<button class="btn-sm btn-outline btn-danger-outline flow-stop" type="button" data-id="${flow.id}" data-flow-focus="flow-stop-${flow.id}" ${activeRun ? "" : "hidden"}>Stop</button>${button("flow-edit", "Edit")}<details class="flow-row-menu"><summary aria-label="More actions: ${esc(flow.name)}" data-flow-focus="more-${flow.id}">More</summary><div>${button("flow-open-folder", "Open folder")}${flow.flow_folder ? button("flow-standalone-status", "Flow files") : ""}${flow.sql_reconciliation_required ? button('flow-sql-reconciled', 'Acknowledge SQL reconciliation') : ''}<button class="btn-sm btn-outline btn-danger-outline flow-delete" type="button" data-id="${flow.id}" data-flow-focus="flow-delete-${flow.id}">Delete</button></div></details></td>
+        <td><div class="flow-last-run">${_flowLastRunHtml(activeRun || { status: flow.last_status, created_at: flow.last_run_at })}</div>${flow.sql_reconciliation_required && flow.sql_mode === "append" ? '<small class="flow-error">SQL reconciliation required</small>' : ""}</td>
+        <td class="flow-row-actions">${button("flow-run", activeRun?.status === "queued" ? "Start now" : activeRun ? "Running" : "Run", activeRun && activeRun.status !== "queued" ? "disabled" : "")}<button class="btn-sm btn-outline btn-danger-outline flow-stop" type="button" data-id="${flow.id}" data-flow-focus="flow-stop-${flow.id}" ${activeRun ? "" : "hidden"}>Stop</button>${button("flow-edit", "Edit")}<details class="flow-row-menu"><summary aria-label="More actions: ${esc(flow.name)}" data-flow-focus="more-${flow.id}">More</summary><div>${button("flow-open-folder", "Open folder")}${flow.flow_folder ? button("flow-standalone-status", "Flow files") : ""}${button("flow-classification", (flow.classification || "production") === "draft" ? "Move to Production" : "Move to Draft", `data-classification="${(flow.classification || "production") === "draft" ? "production" : "draft"}"`)}${flow.sql_reconciliation_required && flow.sql_mode === "append" ? button('flow-sql-reconciled', 'Acknowledge SQL reconciliation') : ''}<button class="btn-sm btn-outline btn-danger-outline flow-delete" type="button" data-id="${flow.id}" data-flow-focus="flow-delete-${flow.id}">Delete</button></div></details></td>
     </tr>`;
 }
 
@@ -11712,7 +11721,7 @@ async function renderFlows() {
     if (requestId !== navigationRequestId || currentPage !== "flows") return "";
     window._flowsState = {
         catalog, flows, runs, workers, scans, estimates, sqlCatalog, people, scanEvents,
-        openCatalogTopics: new Set(), view: "list",
+        openCatalogTopics: new Set(), view: "list", classification: "production",
     };
     return `
         <div class="page-header flow-page-header"><div><h1>Flows</h1><p class="subtitle">Acquire data from files, Outlook, or website reports on the authenticated BI desktop.</p></div><button class="btn-primary" id="flow-create">Create flow</button></div>
@@ -11834,7 +11843,10 @@ function _flowPatchActivity(activity) {
         flow.last_run_at = run?.created_at || null;
     }
     document.querySelectorAll(".flow-group-toggle").forEach(button => {
-        const items = (window._flowsState?.flows || []).filter(flow => _flowRowModel(flow).group === button.dataset.group);
+        const selectedClassification = window._flowsState?.classification === "draft" ? "draft" : "production";
+        const items = (window._flowsState?.flows || []).filter(flow =>
+            (flow.classification || "production") === selectedClassification
+            && _flowRowModel(flow).group === button.dataset.group);
         const counts = [[".flow-group-active", items.filter(flow => active.has(flow.id)).length, "active runs"],
             [".flow-group-failed", items.filter(flow => flow.last_status === "failed").length, "failed"]];
         for (const [selector, count, label] of counts) {
@@ -12399,6 +12411,10 @@ async function _flowSubmitBuilder(event) {
 function _bindFlowWorkspace() {
     const state = window._flowsState;
     _flowWatchExecutionPane();
+    document.querySelectorAll(".flow-classification-tabs button").forEach(button => button.addEventListener("click", () => {
+        state.classification = button.dataset.flowClassification;
+        _flowShowView("list");
+    }));
     document.querySelectorAll(".flow-inline-edit").forEach(select => select.onchange = async () => {
         const flow = state.flows.find(item => item.id === Number(select.dataset.id));
         const field = select.dataset.field;
@@ -12439,6 +12455,20 @@ function _bindFlowWorkspace() {
         if (!window.confirm('Only continue after checking the SQL target and resolving any partial or duplicate data from the interrupted run. This acknowledges reconciliation and allows future runs.')) return;
         try { await apiPostJson(`/api/flows/${button.dataset.id}/sql-reconciled`, {acknowledged:true}); toast('SQL reconciliation acknowledged'); await navigate('flows'); }
         catch (error) { toast(error.message); }
+    }));
+    document.querySelectorAll('.flow-classification').forEach(button => button.addEventListener('click', async () => {
+        const flow = state.flows.find(item => item.id === Number(button.dataset.id));
+        const classification = button.dataset.classification;
+        button.disabled = true;
+        try {
+            const updated = await apiPatch(`/api/flows/${flow.id}`, {classification});
+            Object.assign(flow, updated);
+            toast(classification === 'draft' ? 'Flow moved to Draft flows.' : 'Flow moved to Production.');
+            _flowShowView('list');
+        } catch (error) {
+            toast('Flow classification was not changed: ' + error.message);
+            button.disabled = false;
+        }
     }));
     document.querySelectorAll(".flow-open-folder").forEach(button => button.addEventListener("click", async () => {
         try {

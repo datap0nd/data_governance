@@ -66,6 +66,19 @@ assert.match(render({}), /<option value="">Unassigned/);
 const css = fs.readFileSync(new URL("../app/static/style.css", import.meta.url), "utf8");
 assert.match(css, /main:has\(\.flow-page-header\) \{ max-width: none;/);
 assert.match(css, /\.flow-run-status \.badge \{ white-space: nowrap; overflow-wrap: normal;/);
+assert.match(html, /data-flow-classification="production"[^>]*aria-selected="true"/);
+assert.match(html, /Production <span>1<\/span>/);
+assert.match(html, /Draft flows <span>0<\/span>/);
+assert.match(html, /flow-classification[^>]*data-classification="draft"[^>]*>Move to Draft/);
+context.window._flowsState.classification = "draft";
+const drafts = context.renderFlowList([
+    {id: 3, name: "Live", classification: "production", source_type: "file"},
+    {id: 4, name: "Work in progress", classification: "draft", source_type: "file"},
+], [], {}, []);
+assert.match(drafts, /data-flow-id="4"/);
+assert.doesNotMatch(drafts, /data-flow-id="3"/);
+assert.match(drafts, /data-classification="production"[^>]*>Move to Production/);
+context.window._flowsState.classification = "production";
 
 const running = { id: 10, flow_id: 2, status: "running", progress: { completed: 3, total: 50, message: "Inserting into SQL", runners: [{id:"one",message:"Download",completed:3,total:50},{id:"two",message:"Download",completed:1,total:3},{id:"three",message:"Prepare",completed:0,total:3}], phases: [{label:"Download",completed:3,total:50}] } };
 const live = context.renderFlowList([{ id: 2, name: "Export" }], [], {}, [running]);

@@ -52,6 +52,7 @@ def snapshot(db, flow_id):
     return safe_metadata({
         'schema_version': 1, 'source_of_truth': 'Metronome database',
         'flow_id': flow_id, 'name': flow['name'], 'settings': settings,
+        'classification': flow.get('classification') or 'production',
         'owner': {'id': flow.get('owner_person_id'), 'name': flow.get('owner_name'), 'email': flow.get('owner_email')},
         'created_by': flow.get('created_by'), 'created_at': flow.get('created_at'),
         'schedule': {'type': flow['schedule_type'], 'time': flow['schedule_time'],
