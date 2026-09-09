@@ -13,6 +13,8 @@ from pathlib import Path
 import pytest
 from playwright.sync_api import expect, sync_playwright
 
+from app.flow_recording import validate_definition
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -324,3 +326,45 @@ def test_run_history_and_run_log_show_stages_and_retry_only_unfinished_views(pre
     no_overflow(page)
     assert page.frame(name=None, url=lambda u: 'run-log' in u).evaluate('document.documentElement.scrollWidth <= innerWidth')
     shot(page, evidence, 'run-log-narrow')
+
+
+def test_copying_range_template_preserves_recording_version_three(preview):
+    page, _, _ = preview
+    page.evaluate("""
+        () => {
+            const definition = previewData.revisions[7].find(item => item.id === 3).definition;
+            const index = definition.steps.findIndex(item => item.id === 'regional-setting');
+            const source = structuredClone(definition.steps[index]);
+            definition.version = 3;
+            definition.steps[index] = {
+                id: source.id,
+                action: 'select_range',
+                page: source.page,
+                locator: [...source.locator, {method: 'locator', args: ['xpath=..'], kwargs: {}}],
+                range: {
+                    unit: 'week', start: '2026-W33', end: 'latest_selectable', selection: 'inclusive',
+                    cell_selector: 'button.week', selected_state: 'auto', navigation: {kind: 'scroll'},
+                    anchor_locator: source.locator, container_ancestor_levels: 1,
+                    recorded_weeks: ['2026-W33'], source_step: source,
+                },
+            };
+        }
+    """)
+    page.evaluate("previewShow('recording', 11)")
+    page.locator('[data-editor] [data-begin-template]').click()
+    panel = page.locator('[data-template-panel]')
+    panel.get_by_role('option', name='Regional orders').click()
+    panel.locator('.recording-template-steps li').first.wait_for()
+    panel.get_by_role('button', name='Use this recording').click()
+    page.get_by_role(
+        'button', name='Select week range from 2026-W33', exact=True
+    ).click()
+    page.get_by_label('Step name (display only)', exact=True).fill('Weekly range')
+    page.get_by_role('button', name='Save draft', exact=True).click()
+    page.get_by_text('Draft saved', exact=True).wait_for()
+    definition = page.evaluate(
+        "previewCalls.filter(c=>c.path.endsWith('/recordings/revisions')).at(-1).body.definition"
+    )
+    assert definition['version'] == 3
+    assert any(step['action'] == 'select_range' for step in definition['steps'])
+    validate_definition(definition)
