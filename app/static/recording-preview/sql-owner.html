@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SQL table ownership preview</title>
+<link rel="stylesheet" href="/static/style.css"><link rel="stylesheet" href="/static/users.css">
+<style>body{padding:24px}main{max-width:1000px;margin:auto}nav{display:flex;gap:12px;margin:16px 0;flex-wrap:wrap}.preview-note{color:var(--text-muted);font-size:.85rem}.flow-panel{padding:24px}h2{margin-bottom:16px}#owner-help{line-height:1.7}#flow-feedback{min-height:3em}.target{padding:16px;background:var(--surface-2);border-radius:6px;margin:18px 0}button{min-height:38px}details{margin-top:20px}summary{cursor:pointer}#scenarios{margin:12px 0}code{overflow-wrap:anywhere}</style></head>
+<body><main><p class="preview-note">Fictional preview · changes stay in this tab · no database connection</p>
+<nav aria-label="Preview pages"><button class="btn-outline" id="show-users">Users</button><button class="btn-outline" id="show-flow">Regional orders Flow</button></nav>
+<div id="users-view"></div>
+<section id="flow-view" class="users-page" hidden><header class="page-header"><h1>Regional orders</h1><p class="subtitle">Load the daily report into PostgreSQL</p></header>
+<section class="users-panel flow-panel"><h2>Owner and SQL destination</h2><div class="users-form-grid">
+<label for="flow-owner">Flow owner<select id="flow-owner"></select></label>
+<label for="sql-enabled">SQL load<select id="sql-enabled"><option value="yes">Enabled</option><option value="no">Disabled</option></select></label></div>
+<p id="owner-help" class="users-muted"></p>
+<div class="target"><strong>reporting.public.regional_orders</strong><p>Current database owner: <code id="db-owner">metronome_loader</code></p><p id="db-rows">Last successful load: 120 rows</p></div>
+<div class="users-actions"><button id="save-flow">Save Flow</button><button id="run-flow" class="btn-outline">Run now</button><button id="edit-owner" class="btn-outline">Edit owner in Users</button></div>
+<p id="flow-feedback" class="users-feedback" role="status" aria-live="polite"></p>
+</section>
+<details><summary>Preview scenarios</summary><label for="scenarios">Next run<select id="scenarios"><option value="success">Successful load</option><option value="missing">SQL role does not exist</option><option value="permission">SQL account lacks ownership permissions</option><option value="copy">Data load fails</option></select></label></details></section>
+</main><script>
+const people=[{id:1,name:'Maya Chen',role:'BI',email:'maya@example.test',sql_username:'maya_chen'},{id:2,name:'Omar Malik',role:'Business',email:'omar@example.test',sql_username:null}];
+let ownerId=1,savedOwnerId=1,savedSql=true;
+const byId=id=>document.getElementById(id);
+window.esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+window.api=async()=>people.map(p=>({...p}));
+window.apiPatch=async(path,body)=>{const person=people.find(p=>p.id===Number(path.split('/').pop()));Object.assign(person,body);return {...person};};
+window.apiPostJson=async(path,body)=>{const person={...body,id:Math.max(0,...people.map(p=>p.id))+1};people.push(person);return {...person};};
+window.apiDelete=async path=>{const id=Number(path.split('/').pop());people.splice(people.findIndex(p=>p.id===id),1);if(ownerId===id)ownerId=null;if(savedOwnerId===id)savedOwnerId=null;};
+window.navigate=async()=>showUsers();
+async function showUsers(){byId('flow-view').hidden=true;byId('users-view').hidden=false;byId('users-view').innerHTML=await renderUsers();bindUsersPage();}
+function help(){const person=people.find(p=>p.id===Number(byId('flow-owner').value));byId('edit-owner').disabled=!person;
+byId('owner-help').textContent=byId('sql-enabled').value==='no'?'SQL loading is disabled. Table ownership will not change.':person?.sql_username?`The next successful SQL load will make ${person.sql_username} the owner of this target table in PostgreSQL, including an existing table. The SQL role must exist and the Metronome SQL account must have permission. Changes apply to runs started after saving; already queued runs keep their saved owner.`:'No SQL username is linked to this Flow owner. SQL loading keeps the existing table owner; a new table belongs to the SQL account. Add a SQL username in Users to assign ownership.';}
+function showFlow(){byId('users-view').hidden=true;byId('flow-view').hidden=false;byId('flow-owner').innerHTML='<option value="">No owner</option>'+people.map(p=>`<option value="${p.id}" ${p.id===ownerId?'selected':''}>${esc(p.name)} (${esc(p.role)})</option>`).join('');byId('flow-owner').value=ownerId??'';help();}
+byId('show-users').onclick=showUsers;byId('show-flow').onclick=showFlow;byId('flow-owner').onchange=()=>{ownerId=Number(byId('flow-owner').value)||null;help();};byId('sql-enabled').onchange=help;
+byId('save-flow').onclick=()=>{ownerId=Number(byId('flow-owner').value)||null;savedOwnerId=ownerId;savedSql=byId('sql-enabled').value==='yes';byId('flow-feedback').classList.remove('error');byId('flow-feedback').textContent=!savedSql?'Flow saved. SQL loading is disabled; table ownership will not change.':people.find(p=>p.id===savedOwnerId)?.sql_username?'Flow saved. Ownership will be applied with its next successful SQL load.':'Flow saved. No SQL username is linked; table ownership will not be changed.';};
+byId('edit-owner').onclick=async()=>{const id=Number(byId('flow-owner').value);await showUsers();openUserEditor(people.find(p=>p.id===id));};
+byId('run-flow').onclick=()=>{const feedback=byId('flow-feedback'),person=people.find(p=>p.id===savedOwnerId),scenario=byId('scenarios').value;feedback.classList.remove('error');
+if(!savedSql){feedback.textContent='Run completed. SQL loading is disabled; table ownership is unchanged.';return;}
+if(scenario==='copy'||(person?.sql_username&&scenario!=='success')){feedback.classList.add('error');feedback.textContent=scenario==='copy'?'SQL load failed. PostgreSQL rolled back the rows and ownership change. Fix the CSV and run again.':scenario==='missing'?`SQL ownership failed: role ${person.sql_username} does not exist. Check the SQL username in Users or ask your database administrator to create the role, then run again. PostgreSQL rolled back; table rows and owner are unchanged.`:'SQL ownership failed: the Metronome SQL account needs ownership rights and inherited membership with SET ROLE permission in the selected owner role. Ask your database administrator to grant the required permissions, then run again. PostgreSQL rolled back; table rows and owner are unchanged.';return;}
+if(person?.sql_username)byId('db-owner').textContent=person.sql_username;byId('db-rows').textContent='Last successful load: 125 rows';feedback.textContent=person?.sql_username?`SQL load committed: 125 rows. Table owner: ${person.sql_username}. Refresh the table properties in pgAdmin to see the owner.`:'SQL load committed: 125 rows. No SQL username was linked; table ownership is unchanged.';};
+(async()=>{let source=await(await fetch('/static/users.js')).text();source=source.replaceAll('future table permissions','SQL table ownership on the next successful load').replace('adding one does not grant access yet.','saving one applies to future runs of Flows assigned to this person; existing tables are updated during the SQL load.').replace('Enter the database username, not a password.','Use an existing PostgreSQL role. Ownership is applied only when an assigned Flow successfully loads SQL.').replace('SQL usernames are optional. The link is saved for SQL table ownership on the next successful load;','SQL usernames are optional;');const script=document.createElement('script');script.textContent=source;document.body.appendChild(script);await showUsers();})();
+</script></body></html>

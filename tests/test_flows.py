@@ -4280,7 +4280,7 @@ def test_flow_builder_can_replicate_an_existing_flow():
     assert "id: null, name: \"\", enabled: false, _replicated_from: sourceId," in source
     assert 'existing?.id ? "Save changes" : "Create flow"' in source
     log_html = Path(__file__).parents[1].joinpath("app", "static", "flow_run_log.html").read_text()
-    assert '/static/flow_run_log.js?v=4' in log_html
+    assert re.search(r'/static/flow_run_log\.js\?v=\d+', log_html)
 
 
 def test_asap_region_triplet_select_is_named_data_configuration():

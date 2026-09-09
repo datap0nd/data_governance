@@ -3935,10 +3935,38 @@ def _text_encoding_candidates(raw: bytes) -> list[str]:
     return encodings
 
 
-def _decode_downloaded_text(raw: bytes, *, source_label: str) -> tuple[str, str]:
+def _bomless_utf16_encoding(raw: bytes) -> str | None:
+    """Recognize strongly marked UTF-16 tabular text, never arbitrary binary."""
+    sample = raw[:4096]
+    if len(sample) < 8 or len(sample) % 2 or sample.startswith((b'\xff\xfe', b'\xfe\xff')):
+        return None
+    pairs = len(sample) // 2
+    for encoding, zero_lane in (('utf-16-le', 1), ('utf-16-be', 0)):
+        if sample[zero_lane::2].count(0) / pairs < .3 or sample[1-zero_lane::2].count(0) / pairs > .05:
+            continue
+        try:
+            # The prefix can end between a UTF-16 surrogate pair.
+            import codecs
+            decoded = codecs.getincrementaldecoder(encoding)().decode(sample, final=False)
+        except UnicodeDecodeError:
+            continue
+        if (any(c in decoded for c in '\r\n') and any(c in decoded for c in ',;\t|')
+                and all(c.isprintable() or c in '\r\n\t' for c in decoded)):
+            return encoding
+    return None
+
+
+def _decode_downloaded_text(raw: bytes, *, source_label: str, partial: bool = False) -> tuple[str, str]:
+    import codecs
+    unicode_encoding = _bomless_utf16_encoding(raw)
+    if unicode_encoding:
+        try:
+            return codecs.getincrementaldecoder(unicode_encoding)().decode(raw, final=not partial), unicode_encoding
+        except UnicodeDecodeError as exc:
+            raise RuntimeError(f'Invalid UTF-16 text in {source_label}.') from exc
     for encoding in _text_encoding_candidates(raw):
         try:
-            return raw.decode(encoding), encoding
+            return codecs.getincrementaldecoder(encoding)().decode(raw, final=not partial), encoding
         except UnicodeDecodeError:
             continue
     raise RuntimeError(f"Could not decode {source_label}.")
@@ -5344,6 +5372,7 @@ def _detect_download_format(path: Path) -> str:
             return kind
     decoded_head, _encoding = _decode_downloaded_text(
         head, source_label=f"download prefix for {path.name}",
+        partial=True,
     )
     stripped_text = decoded_head.lstrip("\ufeff \t\r\n").casefold()
     if stripped_text.startswith(HTML_PREFIXES) or re.search(
@@ -5351,7 +5380,7 @@ def _detect_download_format(path: Path) -> str:
         stripped_text,
     ):
         return "html"
-    if b"\x00" in head and not head.startswith((b"\xff\xfe", b"\xfe\xff")):
+    if b"\x00" in head and not head.startswith((b"\xff\xfe", b"\xfe\xff")) and not _bomless_utf16_encoding(head):
         return "binary"
     return "csv"
 
@@ -5414,7 +5443,13 @@ def _store_completed_download(
                 suffix = local_path.suffix.casefold()
             metadata = {'row_count': None, 'columns': []}
         else:
-            raise RuntimeError(f'The recorded download has an unsupported file format: {detected}.')
+            # A recording with no table checks or processing is a download,
+            # not a CSV import. Preserve opaque/protected files as delivered;
+            # never guess that their contents are an Excel workbook or CSV.
+            suffix = '.pdf' if detected == 'pdf' else local_path.suffix
+            if not suffix or suffix.casefold() in {'.download', '.tmp', '.crdownload'}:
+                suffix = '.bin'
+            metadata = {'row_count': None, 'columns': []}
         output = _safe_output_path(output.parent, output.stem + suffix)
         copied = _copy_with_checksum(local_path, output)
         if copied != snapshot:
@@ -5422,7 +5457,8 @@ def _store_completed_download(
         _verify_copied_file(output, snapshot['file_size'], snapshot['checksum'], label='Recorded download')
         return {**metadata, **copied, 'file_path': str(output), 'filename': output.name,
                 'original_file_path': str(output), 'original_filename': output.name,
-                'original_file_size': copied['file_size'], 'detected_format': suffix.lstrip('.')}
+                'original_file_size': copied['file_size'],
+                'detected_format': detected if detected in {'binary', 'pdf'} else suffix.lstrip('.')}
     declared_suffixes = {local_path.suffix.casefold(), output.suffix.casefold()}
     html_excel = (
         detected == "html"
@@ -7210,6 +7246,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
         # Older workers lack this key and are never given a job whose frozen
         # plan refreshes materialized views after SQL insertion.
         registration['capabilities']['post_sql_refresh_v1'] = True
+        registration['capabilities']['sql_table_ownership_v1'] = True
         registration['capabilities']['flow_recorder_v1'] = headed
         registration['capabilities']['flow_recorder_controls_v1'] = headed
         # Metronome can take several minutes to boot after an update (service

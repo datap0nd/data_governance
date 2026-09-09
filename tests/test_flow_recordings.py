@@ -176,13 +176,14 @@ def test_portable_script_dry_run_has_no_metronome_import_or_adjacent_configurati
 
 
 @pytest.fixture()
-def report_server():
+def report_server(request):
+    export = getattr(request, 'param', None) or {'content': b'Code,Period\nA,2026-01-01\n', 'filename': 'report.csv'}
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path.startswith('/export'):
-                content = b'Code,Period\nA,2026-01-01\n'
+                content = export['content']
                 self.send_response(200); self.send_header('Content-Type','text/csv')
-                self.send_header('Content-Disposition','attachment; filename="report.csv"'); self.end_headers(); self.wfile.write(content)
+                self.send_header('Content-Disposition',f'attachment; filename="{export["filename"]}"'); self.end_headers(); self.wfile.write(content)
             else:
                 content = b'''<h1>Sales Report</h1><label>Start<input id="start" value="2020-01-01"></label><label>End<input value="2026-09-05"></label><span id="status">Idle</span><button onclick="setTimeout(()=>document.querySelector('#status').textContent='Ready',30)">Generate</button><button onclick="window.location='/export'">Download</button>'''
                 self.send_response(200);self.send_header('Content-Type','text/html');self.end_headers();self.wfile.write(content)
@@ -191,6 +192,26 @@ def report_server():
     thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
     try: yield f'http://127.0.0.1:{server.server_port}/report'
     finally: server.shutdown();thread.join(timeout=2);server.server_close()
+
+
+@pytest.mark.parametrize('report_server', [{'content': b'Protected\x00report\xff\x10bytes', 'filename': 'report.xlsx'}], indirect=True)
+def test_portable_unchecked_recording_preserves_binary_browser_download(flow_db, tmp_path, report_server):
+    _, job = draft_job(report_server)
+    job['execution']['browser_channel'] = 'chrome'
+    for step in flow_recording.walk_steps(job['recording']['definition']['steps']):
+        if step['action'] == 'download':
+            step['output'] = {'format': 'xlsx'}
+    file = tmp_path / 'portable.py'
+    file.write_text(flow_portable.source(job), encoding='utf-8')
+    root = tmp_path / 'portable-output'
+    result = subprocess.run([sys.executable, '-I', str(file), '--headless', '--output-root', str(root)],
+        cwd=tmp_path, capture_output=True, text=True, timeout=90)
+    assert result.returncode == 0, result.stderr
+    files = list(root.rglob('*.xlsx'))
+    assert files and all(p.read_bytes() == b'Protected\x00report\xff\x10bytes' for p in files)
+    events = [json.loads(line) for line in next(root.rglob('*.jsonl')).read_text().splitlines()]
+    assert events[-1]['status'] == 'succeeded'
+    assert not list(root.rglob('*.csv'))
 
 
 @pytest.mark.parametrize('channel',['chrome','msedge'])

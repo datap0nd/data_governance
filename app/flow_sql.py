@@ -33,6 +33,76 @@ SQL_LOCK_TIMEOUT_SECONDS = 10 * 60
 # INSERT ... SELECT a managed snapshot runs after it, each get the full budget.
 SQL_STATEMENT_TIMEOUT_SECONDS = 30 * 60
 SqlProgress = Callable[[dict], None]
+OWNERSHIP_CAPABILITY = 'sql_table_ownership_v1'
+
+
+def owner_username(target: dict) -> str | None:
+    value = target.get('owner_username')
+    if value is None or value == '':
+        return None
+    if not isinstance(value, str):
+        raise ValueError('SQL owner username must be text.')
+    value = value.strip()
+    if not value:
+        return None
+    _quote_identifier(value)
+    if any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise ValueError('SQL owner username cannot contain control characters.')
+    return value
+
+
+def ownership_supported(job: dict, capabilities: dict) -> bool:
+    target = (job.get('validation_job') or job).get('sql_handoff') or {}
+    return bool(not (target.get('enabled') and target.get('owner_username'))
+                or capabilities.get(OWNERSHIP_CAPABILITY))
+
+
+def _ownership_preflight(connection, schema: str, table: str, owner: str) -> str | None:
+    """Check the exact role and continued loader access without granting roles."""
+    from sqlalchemy import text
+    if connection.execute(text('SELECT 1 FROM pg_roles WHERE rolname=:owner'),
+                          {'owner': owner}).scalar() is None:
+        raise RuntimeError(f'SQL owner role {owner!r} does not exist. Correct the SQL username in Users or ask your database administrator to create the role.')
+    privileges = connection.execute(text(
+        "SELECT current_user, pg_has_role(current_user, :owner, 'USAGE'), "
+        "has_schema_privilege(:owner, :schema, 'CREATE'), "
+        "has_schema_privilege(:owner, :schema, 'USAGE')"
+    ), {'owner': owner, 'schema': schema}).one()
+    actor, inherited, can_create, can_use = privileges
+    if not inherited:
+        raise RuntimeError(f'The Metronome SQL account must inherit privileges of {owner!r} so later SQL loads keep working. Ask your database administrator to grant inherited role membership.')
+    relation = connection.execute(text(
+        "SELECT pg_get_userbyid(c.relowner), c.relkind, pg_has_role(current_user, c.relowner, 'USAGE') "
+        "FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace "
+        "WHERE n.nspname=:schema AND c.relname=:table"
+    ), {'schema': schema, 'table': table}).first()
+    if relation and (relation[1] not in {'r', 'p'} or not relation[2]):
+        raise RuntimeError('SQL ownership requires a table that the Metronome SQL account owns or whose owning role privileges it inherits.')
+    previous = relation[0] if relation else None
+    if not can_use or (previous != owner and not can_create):
+        raise RuntimeError(f'SQL owner role {owner!r} needs USAGE and, when ownership changes, CREATE on schema {schema!r}. Ask your database administrator to grant the required schema permissions.')
+    # SET permission is separate from inherited privileges on PostgreSQL 16+.
+    # Probe it on all supported versions and restore the exact original role.
+    # Driver SQL keeps colons and punctuation inside quoted identifiers literal.
+    try:
+        connection.exec_driver_sql(f'SET LOCAL ROLE {_quote_identifier(owner)}', execution_options={'no_parameters': True})
+        connection.exec_driver_sql(f'SET LOCAL ROLE {_quote_identifier(actor)}', execution_options={'no_parameters': True})
+    except Exception as exc:
+        raise RuntimeError('The Metronome SQL account needs SET ROLE permission for the selected owner. Ask your database administrator to grant it.') from exc
+    return previous
+
+
+def _apply_ownership(connection, schema: str, table: str, owner: str) -> None:
+    from sqlalchemy import text
+    qualified = f'{_quote_identifier(schema)}.{_quote_identifier(table)}'
+    connection.exec_driver_sql(f'ALTER TABLE ONLY {qualified} OWNER TO {_quote_identifier(owner)}', execution_options={'no_parameters': True})
+    actual = connection.execute(text(
+        'SELECT pg_get_userbyid(c.relowner) FROM pg_class c '
+        'JOIN pg_namespace n ON n.oid=c.relnamespace '
+        'WHERE n.nspname=:schema AND c.relname=:table'
+    ), {'schema': schema, 'table': table}).scalar()
+    if actual != owner:
+        raise RuntimeError('PostgreSQL did not confirm the requested table owner; the SQL load will be rolled back.')
 
 
 class SqlHandoffError(RuntimeError):
@@ -309,6 +379,8 @@ def load_artifacts(
     if mode not in {"append", "replace"}:
         raise ValueError("SQL write mode must be append or replace.")
     uppercase = bool(target.get("uppercase"))
+    owner = owner_username(target)
+    ownership = {}
     qualified = f"{_quote_identifier(schema)}.{_quote_identifier(table)}"
     target_name = f"{database}.{schema}.{table}"
     if not artifacts:
@@ -358,6 +430,16 @@ def load_artifacts(
         rollback_status = "The transaction did not commit. PostgreSQL rollback was requested."
         connection.execute(text(f"SET LOCAL lock_timeout = '{SQL_LOCK_TIMEOUT_SECONDS}s'"))
         connection.execute(text(f"SET LOCAL statement_timeout = '{SQL_STATEMENT_TIMEOUT_SECONDS}s'"))
+
+        if owner:
+            stage = 'ownership validation'
+            _emit(progress, 'sql_ownership_validation', f'Checking SQL ownership permissions for {owner}.',
+                  started, status='started', target=target_name, owner_username=owner)
+            previous_owner = _ownership_preflight(connection, schema, table, owner)
+            ownership = {'owner_username': owner, 'previous_owner': previous_owner,
+                         'owner_changed': previous_owner != owner}
+            _emit(progress, 'sql_ownership_validation', 'SQL ownership permissions verified.',
+                  started, status='completed', target=target_name, **ownership)
 
         stage = "target validation"
         _emit(
@@ -534,6 +616,12 @@ def load_artifacts(
                 columns_added=len(columns_added),
             )
 
+        if owner:
+            stage = 'ownership'
+            _apply_ownership(connection, schema, table, owner)
+            _emit(progress, 'sql_ownership', f'Table owner set to {owner}; waiting for SQL commit.',
+                  started, status='completed', target=target_name, **ownership)
+
         stage = "commit"
         commit_started = True
         _emit(
@@ -544,8 +632,8 @@ def load_artifacts(
         transaction = None
         rollback_status = "PostgreSQL confirmed commit."
         _emit(
-            progress, "sql_commit", f"Committed {rows_written} row(s) to {target_name}.",
-            started, status="completed", target=target_name, rows=rows_written,
+            progress, "sql_commit", f"Committed {rows_written} row(s) to {target_name}." + (f' Table owner: {owner}.' if owner else ''),
+            started, status="completed", target=target_name, rows=rows_written, **ownership,
         )
     except Exception as exc:
         if transaction is not None:
@@ -579,6 +667,7 @@ def load_artifacts(
 
     return {
         "rows_written": rows_written,
+        **ownership,
         "files_loaded": len(inspected),
         "mode": mode,
         "uppercase": uppercase,
