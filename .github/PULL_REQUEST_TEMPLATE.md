@@ -9,7 +9,6 @@ Describe the problem and resulting behavior.
 - Tested revision and environment:
 - Checks actually run and results:
 - Final CI run and tested head SHA: <!-- Fill after final checks finish. -->
-- Work-PC/live checks still NOT RUN or BLOCKED:
 
 ## Delivery checklist
 

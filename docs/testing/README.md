@@ -9,6 +9,7 @@ This is a standing instruction from the repository owner, recorded in
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-09-09: opt-in live testing and post-#92 scope review | [Test plan](releases/2026-09-09-testing-scope-post-92/test-plan.md) | [Test report](releases/2026-09-09-testing-scope-post-92/test-report.md) |
 | 2026-09-09: faster pull-request CI | [Test plan](releases/2026-09-09-faster-ci/test-plan.md) | [Test report](releases/2026-09-09-faster-ci/test-report.md) |
 | 2026-09-09: discoverable recording replacement and template retargeting | [Test plan](releases/2026-09-09-recording-replacement-retargeting/test-plan.md) | [Test report](releases/2026-09-09-recording-replacement-retargeting/test-report.md) |
 | 2026-09-09: SQL table ownership and binary recordings | [Test plan](releases/2026-09-09-sql-table-owner/test-plan.md) | [Test report](releases/2026-09-09-sql-table-owner/test-report.md) |
@@ -35,10 +36,9 @@ This is a standing instruction from the repository owner, recorded in
 | 2026-09-05: Flows, PRs #67–#69 | [Work-PC test plan](releases/2026-09-05-flows/test-plan.md): recording controls, dates, GSCM, browser settings, workers and portability | [Verified automated report](releases/2026-09-05-flows/test-report.md); [live results worksheet](releases/2026-09-05-flows/manual-results.csv), initially NOT RUN |
 | 2026-09-05: testing documentation process, PR #70 | [Documentation checks](releases/2026-09-05-testing-process/test-plan.md) | [Documentation report](releases/2026-09-05-testing-process/test-report.md) |
 
-For the redesigned recording editor, start with the first-work-PC sequence in
-its guide above. Historical releases retain their original tests and results;
-the older date-batching tests describe that historical release, not current
-supported execution. Then complete the matrix for each affected portal.
+Historical releases retain their original tests and results; the older
+date-batching tests describe that historical release, not current supported
+execution. Historical work-PC instructions are not a standing requirement.
 
 ## For each future main merge
 
@@ -51,10 +51,15 @@ supported execution. Then complete the matrix for each affected portal.
    behavior and realistic failures. Give cases stable IDs, explicit steps,
    observable expected results and evidence requirements. Include deployment
    prerequisites and cleanup. Keep a docs-only plan proportional.
-3. Run appropriate checks. Shared execution changes require the full Python
-   suite; frontend changes require affected Node tests and syntax checks.
-   Record exact commands, UTC date, code SHA, OS, runtime/browser versions,
-   counts and evidence. A passing historical run must retain its original SHA.
+3. Run one smallest non-overlapping affected test set locally, plus applicable
+   syntax checks. Do not then run a broader local suite containing the same
+   cases. Final-head CI supplies the full Python regression for application,
+   dependency and test changes. Documentation, repository-policy, PR-template
+   and workflow-only changes use the lightweight scope gate. After rebasing,
+   rerun application tests only if application/test code changed or a related
+   conflict was resolved. Record exact commands, UTC date, code SHA, OS,
+   runtime/browser versions, counts and evidence. A passing historical run must
+   retain its original SHA.
 4. Commit the plan/report with the implementation and link them in the PR.
    Reports contain evidence available at their stated cutoff. Mark subsequent
    CI as pending until it finishes. After final checks, update the **PR testing
@@ -62,11 +67,18 @@ supported execution. Then complete the matrix for each affected portal.
    avoids repeatedly changing the commit just to document its own CI results.
    Any code change invalidates older final-head evidence and needs new checks.
 5. Merge after final required checks pass. The PR records the actual merge SHA;
-   do not predict a squash SHA. In the delivery reply link the plan/report,
-   state merge status and identify live checks still outstanding.
-6. When work-PC results arrive, append a dated report/worksheet entry with the
-   deployed app and worker revisions, case IDs and evidence. Preserve earlier
-   failures and retests. A new results-only PR also documents its own scope.
+   do not predict a squash SHA. In the delivery reply link the plan/report and
+   state merge status.
+
+## Live testing is opt-in only
+
+Do not open, inspect, plan, attempt or report work-PC, live portal,
+authentication or hardware checks unless the owner explicitly requests them in
+the current task. If not requested, omit live cases and status placeholders
+from the plan, report, PR and delivery reply. When explicitly requested, append
+dated results with deployed revisions and sanitized evidence, preserving earlier
+failures and retests. Never invoke a Metronome/live-fix skill for testing unless
+the owner explicitly names or requests it in that task.
 
 This is a repository delivery requirement and PR checklist. The application CI
 does not independently enforce the presence or accuracy of these documents.
@@ -81,13 +93,15 @@ does not independently enforce the presence or accuracy of these documents.
 | NOT RUN | No execution evidence exists yet. This is the default for live cases. |
 | N/A | The case does not apply to this release/environment; explain why. It does not count as PASS. |
 
-Keep **automated**, **synthetic browser**, **work-PC live** and **load benchmark**
-results separate. Report skips/warnings and known limitations. CI installation
-of Chrome/Edge does not itself prove portal SSO or browser equivalence.
+Keep **automated**, **synthetic browser**, explicitly requested **work-PC live**
+and **load benchmark** results separate. Report skips/warnings and known
+limitations. CI installation of Chrome/Edge does not itself prove portal SSO or
+browser equivalence.
 
 ## Evidence and repeatability
 
-Use the release worksheet or the report template. For each manual attempt store
+When live testing was explicitly requested, use the release worksheet or the
+report template. For each manual attempt store
 case ID, UTC timestamp, tester, app/worker SHA, browser version, run/session ID,
 expected versus actual result, status and a sanitized evidence reference.
 Duplicate a row for another browser, revision or attempt; never overwrite a

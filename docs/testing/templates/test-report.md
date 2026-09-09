@@ -5,7 +5,7 @@
 - Evidence cutoff (UTC): <timestamp/date>
 - Tested code revision: <exact SHA; identify any uncommitted files tested>
 - Environment: <OS, Python/Node, browser/Playwright versions as applicable>
-- Overall finding: <automated finding and live finding separately>
+- Overall finding: <automated/synthetic finding; add a live finding only when explicitly requested>
 
 ## Executed checks
 
@@ -13,18 +13,19 @@
 | --- | --- | --- | --- | --- |
 | <ID> | <Actual command> | <SHA and environment> | <PASS/FAIL; counts, skips, warnings> | <CI run/job or protected reference> |
 
-## Unperformed or blocked checks
+## Unperformed or blocked in-scope checks
 
 | IDs | Status | Reason | Next action |
 | --- | --- | --- | --- |
-| <ID> | NOT RUN | <No live execution yet> | <Required test environment/action> |
+| <ID> | NOT RUN | <Why an explicitly planned check was not performed> | <Required environment/action> |
 
 ## Findings, limitations and retests
 
 <Describe failures, their impact and evidence of any successful retest.
 Retain the original result. Explain skips/warnings and limits of synthetic data.
-For manual results, include timestamp, tester, app/worker revisions, browser,
-run/session ID, actual result and sanitized evidence reference per attempt.>
+For explicitly requested manual results, include timestamp, tester, app/worker
+revisions, browser, run/session ID, actual result and sanitized evidence
+reference per attempt.>
 
 ## Merge evidence
 

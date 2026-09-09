@@ -10,9 +10,11 @@ For any request that changes code:
 
 1. Implement on the session's designated `claude/...` branch (restart it from
    the latest `origin/main` if its previous PR was already merged).
-2. Validate before pushing: run the affected Python tests (full suite when the
-   change is not trivially isolated) and `node --check app/static/app.js` for
-   frontend changes.
+2. Validate before pushing with one smallest non-overlapping affected test set
+   and applicable syntax checks. Do not repeat that set inside a broader local
+   suite. Final-head CI is the authoritative full regression for application,
+   dependency and test changes; documentation, repository-policy, PR-template
+   and workflow-only changes use the lightweight CI scope gate.
 3. Commit, push, open a PR to `main`, and **merge it immediately** — do not
    wait for the owner to say "merge to main"; that approval is standing.
 4. In the reply, state clearly that the change is merged to `main`, so the
@@ -30,7 +32,11 @@ Every PR merged to `main`, including documentation and maintenance, must include
 or update a release-specific test plan and test report, and link both in its PR
 and delivery reply. Follow [AGENTS.md](AGENTS.md) and the
 [testing workflow](docs/testing/README.md). Include concrete testing instructions,
-actual automated results with revision/environment/evidence, and explicit
-NOT RUN or BLOCKED entries for outstanding live checks. Wait for the final PR
-checks before merging; record that CI run and tested SHA in the PR. Do not
-claim live portal verification from synthetic tests or publish private data.
+actual automated results with revision/environment/evidence. Work-PC, portal,
+authentication and hardware checks are out of scope unless the owner explicitly
+requests them in the current task; omit them rather than recording placeholders.
+Never invoke a Metronome/live-fix skill for testing unless the owner explicitly
+requests that skill in the current task.
+Wait for the final PR checks before merging and record that CI run and tested
+SHA in the PR. Identify synthetic tests accurately and do not publish private
+data.
