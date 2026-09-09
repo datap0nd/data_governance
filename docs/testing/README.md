@@ -9,6 +9,7 @@ This is a standing instruction from the repository owner, recorded in
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-09-09: Flow classification and replace-mode SQL recovery | [Test plan](releases/2026-09-09-flow-classification-sql-recovery/test-plan.md) | [Test report](releases/2026-09-09-flow-classification-sql-recovery/test-report.md) |
 | 2026-09-09: opt-in live testing and post-#92 scope review | [Test plan](releases/2026-09-09-testing-scope-post-92/test-plan.md) | [Test report](releases/2026-09-09-testing-scope-post-92/test-report.md) |
 | 2026-09-09: faster pull-request CI | [Test plan](releases/2026-09-09-faster-ci/test-plan.md) | [Test report](releases/2026-09-09-faster-ci/test-report.md) |
 | 2026-09-09: discoverable recording replacement and template retargeting | [Test plan](releases/2026-09-09-recording-replacement-retargeting/test-plan.md) | [Test report](releases/2026-09-09-recording-replacement-retargeting/test-report.md) |

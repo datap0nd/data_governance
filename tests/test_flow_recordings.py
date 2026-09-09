@@ -313,15 +313,21 @@ def test_cancellation_preserves_catalog_status_and_fences_late_worker(flow_db,mo
     assert flows.claim_run('new')['stopping']
 
 
-def test_recorded_unknown_sql_commit_blocks_new_execution(flow_db):
+def test_recorded_replace_recovery_never_blocks_new_execution(flow_db):
     saved,job=draft_job()
     job['sql_handoff']['enabled']=True
+    job['sql_handoff']['mode']='replace'
     with database.get_db() as db:
+        db.execute("UPDATE flows SET sql_mode='replace' WHERE id=?",(saved['id'],))
         run=db.execute("INSERT INTO flow_runs(flow_id,trigger_type,status,job_json,created_at) VALUES (?,'manual','running',?,'2026-09-05')",(saved['id'],json.dumps(job))).lastrowid
         db.execute("INSERT INTO flow_run_events(run_id,status,stage,created_at) VALUES (?,'running','sql_insertion','2026-09-05')",(run,))
         db.execute("UPDATE flow_runs SET status='failed' WHERE id=?",(run,))
-        assert db.execute('SELECT sql_reconciliation_required FROM flows WHERE id=?',(saved['id'],)).fetchone()[0]==1
-        with pytest.raises(HTTPException,match='SQL'): flows._build_job(db,saved['id'])
+        assert db.execute('SELECT sql_reconciliation_required FROM flows WHERE id=?',(saved['id'],)).fetchone()[0]==0
+        db.execute('UPDATE flows SET sql_reconciliation_required=1 WHERE id=?',(saved['id'],))
+    database.init_db()
+    with database.get_db() as db:
+        assert db.execute('SELECT sql_reconciliation_required FROM flows WHERE id=?',(saved['id'],)).fetchone()[0]==0
+        assert flows._build_job(db,saved['id'],recording_draft=True)
 
 
 def test_ui_can_review_gscm_without_code_and_keeps_portal_default_date():

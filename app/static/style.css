@@ -492,6 +492,31 @@ h2 {
 .flow-tabs button:hover { color: var(--text); }
 .flow-tabs button.active { color: var(--accent); border-bottom-color: var(--accent); }
 
+.flow-classification-tabs {
+    display: inline-flex;
+    gap: 0.25rem;
+    padding: 0.25rem;
+    margin-bottom: var(--space-lg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-2);
+}
+.flow-classification-tabs button {
+    appearance: none;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.8rem;
+    font-weight: 600;
+    padding: 0.45rem 0.7rem;
+}
+.flow-classification-tabs button:hover { color: var(--text); }
+.flow-classification-tabs button.active { background: var(--surface); color: var(--accent); box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+.flow-classification-tabs button span { color: var(--text-dim); margin-left: 0.25rem; }
+
 .flow-status-strip {
     display: flex;
     align-items: center;

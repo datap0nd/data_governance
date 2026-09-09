@@ -101,16 +101,17 @@ def test_inline_edits_preserve_config_and_queued_snapshot(activity_client):
         before = dict(db.execute("SELECT * FROM flows WHERE id=?", (flow["id"],)).fetchone())
         job = db.execute("SELECT job_json FROM flow_runs WHERE id=?", (queued["id"],)).fetchone()[0]
     url = f"/api/flows/{flow['id']}"
-    assert client.patch(url, json={"owner_person_id": person["id"], "browser_mode": "headed"}).status_code == 200
+    assert client.patch(url, json={"owner_person_id": person["id"], "browser_mode": "headed", "classification": "draft"}).status_code == 200
     with database.get_db() as db:
         after = dict(db.execute("SELECT * FROM flows WHERE id=?", (flow["id"],)).fetchone())
         assert db.execute("SELECT job_json FROM flow_runs WHERE id=?", (queued["id"],)).fetchone()[0] == job
         assert db.execute("SELECT detail FROM event_log WHERE entity_type='flow' AND action='updated'").fetchone()
         db.execute("UPDATE flow_runs SET status='cancelled' WHERE id=?", (queued["id"],))
-    for key in before.keys() - {"owner_person_id", "browser_mode", "updated_at"}:
+    for key in before.keys() - {"owner_person_id", "browser_mode", "classification", "updated_at"}:
         assert after[key] == before[key], key
     assert after["owner_person_id"] == person["id"]
     assert after["browser_mode"] == "headed"
+    assert after["classification"] == "draft"
     assert flows.queue_run(flow["id"], _request())["job"]["execution"]["browser_mode"] == "headed"
     assert client.patch(url, json={"owner_person_id": None}).json()["owner_person_id"] is None
 
@@ -118,6 +119,7 @@ def test_inline_edits_preserve_config_and_queued_snapshot(activity_client):
 @pytest.mark.parametrize("body,code", [
     ({"owner_person_id": 999999}, 400), ({"owner_person_id": "1"}, 422),
     ({"browser_mode": "visible"}, 422), ({"browser_mode": None}, 422),
+    ({"classification": "archived"}, 422), ({"classification": None}, 422),
     ({"schedule_type": "manual"}, 422), ({}, 422),
 ])
 def test_inline_rejects_invalid_changes(activity_client, body, code):

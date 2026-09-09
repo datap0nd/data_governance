@@ -116,7 +116,7 @@ const bindEnd = source.indexOf('    document.querySelectorAll(".flow-sort")', bi
 const flow = { id: 1, owner_person_id: 7, browser_mode: "headless" };
 context.window._flowsState = { flows: [flow] };
 const dropdown = { dataset: { id: "1", field: "owner_person_id" }, value: "", disabled: false };
-context.document.querySelectorAll = () => [dropdown];
+context.document.querySelectorAll = selector => selector === ".flow-classification-tabs button" ? [] : [dropdown];
 context.toast = () => {};
 let save;
 context.apiPatch = (url, body) => {
