@@ -33,14 +33,16 @@ controls** remains available. Existing flows retain their method.
 3. Review the short step list. Click a step to edit it inline. Undo and movement
    controls stay with the selected step; selectors and frame diagnostics remain
    under Advanced. Date and download options use the existing execution engine.
-4. **Save draft** preserves incomplete recordings. **Test recording** asks only
-   for missing essential report/ready information, then saves and tests the exact
-   recording with the pending Edit Flow settings. Progress and errors appear
-   beside the actions. Polling preserves edits and selection.
-5. After success, choose **Back to Edit Flow → Save**. Settings and the selected
-   tested revision apply atomically. Testing alone neither activates the recording
-   nor enables scheduling. Output or execution edits require retesting;
-   scheduling-only changes do not.
+4. **Save draft** preserves incomplete recordings. **Test recording** is optional:
+   it asks only for missing essential report/ready information, then saves and tests
+   the exact recording with the pending Edit Flow settings. Progress and errors
+   appear beside the actions. Polling preserves edits and selection.
+5. Choose **Back to Edit Flow → Save**. If the selected recording was not tested,
+   confirm **Save without testing**. Settings and that revision apply atomically and
+   the Flow can run; check the first run output because no test evidence exists.
+   Cancelling the confirmation preserves the form and recording draft. A tested
+   save still applies normally, and testing alone neither activates the recording
+   nor enables scheduling.
 6. **More → Saved versions** opens preserved revisions; **Record again** creates
    a replacement draft. Failed tests and abandoned edits keep the active version.
    An identical draft save preserves existing evidence. Retesting a validated

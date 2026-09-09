@@ -47,7 +47,7 @@ window.RecordedFlowEditor = (() => {
             undo.push({draft:M.clone(draft),selected}); if(undo.length>100)undo.shift();
             draft=next;draft.version=2;draft.timezone='Asia/Dubai';selected=selection;
             dirty=JSON.stringify(draft)!==baseline;
-            if(settings)delete settings.recording_revision_id;window._flowRecordingSelections?.set(flowId,null);
+            if(settings)delete settings.recording_revision_id;window._flowRecordingSelections?.set(flowId,null);window._flowUntestedRecordingSelections?.set(flowId,null);
             remember();
             if(render)renderEditor();else {updateCards();updateButtons();}
         }
@@ -69,6 +69,7 @@ window.RecordedFlowEditor = (() => {
             const result=await apiPostJson(`${prefix}/revisions`,{definition:draft});
             if(!el.isConnected)return null;
             revisionId=result.revision_id;baseline=JSON.stringify(draft);dirty=false;remember();body.querySelector('[data-save-state]').textContent='Draft saved';
+            window._flowUntestedRecordingSelections?.set(flowId,revisionId);
             // Keep selected card and history of local edits; a save never replaces the editor DOM.
             return revisionId;
         }
@@ -142,7 +143,7 @@ window.RecordedFlowEditor = (() => {
             const panel=body.querySelector('[data-template-panel]');if(!templates||panel.hidden)return;
             const needle=templateFilter.trim().toLowerCase();
             const visible=templates.templates.filter(t=>!needle||`${t.name} ${t.website}`.toLowerCase().includes(needle));
-            const status=t=>t.recording_status==='active'?'Active':t.recording_status==='validated'?'Tested':'Draft';
+            const status=t=>t.recording_status==='active'?'Active':t.recording_status==='validated'?'Tested':t.recording_status==='approved'?'Saved without test':'Draft';
             panel.innerHTML=`<div class="recording-detail-heading"><h3>Choose from template</h3><button type="button" class="btn-secondary" data-template-close>Cancel</button></div>
                 <p>Copy the complete recording of another ${h(templates.module_label)} Flow into this Flow as a new draft. Steps, date parameters, output settings, checks, waits and bookmark targets are copied; test evidence and activation are not. Your current steps stay in Saved versions and Undo.</p>
                 <input type="search" data-template-search aria-label="Search ${h(templates.module_label)} flows with recordings" placeholder="Search ${h(templates.module_label)} flows" value="${h(templateFilter)}">
@@ -156,7 +157,7 @@ window.RecordedFlowEditor = (() => {
         function renderTemplateDetail() {
             const panel=body.querySelector('[data-template-panel]'),host=panel?.querySelector('[data-template-detail]');if(!host)return;
             const t=templates.templates.find(x=>x.flow_id===templateFlow);if(!t){host.hidden=true;return;}host.hidden=false;
-            const versionLabel=r=>`${typeof formatDate==='function'?formatDate(r.created_at):r.created_at} · ${r.status==='active'?'active':r.status==='validated'?'tested':'draft'} · ${r.step_count} steps${r.id===t.default_revision_id?' · default':''}`;
+            const versionLabel=r=>`${typeof formatDate==='function'?formatDate(r.created_at):r.created_at} · ${r.status==='active'?'active':r.status==='validated'?'tested':r.status==='approved'?'saved without test':'draft'} · ${r.step_count} steps${r.id===t.default_revision_id?' · default':''}`;
             host.innerHTML=`<h4>${h(t.name)}</h4><label>Version <select data-template-version aria-label="Template version">${t.revisions.map(r=>option(r.id,versionLabel(r),templateRevision)).join('')}</select></label>
                 ${templatePreview?`<p class="recording-template-summary">${templatePreview.step_count} steps${Object.keys(templatePreview.definition.parameters||{}).length?` · ${Object.keys(templatePreview.definition.parameters).length} date parameter(s)`:''}${(templatePreview.definition.steps||[]).some(s=>s.action==='download')?` · ${templatePreview.definition.steps.filter(s=>s.action==='download').length} download(s)`:''}${M.all(templatePreview.definition.steps||[]).some(s=>s.bookmark_target)?' · GSCM bookmark targets':''}</p><ol class="recording-template-steps" aria-label="Steps in this version">${(templatePreview.definition.steps||[]).map(s=>`<li>${h(M.describe(s))}${s.action==='download'?' <span class="recording-badge">Download</span>':''}</li>`).join('')}</ol>`:'<p role="status">Loading steps…</p>'}
                 <p class="recording-template-note">Applying replaces the steps shown in this editor with an independent copy. Undo restores what you had, and Saved versions keep every earlier draft. The copy must pass Test recording before it can be activated.</p>
@@ -194,7 +195,7 @@ window.RecordedFlowEditor = (() => {
             const panel=body.querySelector('[data-history-panel]');
             if(!panel || panel.hidden)return;
             panel.innerHTML=`<p>${dirty?'Save your draft before opening another version.':'Opening a saved version keeps the active recording unchanged.'}</p>${data.revisions.map(r=>`<button class="btn-secondary" data-version="${r.id}">${h(typeof formatDate==='function'?formatDate(r.created_at):r.created_at)} · ${h(r.status)}${r.id===data.flow.recording_revision_id?' · active':''}${r.template_source?` · from ${h(r.template_source.source_flow_name)}`:''}</button>`).join(' ')}`;
-            panel.querySelectorAll('[data-version]').forEach(button=>{button.disabled=dirty||Boolean(active())||pending;button.onclick=()=>{load(data.revisions.find(r=>r.id===Number(button.dataset.version)));if(settings)delete settings.recording_revision_id;window._flowRecordingSelections?.set(flowId,null);renderEditor();};});
+            panel.querySelectorAll('[data-version]').forEach(button=>{button.disabled=dirty||Boolean(active())||pending;button.onclick=()=>{const selectedRevision=data.revisions.find(r=>r.id===Number(button.dataset.version));load(selectedRevision);if(settings)delete settings.recording_revision_id;if(selectedRevision?.status==='validated'){window._flowRecordingSelections?.set(flowId,selectedRevision.id);window._flowUntestedRecordingSelections?.delete(flowId);}else{window._flowRecordingSelections?.set(flowId,null);window._flowUntestedRecordingSelections?.set(flowId,selectedRevision?.id||null);}renderEditor();};});
         }
         function renderEditor() {
             const host=body.querySelector('[data-editor]');
@@ -349,7 +350,7 @@ window.RecordedFlowEditor = (() => {
                 if(refreshError){error.textContent='';refreshError=false;}
                 const arrived=data.revisions[0]?.id;
                 if(!body.querySelector('[data-start]')){load(data.revisions[0]);const kept=drafts.get(flowId);if(kept?.dirty){({draft,revisionId,baseline,selected,undo,dirty}=kept);}shell();renderEditor();}
-                else if(!draft || (wasRecording && previous!==arrived) || (!dirty && previous!==arrived && revisionId!==arrived)) {load(data.revisions.find(r=>r.id===revisionId)||data.revisions[0]);if(previous!==arrived)load(data.revisions[0]);if(wasRecording){if(settings)delete settings.recording_revision_id;window._flowRecordingSelections?.set(flowId,null);}renderEditor();}
+                else if(!draft || (wasRecording && previous!==arrived) || (!dirty && previous!==arrived && revisionId!==arrived)) {load(data.revisions.find(r=>r.id===revisionId)||data.revisions[0]);if(previous!==arrived)load(data.revisions[0]);if(wasRecording){if(settings)delete settings.recording_revision_id;window._flowRecordingSelections?.set(flowId,null);window._flowUntestedRecordingSelections?.set(flowId,arrived||null);}renderEditor();}
                 const session=active()||data.sessions[0],progress=parse(session?.progress_json);
                 const sessionMessage=!session?'':session.status==='succeeded'?(session.operation==='validate'?'Test passed. Back to Edit Flow, then Save.':''):
                     session.error||(session.status==='failed'?(['failed','worker_start_failed'].includes(progress.stage)&&progress.message||'Could not complete this session. Try again.'):

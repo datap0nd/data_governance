@@ -11999,7 +11999,11 @@ function _flowSiteDialog(site = null) {
 }
 
 window._flowRecordingSelections = new Map();
-window._flowAcceptRecording = (id, revision) => window._flowRecordingSelections.set(id, revision);
+window._flowUntestedRecordingSelections = new Map();
+window._flowAcceptRecording = (id, revision) => {
+    window._flowRecordingSelections.set(id, revision);
+    window._flowUntestedRecordingSelections.delete(id);
+};
 function _flowCollectBuilder() {
     const form = $("#flow-builder-form");
     const scheduleType = $("#flow-schedule-type").value;
@@ -12339,6 +12343,57 @@ function _flowBuildSteps(form) {
         queueMicrotask(() => { _flowRevealStep(form, target); target.focus(); form._invalidRevealPending = false; });
     }, true);
     _flowRevealStep(form, form.querySelector(".flow-step-toggle"));
+}
+
+async function _flowSubmitBuilder(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector('button[type="submit"]');
+    const error = form.querySelector(".flow-form-error");
+    const flowId = Number(form.dataset.id);
+    button.disabled = true;
+    error.textContent = "";
+    try {
+        const body = _flowCollectBuilder();
+        const hasUntested = body.execution_method === 'recorded'
+            && window._flowUntestedRecordingSelections?.has(flowId);
+        if (hasUntested) {
+            const revisionId = window._flowUntestedRecordingSelections.get(flowId);
+            if (!revisionId) throw Error('Save the recording draft before saving this Flow.');
+            if (!window.confirm('Save without testing?\n\nThis recording has not been tested. The Flow may fail or produce the wrong output. Check the first run output.')) {
+                button.disabled = false;
+                return;
+            }
+            body.recording_revision_id = revisionId;
+            body.allow_untested_recording = true;
+        }
+        const saved = await (form.dataset.id ? apiPut(`/api/flows/${form.dataset.id}`, body) : apiPostJson("/api/flows", body));
+        toast(saved.standalone?.state === "error"
+            ? `Flow saved; its files could not be updated: ${saved.standalone.message}`
+            : hasUntested ? "Flow saved without testing; check the first run output." : "Flow saved");
+        window._flowRecordingSelections?.delete(saved.id);
+        window._flowUntestedRecordingSelections?.delete(saved.id);
+        window._flowBuilderDrafts?.delete(saved.id);
+        window._flowBuilderDrafts?.delete('new');
+        const replicateFrom = Number(form.dataset.replicateFrom) || 0;
+        const replicateRecording = form.dataset.replicateRecording === "1";
+        await navigate("flows");
+        if (!form.dataset.id && body.execution_method === "recorded" && replicateFrom && replicateRecording) {
+            try {
+                const copied = await apiPostJson(`/api/flows/${saved.id}/recordings/revisions/copy`, { source_flow_id: replicateFrom });
+                toast(`Recording copied from ${copied.provenance?.source_flow_name || "the source flow"} as a draft; open it and save the Flow to use it without testing.`);
+            } catch (err) { toast("Recording not copied: " + err.message); }
+        }
+        if (!form.dataset.id && body.execution_method === "recorded") {
+            _flowShowView("builder", saved);
+            await FlowRecordings.open(saved.id, _flowCollectBuilder());
+        }
+    } catch (err) {
+        error.textContent = "Flow not saved: " + err.message;
+        _flowRevealServerError(form, err);
+        error.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        button.disabled = false;
+    }
 }
 
 function _bindFlowWorkspace() {
@@ -12872,7 +12927,7 @@ function _bindFlowWorkspace() {
         }); syncMethod();
     }
     _flowBuildSteps($("#flow-builder-form"));
-    $("#flow-builder-form")?.addEventListener("submit", async event => { event.preventDefault(); const form = event.currentTarget; const button = form.querySelector('button[type="submit"]'); const error = form.querySelector(".flow-form-error"); button.disabled = true; error.textContent = ""; try { const body = _flowCollectBuilder(); if(body.execution_method==='recorded' && window._flowRecordingSelections?.has(Number(form.dataset.id)) && window._flowRecordingSelections.get(Number(form.dataset.id))===null) throw Error('Test the recording changes before saving this Flow.'); const saved = await (form.dataset.id ? apiPut(`/api/flows/${form.dataset.id}`, body) : apiPostJson("/api/flows", body)); toast(saved.standalone?.state === "error" ? `Flow saved; its files could not be updated: ${saved.standalone.message}` : "Flow saved"); window._flowRecordingSelections?.delete(saved.id); window._flowBuilderDrafts?.delete(saved.id); window._flowBuilderDrafts?.delete('new'); const replicateFrom = Number(form.dataset.replicateFrom) || 0; const replicateRecording = form.dataset.replicateRecording === "1"; await navigate("flows"); if (!form.dataset.id && body.execution_method === "recorded" && replicateFrom && replicateRecording) { try { const copied = await apiPostJson(`/api/flows/${saved.id}/recordings/revisions/copy`, { source_flow_id: replicateFrom }); toast(`Recording copied from ${copied.provenance?.source_flow_name || "the source flow"} as a draft; test it before activation.`); } catch (err) { toast("Recording not copied: " + err.message); } } if (!form.dataset.id && body.execution_method === "recorded") { _flowShowView("builder", saved); await FlowRecordings.open(saved.id, _flowCollectBuilder()); } } catch (err) { error.textContent = "Flow not saved: " + err.message; _flowRevealServerError(form, err); error.scrollIntoView({ behavior: "smooth", block: "nearest" }); button.disabled = false; } });
+    $("#flow-builder-form")?.addEventListener("submit", _flowSubmitBuilder);
 }
 
 function bindFlowsPage() {
