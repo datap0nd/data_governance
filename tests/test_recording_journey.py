@@ -81,6 +81,52 @@ def test_pending_snapshot_atomic_apply_and_active_evidence(flow_db,monkeypatch):
         assert flows._build_job(db,fid)['recording']['revision']==revision
 
 
+def test_draft_can_be_saved_without_testing_only_after_explicit_approval(flow_db,monkeypatch):
+    saved,job=draft_job();client=client_for(monkeypatch);fid=saved['id'];base=f'/api/flows/{fid}'
+    revision=client.post(base+'/recordings/revisions',json={'definition':job['recording']['definition']}).json()['revision_id']
+    pending=flows.FlowWrite.model_validate(saved).model_dump()
+    pending.update(name='Approved without test',recording_revision_id=revision,target_folder=None)
+
+    refused=client.put(base,json=pending)
+    assert refused.status_code==409,refused.text
+    with database.get_db() as db:
+        flow=db.execute('SELECT name,recording_revision_id FROM flows WHERE id=?',(fid,)).fetchone()
+        assert flow['name']==saved['name'] and flow['recording_revision_id'] is None
+        assert db.execute('SELECT status FROM flow_recording_revisions WHERE id=?',(revision,)).fetchone()[0]=='draft'
+
+    approved=client.put(base,json={**pending,'allow_untested_recording':True})
+    assert approved.status_code==200,approved.text
+    with database.get_db() as db:
+        row=db.execute('SELECT * FROM flow_recording_revisions WHERE id=?',(revision,)).fetchone()
+        assert row['status']=='approved' and row['validated_at'] is None
+        assert json.loads(row['evidence_json'])['testing_waived'] is True
+        runnable=flows._build_job(db,fid)
+        assert runnable['recording']['revision']==revision
+        assert runnable['flow']['name']=='Approved without test'
+    queued=client.post(f'{base}/recordings/revisions/{revision}/validate',json={'settings':pending})
+    assert queued.status_code==200,queued.text
+    assert queued.json()['revision_id']!=revision
+    with database.get_db() as db:
+        assert db.execute('SELECT status FROM flow_recording_revisions WHERE id=?',(revision,)).fetchone()[0]=='approved'
+
+
+def test_save_without_testing_rejects_non_runnable_recording_and_rolls_back(flow_db,monkeypatch):
+    saved,job=draft_job();client=client_for(monkeypatch);fid=saved['id'];base=f'/api/flows/{fid}'
+    invalid=job['recording']['definition']
+    invalid['steps']=[step for step in invalid['steps'] if step['action']!='download']
+    revision=client.post(base+'/recordings/revisions',json={'definition':invalid}).json()['revision_id']
+    pending=flows.FlowWrite.model_validate(saved).model_dump()
+    pending.update(name='Must roll back',recording_revision_id=revision,allow_untested_recording=True,target_folder=None)
+
+    rejected=client.put(base,json=pending)
+    assert rejected.status_code==422,rejected.text
+    with database.get_db() as db:
+        flow=db.execute('SELECT name,recording_revision_id FROM flows WHERE id=?',(fid,)).fetchone()
+        revision_row=db.execute('SELECT status,config_hash FROM flow_recording_revisions WHERE id=?',(revision,)).fetchone()
+        assert flow['name']==saved['name'] and flow['recording_revision_id'] is None
+        assert revision_row['status']=='draft' and revision_row['config_hash'] is None
+
+
 def test_browser_real_api_save_test_return_apply(flow_db,monkeypatch,tmp_path,report_server):
     monkeypatch.setattr(flow_recorder_worker,'authenticate',lambda *a,**k:None)
     saved,_=draft_job(report_server);client=client_for(monkeypatch);fid=saved['id'];base=f'/api/flows/{fid}'

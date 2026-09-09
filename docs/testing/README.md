@@ -9,6 +9,7 @@ This is a standing instruction from the repository owner, recorded in
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-09-09: Save recorded Flow without testing | [Test plan](releases/2026-09-09-save-recording-without-test/test-plan.md) | [Test report](releases/2026-09-09-save-recording-without-test/test-report.md) |
 | 2026-09-08: Users, TMDL Checker retirement and refresh recovery | [Test plan](releases/2026-09-08-users-refresh-reliability/test-plan.md) | [Test report](releases/2026-09-08-users-refresh-reliability/test-report.md) |
 | 2026-09-07: Reusable recordings and downstream view refresh | [Test plan](releases/2026-09-07-reusable-recordings-view-refresh/test-plan.md) | [Test report](releases/2026-09-07-reusable-recordings-view-refresh/test-report.md) |
 | 2026-09-07: setup shared SSO password | [Test plan](releases/2026-09-07-setup-sso-password/test-plan.md) | [Test report](releases/2026-09-07-setup-sso-password/test-report.md) |
