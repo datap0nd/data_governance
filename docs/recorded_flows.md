@@ -79,9 +79,10 @@ portable scripts remain historical evidence. Use **Convert to one range** with
 explicit start/end values to create a new draft, then test it before enabling.
 Conversion never turns the old whole batch into an automatic large export.
 
-Definition version 3 adds semantic week ranges. In Review recording, select one
-of two or more consecutive recorded week-cell clicks and choose **This is a
-range**. Confirm the fixed ISO start week and the containing element box. The
+Definition version 3 adds semantic week ranges. In **Review recording**, select
+one recorded element step, open **Advanced**, and enable **This is a range
+step**. A single recorded week-cell click is sufficient; no consecutive-click
+pattern is required. Confirm the fixed ISO start week and containing element box. The
 saved action identifies that container rather than screen coordinates or a
 fixed list of weeks. Playback re-reads eligible cells after every scroll or
 calendar-page repaint, selects only unselected cells from the fixed start

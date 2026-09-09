@@ -14,7 +14,7 @@ from app.flow_recording import validate_definition
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_review_converts_recorded_week_clicks_to_one_range_step():
+def test_advanced_setting_converts_one_recorded_week_click_to_range_step():
     class QuietHandler(SimpleHTTPRequestHandler):
         def log_message(self, *args):
             pass
@@ -33,11 +33,19 @@ def test_review_converts_recorded_week_clicks_to_one_range_step():
                 f"http://127.0.0.1:{server.server_port}/static/recording-preview/range.html"
             )
             page.get_by_role("button", name='Click “2026-W33”', exact=True).click()
-            page.get_by_role("button", name="This is a range", exact=True).click()
+            page.get_by_text("Advanced", exact=True).click()
+            range_setting = page.get_by_label("This is a range step", exact=True)
+            assert range_setting.is_enabled()
+            range_setting.check()
 
             assert page.get_by_text("Range", exact=True).is_visible()
-            assert page.get_by_label("Start week").input_value() == "2026-W32"
+            assert page.get_by_label("Start week").input_value() == "2026-W33"
             assert page.get_by_label("End").input_value() == "Newest selectable week"
+            page.get_by_label("This is a range step", exact=True).uncheck()
+            assert page.get_by_role(
+                "button", name='Click “2026-W33”', exact=True
+            ).is_visible()
+            page.get_by_label("This is a range step", exact=True).check()
             page.get_by_label("Element box").select_option("2")
             page.get_by_role("button", name="Save draft", exact=True).click()
             page.get_by_text("Draft saved", exact=True).wait_for()
@@ -48,9 +56,20 @@ def test_review_converts_recorded_week_clicks_to_one_range_step():
                 "goto", "select_range", "download",
             ]
             contract = definition["steps"][1]["range"]
-            assert contract["start"] == "2026-W32"
+            assert contract["start"] == "2026-W33"
             assert contract["end"] == "latest_selectable"
             assert contract["container_ancestor_levels"] == 2
+            assert contract["source_step"]["action"] == "click"
+
+            page.get_by_role(
+                "button", name="Open reports.example.test", exact=True
+            ).click()
+            assert page.get_by_label(
+                "This is a range step", exact=True
+            ).is_disabled()
+            assert page.get_by_text(
+                "A range step needs an element target.", exact=True
+            ).is_visible()
 
             page.set_viewport_size({"width": 390, "height": 844})
             assert page.evaluate("()=>document.documentElement.scrollWidth<=innerWidth")
