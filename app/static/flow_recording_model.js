@@ -12,9 +12,25 @@ window.RecordedFlowModel = (() => {
         return {page:step?.page || 'page',locator:clone(parts.slice(0,end+1))};
     };
     const name = step => {
-        const part = [...(step.locator || [])].reverse().find(p => p.kwargs?.name || ['get_by_text','get_by_label','get_by_title','get_by_placeholder','get_by_alt_text'].includes(p.method));
+        const part = [...(step.locator || [])].reverse().find(p => p.kwargs?.name || ['get_by_text','get_by_label','get_by_title','get_by_placeholder','get_by_alt_text','get_by_test_id'].includes(p.method));
         return part?.kwargs?.name || part?.args?.[0] || (step.locator?.length ? 'recorded element' : '');
     };
+    const editableTarget = step => {
+        const locator=step?.locator || [];
+        for(let index=locator.length-1;index>=0;index--){
+            const part=locator[index];
+            if(part.method==='get_by_role'&&typeof part.kwargs?.name==='string')return {index,field:'name',value:part.kwargs.name};
+            if(['get_by_text','get_by_label','get_by_title','get_by_placeholder','get_by_alt_text','get_by_test_id'].includes(part.method)&&typeof part.args?.[0]==='string')return {index,field:'argument',value:part.args[0]};
+        }
+        return null;
+    };
+    function renameTarget(step,value) {
+        const target=editableTarget(step);
+        if(!target)throw Error('Choose a visible-text, input-label or CSS target instead.');
+        if(target.field==='name')step.locator[target.index].kwargs.name=value;
+        else step.locator[target.index].args[0]=value;
+        return step;
+    }
     function describe(step) {
         if (step.label) return step.label;
         const action = triggering(step);
@@ -77,5 +93,5 @@ window.RecordedFlowModel = (() => {
         return validatePages(next);
     }
     function owner(definition,id) { return definition.steps.find(s=>all([s]).some(child=>child.id===id)); }
-    return {all,clone,target,frame,name,describe,triggering,canDelay,validatePages,move,remove,owner};
+    return {all,clone,target,frame,name,editableTarget,renameTarget,describe,triggering,canDelay,validatePages,move,remove,owner};
 })();

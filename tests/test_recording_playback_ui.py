@@ -86,11 +86,11 @@ def test_debug_log_retry_copy_fallback_pinning_and_edits_preserved(playback_edit
     page.get_by_role('button', name='Test recording', exact=True).click()
     page.get_by_role('button', name='Debug log', exact=True).wait_for()
     page.get_by_role('button', name='Click Setting', exact=True).click()
-    page.get_by_label('Step name', exact=True).fill('Open settings')
+    page.get_by_label('Step name (display only)', exact=True).fill('Open settings')
     page.evaluate('()=>window.previewFailDebug=true')
     page.get_by_role('button', name='Debug log', exact=True).click()
     page.get_by_text('Debug log is temporarily unavailable.', exact=True).wait_for()
-    assert page.get_by_label('Step name', exact=True).input_value() == 'Open settings'
+    assert page.get_by_label('Step name (display only)', exact=True).input_value() == 'Open settings'
     page.evaluate('()=>window.previewFailDebug=false')
     page.get_by_role('button', name='Retry loading log', exact=True).click()
     page.get_by_label('Debug log text', exact=True).wait_for()
@@ -113,7 +113,7 @@ def test_debug_log_retry_copy_fallback_pinning_and_edits_preserved(playback_edit
     page.get_by_role('button', name='Copy debug log', exact=True).click()
     page.get_by_text('Debug log copied.', exact=True).wait_for()
     assert page.evaluate('()=>window.copiedDebug') == page.get_by_label('Debug log text', exact=True).input_value()
-    assert page.get_by_label('Step name', exact=True).input_value() == 'Open settings'
+    assert page.get_by_label('Step name (display only)', exact=True).input_value() == 'Open settings'
 
 
 def test_debug_late_response_after_close_is_ignored(playback_editor):

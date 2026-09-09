@@ -1,5 +1,12 @@
 # Recording journey previews
 
+The current usability checkpoint for recording replacement and template
+retargeting is [retarget.html](retarget.html). It uses fictional Country/Main
+buttons to demonstrate the visible **Record again** action, the distinction
+between a display-only step name and the target used during playback, Undo,
+saved versions and immediate replacement recording. Serve `app` locally and
+open `/static/recording-preview/retarget.html`.
+
 The current preview is [templates-refresh.html](templates-refresh.html):
 reusable recordings (**Choose from template** in the recording editor and
 **Include its recording** when replicating a flow) and the **Refresh

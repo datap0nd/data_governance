@@ -35,7 +35,7 @@ def startup_page():
 def test_test_startup_failure_retry_and_cancel_preserve_actions(startup_page):
     page=startup_page
     page.get_by_role('button', name='Click “Download Excel”', exact=True).click()
-    page.get_by_label('Step name', exact=True).fill('Download my weekly workbook')
+    page.get_by_label('Step name (display only)', exact=True).fill('Download my weekly workbook')
     action_ids=page.locator('[data-card]').evaluate_all('(cards)=>cards.map(c=>c.dataset.card)')
     page.get_by_role('button', name='Test recording', exact=True).click()
     expect(page.locator('p[data-session]')).to_have_text('Waiting for worker…')
@@ -52,7 +52,7 @@ def test_test_startup_failure_retry_and_cancel_preserve_actions(startup_page):
     page.evaluate("RecordingStartupPreview.transition('failed', {message:'Starting worker…'}, 'The browser could not open. Try Test recording again.')")
     expect(page.locator('p[data-session]')).to_have_text('The browser could not open. Try Test recording again.')
     expect(page.get_by_role('button', name='Test recording', exact=True)).to_be_enabled()
-    expect(page.get_by_label('Step name', exact=True)).to_have_value('Download my weekly workbook')
+    expect(page.get_by_label('Step name (display only)', exact=True)).to_have_value('Download my weekly workbook')
     assert page.locator('[data-card]').evaluate_all('(cards)=>cards.map(c=>c.dataset.card)')==action_ids
 
     page.get_by_role('button', name='Test recording', exact=True).click()
@@ -60,7 +60,7 @@ def test_test_startup_failure_retry_and_cancel_preserve_actions(startup_page):
     page.get_by_role('button', name='Cancel test', exact=True).click()
     expect(page.locator('p[data-session]')).to_have_text('Test cancelled.')
     expect(page.get_by_role('button', name='Test recording', exact=True)).to_be_enabled()
-    expect(page.get_by_label('Step name', exact=True)).to_have_value('Download my weekly workbook')
+    expect(page.get_by_label('Step name (display only)', exact=True)).to_have_value('Download my weekly workbook')
     assert page.get_by_role('button', name='Cancel test', exact=True).count()==0
     assert page.evaluate('RecordingStartupPreview.data.flow.enabled') is False
     assert all('/activate' not in c['path'] for c in page.evaluate('RecordingStartupPreview.calls'))
