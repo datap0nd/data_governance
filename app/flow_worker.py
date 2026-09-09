@@ -5370,7 +5370,8 @@ def _detect_download_format(path: Path) -> str:
                 return "xlsb"
             return "xlsx"
         except (OSError, zipfile.BadZipFile, NotImplementedError, RuntimeError):
-            pass
+            if head.startswith(b"PK"):
+                return "xlsb" if suffix in XLSB_EXCEL_EXTENSIONS else "xlsx"
     for signature, kind in DOWNLOAD_SIGNATURES:
         if head.startswith(signature):
             return kind
@@ -5388,11 +5389,11 @@ def _detect_download_format(path: Path) -> str:
         return "xlsx"
     if suffix in XLSB_EXCEL_EXTENSIONS:
         return "xlsb"
-    if suffix in LEGACY_EXCEL_EXTENSIONS:
-        # The extension is only a routing hint. The legacy reader still has
-        # to prove the workbook before any file is published or loaded.
-        return "xls"
     if b"\x00" in head and not head.startswith((b"\xff\xfe", b"\xfe\xff")) and not _bomless_utf16_encoding(head):
+        if suffix in LEGACY_EXCEL_EXTENSIONS:
+            # The extension is only a routing hint for otherwise opaque bytes.
+            # Plain delimited text named .xls remains text (a common export).
+            return "xls"
         return "binary"
     return "csv"
 

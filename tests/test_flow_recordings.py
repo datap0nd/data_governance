@@ -195,7 +195,7 @@ def report_server(request):
 
 
 @pytest.mark.parametrize('report_server', [{'content': b'Protected\x00report\xff\x10bytes', 'filename': 'report.xlsx'}], indirect=True)
-def test_portable_unchecked_recording_preserves_binary_browser_download(flow_db, tmp_path, report_server):
+def test_portable_unchecked_recording_rejects_binary_mislabeled_as_xlsx(flow_db, tmp_path, report_server):
     _, job = draft_job(report_server)
     job['execution']['browser_channel'] = 'chrome'
     for step in flow_recording.walk_steps(job['recording']['definition']['steps']):
@@ -206,11 +206,9 @@ def test_portable_unchecked_recording_preserves_binary_browser_download(flow_db,
     root = tmp_path / 'portable-output'
     result = subprocess.run([sys.executable, '-I', str(file), '--headless', '--output-root', str(root)],
         cwd=tmp_path, capture_output=True, text=True, timeout=90)
-    assert result.returncode == 0, result.stderr
-    files = list(root.rglob('*.xlsx'))
-    assert files and all(p.read_bytes() == b'Protected\x00report\xff\x10bytes' for p in files)
-    events = [json.loads(line) for line in next(root.rglob('*.jsonl')).read_text().splitlines()]
-    assert events[-1]['status'] == 'succeeded'
+    assert result.returncode == 1
+    assert 'not a complete XLSX ZIP container' in result.stderr
+    assert not [path for path in root.rglob('*.xlsx') if '.metronome' not in path.parts]
     assert not list(root.rglob('*.csv'))
 
 

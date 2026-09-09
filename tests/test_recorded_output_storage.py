@@ -58,7 +58,7 @@ def test_unchecked_recording_still_rejects_a_broken_excel_container(tmp_path):
     assert not (tmp_path / 'output.xlsx').exists()
 
 
-@pytest.mark.parametrize('suffix,expected', [('.xlsx', '.xlsx'), ('.dat', '.dat'), ('.download', '.bin'), ('', '.bin')])
+@pytest.mark.parametrize('suffix,expected', [('.dat', '.dat'), ('.download', '.bin'), ('', '.bin')])
 def test_unchecked_recording_preserves_opaque_binary_with_its_actual_suffix(tmp_path, suffix, expected):
     import hashlib
     content = b'Protected export\x00\x01\x02\x03' + bytes(range(256))
@@ -72,6 +72,16 @@ def test_unchecked_recording_preserves_opaque_binary_with_its_actual_suffix(tmp_
     assert result['detected_format'] == 'binary'
     assert result['checksum'] == hashlib.sha256(content).hexdigest()
     assert result['row_count'] is None and 'normalized_file_path' not in result
+
+
+def test_unchecked_recording_rejects_opaque_bytes_mislabeled_as_xlsx(tmp_path):
+    source = tmp_path / 'browser-file.xlsx'
+    source.write_bytes(b'Protected export\x00\x01\x02\x03' + bytes(range(256)))
+    with pytest.raises(RuntimeError, match='complete XLSX ZIP container'):
+        flow_worker._store_completed_download(
+            source, tmp_path / 'configured.xlsx', file_format='xlsx',
+            recorded_output=True, require_normalized_csv=False,
+        )
 
 
 def test_unchecked_recording_preserves_pdf_but_processing_still_rejects_binary(tmp_path):
