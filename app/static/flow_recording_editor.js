@@ -183,7 +183,9 @@ window.RecordedFlowEditor = (() => {
                 if(!el.isConnected)return;
                 if(draft)undo.push({draft:M.clone(draft),selected});
                 if(undo.length>100)undo.shift();
-                draft=M.clone(result.definition);draft.version=2;draft.timezone='Asia/Dubai';
+                draft=M.clone(result.definition);
+                draft.version=M.all(draft.steps||[]).some(step=>step.action==='select_range')?3:Math.max(2,Number(draft.version)||1);
+                draft.timezone='Asia/Dubai';
                 revisionId=result.revision_id;baseline=JSON.stringify(draft);dirty=false;selected=null;expanded=new Set();
                 if(settings)delete settings.recording_revision_id;window._flowRecordingSelections?.set(flowId,null);
                 templateNote=`Copied from ${source.name}. Test recording before activation.`;
