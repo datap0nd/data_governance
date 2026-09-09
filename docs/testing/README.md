@@ -9,6 +9,7 @@ This is a standing instruction from the repository owner, recorded in
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-09-09: faster pull-request CI | [Test plan](releases/2026-09-09-faster-ci/test-plan.md) | [Test report](releases/2026-09-09-faster-ci/test-report.md) |
 | 2026-09-09: SQL table ownership and binary recordings | [Test plan](releases/2026-09-09-sql-table-owner/test-plan.md) | [Test report](releases/2026-09-09-sql-table-owner/test-report.md) |
 | 2026-09-09: Save recorded Flow without testing | [Test plan](releases/2026-09-09-save-recording-without-test/test-plan.md) | [Test report](releases/2026-09-09-save-recording-without-test/test-report.md) |
 | 2026-09-09: recording dialog import | [Test plan](releases/2026-09-09-recording-dialog-import/test-plan.md) | [Test report](releases/2026-09-09-recording-dialog-import/test-report.md) |
