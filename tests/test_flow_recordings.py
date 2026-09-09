@@ -85,6 +85,46 @@ def test_unsafe_or_unsupported_recording_is_never_imported(statement):
         flow_recording.import_codegen(CODEGEN.replace('    context.close()', '    '+statement+'\n    context.close()'))
 
 
+@pytest.mark.parametrize('trigger', [
+    '    page.goto(',
+    '    page.get_by_role("button", name="Generate").click()',
+    '    with page.expect_download()',
+    '        page.get_by_role("button", name="Download").click()',
+])
+def test_import_codegen_dialog_scaffolding_preserves_actions_and_download(trigger):
+    indent = trigger[:len(trigger) - len(trigger.lstrip())]
+    source = CODEGEN.replace(trigger,
+        indent + 'page.once("dialog", lambda dialog: dialog.dismiss())\n' + trigger)
+    value = flow_recording.import_codegen(source)
+    expected = flow_recording.import_codegen(CODEGEN)
+    # Source line additions may change step IDs, but not recorded behavior.
+    for definition_value in (value, expected):
+        for step in flow_recording.walk_steps(definition_value['steps']):
+            step.pop('id')
+    assert value == expected
+
+
+@pytest.mark.parametrize('handler', [
+    'page.once("download", lambda dialog: dialog.dismiss())',
+    'page.on("dialog", lambda dialog: dialog.dismiss())',
+    'unknown.once("dialog", lambda dialog: dialog.dismiss())',
+    'context.once("dialog", lambda dialog: dialog.dismiss())',
+    'page.locator("button").once("dialog", lambda dialog: dialog.dismiss())',
+    'page.once("dialog", lambda dialog: dialog.accept())',
+    'page.once("dialog", lambda dialog: dialog.dismiss(force=True))',
+    'page.once("dialog", lambda dialog: (__import__("os"), dialog.dismiss()))',
+    'page.once("dialog", lambda dialog=__import__("os"): dialog.dismiss())',
+    'page.once("dialog", lambda dialog, extra: dialog.dismiss())',
+    'page.once("dialog", lambda dialog: other.dismiss())',
+    'page.once("dialog", callback)',
+    'page.once("dialog", lambda dialog: dialog.dismiss(), extra=True)',
+])
+def test_import_rejects_non_codegen_event_callbacks(handler):
+    source = CODEGEN.replace('    context.close()', '    ' + handler + '\n    context.close()')
+    with pytest.raises(ValueError, match='Unsupported action'):
+        flow_recording.import_codegen(source)
+
+
 def test_activation_needs_a_download_but_no_page_checks():
     value = flow_recording.import_codegen(CODEGEN)
     flow_recording.validate_definition(value)
