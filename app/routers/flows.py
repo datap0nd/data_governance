@@ -43,7 +43,7 @@ from app.flow_retention import RUN_FOLDER_KEEP, tombstone_name as retention_tomb
 from app.flow_local_runner import (
     HEADED_WORKER_ID, WORKER_ID as LOCAL_WORKER_ID, launch_local_worker, stop_local_worker,
 )
-from app.flow_sql import configuration_status as sql_configuration_status, discover_catalog as discover_sql_catalog
+from app.flow_sql import configuration_status as sql_configuration_status, discover_catalog as discover_sql_catalog, ownership_supported
 from app.routers.eventlog import get_actor, log_event
 from app.scanner.findings import sync_managed_actions
 from app.source_identity import (
@@ -1717,6 +1717,12 @@ def _build_job(db, flow_id: int, *, force_reprocess: bool = False, recording_dra
             "table": flow.get("sql_table"),
         },
     }
+    # Resolve after pending settings have been applied: the selected owner may
+    # differ from the person joined by _flow_out. Freeze it with the run.
+    if job['sql_handoff']['enabled'] and flow.get('owner_person_id'):
+        owner = db.execute('SELECT sql_username FROM people WHERE id=?', (flow['owner_person_id'],)).fetchone()
+        if owner and owner['sql_username']:
+            job['sql_handoff']['owner_username'] = owner['sql_username']
     from app.flow_view_refresh_discovery import build_plan
     job["post_sql_refresh"] = build_plan(db, flow.get("post_sql_refresh"), job["sql_handoff"], _flow_server_identity())
     if flow.get('execution_method') == 'recorded':
@@ -5403,6 +5409,7 @@ def claim_run(worker_id: str):
                 and (not required_adapter or required_adapter in adapters)
                 and (not (job.get("paths") or {}).get("artifact_store_root") or capabilities.get("shared_flow_artifacts"))
                 and (not flow_view_refresh.plan_views(job) or capabilities.get(flow_view_refresh.CAPABILITY))
+                and ownership_supported(job, capabilities)
                 and set(execution.get("required_artifact_store_ids") or []).issubset(artifact_stores)
                 and (
                     not required_store
@@ -5433,6 +5440,7 @@ def claim_run(worker_id: str):
                 and (not _loads(candidate['job_json'], {}).get('recorder_controls') or capabilities.get('flow_recorder_controls_v1'))
                 and (_loads(candidate['job_json'], {}).get('recording_version', 1) < 2 or capabilities.get('recorded_flows_v2'))
                 and (not _loads(candidate['job_json'], {}).get('requires_recording_engine_validation') or capabilities.get('recorded_validation_engine_v1'))
+                and ownership_supported(_loads(candidate['job_json'], {}), capabilities)
                 and flow_parallel.portal_available(db, _loads(candidate['job_json'], {}))
             )), None)
             if scan:
@@ -6048,6 +6056,7 @@ def _record_sql_outcome(db, run_id: int, body: WorkerProgress, now: str) -> None
             "committed": True, "at": now, "target": body.progress.get("target"),
             "rows_written": body.progress.get("rows_written"), "files_loaded": body.progress.get("files_loaded"),
             "mode": body.progress.get("mode"),
+            **{key: body.progress[key] for key in ('owner_username', 'previous_owner', 'owner_changed') if key in body.progress},
         }
         db.execute("UPDATE flow_runs SET sql_outcome_json=? WHERE id=?", (_json(outcome), run_id))
     elif stage == "sql_insertion":

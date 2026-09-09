@@ -11070,13 +11070,13 @@ function _flowOwnerOptions(people, selectedId) {
 }
 
 function _flowOwnerHelp(owner) {
-    if (!owner) return 'Choose a person managed in Users. Without an owner, nobody is emailed when this flow fails.';
+    if (!owner) return 'Choose a person managed in Users. Without an owner, nobody is emailed when this flow fails and SQL table ownership is unchanged.';
     const email = owner.email
         ? `Failure alerts are sent to ${esc(owner.email)} through Outlook on the app host.`
         : `${esc(owner.name)} has no email in Users. Add one so failure alerts can be delivered.`;
     const sql = owner.sql_username
-        ? `SQL user: <code>${esc(owner.sql_username)}</code>. Saved for future table permissions; no access is granted yet.`
-        : 'An optional SQL username can be linked in Users for future table permissions.';
+        ? `SQL table owner: <code>${esc(owner.sql_username)}</code>. When SQL loading is enabled, the next successful load assigns this role to the target table, including an existing table. The role must exist and the Metronome SQL account must have permission. Already queued runs keep their saved owner.`
+        : 'No SQL username is linked in Users; SQL table ownership will not be changed.';
     return `${email} ${sql}`;
 }
 

@@ -6,6 +6,34 @@ on:
   pull_request:
 
 jobs:
+  sql-ownership:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: ['14', '18']
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres }}
+        env:
+          POSTGRES_DB: metronome_test_ownership
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d metronome_test_ownership"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install PostgreSQL test dependencies
+        run: pip install pytest sqlalchemy psycopg2-binary tzdata
+      - name: Test SQL ownership on disposable PostgreSQL
+        env:
+          METRONOME_TEST_POSTGRES_DSN: postgresql+psycopg2://postgres@127.0.0.1:5432/metronome_test_ownership
+        run: python -m pytest tests/test_sql_ownership_postgres.py -q -ra
   pytest:
     strategy:
       fail-fast: false

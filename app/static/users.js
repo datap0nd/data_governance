@@ -1,4 +1,4 @@
-// Dedicated user profiles. SQL usernames are optional identity metadata only.
+// Dedicated user profiles with optional PostgreSQL table ownership identities.
 let usersState = { people: [], query: '', role: 'all', loadError: null };
 
 function usersCountText() {
@@ -39,7 +39,7 @@ function usersPageHtml() {
             ${[['all', 'Everyone'], ['BI', 'BI'], ['Business', 'Business']].map(([role, label]) => `<button type="button" class="btn-sm btn-outline" data-user-role="${role}" aria-pressed="${usersState.role === role}">${label}</button>`).join('')}
             <span class="users-muted" id="users-count">${usersCountText()}</span></div>
         <section class="users-panel" aria-label="User directory" id="users-list">${usersRowsHtml()}</section>
-        <p class="users-muted">SQL usernames are optional. The link is saved for future table permissions; adding one does not grant access yet.</p>`}
+        <p class="users-muted">SQL usernames are optional. Assigned Flows apply this role as their target table owner on the next successful SQL load, including existing tables. Saving a profile does not change the database immediately. Already queued runs keep their saved owner.</p>`}
     </div>`;
 }
 
@@ -94,7 +94,7 @@ function openUserEditor(person) {
             <label for="user-name">Name<input id="user-name" name="name" required maxlength="200" value="${esc(person?.name || '')}" autocomplete="name"></label>
             <label for="user-role">Role<select id="user-role" name="role" aria-label="Role"><option ${person?.role !== 'Business' ? 'selected' : ''}>BI</option><option ${person?.role === 'Business' ? 'selected' : ''}>Business</option></select></label>
             <label for="user-email">Email <small>Optional · used for flow owner notifications</small><input id="user-email" name="email" type="email" value="${esc(person?.email || '')}" autocomplete="email"></label>
-            <label for="user-sql">SQL username <small>Optional · future table permissions</small><input id="user-sql" name="sql_username" value="${esc(person?.sql_username || '')}" autocomplete="off" spellcheck="false"><small>Enter the database username, not a password.</small></label>
+            <label for="user-sql">SQL username <small>Optional · SQL table ownership</small><input id="user-sql" name="sql_username" value="${esc(person?.sql_username || '')}" autocomplete="off" spellcheck="false"><small>Use an existing PostgreSQL role. Ownership applies when an assigned Flow successfully loads SQL; the Metronome SQL account must have permission. Clearing this field leaves existing table ownership unchanged.</small></label>
         </div><div class="users-feedback" id="user-form-feedback" role="status" aria-live="polite"></div>
         <div class="users-actions"><button type="submit" id="user-save">${person ? 'Save changes' : 'Add user'}</button>${person ? '<button type="button" class="btn-outline btn-danger-outline" id="user-delete">Delete user</button>' : ''}</div>
         <div id="user-delete-confirm"></div></form></section>`;

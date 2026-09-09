@@ -62,7 +62,7 @@ def create_person(req: PersonCreate, request: Request):
 
 @router.patch("/{person_id}", response_model=PersonOut)
 def update_person(person_id: int, req: PersonUpdate, request: Request):
-    """Update a profile; linking a SQL user does not grant permissions."""
+    """Update a profile; future Flow SQL jobs freeze its ownership identity."""
     data = req.model_dump(exclude_unset=True)
     if not data:
         raise HTTPException(status_code=400, detail="No changes provided")

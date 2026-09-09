@@ -108,6 +108,7 @@ def test_users_profile_journey(users_browser, tmp_path):
     evidence.mkdir(parents=True, exist_ok=True)
     expect(page.get_by_role("heading", name="Users", exact=True)).to_be_visible()
     expect(page.get_by_role("region", name="User directory")).to_be_visible()
+    expect(page.locator('#app')).to_contain_text('next successful SQL load, including existing tables')
     rows = page.locator("#users-list tbody tr")
     expect(rows).to_have_count(3)
     expect(page.locator("#users-count")).to_have_text("3 users · 1 SQL identity linked")
@@ -144,6 +145,8 @@ def test_users_profile_journey(users_browser, tmp_path):
     role = page.get_by_label("Role", exact=True)
     email = page.get_by_label(re.compile(r"^Email"))
     sql = page.get_by_label(re.compile(r"^SQL username"))
+    expect(page.locator('#user-editor')).to_contain_text('Use an existing PostgreSQL role')
+    expect(page.locator('#user-editor')).to_contain_text('Clearing this field leaves existing table ownership unchanged')
     expect(name).to_be_focused()
     for field in [role, email, sql]:
         page.keyboard.press("Tab")
@@ -322,3 +325,35 @@ def test_users_pending_save_cannot_replace_editor_and_navigation_is_safe(users_b
     page.locator('nav a[data-page="users"]').click()
     expect(page.get_by_role("button", name="Edit Maya Updated")).to_be_visible()
     expect(page.locator("#user-editor")).to_be_empty()
+
+
+def test_sql_owner_help_and_run_log_confirm_only_committed_changes(users_browser, tmp_path):
+    page, _state, _base = users_browser
+    owner = {'name': 'Maya Chen', 'email': None, 'sql_username': 'Maya <BI> "owner"'}
+    help_text = page.evaluate('owner => _flowOwnerHelp(owner)', owner)
+    assert '&lt;BI&gt;' in help_text and 'Already queued runs keep their saved owner' in help_text
+    assert 'unchanged' in page.evaluate('_flowOwnerHelp(null)')
+    assert 'will not be changed' in page.evaluate('_flowOwnerHelp({name:"Maya"})')
+    page.goto('about:blank')
+    page.set_content('<body class="flow-log-body"><main class="flow-log-page" id="flow-run-log"></main></body>')
+    page.add_style_tag(path=str(ROOT / 'app/static/style.css'))
+    page.add_script_tag(path=str(ROOT / 'app/static/flow_run_log.js'))
+    run = {'id': 42, 'flow_name': 'Fictional sales', 'status': 'failed',
+           'job': {'sql_handoff': {'enabled': True, 'owner_username': owner['sql_username'],
+                   'database': 'analytics', 'schema': 'public', 'table': 'sales', 'mode': 'replace'}},
+           'sql_outcome': {'committed': False}, 'error': 'SQL ownership permission denied; PostgreSQL confirmed rollback.'}
+    page.evaluate('run => render(run)', run)
+    section = page.locator('section').filter(has=page.get_by_role('heading', name='SQL table ownership', exact=True))
+    expect(section).to_contain_text('Requested owner: Maya <BI> "owner"')
+    expect(section).to_contain_text('confirmed only after the SQL load commits')
+    expect(page.get_by_role('heading', name='Final error')).to_be_visible()
+    assert page.locator('bi').count() == 0
+    evidence = Path(os.environ.get('METRONOME_UI_EVIDENCE_DIR', str(tmp_path)))
+    evidence.mkdir(parents=True, exist_ok=True)
+    page.screenshot(path=str(evidence / 'sql-owner-rollback.png'), full_page=True)
+    run.update(status='succeeded', error=None, sql_outcome={'committed': True, 'owner_username': owner['sql_username']})
+    page.evaluate('run => render(run)', run)
+    expect(section).to_contain_text('Committed table owner: Maya <BI> "owner"')
+    expect(section).to_contain_text('Refresh table Properties in pgAdmin')
+    expect(page.get_by_role('heading', name='Final error')).to_have_count(0)
+    page.screenshot(path=str(evidence / 'sql-owner-committed.png'), full_page=True)

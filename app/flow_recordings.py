@@ -143,6 +143,9 @@ def config_hash(job, *, legacy=False):
     clean.pop('local_file', None)
     clean.get('report', {}).pop('automation', None)
     clean.get('report', {}).pop('filters', None)
+    # Ownership is checked transactionally by the SQL executor on every run.
+    # Changing a profile must not require re-recording browser interactions.
+    clean.get('sql_handoff', {}).pop('owner_username', None)
     return flow_recording.digest(clean)
 
 
