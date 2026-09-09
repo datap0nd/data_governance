@@ -16,6 +16,15 @@ Chrome 152.0.7977.83.
 | JavaScript model and syntax | PASS | Visual model test printed `Visual recording model tests passed`; `node --check` passed for app, recording model/editor, retarget preview and template preview scripts. |
 | LIVE-01 | BLOCKED | Windows reports `UGREEN-25854` present/OK, but the local viewer remained black/stalled and no exact Flow identity was visible. No live portal action or signed run was attempted. |
 
+## Post-rebase verification
+
+At 12:31 UTC the implementation was rebased onto `fcc9a5fa` after PR #92
+updated `main`. The only manual conflict was the testing index; both release
+entries were retained. On rebased code revision `f0c1c64d`, the focused browser
+suite passed 20 tests in 54.34s, the visual model test passed, all five listed
+JavaScript syntax checks passed, and `git diff --check origin/main...HEAD`
+passed. Evidence: `test_reports/recording-retarget-rebased.xml` (local).
+
 ## Commands and observations
 
 Clean related regression used the repository-documented Windows workaround,
