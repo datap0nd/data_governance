@@ -63,3 +63,5 @@ def test_command_declares_isolated_paths_before_pytest_launch():
     launch = source.index("$pytestArguments =")
     assert all(source.index(assignment) < launch for assignment in assignments)
     assert "-ExecutionPolicy Bypass" in source[launch:]
+    assert "Refusing to clean unexpected Flow test root" in source
+    assert "Remove-Item -LiteralPath $resolvedIsolationRoot -Recurse -Force" in source

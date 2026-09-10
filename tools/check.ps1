@@ -19,6 +19,7 @@ $runId = '{0}-{1}-{2}' -f ([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ')), 
 $runRoot = Join-Path $repoRoot ".test-runs\$runId"
 $started = [DateTimeOffset]::UtcNow
 $resultPath = Join-Path $runRoot 'result.json'
+$externalIsolationRoot = $null
 $result = [ordered]@{
     schema_version = 1
     run_id = $runId
@@ -56,6 +57,14 @@ function Save-Result {
     $result.finished_utc = $finished.ToString('o')
     $result.duration_seconds = [math]::Round(($finished - $started).TotalSeconds, 3)
     $result.diagnostic = $Diagnostic
+    if ($externalIsolationRoot -and (Test-Path -LiteralPath $externalIsolationRoot)) {
+        $allowedRoot = [IO.Path]::GetFullPath((Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'MetronomeTestRuns'))
+        $resolvedIsolationRoot = [IO.Path]::GetFullPath($externalIsolationRoot)
+        if (-not $resolvedIsolationRoot.StartsWith($allowedRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing to clean unexpected Flow test root: $resolvedIsolationRoot"
+        }
+        Remove-Item -LiteralPath $resolvedIsolationRoot -Recurse -Force
+    }
     $result | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $resultPath -Encoding utf8
     Write-Host "Result: $resultPath"
 }
@@ -237,7 +246,8 @@ try {
     $env:DG_DB_PATH = Join-Path $runRoot 'governance-test.db'
     $env:DG_TEST_RUN_ROOT = $runRoot
     $env:DG_BROWSER_PROFILE_ROOT = $profileRoot
-    $externalFlowRoot = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) "MetronomeTestRuns\$runId\flows"
+    $externalIsolationRoot = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) "MetronomeTestRuns\$runId"
+    $externalFlowRoot = Join-Path $externalIsolationRoot 'flows'
     New-Item -ItemType Directory -Force -Path $externalFlowRoot | Out-Null
     $env:DG_FLOWS_ROOT = $externalFlowRoot
     $env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $repoRoot '.playwright-browsers'
