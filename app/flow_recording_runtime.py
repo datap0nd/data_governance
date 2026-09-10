@@ -326,9 +326,12 @@ def _select_week_range(container, step, update) -> dict:
             continue
         if navigation != 'scroll' or position['height'] <= position['client']:
             break
-        moved = container.evaluate('''el => {
+        moved = container.evaluate('''async el => {
             const before = el.scrollTop;
             el.scrollTop = Math.min(el.scrollHeight, before + Math.max(1, el.clientHeight * .8));
+            // Let scroll handlers and virtual-list repaint work run before the
+            // next snapshot; otherwise a fast host can outrun several pages.
+            await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
             return {before, after:el.scrollTop};
         }''')
         if moved['after'] == moved['before']:
