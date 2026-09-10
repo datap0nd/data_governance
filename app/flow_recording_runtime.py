@@ -546,7 +546,11 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
                 download = pending.value
                 output_index += 1
                 adapter = definition.get('adapter', job.get('site', {}).get('adapter'))
-                if step['output'].get('completion') == 'staging' or adapter == 'asap_portal':
+                staged_completion = (
+                    step['output'].get('completion') == 'staging'
+                    or adapter == 'asap_portal'
+                )
+                if staged_completion:
                     # ASAP dashboard download events are only start signals.
                     # The browser-managed GUID path can become terminal while
                     # still containing an incomplete workbook; the scan-based
@@ -554,13 +558,28 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
                     # the configured staging directory. Recorded navigation
                     # must hand off to that same post-click contract.
                     completed = flow_worker._asap_dashboard_event_staged_download(staging, files_before, step['id'])
+                else:
+                    completed = flow_worker._completed_edge_download(download, step['id'])
+                preserve_staged_excel = bool(
+                    staged_completion
+                    and step['output']['format'] == 'xlsx'
+                    and (
+                        job.get('transformation', {}).get('enabled')
+                        or job.get('sql_handoff', {}).get('enabled')
+                        or job.get('_recording_validation_requires_table')
+                        or step['output'].get('min_rows')
+                        or step['output'].get('headers')
+                        or step['output'].get('period_checks')
+                        or job['downloads'].get('excel_trim', 'none') != 'none'
+                    )
+                )
+                if preserve_staged_excel:
                     # Keep the browser's finished file itself.  NASCA binds
                     # access metadata to that downloaded path, so an otherwise
                     # byte-identical UUID copy can no longer be opened by the
                     # signed-in desktop Excel session.
                     staged = completed
                 else:
-                    completed = flow_worker._completed_edge_download(download, step['id'])
                     suffix = Path(download.suggested_filename).suffix or '.download'
                     staged = staging / f'{uuid.uuid4().hex}{suffix}'
                     flow_worker._copy_with_checksum(completed, staged)
