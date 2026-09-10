@@ -1443,6 +1443,7 @@ def test_nasca_encrypted_modern_excel_uses_desktop_excel_for_sql_csv(
     assert open_event[2]["ReadOnly"] is True
     save_event = next(event for event in events if isinstance(event, tuple) and event[0] == "save")
     assert save_event[1]["FileFormat"] == 62
+    assert "quit" in events
 
 
 def test_nasca_excel_recovery_requires_pywin32(tmp_path, monkeypatch):
@@ -1458,6 +1459,82 @@ def test_nasca_excel_recovery_requires_pywin32(tmp_path, monkeypatch):
             header_mode="auto",
             allow_empty_data=False,
         )
+
+
+def test_nasca_excel_recovery_borrows_and_restores_active_excel(tmp_path, monkeypatch):
+    source = tmp_path / "protected.xlsx"
+    source.write_bytes(b"NASCA protected workbook payload")
+    events = []
+
+    class PriorWorkbook:
+        def Activate(self):
+            events.append("prior_activated")
+
+    class Worksheet:
+        Name = "MTracker"
+
+        def Activate(self):
+            events.append("protected_activated")
+
+    class Workbook:
+        CheckCompatibility = True
+
+        def Worksheets(self, index):
+            assert index == 1
+            return Worksheet()
+
+        def SaveAs(self, path, **kwargs):
+            Path(path).write_text("Subsidiary,Units\nSEEG,120\n", encoding="utf-8-sig")
+
+        def Close(self, save):
+            events.append(("protected_closed", save))
+
+    class Excel:
+        Visible = True
+        DisplayAlerts = True
+        EnableEvents = True
+        AskToUpdateLinks = True
+        AutomationSecurity = 1
+        ActiveWorkbook = PriorWorkbook()
+
+        def __init__(self):
+            self.Workbooks = SimpleNamespace(Open=lambda *args, **kwargs: Workbook())
+
+        def Quit(self):
+            events.append("quit")
+
+    pythoncom = ModuleType("pythoncom")
+    pythoncom.CoInitialize = lambda: events.append("coinitialize")
+    pythoncom.CoUninitialize = lambda: events.append("couninitialize")
+    client = ModuleType("win32com.client")
+    excel = Excel()
+    client.GetActiveObject = lambda name: excel
+    client.DispatchEx = lambda name: pytest.fail("active Excel must be reused")
+    win32com = ModuleType("win32com")
+    win32com.client = client
+    monkeypatch.setitem(sys.modules, "pythoncom", pythoncom)
+    monkeypatch.setitem(sys.modules, "win32com", win32com)
+    monkeypatch.setitem(sys.modules, "win32com.client", client)
+
+    metadata = flow_worker._store_completed_download(
+        source,
+        tmp_path / "result.xlsx",
+        file_format="xlsx",
+        recorded_output=True,
+        require_normalized_csv=True,
+        csv_preamble="none",
+    )
+
+    assert metadata["source_encoding"] == "excel_com"
+    assert excel.Visible is True
+    assert excel.DisplayAlerts is True
+    assert excel.EnableEvents is True
+    assert excel.AskToUpdateLinks is True
+    assert excel.AutomationSecurity == 1
+    assert ("protected_closed", False) in events
+    assert "prior_activated" in events
+    assert "quit" not in events
+    assert events[-1] == "couninitialize"
 
 
 def test_a_real_csv_is_still_normalized_untouched(tmp_path):

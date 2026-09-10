@@ -5119,14 +5119,45 @@ def _normalize_nasca_excel_with_com(
         ) from exc
 
     excel = workbook = worksheet = None
+    owns_excel = False
+    borrowed_settings = {}
+    borrowed_active_workbook = None
     temporary_export = tempfile.TemporaryDirectory(prefix="metronome-nasca-")
     temporary_csv = Path(temporary_export.name) / "decrypted.csv"
     initialized = False
     try:
         pythoncom.CoInitialize()
         initialized = True
-        excel = win32com.client.DispatchEx("Excel.Application")
-        excel.Visible = False
+        # NASCA is attached to the signed-in desktop Excel session.  When that
+        # session already exists, starting an isolated DispatchEx instance can
+        # wait forever inside the protection provider while the user's normal
+        # Excel process remains healthy.  Borrow the active session when one is
+        # available, but restore every application-wide setting and never quit
+        # it.  A dedicated hidden instance remains the fallback for unattended
+        # desktops where Excel is not already running.
+        get_active = getattr(win32com.client, "GetActiveObject", None)
+        if callable(get_active):
+            try:
+                excel = get_active("Excel.Application")
+            except Exception:
+                excel = None
+        if excel is None:
+            excel = win32com.client.DispatchEx("Excel.Application")
+            owns_excel = True
+            excel.Visible = False
+        else:
+            for name in (
+                "DisplayAlerts", "EnableEvents", "AskToUpdateLinks",
+                "AutomationSecurity",
+            ):
+                try:
+                    borrowed_settings[name] = getattr(excel, name)
+                except Exception:
+                    pass
+            try:
+                borrowed_active_workbook = excel.ActiveWorkbook
+            except Exception:
+                pass
         excel.DisplayAlerts = False
         excel.EnableEvents = False
         excel.AskToUpdateLinks = False
@@ -5184,10 +5215,22 @@ def _normalize_nasca_excel_with_com(
             except Exception:
                 pass
         if excel is not None:
-            try:
-                excel.Quit()
-            except Exception:
-                pass
+            if owns_excel:
+                try:
+                    excel.Quit()
+                except Exception:
+                    pass
+            else:
+                for name, value in borrowed_settings.items():
+                    try:
+                        setattr(excel, name, value)
+                    except Exception:
+                        pass
+                if borrowed_active_workbook is not None:
+                    try:
+                        borrowed_active_workbook.Activate()
+                    except Exception:
+                        pass
         temporary_export.cleanup()
         if initialized:
             try:
