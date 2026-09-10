@@ -1,7 +1,7 @@
 # Range setting on one recorded step: test report
 
 - Plan: [test-plan.md](test-plan.md)
-- Change/PR: PR #96 and follow-up template-copy fix (pending PR)
+- Change/PR: PR #96, PR #97, and authoritative save-route fix (pending PR)
 - Evidence cutoff (UTC): 2026-09-09 17:40; final CI is recorded in the PR
 - Tested revision: uncommitted changes based on `85fd02482442787002e802e37a21e6432151455d`
 - Environment: Windows ARM64, Python 3.13, Node 24, synthetic Chrome through Playwright
@@ -27,3 +27,16 @@
   copied a v3 range template, edited and saved it, then validated the submitted
   definition as version 3. Result: 1 passed in 4.74 seconds; local JUnit evidence
   is `test_reports/range-template-v3.xml`.
+
+## Follow-up evidence: authoritative revision save
+
+- Evidence cutoff (UTC): 2026-09-10 05:54; final-head CI is recorded in the follow-up PR.
+- Tested revision: uncommitted fix based on merge `356d9b52695267ce32b22b58606f16547a22fe0e`.
+- The first isolated SAVE-01 run exposed a test collection setup error because
+  `flow_db` was not imported into the test module; no application assertion ran.
+- SAVE-01 retest: PASS. The route-level test submitted a version-2 payload with
+  `select_range`, then read the stored revision, proved it was version 3, and
+  validated it. Result: 1 passed in 6.44 seconds; local JUnit evidence is
+  `test_reports/range-save-v3-final.xml`.
+- Python compilation for the changed route and test plus `git diff --check`:
+  PASS; only expected checkout line-ending notices were emitted.
