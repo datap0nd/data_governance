@@ -2,8 +2,8 @@
 
 - Plan: [test-plan.md](test-plan.md)
 - Change/PR: PR 2 of the faster-delivery rollout; pull request pending
-- Evidence cutoff (UTC): 2026-09-10 14:06, before measured-plan hosted final-head validation
-- Tested code revisions: initial focused set at `044cd6ae4b839f15525abdb782eaccf4002fec5c`; Windows failure recovery at `abde1e6c0d451cf661c3412b4c612acc5cf5bc88`; measured duration updater/plan at `dcd13ba7a79a849ebf8cb18cf6ec234652726720`
+- Evidence cutoff (UTC): 2026-09-10 14:45, before corrected final-head equivalence
+- Tested code revisions: initial focused set at `044cd6ae4b839f15525abdb782eaccf4002fec5c`; Windows prerequisite recovery at `abde1e6c0d451cf661c3412b4c612acc5cf5bc88`; measured duration updater/plan at `dcd13ba7a79a849ebf8cb18cf6ec234652726720`; synthetic click stabilization at `ae47c520663da46472d338b08bbaa36167240edc`
 - Environment: Windows 11, PowerShell 7.6.5, Python 3.13.15 locally; GitHub-hosted environments pending
 - Overall finding: focused classifier, partitioner, reconciliation, aggregate-gate and fixture checks pass locally; hosted serial/parallel equivalence and three consecutive runs remain pending
 
@@ -18,6 +18,7 @@
 | SC-04 recovery | Rerun only the eight failed Windows cases from command-contract and synthetic recorded-click shards after moving argument validation before environment preflight and increasing the fixture-only click budget from 500 ms to 2 s | `abde1e6` content on parent `6495675`; same local environment, synthetic Chrome fixture | PASS; 8 passed in 5.81 s; 8.788 s command | Result ID `20260910T135523170Z-38448-2231f246`; source fingerprint `cfb2486c4a067dbf61e2d6d642279acd14dd35d81f19670d2613c6794bc67d24`. |
 | SC-02 measured rebalance | Aggregate all six JUnit artifacts per OS from run 34484474215 with `tools/ci/update_durations.py`, then independently rebuild the plan | Recovery content after `abde1e6`; same local environment | PASS; all 103 files weighted; measured totals 845.673 s Ubuntu and 1,283.904 s Windows; planned groups 140.941–140.959 s Ubuntu and 213.976–213.993 s Windows | Sanitized checked-in duration tables sourced to run 34484474215. |
 | SC-02 updater contract | Run the focused updater test with one JUnit artifact per shard, then remove one artifact | Recovery content after `abde1e6`; same local environment | PASS; exact aggregation passed and five-of-six input failed closed; 1 passed in 0.13 s | Result ID `20260910T140540128Z-12436-8d6a6cad`. |
+| SC-05 flake recovery | Rerun the three failed synthetic click scenarios and their parameterized dispatch companions after raising only the fixture helper's actionability allowance from 2 s to 10 s | `ae47c52` content on parent `deb20a0`; same local environment, synthetic Chrome fixture | PASS; 5 passed in 3.12 s; 5.921 s command | Result ID `20260910T144503813Z-328-f5b9b71f`; source fingerprint `ceb797324206b5cadeb37b56228c8e89c0b82029fd7c91ca52eb96de551d2855`. |
 
 ## Unperformed or blocked in-scope checks
 
@@ -49,6 +50,27 @@ assertions are unchanged. The eight affected cases passed locally. The failed
 run was cancelled while its now-invalid serial jobs were still running to
 avoid consuming unnecessary hosted capacity; corrected same-head equivalence
 remains required.
+
+Measured-plan equivalence run
+[34487005542](https://github.com/datap0nd/data_governance/actions/runs/34487005542)
+passed all twelve parallel shards, both serial baselines, exact per-OS outcome
+reconciliation and `Merge ready` on `deb20a0`. Its Ubuntu test steps were
+2m04s–2m53s and Windows test steps were 3m07s–3m50s; the one-time serial steps
+took 13m19s Ubuntu and 23m25s Windows. This proved equivalence but is not
+counted toward final-head consecutive runs after the later fixture-only change.
+
+The next parallel-only manual run
+[34490063768](https://github.com/datap0nd/data_governance/actions/runs/34490063768)
+passed eleven of twelve shards plus frontend and PostgreSQL 14/18, but Windows
+shard 3 failed three synthetic click cases when Playwright used almost the full
+2-second fixture allowance waiting for an element to become stable. The same
+head had passed those cases in the prior parallel and serial executions, so
+this is retained as a new-runner timing flake, not hidden as a product defect.
+The fixture now allows 10 seconds for Playwright actionability while retaining
+all visibility, stability, hit-testing and enabled-state assertions; production
+timeouts and meaningful timing tests are unchanged. The affected local cases
+passed, and final-head equivalence plus three clean parallel executions restart
+from zero.
 
 Historical duration weights are OS-specific but partial; unlisted files
 deliberately receive a conservative default until successful manifests provide
