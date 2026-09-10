@@ -5099,6 +5099,7 @@ def _normalize_nasca_excel_with_com(
     strict_headers: bool,
     header_mode: str,
     allow_empty_data: bool,
+    workbook_format: str = "xlsx",
 ) -> dict:
     """Open a NASCA-wrapped modern workbook through desktop Excel.
 
@@ -5119,6 +5120,8 @@ def _normalize_nasca_excel_with_com(
         ) from exc
 
     excel = workbook = worksheet = None
+    excel_source = source
+    source_alias_dir = None
     owns_excel = False
     borrowed_settings = {}
     borrowed_active_workbook = None
@@ -5128,6 +5131,25 @@ def _normalize_nasca_excel_with_com(
     try:
         pythoncom.CoInitialize()
         initialized = True
+        # Playwright gives completed downloads an extensionless UUID name.
+        # NASCA and Excel use the workbook suffix while opening the protected
+        # container, but copying/renaming that file can discard protection
+        # metadata. A same-directory hard link supplies the suffix while still
+        # opening the original browser-managed file record and its metadata.
+        if source.suffix.casefold() not in (
+            OOXML_EXCEL_EXTENSIONS | XLSB_EXCEL_EXTENSIONS
+        ):
+            suffix = ".xlsb" if workbook_format == "xlsb" else ".xlsx"
+            source_alias_dir = tempfile.TemporaryDirectory(
+                prefix="metronome-nasca-open-", dir=source.parent,
+            )
+            source_alias = Path(source_alias_dir.name) / f"browser-download{suffix}"
+            try:
+                os.link(source, source_alias)
+                excel_source = source_alias
+            except OSError:
+                source_alias_dir.cleanup()
+                source_alias_dir = None
         # NASCA is attached to the signed-in desktop Excel session.  When that
         # session already exists, starting an isolated DispatchEx instance can
         # wait forever inside the protection provider while the user's normal
@@ -5165,7 +5187,7 @@ def _normalize_nasca_excel_with_com(
         # never execute VBA while NASCA transparently unwraps its contents.
         excel.AutomationSecurity = 3
         workbook = excel.Workbooks.Open(
-            str(source.resolve()),
+            str(excel_source.resolve()),
             UpdateLinks=0,
             ReadOnly=True,
             IgnoreReadOnlyRecommended=True,
@@ -5231,6 +5253,8 @@ def _normalize_nasca_excel_with_com(
                         borrowed_active_workbook.Activate()
                     except Exception:
                         pass
+        if source_alias_dir is not None:
+            source_alias_dir.cleanup()
         temporary_export.cleanup()
         if initialized:
             try:
@@ -5831,6 +5855,26 @@ def _store_completed_download(
         if output.suffix.casefold() != expected_suffix:
             output = _safe_output_path(output.parent, f"{output.stem}{expected_suffix}")
         original_size = snapshot["file_size"]
+        normalized_output = _safe_output_path(
+            output.parent, f"{output.stem}_normalized.csv",
+        )
+        if processing_progress is not None:
+            processing_progress(
+                "file_normalization",
+                "Opening the completed browser download with desktop Excel and NASCA.",
+            )
+        normalization = _normalize_nasca_excel_with_com(
+            local_path,
+            normalized_output,
+            csv_preamble=csv_preamble,
+            strict_headers=strict_headers,
+            header_mode=xlsx_header_mode,
+            allow_empty_data=recorded_output,
+            workbook_format=modern_format,
+        )
+        # Publish the retained protected original only after Excel has read the
+        # untouched browser download. The normalized CSV remains the existing
+        # transformation and SQL handoff artifact.
         copied = _copy_with_checksum(local_path, output)
         if copied != snapshot:
             raise RuntimeError("The NASCA-encrypted workbook changed while it was copied.")
@@ -5839,22 +5883,6 @@ def _store_completed_download(
             original_size,
             copied["checksum"],
             label="Downloaded NASCA-encrypted Excel workbook",
-        )
-        normalized_output = _safe_output_path(
-            output.parent, f"{output.stem}_normalized.csv",
-        )
-        if processing_progress is not None:
-            processing_progress(
-                "file_normalization",
-                f"Saved {output.name}; opening its NASCA-protected contents with desktop Excel.",
-            )
-        normalization = _normalize_nasca_excel_with_com(
-            output,
-            normalized_output,
-            csv_preamble=csv_preamble,
-            strict_headers=strict_headers,
-            header_mode=xlsx_header_mode,
-            allow_empty_data=recorded_output,
         )
         if processing_progress is not None:
             processing_progress(

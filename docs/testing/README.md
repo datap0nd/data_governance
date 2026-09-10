@@ -9,6 +9,7 @@ This is a standing instruction from the repository owner, recorded in
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-09-10: NASCA browser-source recovery | [Test plan](releases/2026-09-10-nasca-browser-source/test-plan.md) | [Test report](releases/2026-09-10-nasca-browser-source/test-report.md) |
 | 2026-09-10: NASCA active Excel session | [Test plan](releases/2026-09-10-nasca-active-excel-session/test-plan.md) | [Test report](releases/2026-09-10-nasca-active-excel-session/test-report.md) |
 | 2026-09-10: NASCA recording validation parity | [Test plan](releases/2026-09-10-nasca-recording-validation/test-plan.md) | [Test report](releases/2026-09-10-nasca-recording-validation/test-report.md) |
 | 2026-09-10: delivery foundation and merge gate | [Test plan](releases/2026-09-10-delivery-foundation/test-plan.md) | [Test report](releases/2026-09-10-delivery-foundation/test-report.md) |

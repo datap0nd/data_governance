@@ -1355,17 +1355,17 @@ def test_a_damaged_legacy_xls_is_rejected_with_its_real_type(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "protected_bytes",
+    ("protected_bytes", "source_name"),
     [
-        b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 64,
-        b"NASCA protected workbook payload" + b"\x00" * 64,
+        (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 64, "7e3bf520a164c4460e949fcc3bb7a510"),
+        (b"NASCA protected workbook payload" + b"\x00" * 64, "protected.xlsx"),
     ],
     ids=["ole-wrapper", "opaque-non-zip-wrapper"],
 )
 def test_nasca_encrypted_modern_excel_uses_desktop_excel_for_sql_csv(
-    tmp_path, monkeypatch, protected_bytes,
+    tmp_path, monkeypatch, protected_bytes, source_name,
 ):
-    source = tmp_path / "protected.xlsx"
+    source = tmp_path / source_name
     source.write_bytes(protected_bytes)
     events = []
 
@@ -1440,10 +1440,13 @@ def test_nasca_encrypted_modern_excel_uses_desktop_excel_for_sql_csv(
     assert events[0] == "coinitialize"
     assert events[-1] == "couninitialize"
     open_event = next(event for event in events if isinstance(event, tuple) and event[0] == "open")
+    assert open_event[1] != "result.xlsx"
+    assert Path(open_event[1]).suffix.casefold() == ".xlsx"
     assert open_event[2]["ReadOnly"] is True
     save_event = next(event for event in events if isinstance(event, tuple) and event[0] == "save")
     assert save_event[1]["FileFormat"] == 62
     assert "quit" in events
+    assert not list(tmp_path.glob("metronome-nasca-open-*"))
 
 
 def test_nasca_excel_recovery_requires_pywin32(tmp_path, monkeypatch):
