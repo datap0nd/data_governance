@@ -24,3 +24,31 @@ One bounded diff review checked filename propagation, unchanged source-path hand
 The initial combined local command used the exact five selectors listed in the plan, with both F-01 parameters selected together; the reruns isolated only the failed cases. Eight distinct focused cases now have passing evidence. Synthetic Excel cannot certify the corporate protection provider.
 
 Final-head CI is pending at this cutoff. Record its run URL and exact head SHA in the PR before merging. Inflow's requested production run was started on the baseline and was exporting CSV at the last observation; no success is claimed. Fixed-build validation/production runs and SELECT-only database checks remain pending. Append dated, revision-specific live evidence after it exists; preserve these failures.
+
+## 2026-09-10T22:23Z follow-up evidence
+
+PR #111 passed [required CI](https://github.com/datap0nd/data_governance/actions/runs/34533438723)
+on exact head fe7912149475d175fe01afebc7fd65db00c8bab2: 1,953 passed,
+23 skipped, 12 warnings; frontend passed; Merge ready passed. This evidence was
+recorded in the PR before its head-pinned squash merge at 21:56:07Z. Merge
+revision 6062b6098a43d3c344b2bfe96f4d544062b0b9c6 was confirmed installed on
+the work PC at 22:06Z.
+
+| Requested live check | Actual result |
+| --- | --- |
+| Inflow run 432 on baseline 7dbf0e5be | SUCCEEDED in 2m4s. Run reports 38,910 rows committed; pgAdmin independently confirms 38,910 rows. |
+| Inflow SELECT aggregates | Zero exact duplicate rows; months 202608–202609. 329 current-country blanks; item, activity and month null counts zero. These are observations, not evidence of import defects: the downloaded report remains authoritative. |
+| Subsidiary pre-run SELECT baseline | 1,041,916 rows, 1,040,012 distinct whole rows, years 2024–2026, one distinct country, no country/model/quantity nulls. |
+| Country pre-run SELECT baseline | 145,990 rows, 145,960 distinct whole rows, years 2024–2026, 15 countries, no country/model/quantity nulls. |
+| Subsidiary validation 163, recording 46, fixed build 6062b6098 | FAIL at desktop Excel open/export, after the filename fix successfully routed the download into COM. No production SQL. |
+| Country validation 164, recording 47, fixed build 6062b6098 | FAIL at desktop Excel open/export. No production SQL. |
+
+Protected evidence: LIVE-THREE-FLOWS-20260911-INFLOW-432,
+LIVE-THREE-FLOWS-20260911-PG-BASELINES,
+LIVE-THREE-FLOWS-20260911-SUBS-163 and
+LIVE-THREE-FLOWS-20260911-COUNTRY-164. Existing queries and workbooks were
+preserved; no manual SQL data edits were made. Blank or repeated source rows
+must not be filled or removed without a demonstrated source/import mismatch.
+The remaining COM failure is tracked in the
+[direct pywin32 read report](../2026-09-11-nasca-direct-com-read/test-report.md);
+this filename fix alone did not complete the two MTracker flows.

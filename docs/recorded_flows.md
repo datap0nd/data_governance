@@ -105,8 +105,11 @@ checks require it. Legacy OLE/BIFF files and OOXML/XLSB ZIP containers are
 validated from their contents, including ZIP packages with leading transport
 bytes. On the Windows BI desktop, a modern `.xlsx`/`.xlsb` download wrapped in
 an NASCA OLE encryption container is opened read-only through desktop Excel and
-exported to the same normalized CSV/SQL path. Excel links, alerts, events and
-workbook macros are disabled for that operation. Other corrupt or encrypted
+read through pywin32 in bounded cell batches into the same normalized CSV/SQL
+path. The original browser path is opened directly; Excel does not save another
+workbook or CSV. Excel links, alerts and workbook macros are disabled for that
+operation, while the desktop's existing integration-event setting is preserved.
+Other corrupt or encrypted
 workbooks, executable Excel add-ins, arbitrary binary files, and sign-in pages
 fail with format-specific diagnostics.
 
