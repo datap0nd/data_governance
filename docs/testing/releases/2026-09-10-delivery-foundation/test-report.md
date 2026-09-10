@@ -2,7 +2,7 @@
 
 - Plan: [test-plan.md](test-plan.md)
 - Change/PR: pending
-- Evidence cutoff (UTC): 2026-09-10 13:00, before restarted final-head CI
+- Evidence cutoff (UTC): 2026-09-10 13:18, before the second corrected final-head CI rerun
 - Tested code revision: initial tooling at `d902b4a1f787f0c6543cd95862552a054871cdd1`; follow-up content committed as `97a8b9f4d3d6b96b572f4debbc458730da44c430` was tested as `691706a` plus the then-uncommitted `tools/check.ps1` and `tests/test_check_command.py` changes
 - Environment: Windows 11; PowerShell 7.6.5; Python 3.13.15
 - Overall finding: local setup, preflight, isolation policy and aggregate-gate checks pass; final-head CI remains pending
@@ -15,6 +15,7 @@
 | DF-02–DF-04 | `.\tools\check.ps1 -Mode Verify -TestPath tests/test_ci_merge_gate.py,tests/test_check_command.py -SyntaxPath tools/check.ps1,tools/ci/merge_gate.py,tests/test_ci_merge_gate.py,tests/test_check_command.py` | `d902b4a`; Windows 11, PowerShell 7.6.5, Python 3.13.15 | PASS; 10 passed, 0 failed/skipped, pytest 2.56 s, command 4.834 s | Result ID `20260910T124653160Z-30736-53690f8f`; source fingerprint `7601d55f435cb882f4d46391fafe5b3e1fcdd72b855002ccb19eaf9636c1cbb6`. |
 | DF-03 | Temporarily replace `.venv/.metronome-ci-lock.sha256`, run Preflight, restore the marker in `finally`, then rerun Preflight | `d902b4a`; same environment | PASS; mismatched lock rejected before pytest with the Setup instruction; restored environment passed preflight | Result IDs `20260910T124704664Z-18904-ca952fea` and `20260910T124705043Z-32608-5d74160a`. |
 | DF-02 recovery | `.\tools\check.ps1 -Mode Verify -TestPath tests/test_check_command.py,tests/test_flows.py::test_catalog_and_flow_configuration_persist_locally -SyntaxPath tools/check.ps1,tests/test_check_command.py` | `691706a` plus the exact two files later committed as `97a8b9f`; Windows 11, PowerShell 7.6.5, Python 3.13.15 | PASS; 4 passed, 0 failed/skipped, pytest 6.22 s, command 9.418 s | Result ID `20260910T125922331Z-13904-76549b7d`; source fingerprint `8b057a9d68de6717903617fcfacca79778e84f44f98776e0833d8ee32f839e87`. |
+| DF-02 platform recovery | `.\tools\check.ps1 -Mode Verify -TestPath tests/test_check_command.py -SyntaxPath tests/test_check_command.py` after marking the Windows-only command contract | `3431d45` plus the exact test change committed as `a5e27d2`; Windows 11, PowerShell 7.6.5, Python 3.13.15 | PASS; 3 passed, 0 failed/skipped, pytest 3.16 s, command 6.811 s | Result ID `20260910T131730768Z-33296-6c9de3ad`; source fingerprint `7191b213868473dbfd1a4dc64c412fa00a02f2e48816df467b2ab715bc2b8ffe`. |
 
 ## Unperformed or blocked in-scope checks
 
@@ -41,6 +42,13 @@ paths. The command now gives `DG_FLOWS_ROOT` its own unique external test path
 without weakening production path validation; the command-policy tests and one
 real Flow create/persist case then passed together. The earlier PR workflow run
 was superseded because this code change requires new final-head evidence.
+
+Final-head run `34479965537` then completed the full Ubuntu suite with 1,943
+passes, 20 legitimate skips and two failures in 13m56s. Both failures were the
+new local-command contract tests invoking the Windows `.venv\\Scripts` layout
+on Ubuntu; application tests passed. The tests are now explicitly scoped to
+Windows, where their focused rerun passed 3/3. The failed run and aggregate-gate
+rejection are retained as evidence; a corrected final-head run is required.
 
 ## Merge evidence
 
