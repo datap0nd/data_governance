@@ -35,3 +35,27 @@ Required final-head CI is pending. Record its run URL and exact head in the PR
 before merging. The revised pywin32 implementation has not yet run on the work
 PC. Neither MTracker production flow is claimed fixed or succeeded. Append
 dated, revision-specific live results after installation; retain prior failures.
+
+## 2026-09-10T22:34Z Inflow scope extension
+
+The owner specified 2025-W01 through now. Live inspection on 6062b6098 showed
+Sell-out Week as a generic multi-select and the flow using no period selection.
+Code review found that native controls were classified generically and later
+semantic discovery merged options without upgrading the type. ISO-week members
+and their week label now retain week semantics, including after later generic
+observations. This enables the existing start-to-latest period controls.
+
+The exact additional Verify command in the plan passed: 2 cases in 0.63s, both
+syntax targets passed, no skips/warnings. Evidence:
+.test-runs/20260910T223306636Z-32904-766633a7/result.json, based on commit
+5ade0662aecbb00641fe28e09a40ffe446d54945 plus the discovery/test diff.
+The six earlier COM cases are unchanged; this new evidence covers only the
+additional discovery behavior. A bounded review of this added diff checked
+semantic precedence, option retention and non-week controls.
+
+Inflow still requires a new production run with the requested full range.
+Country's SQL owner and schema USAGE/CREATE checks passed. The subsidiary
+table is currently owned by metomx, while its configured owner rafael lacks
+USAGE and CREATE in its destination schema. The owner was asked to choose
+between the exact required schema grant and retaining the existing SQL owner;
+no permission or ownership changes have been made.

@@ -7,6 +7,38 @@ from types import SimpleNamespace
 import pytest
 
 from app import flow_gscm, flow_worker
+
+
+def test_native_week_members_enable_start_to_latest_without_losing_options():
+    from app.routers.flows import _latest_discovered_week
+
+    definitions = []
+    flow_worker._merge_asap_filter_definition(
+        definitions, "Sell-out Week", "multi_select", ["202636", "202501"],
+    )
+    flow_worker._merge_asap_filter_definition(
+        definitions, "Sell-out Week", "week", ["202635"],
+    )
+    flow_worker._merge_asap_filter_definition(
+        definitions, "Sell-out Week", "multi_select", ["202637"],
+    )
+    assert len(definitions) == 1
+    assert definitions[0]["control_type"] == "week"
+    assert set(definitions[0]["options"]) == {"202501", "202635", "202636", "202637"}
+    assert _latest_discovered_week({"filters": definitions}, "2025-W01") == "2026-W37"
+
+
+def test_non_week_member_lists_remain_ordinary_filters():
+    definitions = []
+    flow_worker._merge_asap_filter_definition(
+        definitions, "Week category", "multi_select", ["Weekly", "Daily"],
+    )
+    flow_worker._merge_asap_filter_definition(
+        definitions, "Product code", "select", ["202501", "202636"],
+    )
+    assert [item["control_type"] for item in definitions] == ["multi_select", "select"]
+
+
 from app.flow_worker import (
     _asap_frame,
     _asap_goto,

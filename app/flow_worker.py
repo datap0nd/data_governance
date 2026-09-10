@@ -2659,9 +2659,18 @@ def _merge_asap_filter_definition(
     ][:ASAP_MAX_FILTER_OPTIONS]
     if not label or not options:
         return
+    # A native multi-select still has week semantics when its discovered label
+    # and members identify ISO weeks. Preserve that meaning for the range UI.
+    if "week" in label.casefold() and all(
+        re.fullmatch(r"20\d{2}(?:-W)?(?:0[1-9]|[1-4]\d|5[0-3])", value)
+        for value in options
+    ):
+        control_type = "week"
     key = _slug_key(label, f"filter_{len(definitions) + 1}")
     existing = next((item for item in definitions if item["filter_key"] == key), None)
     if existing is not None:
+        if control_type == "week":
+            existing["control_type"] = "week"
         # Unions must honor the cap too: capping only the first discovery let
         # merged lists grow past the server limit and 422 the whole scan.
         existing["options"] = list(dict.fromkeys(

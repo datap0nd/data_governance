@@ -40,8 +40,14 @@ existing workbooks, query tabs, schedules, owners and destination selections.
 3. Compare the run file's row count with SELECT-only destination aggregates.
    Treat the downloaded source as authoritative: blanks or duplicates do not
    justify filling or deduplicating. Do not substitute older data.
-4. Inflow already succeeded in run 432 and was queried on the preceding
-   revision. Do not rerun it solely because the Excel reader changed.
+4. The owner subsequently specified Inflow's range as 2025-W01 through now.
+   Run 432 proves the import path but does not satisfy this expanded range.
+   Rescan Installed Base (MENA), verify Sell-out Week is recognized as a week
+   control, choose Start to latest available with start 2025-W01 and one file
+   for the full range, then save and run. Verify the frozen job's full inclusive
+   range, source artifact count and SQL count/periods. Latest is based on the
+   report's discovery snapshot: inspect discovery freshness/scheduling rather
+   than claiming it observes future weeks without a new scan.
 5. If Excel fails, record the exact stage; keep the draft unactivated and retain
    protected downloads. A failed validation must not replace SQL contents.
 
@@ -49,3 +55,16 @@ Retain evidence by opaque identifier. Do not commit business rows, private URLs,
 credentials or raw traces. Temporary Python CSVs are task-owned; existing
 retention rules govern saved flow artifacts. No manual data edits or cleanup
 of the user's workbooks/files is part of this test.
+
+## Inflow discovery regression
+
+The same release promotes discovered ISO-week member lists to week controls
+and preserves that semantic type when a second generic rendering is merged.
+Run the two new non-overlapping cases:
+
+    ./tools/check.ps1 -Mode Verify -TestPath tests/test_flow_worker_discovery.py::test_native_week_members_enable_start_to_latest_without_losing_options,tests/test_flow_worker_discovery.py::test_non_week_member_lists_remain_ordinary_filters -SyntaxPath app/flow_worker.py,tests/test_flow_worker_discovery.py
+
+Expect one merged week control, all discovered members retained, and latest-week
+resolution from a fixed 2025-W01 start. Ordinary categories and numeric product
+codes must retain their original control types. No UI journey is added; the
+existing period controls become available for a correctly classified prompt.
