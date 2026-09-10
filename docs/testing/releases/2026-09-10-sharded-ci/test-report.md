@@ -157,6 +157,20 @@ warnings in 7.66 s; 10.884 s command), result ID
 the hosted final-head equivalence and consecutive-run count restart on the
 rebased revision.
 
+The first run on that revision,
+[34509847658](https://github.com/datap0nd/data_governance/actions/runs/34509847658),
+was cancelled after Ubuntu shard 4 exposed a platform-assumption defect in the
+new Flow-root isolation test. The fixture correctly uses
+`<tmp_path>/metronome/flows` when no root is configured, whereas the assertion
+required the final directory name itself to equal the test directory name.
+The corrected invariant requires the unique test directory anywhere in the
+resolved root. The invalid run's serial and unfinished shards were cancelled
+to conserve hosted capacity; completed successes and the failure remain in the
+run evidence. Final-head equivalence and consecutive runs restart after the
+test-only correction. The corrected node and Python syntax passed locally (1
+passed in 0.34 s; 2.736 s command), result ID
+`20260910T174913813Z-24168-6cbc0105`.
+
 Historical duration weights are OS-specific but partial; unlisted files
 deliberately receive a conservative default until successful manifests provide
 measured updates. The hosted equivalence run remains authoritative for full

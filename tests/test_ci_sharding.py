@@ -131,7 +131,7 @@ def test_database_copy_uses_a_test_owned_flow_root(
 ):
     root = Path(os.environ["DG_FLOWS_ROOT"])
     assert root.is_dir()
-    assert root.name == tmp_path.name
+    assert tmp_path.name in root.parts
     marker = root / "test-owned.txt"
     marker.write_text("isolated", encoding="utf-8")
     assert marker.read_text(encoding="utf-8") == "isolated"
