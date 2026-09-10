@@ -24,7 +24,6 @@ import tempfile
 import threading
 import time
 import traceback
-import uuid
 import zipfile
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
@@ -5120,7 +5119,8 @@ def _normalize_nasca_excel_with_com(
         ) from exc
 
     excel = workbook = worksheet = None
-    temporary_csv = Path(tempfile.gettempdir()) / f"metronome-nasca-{uuid.uuid4().hex}.csv"
+    temporary_export = tempfile.TemporaryDirectory(prefix="metronome-nasca-")
+    temporary_csv = Path(temporary_export.name) / "decrypted.csv"
     initialized = False
     try:
         pythoncom.CoInitialize()
@@ -5188,10 +5188,7 @@ def _normalize_nasca_excel_with_com(
                 excel.Quit()
             except Exception:
                 pass
-        try:
-            temporary_csv.unlink(missing_ok=True)
-        except OSError:
-            pass
+        temporary_export.cleanup()
         if initialized:
             try:
                 pythoncom.CoUninitialize()
