@@ -59,3 +59,21 @@ table is currently owned by metomx, while its configured owner rafael lacks
 USAGE and CREATE in its destination schema. The owner was asked to choose
 between the exact required schema grant and retaining the existing SQL owner;
 no permission or ownership changes have been made.
+# 2026-09-10 22:41 UTC: shared discovery scope
+
+The owner requested reusable range handling for other reports. Discovery now
+recognizes portal-authored week/period labels with valid ISO-week members and
+retains those labels; the old Sell-out Week-only fallback is removed. A brittle
+source-string assertion was replaced with behavioral discovery coverage.
+
+The test plan's updated discovery command passed 7 cases in 0.61s, with syntax
+checks for app/flow_worker.py, tests/test_flow_worker_discovery.py and
+tests/test_flows.py. Environment remains checkout Python 3.13.15; no skips or
+warnings. Evidence: .test-runs/20260910T224053012Z-29976-536ff1b5/result.json,
+working tree based on 3bef7fda68f5a24f21467771580b9901fb93f678. This dated
+addition's cutoff is before its commit, final-head CI or live installation.
+
+The owner also approved the requested schema privilege action but redirected
+MTracker_subs to meto_db.bi_staging. Existing read-only evidence already showed
+Rafael has USAGE/CREATE on that schema. No grant or destination change has yet
+been executed at this cutoff.

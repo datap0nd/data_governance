@@ -30,7 +30,9 @@ final-head Merge ready provides the full application regression.
 
 The current task explicitly includes the work PC, live downloads and pgAdmin.
 Use Chrome Remote Desktop's visible UI. Outflow is excluded. Preserve all
-existing workbooks, query tabs, schedules, owners and destination selections.
+existing workbooks, query tabs and schedules. The owner subsequently directed
+MTracker_subs to meto_db.bi_staging; retain its table name and Rafael owner.
+Verify that destination's ownership privileges before the first production run.
 
 1. Verify the installed merge revision. For each MTracker flow, Edit, Review
    recording, Test recording. Record revision, test ID, browser and outcome.
@@ -56,15 +58,19 @@ credentials or raw traces. Temporary Python CSVs are task-owned; existing
 retention rules govern saved flow artifacts. No manual data edits or cleanup
 of the user's workbooks/files is part of this test.
 
-## Inflow discovery regression
+## Shared week-range discovery regression
 
 The same release promotes discovered ISO-week member lists to week controls
 and preserves that semantic type when a second generic rendering is merged.
 Run the two new non-overlapping cases:
 
-    ./tools/check.ps1 -Mode Verify -TestPath tests/test_flow_worker_discovery.py::test_native_week_members_enable_start_to_latest_without_losing_options,tests/test_flow_worker_discovery.py::test_non_week_member_lists_remain_ordinary_filters -SyntaxPath app/flow_worker.py,tests/test_flow_worker_discovery.py
+    ./tools/check.ps1 -Mode Verify -TestPath tests/test_flow_worker_discovery.py::test_native_week_members_enable_start_to_latest_without_losing_options,tests/test_flow_worker_discovery.py::test_non_week_member_lists_remain_ordinary_filters,tests/test_flow_worker_discovery.py::test_week_member_list_discovery_uses_portal_label_and_valid_weeks -SyntaxPath app/flow_worker.py,tests/test_flow_worker_discovery.py,tests/test_flows.py
 
 Expect one merged week control, all discovered members retained, and latest-week
 resolution from a fixed 2025-W01 start. Ordinary categories and numeric product
 codes must retain their original control types. No UI journey is added; the
 existing period controls become available for a correctly classified prompt.
+Exercise Sell-out Week, Shipment Week and Reporting Period labels through both
+native-control merging and searchable-list discovery. Retain the portal's label
+and reject invalid week members. This is shared weekly-range capability, not a
+report-ID exception or an implementation of arbitrary calendar-date inputs.

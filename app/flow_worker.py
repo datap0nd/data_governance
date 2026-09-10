@@ -2661,7 +2661,7 @@ def _merge_asap_filter_definition(
         return
     # A native multi-select still has week semantics when its discovered label
     # and members identify ISO weeks. Preserve that meaning for the range UI.
-    if "week" in label.casefold() and all(
+    if re.search(r"\b(?:week|period)\b", label, re.I) and all(
         re.fullmatch(r"20\d{2}(?:-W)?(?:0[1-9]|[1-4]\d|5[0-3])", value)
         for value in options
     ):
@@ -3614,16 +3614,17 @@ def _asap_discover_filters(frame: Frame, diagnostics: dict | None = None) -> lis
         options, automation = period_slider
         add_definition("Period", "week", options, automation)
 
-    # The Installed Base report exposes its week prompt as a searchable
-    # MicroStrategy member list. Depending on render timing the count/search
-    # marker may not be returned as its own text node, so anchor discovery on
-    # the stable semantic label as well.
-    for week_label in frame.get_by_text(re.compile(r"^sell-out week:?$", re.I)).all():
+    # Searchable member lists may omit their count/search marker while rendering.
+    # Recognize the portal's own week/period label and ISO-week values, without
+    # depending on a report name or one report's spelling of the prompt.
+    for week_label in frame.get_by_text(
+        re.compile(r"^(?:[\w /()-]+\s+)?(?:week|period):?$", re.I),
+    ).all():
         week_values = [
             value for value in nearest_list_values(week_label)
-            if re.fullmatch(r"20\d{4}", value)
+            if re.fullmatch(r"20\d{2}(?:-W)?(?:0[1-9]|[1-4]\d|5[0-3])", value)
         ]
-        add_definition("Sell-out Week", "week", week_values)
+        add_definition(_clean_text(week_label.inner_text()), "week", week_values)
 
     # MicroStrategy list selectors are represented by a heading followed by a
     # member list. Detect the labels from the report's own prompt headings and

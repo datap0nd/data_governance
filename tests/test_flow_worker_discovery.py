@@ -9,18 +9,19 @@ import pytest
 from app import flow_gscm, flow_worker
 
 
-def test_native_week_members_enable_start_to_latest_without_losing_options():
+@pytest.mark.parametrize("label", ["Sell-out Week", "Shipment Week", "Reporting Period"])
+def test_native_week_members_enable_start_to_latest_without_losing_options(label):
     from app.routers.flows import _latest_discovered_week
 
     definitions = []
     flow_worker._merge_asap_filter_definition(
-        definitions, "Sell-out Week", "multi_select", ["202636", "202501"],
+        definitions, label, "multi_select", ["202636", "202501"],
     )
     flow_worker._merge_asap_filter_definition(
-        definitions, "Sell-out Week", "week", ["202635"],
+        definitions, label, "week", ["202635"],
     )
     flow_worker._merge_asap_filter_definition(
-        definitions, "Sell-out Week", "multi_select", ["202637"],
+        definitions, label, "multi_select", ["202637"],
     )
     assert len(definitions) == 1
     assert definitions[0]["control_type"] == "week"
@@ -2009,6 +2010,41 @@ def _discover(records, monkeypatch):
     diagnostics = {}
     definitions = flow_worker._asap_discover_filters(_FilterFrame(records), diagnostics)
     return definitions, diagnostics
+
+
+@pytest.mark.parametrize("label", ["Sell-out Week", "Shipment Week", "Reporting Period"])
+def test_week_member_list_discovery_uses_portal_label_and_valid_weeks(monkeypatch, label):
+    class Prompt(_FilterLocator):
+        @property
+        def first(self):
+            return self
+
+        def count(self):
+            return 1
+
+        def inner_text(self):
+            return label
+
+        def locator(self, _selector):
+            return SimpleNamespace(
+                count=lambda: 1,
+                first=SimpleNamespace(inner_text=lambda: f"{label}\n202501\n2026-W36\n202699\nOther"),
+            )
+
+    class Frame(_FilterFrame):
+        def get_by_text(self, pattern, **_kwargs):
+            if hasattr(pattern, "fullmatch") and pattern.fullmatch(label):
+                return SimpleNamespace(all=lambda: [Prompt()])
+            return _FilterLocator()
+
+    monkeypatch.setattr(flow_worker, "_asap_discover_week_slider", lambda _frame: None)
+    monkeypatch.setattr(flow_worker, "_asap_discover_period_slider", lambda _frame: None)
+    definitions = flow_worker._asap_discover_filters(Frame([]), {})
+    assert len(definitions) == 1
+    assert definitions[0]["label"] == label
+    assert definitions[0]["control_label"] == label
+    assert definitions[0]["control_type"] == "week"
+    assert definitions[0]["options"] == ["202501", "2026-W36"]
 
 
 def test_select_snapshot_resolves_container_labels_and_multiplicity(monkeypatch):
