@@ -545,8 +545,6 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
                     active_step = step
                 download = pending.value
                 output_index += 1
-                suffix = Path(download.suggested_filename).suffix or '.download'
-                staged = staging / f'{uuid.uuid4().hex}{suffix}'
                 adapter = definition.get('adapter', job.get('site', {}).get('adapter'))
                 if step['output'].get('completion') == 'staging' or adapter == 'asap_portal':
                     # ASAP dashboard download events are only start signals.
@@ -556,9 +554,16 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
                     # the configured staging directory. Recorded navigation
                     # must hand off to that same post-click contract.
                     completed = flow_worker._asap_dashboard_event_staged_download(staging, files_before, step['id'])
+                    # Keep the browser's finished file itself.  NASCA binds
+                    # access metadata to that downloaded path, so an otherwise
+                    # byte-identical UUID copy can no longer be opened by the
+                    # signed-in desktop Excel session.
+                    staged = completed
                 else:
                     completed = flow_worker._completed_edge_download(download, step['id'])
-                flow_worker._copy_with_checksum(completed, staged)
+                    suffix = Path(download.suggested_filename).suffix or '.download'
+                    staged = staging / f'{uuid.uuid4().hex}{suffix}'
+                    flow_worker._copy_with_checksum(completed, staged)
                 captured.append((step, staged, output_index))
                 notify(step, 'Download completed.', outcome='completed')
                 continue
