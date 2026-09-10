@@ -9,6 +9,7 @@ This is a standing instruction from the repository owner, recorded in
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-09-10: modern Excel open recovery | [Test plan](releases/2026-09-10-modern-excel-open-recovery/test-plan.md) | [Test report](releases/2026-09-10-modern-excel-open-recovery/test-report.md) |
 | 2026-09-09: range setting on one recorded step | [Test plan](releases/2026-09-09-range-step-advanced/test-plan.md) | [Test report](releases/2026-09-09-range-step-advanced/test-report.md) |
 | 2026-09-09: semantic week ranges and Excel-family downloads | [Test plan](releases/2026-09-09-range-steps-excel-family/test-plan.md) | [Test report](releases/2026-09-09-range-steps-excel-family/test-report.md) |
 | 2026-09-09: Flow classification and replace-mode SQL recovery | [Test plan](releases/2026-09-09-flow-classification-sql-recovery/test-plan.md) | [Test report](releases/2026-09-09-flow-classification-sql-recovery/test-report.md) |

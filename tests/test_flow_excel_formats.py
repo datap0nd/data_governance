@@ -1,6 +1,7 @@
 import base64
 import csv
 from pathlib import Path
+import zipfile
 
 import pytest
 
@@ -132,16 +133,60 @@ def test_ooxml_with_a_transport_prefix_is_still_opened_as_excel(tmp_path):
     assert metadata["row_count"] == 1
 
 
+def test_strict_ooxml_is_read_through_a_temporary_compatibility_copy(tmp_path):
+    from openpyxl import Workbook
+
+    transitional = tmp_path / "transitional.xlsx"
+    workbook = Workbook()
+    workbook.active.append(["Code", "Units"])
+    workbook.active.append(["A", 7])
+    workbook.save(transitional)
+
+    strict = tmp_path / "strict.xlsx"
+    replacements = tuple(
+        (transitional_value, strict_value)
+        for strict_value, transitional_value in flow_worker.STRICT_OOXML_REPLACEMENTS
+    )
+    with zipfile.ZipFile(transitional) as incoming, zipfile.ZipFile(strict, "w") as outgoing:
+        for member in incoming.infolist():
+            payload = incoming.read(member)
+            if member.filename.casefold().endswith((".xml", ".rels")):
+                for transitional_value, strict_value in replacements:
+                    payload = payload.replace(transitional_value, strict_value)
+            outgoing.writestr(member, payload)
+
+    assert flow_worker._is_strict_ooxml(strict)
+    metadata = flow_worker._store_completed_download(
+        strict, tmp_path / "configured.xlsx", file_format="xlsx",
+        csv_preamble="none", strict_headers=True,
+    )
+
+    assert metadata["columns"] == ["Code", "Units"]
+    assert metadata["row_count"] == 1
+    assert Path(metadata["original_file_path"]).read_bytes() == strict.read_bytes()
+
+
+def test_incomplete_modern_excel_reports_the_container_failure(tmp_path):
+    source = tmp_path / "not-a-workbook.xlsx"
+    source.write_bytes(b"opaque workbook response")
+
+    with pytest.raises(RuntimeError, match="not a complete XLSX ZIP container"):
+        flow_worker._store_completed_download(
+            source, tmp_path / "configured.xlsx", file_format="xlsx",
+            csv_preamble="none", strict_headers=True,
+        )
+
+
 @pytest.mark.parametrize(
     ("suffix", "message"),
     [
         (".xls", "legacy Excel workbook could not be opened"),
         (".xlt", "legacy Excel workbook could not be opened"),
         (".xlsb", "binary Excel workbook could not be opened"),
-        (".xlsx", "modern Excel workbook could not be opened"),
-        (".xlsm", "modern Excel workbook could not be opened"),
-        (".xltx", "modern Excel workbook could not be opened"),
-        (".xltm", "modern Excel workbook could not be opened"),
+        (".xlsx", "not a complete XLSX ZIP container"),
+        (".xlsm", "not a complete XLSX ZIP container"),
+        (".xltx", "not a complete XLSX ZIP container"),
+        (".xltm", "not a complete XLSX ZIP container"),
     ],
 )
 def test_excel_suffixes_route_opaque_bytes_to_a_precise_reader_error(tmp_path, suffix, message):
