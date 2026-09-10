@@ -2,10 +2,10 @@
 
 - Plan: [test-plan.md](test-plan.md)
 - Change/PR: pending
-- Evidence cutoff (UTC): 2026-09-10 09:38
-- Tested code revision: working tree based on `7291a559bd160a2f8ecabba5e15817da370b306b`; exact committed revision and final CI pending
+- Evidence cutoff (UTC): 2026-09-10 10:22
+- Tested code revision: `f98eb57edaa31e80093c25d4bdc4426ad8ce2f5f`; final CI pending
 - Environment: Windows 11 Pro 10.0.26200, Python 3.12.14, pytest 9.1.1, openpyxl 3.1.5, Playwright 1.62.0, Chrome 152.0.7977.83
-- Overall finding: PASS for the implemented content-detection, storage, Excel-family, SQL, and recorded-browser regression checks executed so far; full suite and live work-PC recovery pending
+- Overall finding: PASS for the changed content-detection, storage, Excel-family, SQL, and recorded-browser behavior; the full local suite completed with three unrelated failures and final CI/live work-PC recovery remain pending
 
 ## Executed checks
 
@@ -18,12 +18,12 @@
 | REC-SQL-01 and recording regressions | `python -m pytest tests/test_recording_optional_checks.py -q --disable-warnings --maxfail=1` | Same working tree/environment | PASS: 27 passed in 59.83s. | Local command output. |
 | Syntax | `python -m py_compile app/flow_worker.py app/flow_recording_runtime.py tests/test_recorded_output_storage.py tests/test_recording_optional_checks.py` | Same working tree; Python 3.12.14 | PASS. | Local command output. |
 | Whitespace | `git diff --check` | Same working tree | PASS; only Git's configured LF-to-CRLF notices were emitted. | Local command output. |
+| Full Python suite | `$env:PSExecutionPolicyPreference='Bypass'; python -m pytest tests -q --durations=20 --junitxml=test_reports/recorded-download-processing-full.xml` | `f98eb57`; Windows/Python 3.12.14 | FAIL: 1,933 passed, 17 skipped, 3 failed, 11 warnings in 14m14s. Failures were an existing handover fixture path, absent local Edge distribution, and a virtualized-range timing test; none touches the changed post-download path. | Ignored local JUnit XML. |
 
 ## Unperformed or blocked in-scope checks
 
 | IDs | Status | Reason | Next action |
 | --- | --- | --- | --- |
-| Full Python suite | NOT RUN | Implementation is still being finalized. | Run on the committed code revision before PR merge. |
 | Final-head CI | NOT RUN | No PR or final head exists yet. | Push the final branch, wait for required checks, and record run URL/SHA/result in the PR testing section. |
 | LIVE-01 | NOT RUN | This local session is not the authenticated work PC and no live portal/database run was performed. | Update the BI desktop from merged `main` and rerun the existing saved MTracker Flow; record only sanitized evidence. |
 
@@ -43,6 +43,16 @@ captured artifact had already reached the SQL test double; completing the
 double's normal return shape made the unchanged product behavior pass. The
 synthetic download contains no business data and does not prove the live ASAP
 response, authentication, network share, or PostgreSQL permissions.
+
+The full run first encountered the workstation's restrictive Windows
+PowerShell execution policy; rerunning with the process-only bypass made both
+capacity cases pass. The completed run then retained three unrelated failures:
+`test_existing_operator_notes_and_dependencies_are_archived_before_refresh`
+could not create its pre-existing fixture archive, the `msedge` portable case
+reported that Edge is not installed in the path Playwright expects, and
+`test_range_reacquires_virtualized_cells_after_each_scroll` timed out while
+confirming a synthetic week cell. The changed focused suites and Chrome
+recorded SQL reproduction passed. Final GitHub CI remains the merge gate.
 
 ## Merge evidence
 
