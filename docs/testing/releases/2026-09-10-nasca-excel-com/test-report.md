@@ -1,9 +1,9 @@
 # NASCA Excel-COM Flow recovery: test report
 
 - Plan: [test-plan.md](test-plan.md)
-- Change/PR: [#104](https://github.com/datap0nd/data_governance/pull/104); opaque-wrapper follow-up PR pending.
+- Change/PR: [#104](https://github.com/datap0nd/data_governance/pull/104); opaque-wrapper follow-up [#106](https://github.com/datap0nd/data_governance/pull/106).
 - Evidence cutoff (UTC): 2026-09-10 15:18
-- Tested code revision: follow-up working tree based on merged main `3acee314e8f1eb75d838349db14e6b4915914c68`; final committed SHA pending.
+- Tested implementation revision: `9deaf9a9518c4d8400534f372d8bf2f147e50f4f`, based on merged main `3acee314e8f1eb75d838349db14e6b4915914c68`; final report-only head pending.
 - Environment: Windows 11; checkout-owned Python 3.13.15 `.venv`; pytest 9.1.1; synthetic Excel COM fixture plus explicitly requested live BI desktop.
 - Overall finding: #104 added Excel-COM recovery for the expected OLE wrapper, but live build `3acee314` showed that this NASCA payload is an opaque non-ZIP wrapper detected from its `.xlsx` suffix instead. The follow-up routes that shape through COM only when a recorded/scan-selected Excel contract requires table processing. Focused recovery and ordinary corrupt-file regression checks pass; final follow-up CI and live SQL evidence are pending.
 
