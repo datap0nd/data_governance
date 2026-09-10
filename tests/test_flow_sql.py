@@ -1446,7 +1446,7 @@ def test_nasca_encrypted_modern_excel_uses_desktop_excel_for_sql_csv(
     save_event = next(event for event in events if isinstance(event, tuple) and event[0] == "save")
     assert save_event[1]["FileFormat"] == 62
     assert "quit" in events
-    assert not list(tmp_path.glob(".metronome-nasca-open-*"))
+    assert not list(tmp_path.glob("metronome-nasca-open-*"))
 
 
 def test_nasca_excel_recovery_requires_pywin32(tmp_path, monkeypatch):

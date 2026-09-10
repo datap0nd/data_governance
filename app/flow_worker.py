@@ -24,7 +24,6 @@ import tempfile
 import threading
 import time
 import traceback
-import uuid
 import zipfile
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
@@ -5122,7 +5121,7 @@ def _normalize_nasca_excel_with_com(
 
     excel = workbook = worksheet = None
     excel_source = source
-    source_alias = None
+    source_alias_dir = None
     owns_excel = False
     borrowed_settings = {}
     borrowed_active_workbook = None
@@ -5141,14 +5140,16 @@ def _normalize_nasca_excel_with_com(
             OOXML_EXCEL_EXTENSIONS | XLSB_EXCEL_EXTENSIONS
         ):
             suffix = ".xlsb" if workbook_format == "xlsb" else ".xlsx"
-            source_alias = source.with_name(
-                f".metronome-nasca-open-{uuid.uuid4().hex}{suffix}"
+            source_alias_dir = tempfile.TemporaryDirectory(
+                prefix="metronome-nasca-open-", dir=source.parent,
             )
+            source_alias = Path(source_alias_dir.name) / f"browser-download{suffix}"
             try:
                 os.link(source, source_alias)
                 excel_source = source_alias
             except OSError:
-                source_alias = None
+                source_alias_dir.cleanup()
+                source_alias_dir = None
         # NASCA is attached to the signed-in desktop Excel session.  When that
         # session already exists, starting an isolated DispatchEx instance can
         # wait forever inside the protection provider while the user's normal
@@ -5252,11 +5253,8 @@ def _normalize_nasca_excel_with_com(
                         borrowed_active_workbook.Activate()
                     except Exception:
                         pass
-        if source_alias is not None:
-            try:
-                source_alias.unlink(missing_ok=True)
-            except OSError:
-                pass
+        if source_alias_dir is not None:
+            source_alias_dir.cleanup()
         temporary_export.cleanup()
         if initialized:
             try:
