@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 .pytest_tmp*/
 .test-runs/
+.playwright-browsers/
 governance.db
 pipeline_insights.db
 pipeline_insights.db-wal

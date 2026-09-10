@@ -15,6 +15,7 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $venvPython = Join-Path $repoRoot '.venv\Scripts\python.exe'
 $lockPath = Join-Path $repoRoot 'requirements-ci.lock'
+$browserPath = Join-Path $repoRoot '.playwright-browsers'
 $runId = '{0}-{1}-{2}' -f ([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ')), $PID, ([guid]::NewGuid().ToString('N').Substring(0, 8))
 $runRoot = Join-Path $repoRoot ".test-runs\$runId"
 $started = [DateTimeOffset]::UtcNow
@@ -205,6 +206,7 @@ try {
         $lockFingerprint = Get-LockFingerprint
         Set-Content -LiteralPath (Join-Path $repoRoot '.venv\.metronome-ci-lock.sha256') -Value $lockFingerprint -Encoding ascii
         if ($InstallBrowsers) {
+            $env:PLAYWRIGHT_BROWSERS_PATH = $browserPath
             & $venvPython -m playwright install chromium chrome msedge
             if ($LASTEXITCODE -ne 0) { Fail-Check 'Playwright browser setup failed.' }
         }
@@ -222,6 +224,13 @@ try {
 
     Invoke-Preflight
     if ($Mode -eq 'Preflight') {
+        $env:PLAYWRIGHT_BROWSERS_PATH = $browserPath
+        $browserEvidence = Join-Path $runRoot 'browser-preflight.json'
+        & $venvPython (Join-Path $repoRoot 'tools/ci/browser_setup.py') --probe-only --output $browserEvidence
+        if ($LASTEXITCODE -ne 0) {
+            Fail-Check "Browser prerequisites are missing or unrunnable. Run '.\tools\check.ps1 -Mode Setup -InstallBrowsers'."
+        }
+        $result.artifacts.browser_preflight = $browserEvidence
         Save-Result -Status 'passed' -ExitCode 0 -Diagnostic $null
         exit 0
     }
@@ -250,7 +259,17 @@ try {
     $externalFlowRoot = Join-Path $externalIsolationRoot 'flows'
     New-Item -ItemType Directory -Force -Path $externalFlowRoot | Out-Null
     $env:DG_FLOWS_ROOT = $externalFlowRoot
-    $env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $repoRoot '.playwright-browsers'
+    $env:PLAYWRIGHT_BROWSERS_PATH = $browserPath
+    $browserEvidence = Join-Path $runRoot 'browser-preflight.json'
+    $browserArguments = @((Join-Path $repoRoot 'tools/ci/browser_setup.py'), '--probe-only', '--output', $browserEvidence)
+    foreach ($testItem in $TestPath) {
+        $browserArguments += @('--source', (($testItem -split '::', 2)[0]))
+    }
+    & $venvPython @browserArguments
+    if ($LASTEXITCODE -ne 0) {
+        Fail-Check "Selected test browser prerequisites are missing or unrunnable. Run '.\tools\check.ps1 -Mode Setup -InstallBrowsers'."
+    }
+    $result.artifacts.browser_preflight = $browserEvidence
     $junitPath = Join-Path $runRoot 'pytest.xml'
     $result.artifacts.junit = $junitPath
 

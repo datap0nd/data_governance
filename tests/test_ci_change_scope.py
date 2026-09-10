@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from tools.ci.change_scope import classify, execution_policy, read_patterns
+from tools.ci import browser_setup
 from tools.ci.browser_setup import required_browsers
 from tools.ci.check_docs import local_link_errors
 from tools.ci.find_validation_baseline import has_full_windows, select_baseline, select_equivalent
@@ -110,14 +111,25 @@ def test_browser_inventory_uses_actual_launch_calls_without_aliasing(tmp_path):
     tests = tmp_path / "tests"
     tests.mkdir()
     (tests / "test_browser.py").write_text(
-        "p.chromium.launch()\np.chromium.launch(channel='chrome')\nchannel = 'msedge'\n",
+        "def run(p):\n    p.chromium.launch()\n    p.chromium.launch(channel='chrome')\nchannel = 'msedge'\n",
         encoding="utf-8",
     )
     assert required_browsers(tmp_path) == ["chromium", "chrome"]
     (tests / "test_edge.py").write_text(
-        'p.chromium.launch(channel="msedge", headless=True)\n', encoding="utf-8"
+        'def run(p):\n    p.chromium.launch(channel="msedge", headless=True)\n', encoding="utf-8"
     )
     assert required_browsers(tmp_path) == ["chromium", "chrome", "msedge"]
+    assert required_browsers(tmp_path, [tests / "test_edge.py"]) == ["msedge"]
+
+
+def test_browser_probe_only_reports_missing_without_installing(monkeypatch):
+    monkeypatch.setattr(browser_setup, "probe", lambda browser: (False, f"{browser} missing"))
+    results, missing = browser_setup.prepare_browsers(["chromium", "chrome"], probe_only=True)
+    assert missing == ["chromium", "chrome"]
+    assert results == {
+        "chromium": {"ready": False, "detail": "chromium missing"},
+        "chrome": {"ready": False, "detail": "chrome missing"},
+    }
 
 
 def test_lightweight_doc_check_reports_missing_local_targets(tmp_path):

@@ -3,24 +3,36 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import importlib.metadata
 import json
-import re
 import subprocess
 import sys
 from pathlib import Path
 
 
-def required_browsers(root: Path) -> list[str]:
-    source = "\n".join(path.read_text(encoding="utf-8") for path in sorted((root / "tests").glob("test_*.py")))
-    required = []
-    if ".chromium.launch()" in source or ".chromium.launch(headless" in source:
-        required.append("chromium")
-    if re.search(r"launch\([^)]*channel\s*=\s*['\"]chrome['\"]", source):
-        required.append("chrome")
-    if re.search(r"launch\([^)]*channel\s*=\s*['\"]msedge['\"]", source):
-        required.append("msedge")
-    return required
+def required_browsers(root: Path, sources: list[Path] | None = None) -> list[str]:
+    paths = sorted((root / "tests").glob("test_*.py")) if sources is None else sources
+    required: set[str] = set()
+    for path in paths:
+        if not path.is_file():
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for call in (node for node in ast.walk(tree) if isinstance(node, ast.Call)):
+            function = call.func
+            if not (
+                isinstance(function, ast.Attribute)
+                and function.attr == "launch"
+                and isinstance(function.value, ast.Attribute)
+                and function.value.attr == "chromium"
+            ):
+                continue
+            channel = next((keyword.value for keyword in call.keywords if keyword.arg == "channel"), None)
+            if isinstance(channel, ast.Constant) and channel.value in {"chrome", "msedge"}:
+                required.add(channel.value)
+            elif channel is None:
+                required.add("chromium")
+    return [browser for browser in ("chromium", "chrome", "msedge") if browser in required]
 
 
 def probe(browser: str) -> tuple[bool, str]:
@@ -36,25 +48,36 @@ def probe(browser: str) -> tuple[bool, str]:
         return False, str(exc).splitlines()[0]
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--root", type=Path, default=Path.cwd())
-    parser.add_argument("--output", type=Path, required=True)
-    args = parser.parse_args()
-    browsers = required_browsers(args.root)
+def prepare_browsers(browsers: list[str], probe_only: bool) -> tuple[dict[str, dict[str, str | bool]], list[str]]:
     results: dict[str, dict[str, str | bool]] = {}
+    missing: list[str] = []
     for browser in browsers:
         ready, detail = probe(browser)
-        if not ready:
+        if not ready and probe_only:
+            missing.append(browser)
+        elif not ready:
             command = [sys.executable, "-m", "playwright", "install"]
             if browser == "chromium" and sys.platform.startswith("linux"):
                 command.append("--with-deps")
             command.append(browser)
             subprocess.run(command, check=True)
             ready, detail = probe(browser)
-        if not ready:
+        if not ready and not probe_only:
             raise SystemExit(f"{browser} remained unavailable after its dedicated installation: {detail}")
         results[browser] = {"ready": ready, "detail": detail}
+    return results, missing
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--root", type=Path, default=Path.cwd())
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--source", action="append", type=Path, dest="sources")
+    parser.add_argument("--probe-only", action="store_true")
+    args = parser.parse_args()
+    sources = [path if path.is_absolute() else args.root / path for path in args.sources] if args.sources else None
+    browsers = required_browsers(args.root, sources)
+    results, missing = prepare_browsers(browsers, args.probe_only)
     payload = {
         "schema_version": 1,
         "playwright": importlib.metadata.version("playwright"),
@@ -63,6 +86,9 @@ def main() -> int:
     }
     args.output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(payload, sort_keys=True))
+    if missing:
+        print("Missing or unrunnable browser channels: " + ", ".join(missing))
+        return 1
     return 0
 
 
