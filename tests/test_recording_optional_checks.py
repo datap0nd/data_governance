@@ -181,7 +181,7 @@ def test_recording_validation_normalizes_nasca_input_for_configured_sql(
     flow_db, tmp_path, downloads_server, monkeypatch,
 ):
     url, exports = downloads_server
-    protected = b'NASCA protected workbook payload'
+    protected = b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1' + b'NASCA protected workbook payload'
     exports['/1.xlsx'] = protected
     job = replay_job(url, [dict(format='xlsx')])
     # Validation suppresses the SQL side effect but must still prepare the
@@ -189,20 +189,32 @@ def test_recording_validation_normalizes_nasca_input_for_configured_sql(
     job['sql_handoff']['enabled'] = False
     job['_recording_validation_requires_table'] = True
     calls = []
+    completed_paths = []
+
+    original_staged_download = flow_worker._asap_dashboard_event_staged_download
+
+    def capture_staged_download(staging, before, label):
+        completed = original_staged_download(staging, before, label)
+        completed_paths.append(completed.resolve())
+        return completed
 
     def fake_excel_com(source, output, **kwargs):
-        calls.append((Path(source).read_bytes(), kwargs))
+        calls.append((Path(source).resolve(), Path(source).read_bytes(), kwargs))
         Path(output).write_text(
             'country,model,qty\nAE,Fixture,1\n', encoding='utf-8-sig',
         )
         return {'source_encoding': 'excel_com'}
 
+    monkeypatch.setattr(
+        flow_worker, '_asap_dashboard_event_staged_download', capture_staged_download,
+    )
     monkeypatch.setattr(flow_worker, '_normalize_nasca_excel_with_com', fake_excel_com)
 
     state = run_browser(job, tmp_path / 'profile')
 
-    assert calls and calls[0][0] == protected
-    assert calls[0][1]['allow_empty_data'] is True
+    assert completed_paths and calls[0][0] == completed_paths[0]
+    assert calls[0][1] == protected
+    assert calls[0][2]['allow_empty_data'] is True
     artifact = state['artifacts'][0]
     assert artifact['detected_format'] == 'xlsx'
     assert artifact['row_count'] == 1
