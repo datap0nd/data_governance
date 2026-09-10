@@ -1354,6 +1354,98 @@ def test_a_damaged_legacy_xls_is_rejected_with_its_real_type(tmp_path):
     assert "legacy Excel workbook could not be opened" in str(excinfo.value)
 
 
+class _ComSheetFixture:
+    Name = "MTracker"
+
+    def __init__(self, rows):
+        self.rows = rows
+        self.reads = []
+        self.UsedRange = SimpleNamespace(
+            Row=1, Column=1, Rows=SimpleNamespace(Count=len(rows)),
+            Columns=SimpleNamespace(Count=len(rows[0])),
+        )
+
+    def Cells(self, row, column):
+        value = self.rows[row - 1][column - 1]
+        return SimpleNamespace(Row=row, Column=column,
+                               Text="#N/A" if value == -2146826246 else str(value))
+
+    def Range(self, start, end):
+        self.reads.append((start.Row, end.Row))
+        values = tuple(tuple(row[start.Column - 1:end.Column])
+                       for row in self.rows[start.Row - 1:end.Row])
+        if start.Row == end.Row and start.Column == end.Column:
+            values = values[0][0]
+        return SimpleNamespace(Value=values)
+
+
+def test_excel_com_rows_preserve_values_blanks_duplicates_and_batch_boundaries():
+    rows = [("Country", "Units"), ("الإمارات", 120.0), (None, 0.0),
+            ("الإمارات", 120.0), ("Missing", -2146826246)]
+    sheet = _ComSheetFixture(rows)
+    assert list(flow_worker._excel_com_rows(sheet, batch_rows=2)) == [
+        ["Country", "Units"], ["الإمارات", 120], ["", 0],
+        ["الإمارات", 120], ["Missing", "#N/A"],
+    ]
+    assert sheet.reads == [(1, 2), (3, 4), (5, 5)]
+    assert list(flow_worker._excel_com_rows(_ComSheetFixture([(None,)]))) == [[""]]
+
+
+@pytest.mark.parametrize("failed_stage", ["open", "read"])
+def test_nasca_com_failure_identifies_stage_and_restores_desktop(tmp_path, monkeypatch, failed_stage):
+    source = tmp_path / "browser-guid"
+    source.write_bytes(b"protected\x00workbook")
+    closed = []
+
+    class ComFailure(Exception):
+        hresult = -2146827284
+
+    class Workbook:
+        def Worksheets(self, index):
+            raise ComFailure("private provider text must not appear in diagnostics")
+
+        def Close(self, save):
+            closed.append(save)
+
+    def open_book(path, **kwargs):
+        assert Path(path) == source
+        if failed_stage == "open":
+            raise ComFailure("private provider text must not appear in diagnostics")
+        return Workbook()
+
+    excel = SimpleNamespace(
+        Workbooks=SimpleNamespace(Open=open_book), DisplayAlerts=True,
+        AskToUpdateLinks=True, AutomationSecurity=1, EnableEvents=True,
+        ActiveWorkbook=None,
+    )
+    pythoncom = ModuleType("pythoncom")
+    pythoncom.CoInitialize = lambda: None
+    pythoncom.CoUninitialize = lambda: None
+    client = ModuleType("win32com.client")
+    client.GetActiveObject = lambda name: excel
+    win32com = ModuleType("win32com")
+    win32com.client = client
+    for name, module in (("pythoncom", pythoncom), ("win32com", win32com),
+                         ("win32com.client", client)):
+        monkeypatch.setitem(sys.modules, name, module)
+    with pytest.raises(RuntimeError) as failure:
+        flow_worker._store_completed_download(
+            source, tmp_path / "result.xlsx", file_format="xlsx",
+            recorded_output=True, source_filename="report.xlsx",
+        )
+    assert ("opening the original download" if failed_stage == "open"
+            else "reading worksheet cells") in str(failure.value)
+    assert "COM 0x800A03EC" in str(failure.value)
+    assert "private provider text" not in str(failure.value)
+    assert excel.DisplayAlerts is True
+    assert excel.AskToUpdateLinks is True
+    assert excel.AutomationSecurity == 1
+    assert excel.EnableEvents is True
+    assert closed == ([] if failed_stage == "open" else [False])
+    assert list(tmp_path.iterdir()) == [source]
+    assert source.read_bytes() == b"protected\x00workbook"
+
+
 @pytest.mark.parametrize(
     ("protected_bytes", "source_name"),
     [
@@ -1369,18 +1461,15 @@ def test_nasca_encrypted_modern_excel_uses_desktop_excel_for_sql_csv(
     source.write_bytes(protected_bytes)
     events = []
 
-    class Worksheet:
-        Name = "MTracker"
-
-        def Activate(self):
-            events.append("activated")
-
     class Workbook:
         CheckCompatibility = True
 
         def Worksheets(self, index):
             assert index == 1
-            return Worksheet()
+            return _ComSheetFixture([
+                ("MTracker subscribers", None), (None, None),
+                ("Subsidiary", "Units"), ("SEEG", 120.0),
+            ])
 
         def SaveAs(self, path, **kwargs):
             events.append(("save", kwargs))
@@ -1435,16 +1524,14 @@ def test_nasca_encrypted_modern_excel_uses_desktop_excel_for_sql_csv(
     assert excel.AutomationSecurity == 3
     assert excel.Visible is False
     assert excel.DisplayAlerts is False
-    assert excel.EnableEvents is False
+    assert not hasattr(excel, "EnableEvents")
     assert excel.AskToUpdateLinks is False
     assert events[0] == "coinitialize"
     assert events[-1] == "couninitialize"
     open_event = next(event for event in events if isinstance(event, tuple) and event[0] == "open")
-    assert open_event[1] != "result.xlsx"
-    assert Path(open_event[1]).suffix.casefold() == ".xlsx"
+    assert open_event[1] == source.name
     assert open_event[2]["ReadOnly"] is True
-    save_event = next(event for event in events if isinstance(event, tuple) and event[0] == "save")
-    assert save_event[1]["FileFormat"] == 62
+    assert not any(isinstance(event, tuple) and event[0] == "save" for event in events)
     assert "quit" in events
     assert not list(tmp_path.glob("metronome-nasca-open-*"))
 
@@ -1510,18 +1597,12 @@ def test_nasca_excel_recovery_borrows_and_restores_active_excel(tmp_path, monkey
         def Activate(self):
             events.append("prior_activated")
 
-    class Worksheet:
-        Name = "MTracker"
-
-        def Activate(self):
-            events.append("protected_activated")
-
     class Workbook:
         CheckCompatibility = True
 
         def Worksheets(self, index):
             assert index == 1
-            return Worksheet()
+            return _ComSheetFixture([("Subsidiary", "Units"), ("SEEG", 120.0)])
 
         def SaveAs(self, path, **kwargs):
             Path(path).write_text("Subsidiary,Units\nSEEG,120\n", encoding="utf-8-sig")

@@ -5091,6 +5091,39 @@ def _open_excel_workbook(source: Path, workbook_format: str):
     raise RuntimeError(f"Unsupported Excel workbook format: {workbook_format}")
 
 
+def _excel_com_rows(worksheet, *, batch_rows: int = 2000):
+    """Read the authorized Excel view in bounded batches, without SaveAs.
+
+    The legacy scanner reads Cells.Value through pywin32. Range.Value supplies
+    the same values without millions of cross-process calls for large reports.
+    Start at A1, just as a CSV export would, retaining leading empty cells.
+    """
+    used = worksheet.UsedRange
+    last_row = int(used.Row) + int(used.Rows.Count) - 1
+    last_column = int(used.Column) + int(used.Columns.Count) - 1
+    excel_errors = {-2146826288, -2146826281, -2146826273, -2146826265,
+                    -2146826259, -2146826252, -2146826246, -2146826245}
+    for first in range(1, last_row + 1, batch_rows):
+        last = min(first + batch_rows - 1, last_row)
+        values = worksheet.Range(worksheet.Cells(first, 1),
+                                 worksheet.Cells(last, last_column)).Value
+        if first == last and last_column == 1:
+            values = ((values,),)
+        if not isinstance(values, (tuple, list)) or len(values) != last - first + 1:
+            raise RuntimeError("Excel returned an incomplete row batch; no output was published.")
+        for offset, row in enumerate(values):
+            if not isinstance(row, (tuple, list)) or len(row) != last_column:
+                raise RuntimeError("Excel returned an incomplete column batch; no output was published.")
+            result = []
+            for column, value in enumerate(row, 1):
+                if isinstance(value, int) and value in excel_errors:
+                    value = worksheet.Cells(first + offset, column).Text
+                elif isinstance(value, float) and value.is_integer():
+                    value = int(value)
+                result.append(_excel_cell_value(value))
+            yield result
+
+
 def _normalize_nasca_excel_with_com(
     source: Path,
     output: Path,
@@ -5104,11 +5137,10 @@ def _normalize_nasca_excel_with_com(
     """Open a NASCA-wrapped modern workbook through desktop Excel.
 
     NASCA exposes the decrypted workbook only to the signed-in user's Excel
-    process. The bytes therefore look like a legacy OLE container to Python,
-    even when the filename is ``.xlsx``. Excel COM is the same trusted reader
-    the BI desktop user would invoke manually; macros, links, alerts and events
-    stay disabled, and only the active sheet is exported to a temporary CSV for
-    the existing normalization and SQL path.
+    process. Read the original file through that authorized view, as the legacy
+    scanner does. Read cells directly: renaming the protected path or asking
+    Excel to save another protected file is not equivalent to reading its cells.
+    Macros and link updates stay disabled; existing desktop state is restored.
     """
     try:
         import pythoncom
@@ -5120,36 +5152,16 @@ def _normalize_nasca_excel_with_com(
         ) from exc
 
     excel = workbook = worksheet = None
-    excel_source = source
-    source_alias_dir = None
     owns_excel = False
     borrowed_settings = {}
     borrowed_active_workbook = None
     temporary_export = tempfile.TemporaryDirectory(prefix="metronome-nasca-")
     temporary_csv = Path(temporary_export.name) / "decrypted.csv"
     initialized = False
+    stage = "initializing Excel"
     try:
         pythoncom.CoInitialize()
         initialized = True
-        # Playwright gives completed downloads an extensionless UUID name.
-        # NASCA and Excel use the workbook suffix while opening the protected
-        # container, but copying/renaming that file can discard protection
-        # metadata. A same-directory hard link supplies the suffix while still
-        # opening the original browser-managed file record and its metadata.
-        if source.suffix.casefold() not in (
-            OOXML_EXCEL_EXTENSIONS | XLSB_EXCEL_EXTENSIONS
-        ):
-            suffix = ".xlsb" if workbook_format == "xlsb" else ".xlsx"
-            source_alias_dir = tempfile.TemporaryDirectory(
-                prefix="metronome-nasca-open-", dir=source.parent,
-            )
-            source_alias = Path(source_alias_dir.name) / f"browser-download{suffix}"
-            try:
-                os.link(source, source_alias)
-                excel_source = source_alias
-            except OSError:
-                source_alias_dir.cleanup()
-                source_alias_dir = None
         # NASCA is attached to the signed-in desktop Excel session.  When that
         # session already exists, starting an isolated DispatchEx instance can
         # wait forever inside the protection provider while the user's normal
@@ -5169,7 +5181,7 @@ def _normalize_nasca_excel_with_com(
             excel.Visible = False
         else:
             for name in (
-                "DisplayAlerts", "EnableEvents", "AskToUpdateLinks",
+                "DisplayAlerts", "AskToUpdateLinks",
                 "AutomationSecurity",
             ):
                 try:
@@ -5181,30 +5193,27 @@ def _normalize_nasca_excel_with_com(
             except Exception:
                 pass
         excel.DisplayAlerts = False
-        excel.EnableEvents = False
+        # Leave installed Excel integration events in their existing state.
+        # AutomationSecurity blocks workbook VBA without disabling the signed-in
+        # application's protection-provider event handling.
         excel.AskToUpdateLinks = False
         # msoAutomationSecurityForceDisable: opening a downloaded workbook must
         # never execute VBA while NASCA transparently unwraps its contents.
         excel.AutomationSecurity = 3
+        stage = "opening the original download"
         workbook = excel.Workbooks.Open(
-            str(excel_source.resolve()),
+            str(source.resolve()),
             UpdateLinks=0,
             ReadOnly=True,
             IgnoreReadOnlyRecommended=True,
             AddToMru=False,
         )
+        stage = "reading worksheet cells"
         worksheet = workbook.Worksheets(1)
         sheet_name = str(worksheet.Name)
-        worksheet.Activate()
-        workbook.CheckCompatibility = False
-        # xlCSVUTF8 (62) retains Unicode from the decrypted sheet. Modern
-        # desktop Excel versions used by Metronome support this format.
-        workbook.SaveAs(
-            str(temporary_csv),
-            FileFormat=62,
-            CreateBackup=False,
-            Local=True,
-        )
+        with temporary_csv.open("w", encoding="utf-8-sig", newline="") as handle:
+            csv.writer(handle).writerows(_excel_com_rows(worksheet))
+        stage = "normalizing worksheet rows"
         preamble = "none" if header_mode == "first_row" else csv_preamble
         normalization = _normalize_csv(
             temporary_csv,
@@ -5226,9 +5235,12 @@ def _normalize_nasca_excel_with_com(
     except RuntimeError:
         raise
     except Exception as exc:
+        hresult = getattr(exc, "hresult", None)
+        detail = f"; COM 0x{hresult & 0xffffffff:08X}" if isinstance(hresult, int) else ""
         raise RuntimeError(
-            f"Desktop Excel could not open or export the NASCA-encrypted workbook: {source.name}. "
-            "Confirm that Excel and NASCA can open the downloaded file for this Windows account."
+            f"Desktop Excel failed while {stage}: {source.name} "
+            f"({type(exc).__name__}{detail}). "
+            "The protected download was preserved; SQL was not started."
         ) from exc
     finally:
         if workbook is not None:
@@ -5253,8 +5265,6 @@ def _normalize_nasca_excel_with_com(
                         borrowed_active_workbook.Activate()
                     except Exception:
                         pass
-        if source_alias_dir is not None:
-            source_alias_dir.cleanup()
         temporary_export.cleanup()
         if initialized:
             try:

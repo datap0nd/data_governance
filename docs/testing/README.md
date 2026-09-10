@@ -9,6 +9,7 @@ This is a standing instruction from the repository owner, recorded in
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-09-11: NASCA direct pywin32 reads | [Test plan](releases/2026-09-11-nasca-direct-com-read/test-plan.md) | [Test report](releases/2026-09-11-nasca-direct-com-read/test-report.md) |
 | 2026-09-11: browser filename handoff | [Test plan](releases/2026-09-11-browser-filename-handoff/test-plan.md) | [Test report](releases/2026-09-11-browser-filename-handoff/test-report.md) |
 | 2026-09-10: NASCA recorded-path preservation | [Test plan](releases/2026-09-10-nasca-recorded-path/test-plan.md) | [Test report](releases/2026-09-10-nasca-recorded-path/test-report.md) |
 | 2026-09-10: NASCA browser-source recovery | [Test plan](releases/2026-09-10-nasca-browser-source/test-plan.md) | [Test report](releases/2026-09-10-nasca-browser-source/test-report.md) |
