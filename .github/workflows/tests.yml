@@ -10,8 +10,6 @@ on:
 
 concurrency:
   group: tests-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  # A newer PR commit or main merge contains the older revision's content, so
-  # only the newest run is useful. Keep scheduled/manual runs independent.
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
 jobs:
@@ -20,6 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       application: ${{ steps.classify.outputs.application }}
+      postgres: ${{ steps.classify.outputs.postgres }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -29,18 +28,31 @@ jobs:
         shell: bash
         run: |
           application=true
+          postgres=false
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             application=false
             while IFS= read -r path; do
               case "$path" in
-                docs/*|AGENTS.md|CLAUDE.md|.github/PULL_REQUEST_TEMPLATE.md|.github/workflows/*) ;;
-                *) application=true; break ;;
+                docs/*|AGENTS.md|CLAUDE.md|README.md|.github/PULL_REQUEST_TEMPLATE.md) ;;
+                *) application=true ;;
+              esac
+              case "$path" in
+                app/flow_sql.py|requirements-ci.*|tests/test_sql_ownership_postgres.py|.github/workflows/tests.yml)
+                  postgres=true ;;
               esac
             done < <(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}")
             git diff --check "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"
           fi
+          if [[ "${{ github.event_name }}" == "schedule" || "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            postgres=true
+          fi
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            postgres=true
+          fi
           echo "application=$application" >> "$GITHUB_OUTPUT"
+          echo "postgres=$postgres" >> "$GITHUB_OUTPUT"
           echo "Application regression required: $application"
+          echo "PostgreSQL integration required: $postgres"
 
   python:
     name: Python (${{ matrix.os }})
@@ -58,13 +70,23 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
-          cache-dependency-path: requirements-ci.txt
-      - name: Install test dependencies
-        run: pip install -r requirements-ci.txt
+          cache-dependency-path: requirements-ci.lock
+      - name: Install locked test dependencies
+        run: pip install -r requirements-ci.lock
       - name: Install browsers for synthetic UI fixtures
         run: python -m playwright install --with-deps chromium chrome
       - name: Run Python test suite
-        run: python -m pytest tests -q --durations=20
+        env:
+          DG_DB_PATH: ${{ runner.temp }}/metronome-${{ matrix.os }}/governance.db
+          DG_TEST_RUN_ROOT: ${{ runner.temp }}/metronome-${{ matrix.os }}
+          DG_BROWSER_PROFILE_ROOT: ${{ runner.temp }}/metronome-${{ matrix.os }}/browser-profiles
+        run: python -m pytest tests -q --durations=20 --junitxml=test-results.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: python-${{ matrix.os }}-results
+          path: test-results.xml
+          retention-days: 14
 
   frontend:
     name: Frontend contracts and syntax
@@ -74,59 +96,61 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Run catalog tree tests
-        run: node tests/test_flow_catalog_tree.mjs
-      - name: Run Flow list display tests
-        run: node tests/test_flows_display.mjs
-      - name: Run Flow activity polling tests
-        run: node tests/test_flow_activity_polling.mjs
-      - name: Run lineage display tests
-        run: node tests/test_lineage_display.mjs
-      - name: Run lineage edge tests
-        run: node tests/test_lineage_edges.mjs
-      - name: Run lineage layer tests
-        run: node tests/test_lineage_layers.mjs
-      - name: Run scan status display tests
-        run: node tests/test_scan_status_display.mjs
-      - name: Run scanner job display tests
-        run: node tests/test_scanner_job_display.mjs
-      - name: Run Flow diagnostics display tests
-        run: node tests/test_flow_diagnostics_display.mjs
-      - name: Run AI Operations Investigator display tests
-        run: node tests/test_ai_operations_display.mjs
-      - name: Run AI settings display tests
-        run: node tests/test_ai_settings_display.mjs
-      - name: Run Updates display tests
-        run: node tests/test_updates_display.mjs
-      - name: Run Paths display tests
-        run: node tests/test_paths_display.mjs
-      - name: Run Flow destination display tests
-        run: node tests/test_flow_destination_display.mjs
-      - name: Run grouped Flow list tests
-        run: node tests/test_flow_groups.mjs
-      - name: Run Flow sorting tests
-        run: node tests/test_flow_sorting.mjs
-      - name: Run Flow builder contract tests
-        run: node tests/test_flow_builder_contract.mjs
-      - name: Run Flow capacity display tests
-        run: node tests/test_flow_capacity_display.mjs
-      - name: Run parallel download display tests
-        run: node tests/test_flow_parallel_display.mjs
-      - name: Run pipeline insights display tests
-        run: node tests/test_pipeline_insights_display.mjs
-      - name: Run scanner modules display tests
-        run: node tests/test_scanner_modules_display.mjs
+      - name: Run frontend contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          for test_file in tests/test_*.mjs; do node "$test_file"; done
       - name: Check frontend JavaScript syntax
-        run: node --check app/static/app.js
-      - name: Check Users JavaScript syntax
-        run: node --check app/static/users.js
-      - name: Check run log JavaScript syntax
-        run: node --check app/static/flow_run_log.js
-      - name: Check recording editor syntax
-        run: node --check app/static/flow_recordings.js
-      - name: Test visual recording model
-        run: node tests/test_recording_visual_model.mjs
-      - name: Check visual recording editor syntax
-        run: node --check app/static/flow_recording_editor.js
-      - name: Check visual recording model syntax
-        run: node --check app/static/flow_recording_model.js
+        shell: bash
+        run: |
+          set -euo pipefail
+          for source_file in app/static/*.js; do node --check "$source_file"; done
+
+  postgres:
+    name: PostgreSQL ${{ matrix.postgres }}
+    needs: scope
+    if: needs.scope.outputs.postgres == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: ['14', '18']
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres }}
+        env:
+          POSTGRES_DB: metronome_test_ownership
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d metronome_test_ownership"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-ci.lock
+      - name: Install locked test dependencies
+        run: pip install -r requirements-ci.lock
+      - name: Test SQL ownership on disposable PostgreSQL
+        env:
+          METRONOME_TEST_POSTGRES_DSN: postgresql+psycopg2://postgres@127.0.0.1:5432/metronome_test_ownership
+        run: python -m pytest tests/test_sql_ownership_postgres.py -q -ra
+
+  merge-ready:
+    name: Merge ready
+    if: always()
+    needs: [scope, python, frontend, postgres]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require every selected check
+        env:
+          CI_NEEDS_JSON: ${{ toJSON(needs) }}
+        run: python tools/ci/merge_gate.py --needs-json "$CI_NEEDS_JSON"

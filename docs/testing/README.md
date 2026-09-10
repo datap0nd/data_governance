@@ -9,6 +9,7 @@ This is a standing instruction from the repository owner, recorded in
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-09-10: delivery foundation and merge gate | [Test plan](releases/2026-09-10-delivery-foundation/test-plan.md) | [Test report](releases/2026-09-10-delivery-foundation/test-report.md) |
 | 2026-09-10: recorded ASAP staging completion | [Test plan](releases/2026-09-10-recorded-asap-staging-completion/test-plan.md) | [Test report](releases/2026-09-10-recorded-asap-staging-completion/test-report.md) |
 | 2026-09-10: recorded ASAP long-preamble recovery | [Test plan](releases/2026-09-10-recorded-asap-long-preamble/test-plan.md) | [Test report](releases/2026-09-10-recorded-asap-long-preamble/test-report.md) |
 | 2026-09-10: recorded download processing regression | [Test plan](releases/2026-09-10-recorded-download-processing-regression/test-plan.md) | [Test report](releases/2026-09-10-recorded-download-processing-regression/test-report.md) |
@@ -76,6 +77,44 @@ execution. Historical work-PC instructions are not a standing requirement.
 5. Merge after final required checks pass. The PR records the actual merge SHA;
    do not predict a squash SHA. In the delivery reply link the plan/report and
    state merge status.
+
+## Supported local command
+
+The repository has one local test entry point:
+
+```powershell
+.\tools\check.ps1 -Mode Setup
+.\tools\check.ps1 -Mode Preflight
+.\tools\check.ps1 -Mode Verify `
+  -TestPath tests/test_flows.py::test_safe_output_path_never_overwrites `
+  -SyntaxPath app/flow_worker.py
+```
+
+Setup creates `.venv` from Python 3.13 and installs the exact
+`requirements-ci.lock`. Every invocation records a compact JSON result under a
+unique ignored `.test-runs/` directory. Verification sets isolated database,
+temporary, browser-profile and evidence paths before application imports.
+Pass `-Reuse` only when reusing a matching successful result. A local full run
+is reserved for a named diagnostic or equivalence investigation and requires
+both `-Full` and `-DiagnosticReason`.
+
+After a failure, rerun the failed case and only the integration companions it
+needs. Do not restart the suite merely to obtain a traceback. Review the actual
+diff and its relevant failure/recovery paths once; repeat review only after a
+new finding or code change. Write the plan/report during implementation and
+open the PR after focused evidence is ready. Final full regression belongs to
+CI.
+
+## Merge gate and delivery states
+
+Every workflow execution ends in one check named `Merge ready`. It accepts an
+omitted job only when change classification explicitly excluded that job, and
+rejects failed, cancelled, missing or unexpectedly skipped selected work. The
+PR must contain current `main`, and its testing section must record the final
+run URL and tested head SHA before a head-pinned merge.
+
+Report delivery as four distinct states: implementation ready, local checks
+complete, CI complete and merged. A merge is not a deployment.
 
 ## Live testing is opt-in only
 

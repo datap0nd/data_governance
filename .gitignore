@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 .venv/
 .pytest_tmp*/
+.test-runs/
 governance.db
 pipeline_insights.db
 pipeline_insights.db-wal

@@ -7,6 +7,19 @@ that merge. Use the session's branch naming rules and start from current
 
 ## Testing instructions and reports on every main merge
 
+Use `tools/check.ps1` as the only supported local verification entry point.
+Run `-Mode Setup` once to create the checkout-owned Python 3.13 `.venv`, then
+use `-Mode Verify` with explicit test-node/file selectors and applicable
+`-SyntaxPath` values. Run `-Mode Preflight` for an environment diagnosis.
+`-Full` is diagnostic-only and requires `-DiagnosticReason`. Do not borrow a
+sibling environment, a temporary environment or the coding-agent runtime.
+
+Open the PR as soon as the focused local evidence and initial release report
+are ready. Required final-head CI is represented by the always-present
+`Merge ready` check. Record its run URL and exact head SHA in the PR before a
+head-pinned merge. Distinguish implementation ready, local checks complete, CI
+complete and merged; do not call a merge deployed.
+
 For **every PR merged to main**, including documentation, maintenance and fixes:
 
 1. Create or update a release-specific **test plan and test report** under
@@ -25,6 +38,11 @@ For **every PR merged to main**, including documentation, maintenance and fixes:
    rebase, rerun application tests only when application/test code changed or a
    related conflict was resolved. Record actual commands, revision, environment,
    results, skips/warnings and evidence links.
+   Reuse a prior local result only through `tools/check.ps1 -Reuse`, which
+   verifies the relevant source, test, dependency and selection fingerprint.
+   After a failure, rerun the failed case and only necessary integration
+   companions. Perform one bounded review of the actual diff and affected
+   failure/recovery paths; reopen it only after a new finding or code change.
 4. Work-PC, live portal, authentication and hardware testing is opt-in only.
    Do not open, inspect, attempt, plan or report those checks unless the owner
    explicitly requests them in the current task. When they are not requested,
