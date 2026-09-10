@@ -236,6 +236,44 @@ def test_worker_environment_survives_failure_and_trace_does_not_mask_it(flow_db,
     assert events[0]['diagnostic']['environment']['browser_version'] == 'browser-1'
 
 
+def test_validation_retains_sql_input_checks_without_executing_sql(
+    tmp_path, monkeypatch,
+):
+    job = {
+        'recording': {'engine_hash': 'recording-engine', 'revision': 7},
+        'execution': {},
+        'paths': {'flow_folder': str(tmp_path / 'flow')},
+        'downloads': {},
+        'sql_handoff': {'enabled': True},
+    }
+    monkeypatch.setattr(flow_portable, 'execution_hash', lambda: job['recording']['engine_hash'])
+    monkeypatch.setattr(flow_worker, '_code_version', lambda: 'tested-worker')
+    monkeypatch.setattr(flow_recorder_worker, 'authenticate', lambda *args: None)
+    page = SimpleNamespace(context=SimpleNamespace(
+        browser=SimpleNamespace(version='browser-1'),
+        tracing=SimpleNamespace(start=lambda **kwargs: None, stop=lambda **kwargs: None),
+    ))
+    captured = {}
+
+    def execute(_page, validation_job, _progress, _profile, *args, state, **kwargs):
+        captured['job'] = validation_job
+        state['artifacts'] = [{
+            'status': 'saved', 'export_view': 'download', 'filename': 'validated.csv',
+            'checksum': 'a' * 64, 'row_count': 1,
+        }]
+
+    monkeypatch.setattr(flow_recording_runtime, 'execute_recorded_flow', execute)
+
+    result = flow_recorder_worker.validate(
+        {'id': 321, 'job': {'validation_job': job, 'configuration_hash': 'tested-config'}},
+        page, tmp_path, lambda *args: None,
+    )
+
+    assert captured['job']['sql_handoff']['enabled'] is False
+    assert captured['job']['_recording_validation_requires_table'] is True
+    assert result['sql_executed'] is False
+
+
 def test_technical_exception_preserves_cause_stack_and_redacts_browser_content():
     try:
         raise TimeoutError('Locator.click: Timeout 120000ms exceeded.\nCall log:\n'

@@ -9,6 +9,7 @@ This is a standing instruction from the repository owner, recorded in
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-09-10: NASCA recording validation parity | [Test plan](releases/2026-09-10-nasca-recording-validation/test-plan.md) | [Test report](releases/2026-09-10-nasca-recording-validation/test-report.md) |
 | 2026-09-10: delivery foundation and merge gate | [Test plan](releases/2026-09-10-delivery-foundation/test-plan.md) | [Test report](releases/2026-09-10-delivery-foundation/test-report.md) |
 | 2026-09-10: NASCA Excel-COM Flow recovery | [Test plan](releases/2026-09-10-nasca-excel-com/test-plan.md) | [Test report](releases/2026-09-10-nasca-excel-com/test-report.md) |
 | 2026-09-10: recorded ASAP staging completion | [Test plan](releases/2026-09-10-recorded-asap-staging-completion/test-plan.md) | [Test report](releases/2026-09-10-recorded-asap-staging-completion/test-report.md) |

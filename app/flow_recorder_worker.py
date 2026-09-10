@@ -240,6 +240,14 @@ def validate(scan, page, profile, progress):
     private.mkdir(parents=True, exist_ok=False)
     job['paths'] = {**job['paths'], 'enforced': False, 'flow_folder': None, 'artifact_store_root': None, 'scripts_folder': None}
     job['downloads'].update(target_folder=str(private), output_mode='run_folders')
+    # A recording test must not write to SQL, but it still has to exercise the
+    # same workbook normalization that production SQL will consume.  Preserve
+    # that requirement before disabling the side effect; otherwise a protected
+    # Excel download takes the unchecked/raw branch and is rejected as a broken
+    # ZIP before desktop Excel has a chance to unwrap it.
+    job['_recording_validation_requires_table'] = bool(
+        job.get('sql_handoff', {}).get('enabled')
+    )
     job['sql_handoff']['enabled'] = False
     state = {}
     tracing_started = False
