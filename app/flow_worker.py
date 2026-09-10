@@ -5762,17 +5762,28 @@ def _store_completed_download(
             or (recorded_output and file_format == "xlsx")
         )
     )
-    if detected == "xls" and declared_suffixes & (
+    declared_modern_excel = declared_suffixes & (
         OOXML_EXCEL_EXTENSIONS | XLSB_EXCEL_EXTENSIONS
-    ):
+    )
+    protected_excel_contract = bool(
+        recorded_output
+        or (asap_type is not None and asap_type.content_family == "excel")
+    )
+    nasca_wrapped_modern_excel = bool(declared_modern_excel) and (
+        detected == "xls"
+        or (
+            protected_excel_contract
+            and detected in {"xlsx", "xlsb"}
+            and not zipfile.is_zipfile(local_path)
+        )
+    )
+    if nasca_wrapped_modern_excel:
         if str(excel_trim or "none").strip().casefold() != "none":
             raise RuntimeError(
                 "NASCA-encrypted Excel downloads cannot use row/column trimming during "
                 "desktop Excel recovery. Remove the trim setting and retry."
             )
-        modern_format = (
-            "xlsb" if declared_suffixes & XLSB_EXCEL_EXTENSIONS else "xlsx"
-        )
+        modern_format = "xlsb" if declared_suffixes & XLSB_EXCEL_EXTENSIONS else "xlsx"
         expected_suffix = _excel_output_suffix(local_path, output, modern_format)
         if output.suffix.casefold() != expected_suffix:
             output = _safe_output_path(output.parent, f"{output.stem}{expected_suffix}")

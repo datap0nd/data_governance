@@ -1354,9 +1354,19 @@ def test_a_damaged_legacy_xls_is_rejected_with_its_real_type(tmp_path):
     assert "legacy Excel workbook could not be opened" in str(excinfo.value)
 
 
-def test_nasca_encrypted_modern_excel_uses_desktop_excel_for_sql_csv(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "protected_bytes",
+    [
+        b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 64,
+        b"NASCA protected workbook payload" + b"\x00" * 64,
+    ],
+    ids=["ole-wrapper", "opaque-non-zip-wrapper"],
+)
+def test_nasca_encrypted_modern_excel_uses_desktop_excel_for_sql_csv(
+    tmp_path, monkeypatch, protected_bytes,
+):
     source = tmp_path / "protected.xlsx"
-    source.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 64)
+    source.write_bytes(protected_bytes)
     events = []
 
     class Worksheet:
