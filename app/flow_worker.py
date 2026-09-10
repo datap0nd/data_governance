@@ -5091,6 +5091,111 @@ def _open_excel_workbook(source: Path, workbook_format: str):
     raise RuntimeError(f"Unsupported Excel workbook format: {workbook_format}")
 
 
+def _normalize_nasca_excel_with_com(
+    source: Path,
+    output: Path,
+    *,
+    csv_preamble: str,
+    strict_headers: bool,
+    header_mode: str,
+    allow_empty_data: bool,
+) -> dict:
+    """Open a NASCA-wrapped modern workbook through desktop Excel.
+
+    NASCA exposes the decrypted workbook only to the signed-in user's Excel
+    process. The bytes therefore look like a legacy OLE container to Python,
+    even when the filename is ``.xlsx``. Excel COM is the same trusted reader
+    the BI desktop user would invoke manually; macros, links, alerts and events
+    stay disabled, and only the active sheet is exported to a temporary CSV for
+    the existing normalization and SQL path.
+    """
+    try:
+        import pythoncom
+        import win32com.client
+    except ImportError as exc:
+        raise RuntimeError(
+            "Opening a NASCA-encrypted Excel download requires pywin32 and desktop "
+            "Excel on Windows. Re-run setup.ps1 on the BI desktop."
+        ) from exc
+
+    excel = workbook = worksheet = None
+    temporary_export = tempfile.TemporaryDirectory(prefix="metronome-nasca-")
+    temporary_csv = Path(temporary_export.name) / "decrypted.csv"
+    initialized = False
+    try:
+        pythoncom.CoInitialize()
+        initialized = True
+        excel = win32com.client.DispatchEx("Excel.Application")
+        excel.Visible = False
+        excel.DisplayAlerts = False
+        excel.EnableEvents = False
+        excel.AskToUpdateLinks = False
+        # msoAutomationSecurityForceDisable: opening a downloaded workbook must
+        # never execute VBA while NASCA transparently unwraps its contents.
+        excel.AutomationSecurity = 3
+        workbook = excel.Workbooks.Open(
+            str(source.resolve()),
+            UpdateLinks=0,
+            ReadOnly=True,
+            IgnoreReadOnlyRecommended=True,
+            AddToMru=False,
+        )
+        worksheet = workbook.Worksheets(1)
+        sheet_name = str(worksheet.Name)
+        worksheet.Activate()
+        workbook.CheckCompatibility = False
+        # xlCSVUTF8 (62) retains Unicode from the decrypted sheet. Modern
+        # desktop Excel versions used by Metronome support this format.
+        workbook.SaveAs(
+            str(temporary_csv),
+            FileFormat=62,
+            CreateBackup=False,
+            Local=True,
+        )
+        preamble = "none" if header_mode == "first_row" else csv_preamble
+        normalization = _normalize_csv(
+            temporary_csv,
+            output=output,
+            preamble=preamble,
+            strict_headers=strict_headers,
+            allow_empty_data=allow_empty_data,
+        )
+        return {
+            **normalization,
+            "excel_trim": "none",
+            "xlsx_header_mode": header_mode,
+            "source_encoding": "excel_com",
+            "source_delimiter": ",",
+            "source_sheets": [sheet_name],
+            "recovered_week_columns": [],
+            "removed_metric_label": None,
+        }
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(
+            f"Desktop Excel could not open or export the NASCA-encrypted workbook: {source.name}. "
+            "Confirm that Excel and NASCA can open the downloaded file for this Windows account."
+        ) from exc
+    finally:
+        if workbook is not None:
+            try:
+                workbook.Close(False)
+            except Exception:
+                pass
+        if excel is not None:
+            try:
+                excel.Quit()
+            except Exception:
+                pass
+        temporary_export.cleanup()
+        if initialized:
+            try:
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
+
+
 def _normalize_xlsx(
     source: Path, output: Path, *, requested_weeks: list[str],
     header_mode: str = "auto", strict_headers: bool = False,
@@ -5660,11 +5765,58 @@ def _store_completed_download(
     if detected == "xls" and declared_suffixes & (
         OOXML_EXCEL_EXTENSIONS | XLSB_EXCEL_EXTENSIONS
     ):
-        raise RuntimeError(
-            f"The Excel attachment {local_path.name} uses an OLE encrypted container even "
-            "though its filename declares a modern workbook. Password-protected/encrypted "
-            "Excel attachments are unsupported; attach an unencrypted workbook instead."
+        if str(excel_trim or "none").strip().casefold() != "none":
+            raise RuntimeError(
+                "NASCA-encrypted Excel downloads cannot use row/column trimming during "
+                "desktop Excel recovery. Remove the trim setting and retry."
+            )
+        modern_format = (
+            "xlsb" if declared_suffixes & XLSB_EXCEL_EXTENSIONS else "xlsx"
         )
+        expected_suffix = _excel_output_suffix(local_path, output, modern_format)
+        if output.suffix.casefold() != expected_suffix:
+            output = _safe_output_path(output.parent, f"{output.stem}{expected_suffix}")
+        original_size = snapshot["file_size"]
+        copied = _copy_with_checksum(local_path, output)
+        if copied != snapshot:
+            raise RuntimeError("The NASCA-encrypted workbook changed while it was copied.")
+        _verify_copied_file(
+            output,
+            original_size,
+            copied["checksum"],
+            label="Downloaded NASCA-encrypted Excel workbook",
+        )
+        normalized_output = _safe_output_path(
+            output.parent, f"{output.stem}_normalized.csv",
+        )
+        if processing_progress is not None:
+            processing_progress(
+                "file_normalization",
+                f"Saved {output.name}; opening its NASCA-protected contents with desktop Excel.",
+            )
+        normalization = _normalize_nasca_excel_with_com(
+            output,
+            normalized_output,
+            csv_preamble=csv_preamble,
+            strict_headers=strict_headers,
+            header_mode=xlsx_header_mode,
+            allow_empty_data=recorded_output,
+        )
+        if processing_progress is not None:
+            processing_progress(
+                "file_metadata",
+                f"Normalized {normalized_output.name}; calculating its checksum and row count.",
+            )
+        metadata = {**_csv_metadata(normalized_output), **normalization}
+        return {
+            **metadata,
+            "file_path": str(normalized_output),
+            "filename": normalized_output.name,
+            "original_file_path": str(output),
+            "original_filename": output.name,
+            "original_file_size": original_size,
+            "detected_format": modern_format,
+        }
     if detected in {"pdf", "binary"}:
         raise RuntimeError(
             f"The download is not a CSV or an Excel workbook: {local_path.name} "

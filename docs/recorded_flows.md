@@ -103,9 +103,12 @@ and `.xltm`, preserves the compatible extension supplied by the browser, and
 normalizes worksheet values to CSV only when downstream processing or data
 checks require it. Legacy OLE/BIFF files and OOXML/XLSB ZIP containers are
 validated from their contents, including ZIP packages with leading transport
-bytes. Corrupt or encrypted workbooks, executable Excel add-ins, arbitrary
-binary files, and sign-in pages fail with format-specific diagnostics. Workbook
-macros are never executed.
+bytes. On the Windows BI desktop, a modern `.xlsx`/`.xlsb` download wrapped in
+an NASCA OLE encryption container is opened read-only through desktop Excel and
+exported to the same normalized CSV/SQL path. Excel links, alerts, events and
+workbook macros are disabled for that operation. Other corrupt or encrypted
+workbooks, executable Excel add-ins, arbitrary binary files, and sign-in pages
+fail with format-specific diagnostics.
 
 Recordings are parsed as Python syntax, never executed as imported code. Only
 the supported action/locator model can activate. Coordinate/forced actions,

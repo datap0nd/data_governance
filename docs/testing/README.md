@@ -10,6 +10,7 @@ This is a standing instruction from the repository owner, recorded in
 | Release | What to test | Results |
 | --- | --- | --- |
 | 2026-09-10: delivery foundation and merge gate | [Test plan](releases/2026-09-10-delivery-foundation/test-plan.md) | [Test report](releases/2026-09-10-delivery-foundation/test-report.md) |
+| 2026-09-10: NASCA Excel-COM Flow recovery | [Test plan](releases/2026-09-10-nasca-excel-com/test-plan.md) | [Test report](releases/2026-09-10-nasca-excel-com/test-report.md) |
 | 2026-09-10: recorded ASAP staging completion | [Test plan](releases/2026-09-10-recorded-asap-staging-completion/test-plan.md) | [Test report](releases/2026-09-10-recorded-asap-staging-completion/test-report.md) |
 | 2026-09-10: recorded ASAP long-preamble recovery | [Test plan](releases/2026-09-10-recorded-asap-long-preamble/test-plan.md) | [Test report](releases/2026-09-10-recorded-asap-long-preamble/test-report.md) |
 | 2026-09-10: recorded download processing regression | [Test plan](releases/2026-09-10-recorded-download-processing-regression/test-plan.md) | [Test report](releases/2026-09-10-recorded-download-processing-regression/test-report.md) |
