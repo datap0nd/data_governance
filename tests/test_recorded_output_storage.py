@@ -109,6 +109,44 @@ def test_bomless_utf16_export_is_recognized_and_normalized_for_sql(tmp_path, enc
     assert Path(result['file_path']).read_text(encoding='utf-8-sig') == 'Region,Units\nMENA,7\nPortugal,8\n'
 
 
+@pytest.mark.parametrize('encoding', ['utf-8', 'utf-16-le', 'utf-16-be'])
+def test_excel_named_text_export_is_normalized_for_recorded_sql(tmp_path, encoding):
+    source = tmp_path / 'MTracker_subs.xlsx'
+    source.write_bytes('Region\tUnits\r\nMENA\t7\r\nPortugal\t8\r\n'.encode(encoding))
+
+    assert flow_worker._detect_download_format(source) == 'csv'
+    result = flow_worker._store_completed_download(
+        source, tmp_path / 'configured.xlsx', file_format='xlsx',
+        recorded_output=True,
+    )
+
+    output = Path(result['file_path'])
+    assert output.suffix == '.csv'
+    assert result['detected_format'] == 'csv'
+    assert result['row_count'] == 2
+    assert output.read_text(encoding='utf-8-sig') == 'Region,Units\nMENA,7\nPortugal,8\n'
+
+
+def test_recorded_excel_output_accepts_html_table_for_sql_without_invented_asap_type(tmp_path):
+    source = tmp_path / 'MTracker_subs.xlsx'
+    source.write_text(
+        '<html><body><table><tr><th>Region</th><th>Units</th></tr>'
+        '<tr><td>MENA</td><td>7</td></tr></table></body></html>',
+        encoding='utf-8',
+    )
+
+    result = flow_worker._store_completed_download(
+        source, tmp_path / 'configured.xlsx', file_format='xlsx',
+        recorded_output=True,
+    )
+
+    output = Path(result['file_path'])
+    assert output.suffix == '.csv'
+    assert result['row_count'] == 1
+    assert result['columns'] == ['Region', 'Units']
+    assert Path(result['original_file_path']).suffix == '.xls'
+
+
 def test_utf16_detection_handles_prefix_ending_between_surrogates(tmp_path):
     source = tmp_path / 'download.csv'
     prefix = 'Name,Units\n' + 'A' * (2047 - len('Name,Units\n'))

@@ -631,7 +631,12 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
             needs_table = bool(downstream or specification.get('min_rows') or specification.get('headers')
                 or specification.get('period_checks') or job['downloads'].get('excel_trim', 'none') != 'none')
             metadata = flow_worker._store_completed_download(staged, output,
-                file_format=fmt, asap_download_type={'html': 'html', 'txt': 'plain_text', 'csv': 'csv_file_format', 'xlsx': 'excel_plain_text'}[fmt],
+                # The recording proves what the browser clicked, not which
+                # semantic ASAP Export Wizard option produced the response.
+                # Let the shared post-download pipeline follow the bytes just
+                # as it did for scan-selected flows instead of inventing an
+                # Excel assertion from an ``.xlsx`` output label.
+                file_format=fmt,
                 require_normalized_csv=fmt in {'csv', 'xlsx'} and needs_table, recorded_output=True,
                 allow_raw_xlsx_fallback=False, excel_trim=job['downloads'].get('excel_trim', 'none'), csv_preamble='none')
             minimum_rows = specification.get('min_rows', 0)

@@ -11,7 +11,13 @@ import openpyxl
 import pytest
 from playwright.sync_api import sync_playwright
 
-from app import flow_browser, flow_portable, flow_recording, flow_recording_runtime as runtime
+from app import (
+    flow_browser,
+    flow_portable,
+    flow_recording,
+    flow_recording_runtime as runtime,
+    flow_sql,
+)
 from test_flow_recordings import definition, draft_job
 from test_flows import flow_db
 
@@ -133,6 +139,39 @@ def test_optional_minimum_counts_nonblank_data_rows_without_header(flow_db, tmp_
     state = run_browser(job, tmp_path / 'profile')
     assert state['artifacts'][0]['publish_status'] == 'published'
     assert state['artifacts'][0]['row_count'] == 3
+
+
+def test_excel_named_text_download_reuses_shared_normalization_for_sql(
+    flow_db, tmp_path, downloads_server, monkeypatch,
+):
+    url, exports = downloads_server
+    exports['/1.xlsx'] = (
+        'Region\tUnits\r\nMENA\t7\r\nPortugal\t8\r\n'.encode('utf-16-le')
+    )
+    job = replay_job(url, [dict(format='xlsx')])
+    job['sql_handoff']['enabled'] = True
+    loaded = {}
+
+    def capture_load(artifacts, config, progress=None):
+        loaded['artifacts'] = artifacts
+        loaded['config'] = config
+        return {'status': 'loaded', 'rows_written': 2, 'files_loaded': 1}
+
+    monkeypatch.setattr(flow_sql, 'load_artifacts', capture_load)
+
+    state = run_browser(job, tmp_path / 'profile')
+
+    assert state['sql_result'] == {
+        'status': 'loaded', 'rows_written': 2, 'files_loaded': 1,
+    }
+    assert len(loaded['artifacts']) == 1
+    artifact = loaded['artifacts'][0]
+    assert Path(artifact['file_path']).suffix == '.csv'
+    assert artifact['detected_format'] == 'csv'
+    assert artifact['row_count'] == 2
+    assert Path(artifact['file_path']).read_text(encoding='utf-8-sig') == (
+        'Region,Units\nMENA,7\nPortugal,8\n'
+    )
 
 
 @pytest.mark.parametrize('fmt', ['csv', 'xlsx'])
