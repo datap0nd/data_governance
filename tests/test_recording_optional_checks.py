@@ -177,6 +177,40 @@ def test_excel_named_text_download_reuses_shared_normalization_for_sql(
     )
 
 
+def test_recording_validation_normalizes_nasca_input_for_configured_sql(
+    flow_db, tmp_path, downloads_server, monkeypatch,
+):
+    url, exports = downloads_server
+    protected = b'NASCA protected workbook payload'
+    exports['/1.xlsx'] = protected
+    job = replay_job(url, [dict(format='xlsx')])
+    # Validation suppresses the SQL side effect but must still prepare the
+    # exact tabular artifact that the configured production SQL run will use.
+    job['sql_handoff']['enabled'] = False
+    job['_recording_validation_requires_table'] = True
+    calls = []
+
+    def fake_excel_com(source, output, **kwargs):
+        calls.append((Path(source).read_bytes(), kwargs))
+        Path(output).write_text(
+            'country,model,qty\nAE,Fixture,1\n', encoding='utf-8-sig',
+        )
+        return {'source_encoding': 'excel_com'}
+
+    monkeypatch.setattr(flow_worker, '_normalize_nasca_excel_with_com', fake_excel_com)
+
+    state = run_browser(job, tmp_path / 'profile')
+
+    assert calls and calls[0][0] == protected
+    assert calls[0][1]['allow_empty_data'] is True
+    artifact = state['artifacts'][0]
+    assert artifact['detected_format'] == 'xlsx'
+    assert artifact['row_count'] == 1
+    assert Path(artifact['file_path']).suffix == '.csv'
+    assert Path(artifact['original_file_path']).read_bytes() == protected
+    assert 'sql_result' not in state
+
+
 def test_recorded_asap_download_uses_scan_path_staging_completion(
     flow_db, tmp_path, downloads_server, monkeypatch,
 ):

@@ -632,7 +632,11 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
             output = flow_worker._safe_output_path(target, filename)
             if any(Path(item['file_path']).resolve() == output.resolve() for item in artifacts if item.get('file_path')):
                 raise RuntimeError('Recorded outputs have duplicate filenames. Include {index} in the filename template.')
-            downstream = job.get('transformation', {}).get('enabled') or job.get('sql_handoff', {}).get('enabled')
+            downstream = (
+                job.get('transformation', {}).get('enabled')
+                or job.get('sql_handoff', {}).get('enabled')
+                or job.get('_recording_validation_requires_table')
+            )
             if downstream and fmt in {'html', 'txt'}:
                 raise ValueError('HTML/text downloads cannot be transformed or loaded into SQL.')
             needs_table = bool(downstream or specification.get('min_rows') or specification.get('headers')
