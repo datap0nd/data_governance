@@ -1,8 +1,9 @@
 import hashlib
 import io
+import sys
 import zipfile
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -1353,11 +1354,100 @@ def test_a_damaged_legacy_xls_is_rejected_with_its_real_type(tmp_path):
     assert "legacy Excel workbook could not be opened" in str(excinfo.value)
 
 
-def test_an_encrypted_modern_excel_container_has_an_actionable_error(tmp_path):
+def test_nasca_encrypted_modern_excel_uses_desktop_excel_for_sql_csv(tmp_path, monkeypatch):
     source = tmp_path / "protected.xlsx"
     source.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 64)
-    with pytest.raises(RuntimeError, match="Password-protected/encrypted"):
-        flow_worker._store_completed_download(source, tmp_path / "protected.xlsx")
+    events = []
+
+    class Worksheet:
+        Name = "MTracker"
+
+        def Activate(self):
+            events.append("activated")
+
+    class Workbook:
+        CheckCompatibility = True
+
+        def Worksheets(self, index):
+            assert index == 1
+            return Worksheet()
+
+        def SaveAs(self, path, **kwargs):
+            events.append(("save", kwargs))
+            Path(path).write_text(
+                "MTracker subscribers\n\nSubsidiary,Units\nSEEG,120\n",
+                encoding="utf-8-sig",
+            )
+
+        def Close(self, save):
+            events.append(("closed", save))
+
+    class Excel:
+        def __init__(self):
+            self.Workbooks = SimpleNamespace(Open=self.open)
+
+        def open(self, path, **kwargs):
+            events.append(("open", Path(path).name, kwargs))
+            return Workbook()
+
+        def Quit(self):
+            events.append("quit")
+
+    pythoncom = ModuleType("pythoncom")
+    pythoncom.CoInitialize = lambda: events.append("coinitialize")
+    pythoncom.CoUninitialize = lambda: events.append("couninitialize")
+    client = ModuleType("win32com.client")
+    excel = Excel()
+    client.DispatchEx = lambda name: excel
+    win32com = ModuleType("win32com")
+    win32com.client = client
+    monkeypatch.setitem(sys.modules, "pythoncom", pythoncom)
+    monkeypatch.setitem(sys.modules, "win32com", win32com)
+    monkeypatch.setitem(sys.modules, "win32com.client", client)
+
+    metadata = flow_worker._store_completed_download(
+        source,
+        tmp_path / "result.xlsx",
+        file_format="xlsx",
+        recorded_output=True,
+        require_normalized_csv=True,
+        csv_preamble="asap",
+    )
+
+    assert metadata["detected_format"] == "xlsx"
+    assert metadata["source_encoding"] == "excel_com"
+    assert metadata["columns"] == ["Subsidiary", "Units"]
+    assert metadata["row_count"] == 1
+    assert Path(metadata["file_path"]).read_text(encoding="utf-8-sig").splitlines() == [
+        "Subsidiary,Units", "SEEG,120",
+    ]
+    assert Path(metadata["original_file_path"]).read_bytes() == source.read_bytes()
+    assert excel.AutomationSecurity == 3
+    assert excel.Visible is False
+    assert excel.DisplayAlerts is False
+    assert excel.EnableEvents is False
+    assert excel.AskToUpdateLinks is False
+    assert events[0] == "coinitialize"
+    assert events[-1] == "couninitialize"
+    open_event = next(event for event in events if isinstance(event, tuple) and event[0] == "open")
+    assert open_event[2]["ReadOnly"] is True
+    save_event = next(event for event in events if isinstance(event, tuple) and event[0] == "save")
+    assert save_event[1]["FileFormat"] == 62
+
+
+def test_nasca_excel_recovery_requires_pywin32(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "pythoncom", None)
+    monkeypatch.setitem(sys.modules, "win32com", None)
+    monkeypatch.setitem(sys.modules, "win32com.client", None)
+    with pytest.raises(RuntimeError, match="requires pywin32 and desktop Excel"):
+        flow_worker._normalize_nasca_excel_with_com(
+            tmp_path / "protected.xlsx",
+            tmp_path / "normalized.csv",
+            csv_preamble="asap",
+            strict_headers=False,
+            header_mode="auto",
+            allow_empty_data=False,
+        )
 
 
 def test_a_real_csv_is_still_normalized_untouched(tmp_path):
