@@ -213,17 +213,17 @@ try {
         exit 0
     }
 
+    if ($Mode -eq 'Verify' -and $Full -and [string]::IsNullOrWhiteSpace($DiagnosticReason)) {
+        Fail-Check 'A local full suite is diagnostic-only. Supply -Full -DiagnosticReason with the failure or equivalence question being investigated.'
+    }
+    if ($Mode -eq 'Verify' -and -not $Full -and $TestPath.Count -eq 0) {
+        Fail-Check "Verify requires explicit -TestPath selectors. Example: .\tools\check.ps1 -Mode Verify -TestPath tests/test_flows.py::test_name"
+    }
+
     Invoke-Preflight
     if ($Mode -eq 'Preflight') {
         Save-Result -Status 'passed' -ExitCode 0 -Diagnostic $null
         exit 0
-    }
-
-    if ($Full -and [string]::IsNullOrWhiteSpace($DiagnosticReason)) {
-        Fail-Check 'A local full suite is diagnostic-only. Supply -Full -DiagnosticReason with the failure or equivalence question being investigated.'
-    }
-    if (-not $Full -and $TestPath.Count -eq 0) {
-        Fail-Check "Verify requires explicit -TestPath selectors. Example: .\tools\check.ps1 -Mode Verify -TestPath tests/test_flows.py::test_name"
     }
     if ($Full) { $TestPath = @('tests') }
     $result.selection.tests = @($TestPath)
