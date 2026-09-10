@@ -2,10 +2,10 @@
 
 - Plan: [test-plan.md](test-plan.md)
 - Change/PR: PR 2 of the faster-delivery rollout; pull request pending
-- Evidence cutoff (UTC): 2026-09-10 15:06, before corrected final-head equivalence
+- Evidence cutoff (UTC): 2026-09-10 16:42, before corrected final-head equivalence
 - Tested code revisions: initial focused set at `044cd6ae4b839f15525abdb782eaccf4002fec5c`; Windows prerequisite recovery at `abde1e6c0d451cf661c3412b4c612acc5cf5bc88`; measured duration updater/plan at `dcd13ba7a79a849ebf8cb18cf6ec234652726720`; synthetic click stabilization at `ae47c520663da46472d338b08bbaa36167240edc`; virtual-range repaint recovery at `8afea8c22caf3c922ef2efdfa4dff93c6820d7b4`; browser preflight at `1d237c9f6e4d6f0b0dd400549610120e2b0ed33a`
-- Environment: Windows 11, PowerShell 7.6.5, Python 3.13.15 locally; GitHub-hosted environments pending
-- Overall finding: focused classifier, partitioner, reconciliation, aggregate-gate and fixture checks pass locally; hosted serial/parallel equivalence and three consecutive runs remain pending
+- Environment: Windows 11, PowerShell 7.6.5, Python 3.13.15 locally; GitHub-hosted Ubuntu and Windows runners
+- Overall finding: focused classifier, partitioner, reconciliation, aggregate-gate and fixture checks pass locally; rebased hosted equivalence passed before a later test-harness correction, so final-head equivalence and three consecutive runs remain pending
 
 ## Executed checks
 
@@ -99,6 +99,27 @@ Edge from a string literal inside its own unit test. Replacing text matching
 with Python AST call inspection removed that false positive; a probe-only unit
 fixture proves missing channels are reported without installing them. The
 final preflight launched managed Chromium and real Chrome successfully.
+
+After rebasing onto application changes from PRs #104 and #106, the newly
+affected `tests/test_flow_sql.py` set passed locally (63 passed in 14.82 s;
+18.389 s command) at `c7df10a`, and hosted run
+[34498398343](https://github.com/datap0nd/data_governance/actions/runs/34498398343)
+passed all twelve shards, both serial baselines, exact reconciliation, and
+`Merge ready`. Parallel repeat
+[34501204108](https://github.com/datap0nd/data_governance/actions/runs/34501204108)
+also passed. The next repeat
+[34502430269](https://github.com/datap0nd/data_governance/actions/runs/34502430269)
+passed eleven Windows/Ubuntu shards but Windows shard 3 failed when the
+synthetic setup-block harness exceeded its 30-second subprocess watchdog while
+starting Windows PowerShell and real DPAPI. Both parameterized branches passed
+locally in 2.44 s. The watchdog is not a product timing assertion; it is now 60
+seconds to accommodate cold hosted-process startup while remaining bounded.
+Production setup behavior and every credential, failure, and secret-redaction
+assertion are unchanged. Final-head equivalence and the three-clean-run count
+restart after this test-only correction. The corrected failed node, its corrupt
+credential parameter, ordering companion, and Python syntax then passed locally
+(3 passed in 2.14 s; 5.140 s command), result ID
+`20260910T164214561Z-38876-e85bcad4`.
 
 Historical duration weights are OS-specific but partial; unlisted files
 deliberately receive a conservative default until successful manifests provide
