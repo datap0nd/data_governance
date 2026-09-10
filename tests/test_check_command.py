@@ -54,8 +54,8 @@ def test_command_declares_isolated_paths_before_pytest_launch():
     assignments = [
         "$env:TEMP = $tempRoot",
         "$env:TMP = $tempRoot",
-        "$env:DG_DB_PATH = Join-Path $runRoot 'governance-test.db'",
-        "$env:DG_TEST_RUN_ROOT = $runRoot",
+        "$env:DG_DB_PATH = Join-Path $externalIsolationRoot 'governance-test.db'",
+        "$env:DG_TEST_RUN_ROOT = $externalIsolationRoot",
         "$env:DG_BROWSER_PROFILE_ROOT = $profileRoot",
         "$env:DG_FLOWS_ROOT = $externalFlowRoot",
         "$env:PLAYWRIGHT_BROWSERS_PATH = $browserPath",
@@ -63,8 +63,12 @@ def test_command_declares_isolated_paths_before_pytest_launch():
     launch = source.index("$pytestArguments =")
     assert all(source.index(assignment) < launch for assignment in assignments)
     assert "$browserPath = Join-Path $repoRoot '.playwright-browsers'" in source
+    assert "$externalIsolationBase = Join-Path ([IO.Path]::GetTempPath()) 'mt'" in source
+    assert "$externalIsolationRoot = Join-Path $externalIsolationBase $isolationId" in source
     assert "-ExecutionPolicy Bypass" in source[launch:]
     assert "Refusing to clean unexpected Flow test root" in source
     assert "Remove-Item -LiteralPath $resolvedIsolationRoot -Recurse -Force" in source
     assert "browser_setup.py'), '--probe-only'" in source
+    assert "@('--browser', $Matches[1])" in source
+    assert "browser_setup.py') --output $browserEvidence" in source
     assert "-Mode Setup -InstallBrowsers" in source

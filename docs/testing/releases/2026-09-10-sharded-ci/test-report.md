@@ -2,7 +2,7 @@
 
 - Plan: [test-plan.md](test-plan.md)
 - Change/PR: PR 2 of the faster-delivery rollout; pull request pending
-- Evidence cutoff (UTC): 2026-09-10 16:42, before corrected final-head equivalence
+- Evidence cutoff (UTC): 2026-09-10 17:38, before corrected final-head equivalence
 - Tested code revisions: initial focused set at `044cd6ae4b839f15525abdb782eaccf4002fec5c`; Windows prerequisite recovery at `abde1e6c0d451cf661c3412b4c612acc5cf5bc88`; measured duration updater/plan at `dcd13ba7a79a849ebf8cb18cf6ec234652726720`; synthetic click stabilization at `ae47c520663da46472d338b08bbaa36167240edc`; virtual-range repaint recovery at `8afea8c22caf3c922ef2efdfa4dff93c6820d7b4`; browser preflight at `1d237c9f6e4d6f0b0dd400549610120e2b0ed33a`
 - Environment: Windows 11, PowerShell 7.6.5, Python 3.13.15 locally; GitHub-hosted Ubuntu and Windows runners
 - Overall finding: focused classifier, partitioner, reconciliation, aggregate-gate and fixture checks pass locally; rebased hosted equivalence passed before a later test-harness correction, so final-head equivalence and three consecutive runs remain pending
@@ -120,6 +120,32 @@ restart after this test-only correction. The corrected failed node, its corrupt
 credential parameter, ordering companion, and Python syntax then passed locally
 (3 passed in 2.14 s; 5.140 s command), result ID
 `20260910T164214561Z-38876-e85bcad4`.
+
+The next third-run attempt
+[34507553784](https://github.com/datap0nd/data_governance/actions/runs/34507553784)
+passed eleven shards but Ubuntu shard 1 failed when the first generated
+portable Edge process exceeded its 90-second subprocess watchdog; the prior
+unchanged-head run completed that test in 32.69 s for Edge and 16.63 s for
+Chrome. A targeted local rerun then exposed two supported-command gaps before
+reaching equivalent evidence: the checkout-rooted pytest temp path could exceed
+Windows legacy path limits, and source-only AST scanning did not recognize
+browser channels supplied by `pytest.mark.parametrize`. The command now uses a
+short, unique `%TEMP%\\mt\\<pid-guid>` isolation root, retains its evidence in
+the ignored checkout directory, and restricts cleanup to the exact temp
+namespace. The browser scanner recognizes literal parameterized channels and
+exact browser parameter selectors, preserving distinct real Chrome and Edge
+requirements. Database-template copies now pair with a fresh per-test Flow
+filesystem root, preventing repeated IDs/names from colliding in one invocation.
+
+The local setup path correctly attempted only the missing Edge channel, but the
+Playwright installer was refused for insufficient machine privileges. No
+elevation or alternate browser alias was used. The exact Chrome parameter plus
+the filesystem, scanner, command, and syntax companions passed locally (4
+passed in 18.85 s; 22.822 s command), result ID
+`20260910T173808050Z-29280-f43ebe39`. The portable-process watchdog is now a
+bounded 120 seconds; all download, transformation, repeated-run, artifact, and
+real-channel assertions remain unchanged. Hosted Ubuntu/Windows runners remain
+authoritative for the final real Edge execution and equivalence evidence.
 
 Historical duration weights are OS-specific but partial; unlisted files
 deliberately receive a conservative default until successful manifests provide

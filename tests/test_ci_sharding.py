@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import copy
 import contextlib
+import os
 import sqlite3
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 import pytest
 
@@ -122,6 +124,17 @@ def test_database_template_copy_matches_schema_and_remains_immutable(
     second.write_bytes(metronome_empty_database_template.read_bytes())
     with contextlib.closing(sqlite3.connect(second)) as second_db:
         assert second_db.execute("SELECT value FROM app_settings WHERE key='template-test'").fetchone() is None
+
+
+def test_database_copy_uses_a_test_owned_flow_root(
+    metronome_fresh_database, tmp_path
+):
+    root = Path(os.environ["DG_FLOWS_ROOT"])
+    assert root.is_dir()
+    assert root.name == tmp_path.name
+    marker = root / "test-owned.txt"
+    marker.write_text("isolated", encoding="utf-8")
+    assert marker.read_text(encoding="utf-8") == "isolated"
 
 
 def test_duration_update_aggregates_every_junit_file_and_rejects_missing_shards(tmp_path):

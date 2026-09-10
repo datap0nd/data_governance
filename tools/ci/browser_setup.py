@@ -11,6 +11,33 @@ import sys
 from pathlib import Path
 
 
+def parameterized_browsers(tree: ast.AST) -> set[str]:
+    """Return literal browser channels supplied through pytest parametrization."""
+    required: set[str] = set()
+    for call in (node for node in ast.walk(tree) if isinstance(node, ast.Call)):
+        if not (
+            isinstance(call.func, ast.Attribute)
+            and call.func.attr == "parametrize"
+            and len(call.args) >= 2
+            and isinstance(call.args[0], ast.Constant)
+            and isinstance(call.args[0].value, str)
+        ):
+            continue
+        names = [name.strip() for name in call.args[0].value.split(",")]
+        if "channel" not in names or not isinstance(call.args[1], (ast.List, ast.Tuple)):
+            continue
+        index = names.index("channel")
+        for value in call.args[1].elts:
+            candidate = value if len(names) == 1 else (
+                value.elts[index]
+                if isinstance(value, (ast.List, ast.Tuple)) and len(value.elts) > index
+                else None
+            )
+            if isinstance(candidate, ast.Constant) and candidate.value in {"chrome", "msedge"}:
+                required.add(candidate.value)
+    return required
+
+
 def required_browsers(root: Path, sources: list[Path] | None = None) -> list[str]:
     paths = sorted((root / "tests").glob("test_*.py")) if sources is None else sources
     required: set[str] = set()
@@ -18,6 +45,7 @@ def required_browsers(root: Path, sources: list[Path] | None = None) -> list[str
         if not path.is_file():
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        required.update(parameterized_browsers(tree))
         for call in (node for node in ast.walk(tree) if isinstance(node, ast.Call)):
             function = call.func
             if not (
@@ -73,10 +101,18 @@ def main() -> int:
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--source", action="append", type=Path, dest="sources")
+    parser.add_argument(
+        "--browser", action="append", choices=("chromium", "chrome", "msedge"), dest="browsers"
+    )
     parser.add_argument("--probe-only", action="store_true")
     args = parser.parse_args()
     sources = [path if path.is_absolute() else args.root / path for path in args.sources] if args.sources else None
-    browsers = required_browsers(args.root, sources)
+    browsers = required_browsers(args.root, sources) if sources or not args.browsers else []
+    browsers = [
+        browser
+        for browser in ("chromium", "chrome", "msedge")
+        if browser in set(browsers) | set(args.browsers or [])
+    ]
     results, missing = prepare_browsers(browsers, args.probe_only)
     payload = {
         "schema_version": 1,

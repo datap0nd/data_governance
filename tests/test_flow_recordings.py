@@ -16,6 +16,11 @@ from app.routers import flows, flow_recordings as routes
 from test_flows import flow_db, _request
 
 
+# The two real-browser subprocesses normally finish in 17-33 seconds on hosted
+# Ubuntu. Keep a bounded watchdog while allowing cold channel startup variance.
+PORTABLE_PIPELINE_TIMEOUT_SECONDS = 120
+
+
 CODEGEN = '''import re
 from playwright.sync_api import Playwright, sync_playwright, expect
 
@@ -227,7 +232,7 @@ pathlib.Path(a.output).write_text(pathlib.Path(a.input).read_text().replace('A,'
     file=tmp_path/'portable.py';file.write_text(flow_portable.source(job),encoding='utf-8')
     root=tmp_path/'portable-output'
     result=subprocess.run([sys.executable,'-I',str(file),'--headless','--output-root',str(root)],
-        cwd=tmp_path,capture_output=True,text=True,timeout=90)
+        cwd=tmp_path,capture_output=True,text=True,timeout=PORTABLE_PIPELINE_TIMEOUT_SECONDS)
     assert result.returncode==0,result.stderr
     files=list(root.rglob('*.csv'))
     assert any('B,2026-01-01' in p.read_text(encoding='utf-8-sig') for p in files)
@@ -237,7 +242,7 @@ pathlib.Path(a.output).write_text(pathlib.Path(a.input).read_text().replace('A,'
     artifact=next(a for a in events[-1]['artifacts'] if a.get('recording_defaults'))
     assert artifact['recording_defaults']=={'end':'2026-09-05'}
     repeated=subprocess.run([sys.executable,'-I',str(file),'--headless','--output-root',str(root)],
-        cwd=tmp_path,capture_output=True,text=True,timeout=90)
+        cwd=tmp_path,capture_output=True,text=True,timeout=PORTABLE_PIPELINE_TIMEOUT_SECONDS)
     assert repeated.returncode==0,repeated.stderr
 
 
