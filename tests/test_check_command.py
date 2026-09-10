@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
 CHECK = ROOT / "tools" / "check.ps1"
+pytestmark = pytest.mark.skipif(
+    os.name != "nt", reason="the supported local PowerShell command uses a Windows checkout-owned .venv"
+)
 
 
 def run_check(*arguments: str) -> subprocess.CompletedProcess[str]:
