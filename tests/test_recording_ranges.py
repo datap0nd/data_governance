@@ -7,6 +7,7 @@ import pytest
 from app import flow_portable, flow_recording
 from app import flow_recording_runtime as range_runtime
 from app.flow_recording_runtime import _select_week_range
+from test_flows import flow_db
 
 
 def _range_step(*, start="2026-W32", selector="button.week", selected_state="aria-pressed"):
@@ -25,6 +26,34 @@ def _range_step(*, start="2026-W32", selector="button.week", selected_state="ari
             "navigation": {"kind": "scroll"},
         },
     }
+
+
+def test_revision_save_promotes_range_definition_to_version_three(flow_db):
+    import json
+
+    from app import database
+    from app.routers import flow_recordings as routes
+    from test_flow_recordings import draft_job
+
+    saved, _job = draft_job()
+    submitted = {
+        "version": 2,
+        "timezone": "Asia/Dubai",
+        "parameters": {},
+        "steps": [_range_step()],
+    }
+    revision_id = routes.save_revision(
+        saved["id"], routes.RevisionWrite(definition=submitted)
+    )["revision_id"]
+    with database.get_db() as db:
+        stored = json.loads(
+            db.execute(
+                "SELECT definition_json FROM flow_recording_revisions WHERE id=?",
+                (revision_id,),
+            ).fetchone()[0]
+        )
+    assert stored["version"] == 3
+    flow_recording.validate_definition(stored, activation=False)
 
 
 @contextmanager

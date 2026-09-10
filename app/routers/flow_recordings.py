@@ -335,7 +335,13 @@ def finish_recording(flow_id: int, scan_id: int):
 @router.post('/{flow_id}/recordings/revisions')
 def save_revision(flow_id: int, body: RevisionWrite):
     try:
-        definition = flow_recording.validate_definition({**body.definition, 'version': 2, 'timezone': 'Asia/Dubai'}, activation=False)
+        submitted = {**body.definition, 'timezone': 'Asia/Dubai'}
+        version = submitted.get('version', 1)
+        if type(version) is int:
+            required = 3 if any(step.get('action') == 'select_range'
+                                for step in flow_recording.walk_steps(submitted.get('steps', []))) else 2
+            submitted['version'] = max(required, version)
+        definition = flow_recording.validate_definition(submitted, activation=False)
     except (ValueError, KeyError, TypeError) as exc:
         raise HTTPException(422, str(exc)) from exc
     if len(flow_recording.canonical(definition)) > 1_000_000:
