@@ -2,8 +2,8 @@
 
 - Plan: [test-plan.md](test-plan.md)
 - Change/PR: PR 2 of the faster-delivery rollout; pull request pending
-- Evidence cutoff (UTC): 2026-09-10 14:59, before corrected final-head equivalence
-- Tested code revisions: initial focused set at `044cd6ae4b839f15525abdb782eaccf4002fec5c`; Windows prerequisite recovery at `abde1e6c0d451cf661c3412b4c612acc5cf5bc88`; measured duration updater/plan at `dcd13ba7a79a849ebf8cb18cf6ec234652726720`; synthetic click stabilization at `ae47c520663da46472d338b08bbaa36167240edc`; virtual-range repaint recovery at `8afea8c22caf3c922ef2efdfa4dff93c6820d7b4`
+- Evidence cutoff (UTC): 2026-09-10 15:06, before corrected final-head equivalence
+- Tested code revisions: initial focused set at `044cd6ae4b839f15525abdb782eaccf4002fec5c`; Windows prerequisite recovery at `abde1e6c0d451cf661c3412b4c612acc5cf5bc88`; measured duration updater/plan at `dcd13ba7a79a849ebf8cb18cf6ec234652726720`; synthetic click stabilization at `ae47c520663da46472d338b08bbaa36167240edc`; virtual-range repaint recovery at `8afea8c22caf3c922ef2efdfa4dff93c6820d7b4`; browser preflight at `1d237c9f6e4d6f0b0dd400549610120e2b0ed33a`
 - Environment: Windows 11, PowerShell 7.6.5, Python 3.13.15 locally; GitHub-hosted environments pending
 - Overall finding: focused classifier, partitioner, reconciliation, aggregate-gate and fixture checks pass locally; hosted serial/parallel equivalence and three consecutive runs remain pending
 
@@ -20,6 +20,7 @@
 | SC-02 updater contract | Run the focused updater test with one JUnit artifact per shard, then remove one artifact | Recovery content after `abde1e6`; same local environment | PASS; exact aggregation passed and five-of-six input failed closed; 1 passed in 0.13 s | Result ID `20260910T140540128Z-12436-8d6a6cad`. |
 | SC-05 flake recovery | Rerun the three failed synthetic click scenarios and their parameterized dispatch companions after raising only the fixture helper's actionability allowance from 2 s to 10 s | `ae47c52` content on parent `deb20a0`; same local environment, synthetic Chrome fixture | PASS; 5 passed in 3.12 s; 5.921 s command | Result ID `20260910T144503813Z-328-f5b9b71f`; source fingerprint `ceb797324206b5cadeb37b56228c8e89c0b82029fd7c91ca52eb96de551d2855`. |
 | SC-05 virtual-range recovery | Rerun `test_range_reacquires_virtualized_cells_after_each_scroll` after making its virtual selection state persistent and yielding two browser animation frames after every programmatic scroll | `8afea8c` content on parent `a928fe5`; same local environment, synthetic managed Chromium | PASS; 1 passed in 2.57 s; 4.928 s command | Result ID `20260910T145846742Z-24988-4190255b`; source fingerprint `9a03592a3f479a6801a7b819b7d17e736e27699e0eb84c678affa2c845f3a006`. |
+| SC-06 local browser preflight | Run Preflight after installing managed Chromium into the ignored checkout cache; exercise AST-based real-launch discovery and probe-only missing-channel behavior | `1d237c9` content; same local environment | PASS after one test-expectation correction; managed Chromium and real Chrome launched; preflight 3.395 s; initial combined run had 2 passes/1 stale literal assertion, then that node and the new probe-only node passed | Preflight result `20260910T150601307Z-25896-b32c89cc`; focused results `20260910T150423649Z-17876-d0cfb2e6`, `20260910T150445576Z-36012-b019f73a`, and `20260910T150549493Z-7632-48e6515a`. |
 
 ## Unperformed or blocked in-scope checks
 
@@ -88,6 +89,16 @@ timeout and exact enabled/selected-state checks. The deterministic fixture
 persists selection across its virtual repaint, and the affected case passed.
 The invalid hosted run was cancelled to conserve capacity; final-head
 equivalence and the three-run count restart again.
+
+The local missing-Chromium incident also showed that dependency preflight did
+not yet prove browser launchability. Setup now installs Playwright-managed
+binaries into the checkout-owned ignored cache, full Preflight probes every
+actually launched browser, and Verify probes only channels called by the
+selected test files before pytest. The first scanner attempt falsely selected
+Edge from a string literal inside its own unit test. Replacing text matching
+with Python AST call inspection removed that false positive; a probe-only unit
+fixture proves missing channels are reported without installing them. The
+final preflight launched managed Chromium and real Chrome successfully.
 
 Historical duration weights are OS-specific but partial; unlisted files
 deliberately receive a conservative default until successful manifests provide
