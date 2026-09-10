@@ -27,7 +27,7 @@ Use the bundled Python runtime after installing `requirements-ci.txt`:
 
 ```powershell
 $py = 'C:\Users\keeoh\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe'
-& $py -m pytest tests/test_recording_optional_checks.py::test_recorded_asap_download_uses_scan_path_staging_completion tests/test_recording_optional_checks.py::test_excel_named_text_download_reuses_shared_normalization_for_sql -q
+& $py -m pytest tests/test_recording_optional_checks.py::test_recorded_asap_download_uses_scan_path_staging_completion tests/test_recording_optional_checks.py::test_excel_named_text_download_reuses_shared_normalization_for_sql tests/test_recording_journey.py::test_browser_real_api_save_test_return_apply -q
 ```
 
 Run `python -m py_compile app/flow_recording_runtime.py` and `git diff --check`. Final-head GitHub CI supplies the full Python regression and frontend/scope gates.
