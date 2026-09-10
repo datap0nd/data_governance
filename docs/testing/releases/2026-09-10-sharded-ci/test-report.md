@@ -2,7 +2,7 @@
 
 - Plan: [test-plan.md](test-plan.md)
 - Change/PR: PR 2 of the faster-delivery rollout; pull request pending
-- Evidence cutoff (UTC): 2026-09-10 17:38, before corrected final-head equivalence
+- Evidence cutoff (UTC): 2026-09-10 17:42, before corrected final-head equivalence
 - Tested code revisions: initial focused set at `044cd6ae4b839f15525abdb782eaccf4002fec5c`; Windows prerequisite recovery at `abde1e6c0d451cf661c3412b4c612acc5cf5bc88`; measured duration updater/plan at `dcd13ba7a79a849ebf8cb18cf6ec234652726720`; synthetic click stabilization at `ae47c520663da46472d338b08bbaa36167240edc`; virtual-range repaint recovery at `8afea8c22caf3c922ef2efdfa4dff93c6820d7b4`; browser preflight at `1d237c9f6e4d6f0b0dd400549610120e2b0ed33a`
 - Environment: Windows 11, PowerShell 7.6.5, Python 3.13.15 locally; GitHub-hosted Ubuntu and Windows runners
 - Overall finding: focused classifier, partitioner, reconciliation, aggregate-gate and fixture checks pass locally; rebased hosted equivalence passed before a later test-harness correction, so final-head equivalence and three consecutive runs remain pending
@@ -146,6 +146,16 @@ passed in 18.85 s; 22.822 s command), result ID
 bounded 120 seconds; all download, transformation, repeated-run, artifact, and
 real-channel assertions remain unchanged. Hosted Ubuntu/Windows runners remain
 authoritative for the final real Edge execution and equivalence evidence.
+
+Before the corrected candidate could run, PR #107 changed recording validation
+code and tests on `main`. The branch was rebased onto `2fec423`; the testing
+index conflict was resolved by retaining both releases, and the application
+merge was otherwise conflict-free. Its two newly added recording-validation
+cases and affected Python syntax passed locally (2 passed, 2 dependency
+warnings in 7.66 s; 10.884 s command), result ID
+`20260910T174145625Z-38008-6c356b0b`. Because application/test content changed,
+the hosted final-head equivalence and consecutive-run count restart on the
+rebased revision.
 
 Historical duration weights are OS-specific but partial; unlisted files
 deliberately receive a conservative default until successful manifests provide
