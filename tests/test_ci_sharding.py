@@ -3,10 +3,12 @@ from __future__ import annotations
 import copy
 import contextlib
 import sqlite3
+import xml.etree.ElementTree as ET
 
 import pytest
 
 from tools.ci.sharding import SHARD_COUNT, ShardError, partition, reconcile_os, validate_plan
+from tools.ci.update_durations import junit_file_weights
 
 
 def sample_plan():
@@ -120,3 +122,25 @@ def test_database_template_copy_matches_schema_and_remains_immutable(
     second.write_bytes(metronome_empty_database_template.read_bytes())
     with contextlib.closing(sqlite3.connect(second)) as second_db:
         assert second_db.execute("SELECT value FROM app_settings WHERE key='template-test'").fetchone() is None
+
+
+def test_duration_update_aggregates_every_junit_file_and_rejects_missing_shards(tmp_path):
+    files = [f"tests/test_{index}.py" for index in range(1, 7)]
+    for index, path in enumerate(files, start=1):
+        destination = tmp_path / f"python-windows-{index}" / "junit.xml"
+        destination.parent.mkdir()
+        suite = ET.Element("testsuite")
+        ET.SubElement(
+            suite,
+            "testcase",
+            classname=path.removesuffix(".py").replace("/", "."),
+            name="test_case",
+            time=str(index / 10),
+        )
+        ET.ElementTree(suite).write(destination, encoding="unicode")
+    assert junit_file_weights(tmp_path, "windows", files) == {
+        path: round(index / 10, 3) for index, path in enumerate(files, start=1)
+    }
+    (tmp_path / "python-windows-6" / "junit.xml").unlink()
+    with pytest.raises(ValueError, match="5 JUnit files"):
+        junit_file_weights(tmp_path, "windows", files)
