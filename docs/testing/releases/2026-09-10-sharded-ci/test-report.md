@@ -2,8 +2,8 @@
 
 - Plan: [test-plan.md](test-plan.md)
 - Change/PR: PR 2 of the faster-delivery rollout; pull request pending
-- Evidence cutoff (UTC): 2026-09-10 14:45, before corrected final-head equivalence
-- Tested code revisions: initial focused set at `044cd6ae4b839f15525abdb782eaccf4002fec5c`; Windows prerequisite recovery at `abde1e6c0d451cf661c3412b4c612acc5cf5bc88`; measured duration updater/plan at `dcd13ba7a79a849ebf8cb18cf6ec234652726720`; synthetic click stabilization at `ae47c520663da46472d338b08bbaa36167240edc`
+- Evidence cutoff (UTC): 2026-09-10 14:59, before corrected final-head equivalence
+- Tested code revisions: initial focused set at `044cd6ae4b839f15525abdb782eaccf4002fec5c`; Windows prerequisite recovery at `abde1e6c0d451cf661c3412b4c612acc5cf5bc88`; measured duration updater/plan at `dcd13ba7a79a849ebf8cb18cf6ec234652726720`; synthetic click stabilization at `ae47c520663da46472d338b08bbaa36167240edc`; virtual-range repaint recovery at `8afea8c22caf3c922ef2efdfa4dff93c6820d7b4`
 - Environment: Windows 11, PowerShell 7.6.5, Python 3.13.15 locally; GitHub-hosted environments pending
 - Overall finding: focused classifier, partitioner, reconciliation, aggregate-gate and fixture checks pass locally; hosted serial/parallel equivalence and three consecutive runs remain pending
 
@@ -19,6 +19,7 @@
 | SC-02 measured rebalance | Aggregate all six JUnit artifacts per OS from run 34484474215 with `tools/ci/update_durations.py`, then independently rebuild the plan | Recovery content after `abde1e6`; same local environment | PASS; all 103 files weighted; measured totals 845.673 s Ubuntu and 1,283.904 s Windows; planned groups 140.941–140.959 s Ubuntu and 213.976–213.993 s Windows | Sanitized checked-in duration tables sourced to run 34484474215. |
 | SC-02 updater contract | Run the focused updater test with one JUnit artifact per shard, then remove one artifact | Recovery content after `abde1e6`; same local environment | PASS; exact aggregation passed and five-of-six input failed closed; 1 passed in 0.13 s | Result ID `20260910T140540128Z-12436-8d6a6cad`. |
 | SC-05 flake recovery | Rerun the three failed synthetic click scenarios and their parameterized dispatch companions after raising only the fixture helper's actionability allowance from 2 s to 10 s | `ae47c52` content on parent `deb20a0`; same local environment, synthetic Chrome fixture | PASS; 5 passed in 3.12 s; 5.921 s command | Result ID `20260910T144503813Z-328-f5b9b71f`; source fingerprint `ceb797324206b5cadeb37b56228c8e89c0b82029fd7c91ca52eb96de551d2855`. |
+| SC-05 virtual-range recovery | Rerun `test_range_reacquires_virtualized_cells_after_each_scroll` after making its virtual selection state persistent and yielding two browser animation frames after every programmatic scroll | `8afea8c` content on parent `a928fe5`; same local environment, synthetic managed Chromium | PASS; 1 passed in 2.57 s; 4.928 s command | Result ID `20260910T145846742Z-24988-4190255b`; source fingerprint `9a03592a3f479a6801a7b819b7d17e736e27699e0eb84c678affa2c845f3a006`. |
 
 ## Unperformed or blocked in-scope checks
 
@@ -71,6 +72,22 @@ all visibility, stability, hit-testing and enabled-state assertions; production
 timeouts and meaningful timing tests are unchanged. The affected local cases
 passed, and final-head equivalence plus three clean parallel executions restart
 from zero.
+
+The next final-head attempt
+[34491225739](https://github.com/datap0nd/data_governance/actions/runs/34491225739)
+then found a separate Ubuntu timing race in the existing virtualized-week-range
+fixture. A fast sequence of programmatic scroll assignments could advance
+before the browser delivered the `scroll` repaint, leaving the old cells in
+every snapshot. The first local rerun correctly failed before the case because
+the checkout lacked its managed Chromium prerequisite; Chromium was installed
+into the ignored checkout cache. A second run showed the stale viewport ending
+at W33, confirming the repaint race. The range implementation now yields two
+animation frames after each scroll so scroll handlers and virtual rendering
+complete before the next snapshot, while retaining the production 10-second
+timeout and exact enabled/selected-state checks. The deterministic fixture
+persists selection across its virtual repaint, and the affected case passed.
+The invalid hosted run was cancelled to conserve capacity; final-head
+equivalence and the three-run count restart again.
 
 Historical duration weights are OS-specific but partial; unlisted files
 deliberately receive a conservative default until successful manifests provide
