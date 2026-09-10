@@ -20,6 +20,7 @@ import re
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -4882,6 +4883,102 @@ class _XlsbWorkbook:
         self._workbook.close()
 
 
+class _TemporaryOpenpyxlWorkbook:
+    """Keep a compatibility copy alive for an openpyxl read-only workbook."""
+
+    def __init__(self, workbook, backing_file):
+        self._workbook = workbook
+        self._backing_file = backing_file
+        self.worksheets = workbook.worksheets
+
+    def close(self):
+        try:
+            self._workbook.close()
+        finally:
+            self._backing_file.close()
+
+
+STRICT_OOXML_REPLACEMENTS = (
+    (
+        b"application/vnd.ms-excel.sheet.main+xml",
+        b"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml",
+    ),
+    (
+        b"application/vnd.ms-excel.template.main+xml",
+        b"application/vnd.openxmlformats-officedocument.spreadsheetml.template.main+xml",
+    ),
+    (
+        b"http://purl.oclc.org/ooxml/spreadsheetml/main",
+        b"http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+    ),
+    (
+        b"http://purl.oclc.org/ooxml/officeDocument/relationships",
+        b"http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+    ),
+    (
+        b"http://purl.oclc.org/ooxml/package/relationships",
+        b"http://schemas.openxmlformats.org/package/2006/relationships",
+    ),
+    (
+        b"http://purl.oclc.org/ooxml/drawingml/main",
+        b"http://schemas.openxmlformats.org/drawingml/2006/main",
+    ),
+    (
+        b"http://purl.oclc.org/ooxml/drawingml/spreadsheetDrawing",
+        b"http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing",
+    ),
+)
+
+
+def _is_strict_ooxml(source: Path) -> bool:
+    """Return whether a ZIP workbook declares the ISO Strict OOXML dialect."""
+    try:
+        with zipfile.ZipFile(source) as workbook:
+            manifest = workbook.read("[Content_Types].xml")
+    except (KeyError, OSError, zipfile.BadZipFile, NotImplementedError, RuntimeError):
+        return False
+    return (
+        b"application/vnd.ms-excel.sheet.main+xml" in manifest
+        or b"application/vnd.ms-excel.template.main+xml" in manifest
+    )
+
+
+def _strict_ooxml_compatibility_copy(source: Path):
+    """Translate Strict package identifiers for a read-only openpyxl pass.
+
+    The delivered workbook is never modified. The temporary ZIP exists only
+    while normalization is reading it, and VBA is neither loaded nor run.
+    """
+    converted = tempfile.TemporaryFile(suffix=".xlsx")
+    try:
+        with zipfile.ZipFile(source) as incoming, zipfile.ZipFile(
+            converted, "w", allowZip64=True,
+        ) as outgoing:
+            for member in incoming.infolist():
+                payload = incoming.read(member)
+                if member.filename.casefold().endswith((".xml", ".rels")):
+                    for strict_value, transitional_value in STRICT_OOXML_REPLACEMENTS:
+                        payload = payload.replace(strict_value, transitional_value)
+                outgoing.writestr(member, payload)
+        converted.seek(0)
+        return converted
+    except Exception:
+        converted.close()
+        raise
+
+
+def _modern_excel_reader_detail(exc: Exception) -> str:
+    """Expose a useful parser category without echoing workbook contents."""
+    message = str(exc).casefold()
+    if "password" in message or "encrypted" in message:
+        return "the package is password-protected or encrypted"
+    if "valid workbook part" in message:
+        return "the OOXML package does not declare a supported workbook part"
+    if isinstance(exc, KeyError):
+        return "the OOXML package references a missing internal member"
+    return f"the workbook reader reported {type(exc).__name__}"
+
+
 def _open_excel_workbook(source: Path, workbook_format: str):
     """Open an Excel family with a consistent read-only worksheet interface."""
     if workbook_format == "xlsx":
@@ -4893,12 +4990,34 @@ def _open_excel_workbook(source: Path, workbook_format: str):
             ) from exc
         try:
             # data_only reads cached formula results and never executes VBA.
-            return load_workbook(source, read_only=True, data_only=True)
-        except Exception as exc:
+            # External links are irrelevant to normalization. Ignoring them
+            # also lets Excel-tolerated files with stale link parts open.
+            return load_workbook(
+                source, read_only=True, data_only=True, keep_links=False,
+            )
+        except Exception as first_error:
+            if _is_strict_ooxml(source):
+                compatibility_copy = None
+                try:
+                    compatibility_copy = _strict_ooxml_compatibility_copy(source)
+                    workbook = load_workbook(
+                        compatibility_copy, read_only=True, data_only=True,
+                        keep_links=False,
+                    )
+                    return _TemporaryOpenpyxlWorkbook(workbook, compatibility_copy)
+                except Exception as strict_error:
+                    if compatibility_copy is not None:
+                        compatibility_copy.close()
+                    first_error = strict_error
+            try:
+                _validate_excel_container(source, "xlsx")
+            except RuntimeError:
+                raise
             raise RuntimeError(
                 f"Downloaded modern Excel workbook could not be opened: {source.name}. "
-                "It may be damaged or password-protected/encrypted."
-            ) from exc
+                f"{_modern_excel_reader_detail(first_error).capitalize()}. The original "
+                "download was preserved and no VBA was executed."
+            ) from first_error
     if workbook_format == "xls":
         try:
             import xlrd
