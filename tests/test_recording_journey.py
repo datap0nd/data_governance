@@ -135,7 +135,13 @@ def test_browser_real_api_save_test_return_apply(flow_db,monkeypatch,tmp_path,re
     revision=client.post(base+'/recordings/revisions',json={'definition':raw}).json()['revision_id']
     root=Path(__file__).resolve().parents[1]
     with sync_playwright() as pw:
-        browser=pw.chromium.launch(channel='chrome',headless=True)
+        # Validation workers launch their browser with this exact staging
+        # directory. Keep the browser/API journey faithful to that contract so
+        # recorded ASAP completion can observe the stable staged file.
+        browser=pw.chromium.launch(
+            channel='chrome', headless=True,
+            downloads_path=str(tmp_path/'profile'/'downloads'),
+        )
         page=browser.new_page(viewport={'width':1280,'height':900})
         page.route('http://recording.test/**',lambda route: route.fulfill(status=200,content_type='text/html',body='<div id="flow-workspace"><form id="flow-builder-form"><input id="pending-name" value="Untouched"></form></div>'))
         page.goto('http://recording.test/')

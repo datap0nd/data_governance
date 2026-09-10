@@ -547,7 +547,14 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
                 output_index += 1
                 suffix = Path(download.suggested_filename).suffix or '.download'
                 staged = staging / f'{uuid.uuid4().hex}{suffix}'
-                if step['output'].get('completion') == 'staging':
+                adapter = definition.get('adapter', job.get('site', {}).get('adapter'))
+                if step['output'].get('completion') == 'staging' or adapter == 'asap_portal':
+                    # ASAP dashboard download events are only start signals.
+                    # The browser-managed GUID path can become terminal while
+                    # still containing an incomplete workbook; the scan-based
+                    # ASAP path has always completed from the stable file in
+                    # the configured staging directory. Recorded navigation
+                    # must hand off to that same post-click contract.
                     completed = flow_worker._asap_dashboard_event_staged_download(staging, files_before, step['id'])
                 else:
                     completed = flow_worker._completed_edge_download(download, step['id'])

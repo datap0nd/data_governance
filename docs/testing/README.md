@@ -9,6 +9,7 @@ This is a standing instruction from the repository owner, recorded in
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-09-10: recorded ASAP staging completion | [Test plan](releases/2026-09-10-recorded-asap-staging-completion/test-plan.md) | [Test report](releases/2026-09-10-recorded-asap-staging-completion/test-report.md) |
 | 2026-09-10: recorded ASAP long-preamble recovery | [Test plan](releases/2026-09-10-recorded-asap-long-preamble/test-plan.md) | [Test report](releases/2026-09-10-recorded-asap-long-preamble/test-report.md) |
 | 2026-09-10: recorded download processing regression | [Test plan](releases/2026-09-10-recorded-download-processing-regression/test-plan.md) | [Test report](releases/2026-09-10-recorded-download-processing-regression/test-report.md) |
 | 2026-09-10: modern Excel open recovery | [Test plan](releases/2026-09-10-modern-excel-open-recovery/test-plan.md) | [Test report](releases/2026-09-10-modern-excel-open-recovery/test-report.md) |

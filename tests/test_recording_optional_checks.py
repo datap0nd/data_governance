@@ -17,6 +17,7 @@ from app import (
     flow_recording,
     flow_recording_runtime as runtime,
     flow_sql,
+    flow_worker,
 )
 from test_flow_recordings import definition, draft_job
 from test_flows import flow_db
@@ -174,6 +175,41 @@ def test_excel_named_text_download_reuses_shared_normalization_for_sql(
     assert Path(artifact['file_path']).read_text(encoding='utf-8-sig') == (
         'Region,Units\nMENA,7\nPortugal,8\n'
     )
+
+
+def test_recorded_asap_download_uses_scan_path_staging_completion(
+    flow_db, tmp_path, downloads_server, monkeypatch,
+):
+    url, exports = downloads_server
+    exports['/1.xlsx'] = export_bytes('xlsx', [['Region', 'Units'], ['MENA', 7]])
+    job = replay_job(url, [dict(format='xlsx')])
+    download_step = job['recording']['definition']['steps'][-1]
+    assert download_step['output'].get('completion') is None
+    staged_calls = []
+
+    def stable_staging(staging, before, label):
+        staged_calls.append((staging, before, label))
+        return flow_worker._wait_for_staged_download(
+            staging, before, timeout_seconds=10, start_timeout_seconds=10,
+        )
+
+    monkeypatch.setattr(
+        flow_worker, '_asap_dashboard_event_staged_download', stable_staging,
+    )
+    monkeypatch.setattr(
+        flow_worker, '_completed_edge_download',
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError('Recorded ASAP must not trust the browser-managed GUID path')
+        ),
+    )
+
+    state = run_browser(job, tmp_path / 'profile')
+
+    assert len(staged_calls) == 1
+    assert staged_calls[0][2] == 'download-1'
+    assert state['artifacts'][0]['publish_status'] == 'published'
+    output = Path(job['downloads']['target_folder']) / 'output_1.xlsx'
+    assert output.read_bytes() == exports['/1.xlsx']
 
 
 @pytest.mark.parametrize('fmt', ['csv', 'xlsx'])
