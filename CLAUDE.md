@@ -55,3 +55,9 @@ agent environments. The command isolates databases, temporary files, locks,
 browser profiles and evidence under an ignored per-run directory and records a
 machine-readable result. Reuse evidence only with `-Reuse` when its fingerprint
 still matches.
+
+CI scope selection comes from `tools/ci/change_scope.py` and
+`ci/windows-sensitive-paths.txt`; unknown backend paths default to Windows.
+Selected Python suites are six deterministic file-level shards per OS. The
+inventory reconciliation and `Merge ready` results are mandatory evidence, and
+CI-orchestration changes require same-head serial outcome equivalence.

@@ -14,10 +14,9 @@ from app.routers import flows, pipelines
 
 
 @pytest.fixture()
-def flow_db(tmp_path, monkeypatch):
-    db_path = tmp_path / "flows.db"
+def flow_db(metronome_fresh_database, monkeypatch):
+    db_path = metronome_fresh_database
     monkeypatch.setattr(database, "DB_PATH", str(db_path))
-    database.init_db()
     with database.get_db() as db:
         db.execute("INSERT OR REPLACE INTO app_settings(key,value) VALUES ('flows_browser_channel','msedge')")
     return db_path

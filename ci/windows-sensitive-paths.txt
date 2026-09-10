@@ -1,0 +1,30 @@
+# Paths whose behavior depends on Windows, PowerShell, browsers, desktop apps,
+# filesystem locking, credentials, setup/update, or worker process launching.
+setup.ps1
+update_app.ps1
+requirements*
+vendor/**
+app/auto_update.py
+app/flow_browser.py
+app/flow_credentials.py
+app/flow_folder_access.py
+app/flow_local_runner.py
+app/flow_portable.py
+app/flow_recorder_worker.py
+app/flow_worker.py
+tools/**
+tests/test_auto_update.py
+tests/test_flow_capacity.py
+tests/test_flow_credentials.py
+tests/test_flow_folder_access.py
+tests/test_flow_local_file.py
+tests/test_flow_portable.py
+tests/test_flow_recordings.py
+tests/test_flow_worker_startup.py
+tests/test_outlook_dispatch.py
+tests/test_pbi_*.py
+tests/test_setup_sso_password.py
+tests/test_unattended_update_scripts.py
+.github/workflows/tests.yml
+tools/ci/*.py
+ci/*

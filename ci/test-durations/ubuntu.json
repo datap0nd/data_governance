@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "source": "GitHub serial runs through 2026-09-10; unlisted files use the conservative default",
+  "default_seconds": 10.0,
+  "files": {
+    "tests/test_flows.py": 150.0,
+    "tests/test_gscm.py": 120.0,
+    "tests/test_flow_worker_discovery.py": 100.0,
+    "tests/test_auto_update.py": 90.0,
+    "tests/test_flow_capacity.py": 90.0,
+    "tests/test_flow_recordings.py": 50.0,
+    "tests/test_recording_journey.py": 60.0,
+    "tests/test_recording_pacing.py": 25.0,
+    "tests/test_recording_controls.py": 20.0,
+    "tests/test_recording_optional_checks.py": 25.0,
+    "tests/test_recording_v2_pipeline.py": 25.0,
+    "tests/test_recording_clicks.py": 20.0
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "source": "GitHub Windows serial run 34471028249 and earlier duration summaries; unlisted files use the conservative default",
+  "default_seconds": 12.0,
+  "files": {
+    "tests/test_flows.py": 180.0,
+    "tests/test_gscm.py": 145.0,
+    "tests/test_flow_worker_discovery.py": 120.0,
+    "tests/test_auto_update.py": 110.0,
+    "tests/test_flow_capacity.py": 135.0,
+    "tests/test_flow_recordings.py": 65.0,
+    "tests/test_recording_journey.py": 85.0,
+    "tests/test_recording_pacing.py": 30.0,
+    "tests/test_recording_controls.py": 25.0,
+    "tests/test_recording_optional_checks.py": 35.0,
+    "tests/test_recording_v2_pipeline.py": 35.0,
+    "tests/test_recording_clicks.py": 25.0,
+    "tests/test_flow_activity.py": 20.0,
+    "tests/test_recording_startup_ui.py": 20.0
+  }
+}
