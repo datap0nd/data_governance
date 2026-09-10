@@ -2,7 +2,7 @@
 
 - Plan: [test-plan.md](test-plan.md)
 - Change/PR: pending
-- Evidence cutoff (UTC): 2026-09-10 13:18, before the second corrected final-head CI rerun
+- Evidence cutoff (UTC): 2026-09-10 13:22, before the final corrected CI rerun
 - Tested code revision: initial tooling at `d902b4a1f787f0c6543cd95862552a054871cdd1`; follow-up content committed as `97a8b9f4d3d6b96b572f4debbc458730da44c430` was tested as `691706a` plus the then-uncommitted `tools/check.ps1` and `tests/test_check_command.py` changes
 - Environment: Windows 11; PowerShell 7.6.5; Python 3.13.15
 - Overall finding: local setup, preflight, isolation policy and aggregate-gate checks pass; final-head CI remains pending
@@ -16,6 +16,7 @@
 | DF-03 | Temporarily replace `.venv/.metronome-ci-lock.sha256`, run Preflight, restore the marker in `finally`, then rerun Preflight | `d902b4a`; same environment | PASS; mismatched lock rejected before pytest with the Setup instruction; restored environment passed preflight | Result IDs `20260910T124704664Z-18904-ca952fea` and `20260910T124705043Z-32608-5d74160a`. |
 | DF-02 recovery | `.\tools\check.ps1 -Mode Verify -TestPath tests/test_check_command.py,tests/test_flows.py::test_catalog_and_flow_configuration_persist_locally -SyntaxPath tools/check.ps1,tests/test_check_command.py` | `691706a` plus the exact two files later committed as `97a8b9f`; Windows 11, PowerShell 7.6.5, Python 3.13.15 | PASS; 4 passed, 0 failed/skipped, pytest 6.22 s, command 9.418 s | Result ID `20260910T125922331Z-13904-76549b7d`; source fingerprint `8b057a9d68de6717903617fcfacca79778e84f44f98776e0833d8ee32f839e87`. |
 | DF-02 platform recovery | `.\tools\check.ps1 -Mode Verify -TestPath tests/test_check_command.py -SyntaxPath tests/test_check_command.py` after marking the Windows-only command contract | `3431d45` plus the exact test change committed as `a5e27d2`; Windows 11, PowerShell 7.6.5, Python 3.13.15 | PASS; 3 passed, 0 failed/skipped, pytest 3.16 s, command 6.811 s | Result ID `20260910T131730768Z-33296-6c9de3ad`; source fingerprint `7191b213868473dbfd1a4dc64c412fa00a02f2e48816df467b2ab715bc2b8ffe`. |
+| DF-02 cleanup recovery | Run the Windows command-contract tests and verify the exact external run path no longer exists after completion | `95ae97b` plus the exact cleanup content committed as `ccc64d1`; same environment | PASS; 3 passed in 3.12 s, command 5.590 s; external root absent | Result ID `20260910T132207454Z-35132-0d354bfb`; source fingerprint `425515bb7345ec956312fec4e67279e1c185028fa563193b845694b80efa5322`. |
 
 ## Unperformed or blocked in-scope checks
 
@@ -49,6 +50,11 @@ new local-command contract tests invoking the Windows `.venv\\Scripts` layout
 on Ubuntu; application tests passed. The tests are now explicitly scoped to
 Windows, where their focused rerun passed 3/3. The failed run and aggregate-gate
 rejection are retained as evidence; a corrected final-head run is required.
+
+The external Flow root cleanup now resolves the exact target, verifies it is a
+descendant of `%LOCALAPPDATA%\\MetronomeTestRuns`, and removes only that run's
+directory. The focused contract passed and an explicit post-run check found no
+remaining directory for result `20260910T132207454Z-35132-0d354bfb`.
 
 ## Merge evidence
 
