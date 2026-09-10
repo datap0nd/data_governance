@@ -5675,7 +5675,7 @@ DOWNLOAD_SIGNATURES = (
 HTML_PREFIXES = ("<!doctype html", "<html", "<?xml", "<table", "<meta")
 
 
-def _detect_download_format(path: Path) -> str:
+def _detect_download_format(path: Path, *, source_filename: str | None = None) -> str:
     """Identify a downloaded file from its content, not from its name.
 
     Decoding is not a safety net here: ``latin-1`` accepts every byte, so a
@@ -5693,7 +5693,9 @@ def _detect_download_format(path: Path) -> str:
         head = handle.read(128 * 1024)
     if not head:
         raise RuntimeError(f"The downloaded file is empty: {path.name}")
-    suffix = path.suffix.casefold()
+    # Browser-managed paths can be extensionless. Keep the response filename
+    # as a routing hint without copying or renaming the protected source.
+    suffix = Path(source_filename or path.name).suffix.casefold()
     if suffix in EXECUTABLE_EXCEL_ADDIN_EXTENSIONS:
         raise RuntimeError(f"Executable Excel add-ins are not supported: {path.name}")
     if head.startswith(b"PK") or suffix in (OOXML_EXCEL_EXTENSIONS | XLSB_EXCEL_EXTENSIONS):
@@ -5758,6 +5760,7 @@ def _store_completed_download(
     excel_trim: str = "none",
     processing_progress: Callable[[str, str], None] | None = None,
     recorded_output: bool = False,
+    source_filename: str | None = None,
 ) -> dict:
     """Normalize the browser-local file, then copy it to the final target.
 
@@ -5776,7 +5779,7 @@ def _store_completed_download(
     # detection, normalization, and the target copy must all see the same
     # final bytes, not a mid-flush view of a share-backed staging folder.
     snapshot = _stable_source_snapshot(local_path)
-    detected = _detect_download_format(local_path)
+    detected = _detect_download_format(local_path, source_filename=source_filename)
     if recorded_output and not require_normalized_csv:
         # Recording-only downloads keep their bytes. Table shape and row
         # counts become requirements only when a data check or processing
@@ -5811,7 +5814,8 @@ def _store_completed_download(
                 'original_file_path': str(output), 'original_filename': output.name,
                 'original_file_size': copied['file_size'],
                 'detected_format': detected if detected in {'binary', 'pdf'} else suffix.lstrip('.')}
-    declared_suffixes = {local_path.suffix.casefold(), output.suffix.casefold()}
+    declared_suffixes = {local_path.suffix.casefold(), output.suffix.casefold(),
+                        Path(source_filename or local_path.name).suffix.casefold()}
     html_excel = (
         detected == "html"
         and (

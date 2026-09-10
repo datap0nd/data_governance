@@ -177,11 +177,14 @@ def test_excel_named_text_download_reuses_shared_normalization_for_sql(
     )
 
 
+@pytest.mark.parametrize('protected', [
+    b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1' + b'NASCA protected workbook payload',
+    b'NASCA protected workbook payload' + b'\x00' * 64,
+], ids=['ole-wrapper', 'opaque-extensionless-wrapper'])
 def test_recording_validation_normalizes_nasca_input_for_configured_sql(
-    flow_db, tmp_path, downloads_server, monkeypatch,
+    flow_db, tmp_path, downloads_server, monkeypatch, protected,
 ):
     url, exports = downloads_server
-    protected = b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1' + b'NASCA protected workbook payload'
     exports['/1.xlsx'] = protected
     job = replay_job(url, [dict(format='xlsx')])
     # Validation suppresses the SQL side effect but must still prepare the
@@ -213,6 +216,7 @@ def test_recording_validation_normalizes_nasca_input_for_configured_sql(
     state = run_browser(job, tmp_path / 'profile')
 
     assert completed_paths and calls[0][0] == completed_paths[0]
+    assert completed_paths[0].suffix == ''
     assert calls[0][1] == protected
     assert calls[0][2]['allow_empty_data'] is True
     artifact = state['artifacts'][0]

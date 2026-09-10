@@ -1449,6 +1449,43 @@ def test_nasca_encrypted_modern_excel_uses_desktop_excel_for_sql_csv(
     assert not list(tmp_path.glob("metronome-nasca-open-*"))
 
 
+def test_extensionless_nasca_failure_does_not_publish_or_load_binary(tmp_path, monkeypatch):
+    source = tmp_path / "browser-guid"
+    payload = b"NASCA protected workbook payload" + b"\x00" * 64
+    source.write_bytes(payload)
+
+    def fail_open(path, output, **kwargs):
+        assert path == source
+        raise RuntimeError("Excel rejected this protected workbook")
+
+    monkeypatch.setattr(flow_worker, "_normalize_nasca_excel_with_com", fail_open)
+    with pytest.raises(RuntimeError, match="Excel rejected"):
+        flow_worker._store_completed_download(
+            source, tmp_path / "result.xlsx", file_format="xlsx",
+            recorded_output=True, source_filename="report.xlsx",
+        )
+    assert list(tmp_path.iterdir()) == [source]
+    assert source.read_bytes() == payload
+
+
+@pytest.mark.parametrize(("payload", "expected"), [
+    (b"Region,Units\nMENA,7\n", "csv"),
+    (b"<html><body>sign in to continue</body></html>", "html"),
+    (b"%PDF-1.7\nfixture", "pdf"),
+])
+def test_browser_excel_filename_hint_does_not_override_known_content(tmp_path, payload, expected):
+    source = tmp_path / "browser-guid"
+    source.write_bytes(payload)
+    assert flow_worker._detect_download_format(source, source_filename="report.xlsx") == expected
+
+
+def test_browser_filename_hint_rejects_executable_excel_addins(tmp_path):
+    source = tmp_path / "browser-guid"
+    source.write_bytes(b"opaque\x00payload")
+    with pytest.raises(RuntimeError, match="Executable Excel add-ins"):
+        flow_worker._detect_download_format(source, source_filename="report.xlam")
+
+
 def test_nasca_excel_recovery_requires_pywin32(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "pythoncom", None)
     monkeypatch.setitem(sys.modules, "win32com", None)

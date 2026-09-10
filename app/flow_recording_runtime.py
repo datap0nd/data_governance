@@ -583,7 +583,7 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
                     suffix = Path(download.suggested_filename).suffix or '.download'
                     staged = staging / f'{uuid.uuid4().hex}{suffix}'
                     flow_worker._copy_with_checksum(completed, staged)
-                captured.append((step, staged, output_index))
+                captured.append((step, staged, output_index, download.suggested_filename))
                 notify(step, 'Download completed.', outcome='completed')
                 continue
             if action == 'popup':
@@ -646,7 +646,7 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
     read_defaults(final=True)
     # All files are captured before publication, so a later failed interaction
     # cannot leave a partially published direct-output bundle.
-    for step, staged, index in captured:
+    for step, staged, index, source_filename in captured:
         try:
             notify(step, 'Validating downloaded output.', outcome='running')
             specification = step['output']
@@ -666,6 +666,7 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
             needs_table = bool(downstream or specification.get('min_rows') or specification.get('headers')
                 or specification.get('period_checks') or job['downloads'].get('excel_trim', 'none') != 'none')
             metadata = flow_worker._store_completed_download(staged, output,
+                source_filename=source_filename,
                 # The recording proves what the browser clicked, not which
                 # semantic ASAP Export Wizard option produced the response.
                 # Let the shared post-download pipeline follow the bytes just
