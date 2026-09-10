@@ -3939,7 +3939,10 @@ def _text_encoding_candidates(raw: bytes) -> list[str]:
 
 def _bomless_utf16_encoding(raw: bytes) -> str | None:
     """Recognize strongly marked UTF-16 tabular text, never arbitrary binary."""
-    sample = raw[:4096]
+    # A long ASAP report/filter preamble can postpone the first delimiter well
+    # past 4 KiB. Keep this bounded, but inspect enough of the same classification
+    # prefix to prove that the alternating-NUL text is tabular UTF-16.
+    sample = raw[:128 * 1024]
     if len(sample) < 8 or len(sample) % 2 or sample.startswith((b'\xff\xfe', b'\xfe\xff')):
         return None
     pairs = len(sample) // 2
@@ -4022,8 +4025,8 @@ def _parse_strict_delimited_rows(decoded: str) -> tuple[list[list[str]], str] | 
     return rows, delimiter
 
 
-def _looks_like_delimited_text_prefix(decoded: str) -> bool:
-    """Recognize a real tabular text response despite an Excel-like filename.
+def _strict_delimited_prefix(decoded: str) -> tuple[int, str] | None:
+    """Return the first structurally valid table start and its delimiter.
 
     Browser downloads inherit the server's suggested filename. Some recorded
     portal exports use an ``.xlsx`` name for UTF-8/UTF-16 delimited data, so an
@@ -4032,10 +4035,25 @@ def _looks_like_delimited_text_prefix(decoded: str) -> bool:
     table. The structural parser still rejects prose and opaque responses.
     """
     lines = decoded.lstrip("\ufeff").splitlines()
-    for start in range(min(len(lines), 200)):
-        if _parse_strict_delimited_rows("\n".join(lines[start:])) is not None:
-            return True
-    return False
+    # A large report can serialize hundreds of selected filters before the
+    # first data header. The caller supplies a bounded prefix, so search a
+    # correspondingly bounded number of lines rather than assuming the table
+    # begins within the first 200.
+    for start in range(min(len(lines), 2_000)):
+        # A real multi-column header must contain a supported delimiter. Skip
+        # plain preamble lines so a long filter block does not turn this into
+        # repeated parsing of the same 128 KiB suffix.
+        if not any(delimiter in lines[start] for delimiter in (",", ";", "\t", "|")):
+            continue
+        parsed = _parse_strict_delimited_rows("\n".join(lines[start:]))
+        if parsed is not None:
+            return start, parsed[1]
+    return None
+
+
+def _looks_like_delimited_text_prefix(decoded: str) -> bool:
+    """Recognize a real tabular text response despite an Excel-like filename."""
+    return _strict_delimited_prefix(decoded) is not None
 
 
 def _asap_csv_header_index(rows: list[list[str]]) -> int:
@@ -4062,7 +4080,9 @@ def _asap_csv_header_index(rows: list[list[str]]) -> int:
     section_candidates = []
     for section_number, (section_start, section_end) in enumerate(sections):
         candidates = []
-        for index in range(section_start, min(section_end, 200)):
+        # Keep the scan bounded, but do not discard a valid data section only
+        # because hundreds of ASAP filter rows precede it.
+        for index in range(section_start, min(section_end, 2_000)):
             header = [str(value).strip() for value in rows[index]]
             populated = [value for value in header if value]
             if (
@@ -4111,12 +4131,16 @@ def _normalize_csv(
         rows, delimiter = parsed
     else:
         lines = decoded.splitlines()
-        sample = "\n".join(lines[:20])
-        try:
-            dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
-            delimiter = dialect.delimiter
-        except csv.Error:
-            delimiter = max((",", ";", "\t", "|"), key=lambda item: sample.count(item))
+        structural = _strict_delimited_prefix(decoded)
+        if structural is not None:
+            _header_start, delimiter = structural
+        else:
+            sample = "\n".join(lines[:20])
+            try:
+                dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+                delimiter = dialect.delimiter
+            except csv.Error:
+                delimiter = max((",", ";", "\t", "|"), key=lambda item: sample.count(item))
         rows = list(csv.reader(io.StringIO(decoded), delimiter=delimiter))
     if not rows:
         raise RuntimeError("The downloaded CSV is empty.")
@@ -5487,8 +5511,14 @@ def _detect_download_format(path: Path) -> str:
     out as a "CSV", and only fails much later inside PostgreSQL with a garbled
     column name. Refuse it at the door instead.
     """
+    # ASAP text exports can place a long report/filter preamble before the
+    # first tabular header.  Four KiB is enough for binary signatures, but it
+    # is not enough to classify those exports from their contents and causes
+    # an Excel-named text response to fall back to the ``.xlsx`` suffix.  Read
+    # the same bounded prefix used by the downstream sign-in/table checks so
+    # the real header can win without loading an unbounded download here.
     with path.open("rb") as handle:
-        head = handle.read(4096)
+        head = handle.read(128 * 1024)
     if not head:
         raise RuntimeError(f"The downloaded file is empty: {path.name}")
     suffix = path.suffix.casefold()

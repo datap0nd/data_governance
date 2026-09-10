@@ -117,7 +117,29 @@ def test_excel_named_text_export_is_normalized_for_recorded_sql(tmp_path, encodi
     assert flow_worker._detect_download_format(source) == 'csv'
     result = flow_worker._store_completed_download(
         source, tmp_path / 'configured.xlsx', file_format='xlsx',
-        recorded_output=True,
+        recorded_output=True, csv_preamble='asap',
+    )
+
+    output = Path(result['file_path'])
+    assert output.suffix == '.csv'
+    assert result['detected_format'] == 'csv'
+    assert result['row_count'] == 2
+    assert output.read_text(encoding='utf-8-sig') == 'Region,Units\nMENA,7\nPortugal,8\n'
+
+
+def test_excel_named_text_export_with_long_report_preamble_is_detected_for_recorded_sql(tmp_path):
+    source = tmp_path / 'MTracker_subs.xlsx'
+    preamble = ''.join(f'Report filter {index}: selected value\r\n' for index in range(220))
+    assert len(preamble.encode('utf-8')) > 4096
+    source.write_text(
+        preamble + '\r\nRegion\tUnits\r\nMENA\t7\r\nPortugal\t8\r\n',
+        encoding='utf-8',
+    )
+
+    assert flow_worker._detect_download_format(source) == 'csv'
+    result = flow_worker._store_completed_download(
+        source, tmp_path / 'configured.xlsx', file_format='xlsx',
+        recorded_output=True, csv_preamble='asap',
     )
 
     output = Path(result['file_path'])

@@ -638,7 +638,12 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
                 # Excel assertion from an ``.xlsx`` output label.
                 file_format=fmt,
                 require_normalized_csv=fmt in {'csv', 'xlsx'} and needs_table, recorded_output=True,
-                allow_raw_xlsx_fallback=False, excel_trim=job['downloads'].get('excel_trim', 'none'), csv_preamble='none')
+                allow_raw_xlsx_fallback=False, excel_trim=job['downloads'].get('excel_trim', 'none'),
+                # Recorded ASAP downloads still use ASAP's report/filter
+                # preamble even though navigation came from a recording.
+                # Reuse the scan-selected normalization contract so only the
+                # final rectangular data section reaches SQL.
+                csv_preamble=('asap' if job.get('site', {}).get('adapter') == 'asap_portal' else 'none'))
             minimum_rows = specification.get('min_rows', 0)
             if minimum_rows:
                 csv_path = metadata.get('normalized_file_path') or metadata.get('file_path')

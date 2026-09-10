@@ -145,9 +145,11 @@ def test_excel_named_text_download_reuses_shared_normalization_for_sql(
     flow_db, tmp_path, downloads_server, monkeypatch,
 ):
     url, exports = downloads_server
+    preamble = ''.join(f'Report filter {index}: selected value\r\n' for index in range(220))
+    assert len(preamble.encode('utf-16-le')) > 4096
     exports['/1.xlsx'] = (
-        'Region\tUnits\r\nMENA\t7\r\nPortugal\t8\r\n'.encode('utf-16-le')
-    )
+        preamble + '\r\nRegion\tUnits\r\nMENA\t7\r\nPortugal\t8\r\n'
+    ).encode('utf-16-le')
     job = replay_job(url, [dict(format='xlsx')])
     job['sql_handoff']['enabled'] = True
     loaded = {}
