@@ -237,6 +237,9 @@ try {
     $env:DG_DB_PATH = Join-Path $runRoot 'governance-test.db'
     $env:DG_TEST_RUN_ROOT = $runRoot
     $env:DG_BROWSER_PROFILE_ROOT = $profileRoot
+    $externalFlowRoot = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) "MetronomeTestRuns\$runId\flows"
+    New-Item -ItemType Directory -Force -Path $externalFlowRoot | Out-Null
+    $env:DG_FLOWS_ROOT = $externalFlowRoot
     $env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $repoRoot '.playwright-browsers'
     $junitPath = Join-Path $runRoot 'pytest.xml'
     $result.artifacts.junit = $junitPath

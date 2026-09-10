@@ -51,6 +51,7 @@ def test_command_declares_isolated_paths_before_pytest_launch():
         "$env:DG_DB_PATH = Join-Path $runRoot 'governance-test.db'",
         "$env:DG_TEST_RUN_ROOT = $runRoot",
         "$env:DG_BROWSER_PROFILE_ROOT = $profileRoot",
+        "$env:DG_FLOWS_ROOT = $externalFlowRoot",
         "$env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $repoRoot '.playwright-browsers'",
     ]
     launch = source.index("$pytestArguments =")
