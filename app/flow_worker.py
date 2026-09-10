@@ -4022,6 +4022,22 @@ def _parse_strict_delimited_rows(decoded: str) -> tuple[list[list[str]], str] | 
     return rows, delimiter
 
 
+def _looks_like_delimited_text_prefix(decoded: str) -> bool:
+    """Recognize a real tabular text response despite an Excel-like filename.
+
+    Browser downloads inherit the server's suggested filename. Some recorded
+    portal exports use an ``.xlsx`` name for UTF-8/UTF-16 delimited data, so an
+    extension cannot override strong content evidence. Try each plausible
+    header position because report-title and filter preambles can precede the
+    table. The structural parser still rejects prose and opaque responses.
+    """
+    lines = decoded.lstrip("\ufeff").splitlines()
+    for start in range(min(len(lines), 200)):
+        if _parse_strict_delimited_rows("\n".join(lines[start:])) is not None:
+            return True
+    return False
+
+
 def _asap_csv_header_index(rows: list[list[str]]) -> int:
     """Choose the last rectangular section after ASAP title/filter details.
 
@@ -5504,6 +5520,8 @@ def _detect_download_format(path: Path) -> str:
         stripped_text,
     ):
         return "html"
+    if _looks_like_delimited_text_prefix(decoded_head):
+        return "csv"
     if suffix in OOXML_EXCEL_EXTENSIONS:
         return "xlsx"
     if suffix in XLSB_EXCEL_EXTENSIONS:
@@ -5597,6 +5615,7 @@ def _store_completed_download(
         and (
             bool(declared_suffixes & LEGACY_EXCEL_EXTENSIONS)
             or (asap_type is not None and asap_type.content_family == "excel")
+            or (recorded_output and file_format == "xlsx")
         )
         # Outlook's strict flat-file contract and an explicitly selected ASAP
         # Excel type may opt into validated HTML/XML-as-XLS handling. A portal
@@ -5605,6 +5624,7 @@ def _store_completed_download(
         and (
             (strict_headers and csv_preamble == "none")
             or (asap_type is not None and asap_type.content_family == "excel")
+            or (recorded_output and file_format == "xlsx")
         )
     )
     if detected == "xls" and declared_suffixes & (
