@@ -73,11 +73,12 @@ def snapshot(db, flow_id):
 
 def _draft(folder, flow_id, metadata, reason):
     """Keep incomplete work on disk without accidentally running an older active file."""
+    from app.flow_portable import preserve_edited_script
     target = folder / 'Scripts' / 'run_flow.py'
     flow_layout._regular(target)
     previous = flow_layout.read_manifest(folder, flow_id).get('standalone') or {}
-    if target.exists() and hashlib.sha256(target.read_text(encoding='utf-8').encode()).hexdigest() != previous.get('launcher_hash'):
-        raise ValueError('Scripts/run_flow.py was modified; preserve or rename it before saving again.')
+    # An operator's edits are archived under Scripts/versions, never a reason to stop saving.
+    archived = preserve_edited_script(target, previous.get('launcher_hash'))
     content = DRAFT_HEADER + 'import json, sys\n'
     content += 'FLOW = json.loads(' + repr(json.dumps(metadata, ensure_ascii=False)) + ')\n'
     content += 'if __name__ == "__main__":\n'
@@ -85,6 +86,8 @@ def _draft(folder, flow_id, metadata, reason):
     flow_standalone._atomic_text(target, content)
     result = {'state': 'draft', 'message': reason, 'launcher': str(target),
               'launcher_hash': hashlib.sha256(content.encode()).hexdigest()}
+    if archived:
+        result['archived_edit'] = archived
     flow_layout.update_manifest(folder, flow_id, standalone=result)
     return result
 
@@ -102,12 +105,8 @@ def _write_companion(folder, name, content):
         versions.mkdir(exist_ok=True)
         digest = hashlib.sha256(previous.encode()).hexdigest()
         archived = versions / f'{target.stem}-{digest}{target.suffix}'
-        flow_layout._regular(archived)
-        if archived.exists():
-            if archived.read_text(encoding='utf-8') != previous:
-                raise ValueError('An archived Flow companion file was modified; preserve it before saving again.')
-        else:
-            flow_standalone._atomic_text(archived, previous)
+        from app.flow_portable import _write_revision
+        _write_revision(archived, previous)
     flow_standalone._atomic_text(target, content)
 
 
@@ -139,7 +138,8 @@ def sync_flow(db, flow_id, *, force=False):
         intact = target.is_file() and hashlib.sha256(target.read_text(encoding='utf-8').encode()).hexdigest() == previous.get('launcher_hash')
         companions = all((folder / 'Scripts' / name).is_file() for name in ('README.md', 'requirements.txt'))
         if not force and intact and companions and previous.get('snapshot_hash') == digest and previous.get('state') in {'current', 'draft'}:
-            return previous
+            # An archived edit is reported once, on the save that archived it.
+            return {key: value for key, value in previous.items() if key != 'archived_edit'}
         # Save the descriptive snapshot even when execution settings are incomplete.
         flow_layout.update_manifest(folder, flow_id, flow_name=metadata['name'], configuration=metadata,
                                     handover={'state': 'updating', 'snapshot_hash': digest})

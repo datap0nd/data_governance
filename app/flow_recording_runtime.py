@@ -806,8 +806,10 @@ def standalone_main(job, argv=None):
     parser.add_argument('--parameter', action='append', default=[], metavar='NAME=VALUE')
     parser.add_argument('--profile-dir', type=Path)
     parser.add_argument('--output-root', type=Path, help='Use a dedicated root for this portable Flow on this machine.')
+    parser.add_argument('--quiet', action='store_true', help='Do not echo progress to stderr while the Flow runs.')
     args = parser.parse_args(argv)
     job = copy.deepcopy(job)
+    from app.flow_standalone import echo_progress
     try:
         flow_recording.validate_definition(job['recording']['definition'])
         overrides = dict(item.split('=', 1) for item in args.parameter)
@@ -935,6 +937,8 @@ def standalone_main(job, argv=None):
                         os.replace(confirmed, journal)
                     log.write(json.dumps({'status': status, 'progress': detail, 'artifacts': artifacts or [], 'timings': timings or []}, default=str) + '\n')
                     log.flush()
+                    if not args.quiet:
+                        echo_progress(status, detail)
                 if args.retry_views:
                     job['_standalone'] = True
                     flow_worker.execute_flow(None, job, progress, profile, None, run_id=run_id,
@@ -958,5 +962,8 @@ def standalone_main(job, argv=None):
                                 journal.unlink(missing_ok=True)
         return 0
     except Exception as exc:
+        # The full traceback names this file's own line numbers; keep it visible for troubleshooting.
+        import traceback
+        traceback.print_exc(file=sys.stderr)
         print(f'Recorded Flow failed: {exc}', file=sys.stderr)
         return 1
