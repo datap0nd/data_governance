@@ -12417,21 +12417,18 @@ async function _flowSubmitBuilder(event) {
         const hasUntested = body.execution_method === 'recorded'
             && window._flowUntestedRecordingSelections?.has(flowId);
         if (hasUntested) {
+            // Testing is optional: the saved draft becomes the Flow's recording
+            // as it is. Only unsaved recording edits stop the save.
             const revisionId = window._flowUntestedRecordingSelections.get(flowId);
             if (!revisionId) throw Error('Save the recording draft before saving this Flow.');
-            if (!window.confirm('Save without testing?\n\nThis recording has not been tested. The Flow may fail or produce the wrong output. Check the first run output.')) {
-                button.disabled = false;
-                return;
-            }
             body.recording_revision_id = revisionId;
-            body.allow_untested_recording = true;
         }
         const saved = await (form.dataset.id ? apiPut(`/api/flows/${form.dataset.id}`, body) : apiPostJson("/api/flows", body));
         const archivedEdit = saved.standalone?.archived_edit ? String(saved.standalone.archived_edit).split(/[\\/]/).pop() : "";
         toast(saved.standalone?.state === "error"
             ? `Flow saved; its files could not be updated: ${saved.standalone.message}`
             : archivedEdit ? `Flow saved; your edited run_flow.py was archived as Scripts/versions/${archivedEdit} and the script was refreshed.`
-            : hasUntested ? "Flow saved without testing; check the first run output." : "Flow saved");
+            : hasUntested ? "Flow saved. This recording has not been tested; check the first run output." : "Flow saved");
         window._flowRecordingSelections?.delete(saved.id);
         window._flowUntestedRecordingSelections?.delete(saved.id);
         window._flowBuilderDrafts?.delete(saved.id);
@@ -12442,7 +12439,7 @@ async function _flowSubmitBuilder(event) {
         if (!form.dataset.id && body.execution_method === "recorded" && replicateFrom && replicateRecording) {
             try {
                 const copied = await apiPostJson(`/api/flows/${saved.id}/recordings/revisions/copy`, { source_flow_id: replicateFrom });
-                toast(`Recording copied from ${copied.provenance?.source_flow_name || "the source flow"} as a draft; open it and save the Flow to use it without testing.`);
+                toast(`Recording copied from ${copied.provenance?.source_flow_name || "the source flow"} as a draft; open it and save the Flow to use it. Testing is optional.`);
             } catch (err) { toast("Recording not copied: " + err.message); }
         }
         if (!form.dataset.id && body.execution_method === "recorded") {

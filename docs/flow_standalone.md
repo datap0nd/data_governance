@@ -45,7 +45,7 @@ Period windows and catalog filters are frozen at synchronization time. They do n
 
 ## Incomplete work and recovery
 
-An unfinished or incompatible recording still has a Python file and complete descriptive JSON. Its script exits with an explicit draft explanation instead of running old settings. Finish the recording, then either test it or explicitly confirm **Save without testing** to obtain an executable version. The active and latest draft definitions are identified separately; a new draft does not replace the activated recording used for execution until the Flow is saved.
+A Flow without a saved recording, or whose recording is structurally incomplete, still has a Python file and complete descriptive JSON. Its script exits with an explicit draft explanation instead of running. Finish the recording and save the Flow to obtain an executable version; testing is optional, and the script header states whether the active recording was tested with the current settings. The active and latest draft definitions are identified separately; a new draft does not replace the activated recording used for execution until the Flow is saved.
 
 Open **More → Flow files** to check synchronization; **Open folder** takes you to the files. If a share is unavailable, the database save remains successful and the UI reports that the files need attention. Restore access and save again, or restart Metronome to reconcile. Never assume a file with an old timestamp is current after a failed synchronization. If `run_flow.py` was edited manually, the status reads `modified` until the next save, which archives the edited copy under `Scripts/versions` and refreshes the script; the save confirmation names the archived file.
 

@@ -240,7 +240,7 @@ def copy_template_revision(db, flow_id: int, body: TemplateCopy, *, now: str | N
 
     The copy carries the complete definition (steps, parameters, output
     settings, checks, waits and GSCM bookmark targets) but none of the source's
-    validation evidence or activation; it must pass Test recording first.
+    validation evidence or activation; testing the copy is optional.
     """
     destination = flows._flow_out(db, flow_id)
     module = _destination_module(db, destination, body.site_id)
@@ -410,9 +410,10 @@ def activate_revision(flow_id: int, revision_id: int):
         flow_recordings.assert_flow_idle(db, flow_id)
         if db.execute("SELECT 1 FROM flow_runs WHERE flow_id=? AND status IN ('queued','claimed','running')", (flow_id,)).fetchone():
             raise HTTPException(409, 'Wait for the active Flow run to finish.')
-        row = db.execute("SELECT * FROM flow_recording_revisions WHERE flow_id=? AND id=? AND status='validated'", (flow_id, revision_id)).fetchone()
+        # Any saved version can be activated; testing is optional evidence.
+        row = db.execute("SELECT * FROM flow_recording_revisions WHERE flow_id=? AND id=?", (flow_id, revision_id)).fetchone()
         if not row:
-            raise HTTPException(409, 'Validate this revision successfully before activation.')
+            raise HTTPException(404, 'Recording revision not found.')
         db.execute("UPDATE flows SET execution_method='recorded',recording_revision_id=?,recording_review_reason=NULL WHERE id=?", (revision_id, flow_id))
         job = flows._build_job(db, flow_id)
         try:

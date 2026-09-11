@@ -82,9 +82,17 @@ def test_preview_and_copy_create_independent_draft_with_provenance_and_no_eviden
         assert json.loads(row['template_source_json'])['source_flow_name'] == 'Portable sales'
         flow = db.execute('SELECT recording_revision_id, enabled FROM flows WHERE id=?', (destination['id'],)).fetchone()
         assert flow['recording_revision_id'] is None and flow['enabled'] == 0
-        # The copy must pass Test recording before activation.
-        with pytest.raises(HTTPException, match='Validate'):
-            routes.activate_revision(destination['id'], copied['revision_id'])
+    # Testing the copy is optional: activation binds the untested draft as it is.
+    with pytest.raises(HTTPException, match='not found'):
+        routes.activate_revision(destination['id'], copied['revision_id'] + 1000)
+    activated = routes.activate_revision(destination['id'], copied['revision_id'])
+    assert activated['revision_id'] == copied['revision_id']
+    with database.get_db() as db:
+        flow = db.execute('SELECT recording_revision_id FROM flows WHERE id=?', (destination['id'],)).fetchone()
+        assert flow['recording_revision_id'] == copied['revision_id']
+        runnable = flows._build_job(db, destination['id'])
+        assert runnable['recording']['revision'] == copied['revision_id'] and runnable['recording']['tested'] is False
+        assert db.execute('SELECT status FROM flow_recording_revisions WHERE id=?', (copied['revision_id'],)).fetchone()[0] == 'draft'
     listing = routes.list_recordings(destination['id'])
     assert listing['revisions'][0]['template_source']['source_revision_id'] == revision
     # Later edits or deletion of the source do not affect the copy.

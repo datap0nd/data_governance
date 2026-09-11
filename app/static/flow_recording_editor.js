@@ -160,7 +160,7 @@ window.RecordedFlowEditor = (() => {
             const versionLabel=r=>`${typeof formatDate==='function'?formatDate(r.created_at):r.created_at} · ${r.status==='active'?'active':r.status==='validated'?'tested':r.status==='approved'?'saved without test':'draft'} · ${r.step_count} steps${r.id===t.default_revision_id?' · default':''}`;
             host.innerHTML=`<h4>${h(t.name)}</h4><label>Version <select data-template-version aria-label="Template version">${t.revisions.map(r=>option(r.id,versionLabel(r),templateRevision)).join('')}</select></label>
                 ${templatePreview?`<p class="recording-template-summary">${templatePreview.step_count} steps${Object.keys(templatePreview.definition.parameters||{}).length?` · ${Object.keys(templatePreview.definition.parameters).length} date parameter(s)`:''}${(templatePreview.definition.steps||[]).some(s=>s.action==='download')?` · ${templatePreview.definition.steps.filter(s=>s.action==='download').length} download(s)`:''}${M.all(templatePreview.definition.steps||[]).some(s=>s.bookmark_target)?' · GSCM bookmark targets':''}</p><ol class="recording-template-steps" aria-label="Steps in this version">${(templatePreview.definition.steps||[]).map(s=>`<li>${h(M.describe(s))}${s.action==='download'?' <span class="recording-badge">Download</span>':''}</li>`).join('')}</ol>`:'<p role="status">Loading steps…</p>'}
-                <p class="recording-template-note">Applying replaces the steps shown in this editor with an independent copy. Undo restores what you had, and Saved versions keep every earlier draft. The copy must pass Test recording before it can be activated.</p>
+                <p class="recording-template-note">Applying replaces the steps shown in this editor with an independent copy. Undo restores what you had, and Saved versions keep every earlier draft. Testing the copy is optional; save the Flow to use it.</p>
                 <button type="button" class="btn-primary" data-template-apply ${templatePreview&&!pending?'':'disabled'}>Use this recording</button>`;
             host.querySelector('[data-template-version]').onchange=e=>{templateRevision=Number(e.target.value);templatePreview=null;renderTemplateDetail();loadTemplatePreview();};
             host.querySelector('[data-template-apply]').onclick=applyTemplate;
@@ -188,7 +188,7 @@ window.RecordedFlowEditor = (() => {
                 draft.timezone='Asia/Dubai';
                 revisionId=result.revision_id;baseline=JSON.stringify(draft);dirty=false;selected=null;expanded=new Set();
                 if(settings)delete settings.recording_revision_id;window._flowRecordingSelections?.set(flowId,null);
-                templateNote=`Copied from ${source.name}. Test recording before activation.`;
+                templateNote=`Copied from ${source.name}. Save the Flow to use it; testing is optional.`;
                 remember();closeTemplates();renderEditor();
                 body.querySelector('[data-save-state]').textContent=templateNote;
             });
@@ -203,7 +203,7 @@ window.RecordedFlowEditor = (() => {
             const host=body.querySelector('[data-editor]');
             if(!draft){host.innerHTML='<p>Open your report, run it, then download the files. Or start from another Flow’s saved recording with <strong>Choose from template</strong>.</p><button class="btn-primary" data-begin>Start recording</button> <button class="btn-secondary" data-begin-template>Choose from template</button>';host.querySelector('[data-begin]').onclick=()=>body.querySelector('[data-start]').click();host.querySelector('[data-begin-template]').onclick=()=>body.querySelector('[data-template]').click();updateButtons();return;}
             if('date_batch' in draft){
-                host.innerHTML='<form data-convert><p role="alert">Date batching has been removed. This schedule is paused. Enter one explicit range to create an ordinary recording, then test it.</p><label>Start date <input name="start" required placeholder="Recorded date format"></label><label>End date <input name="end" required placeholder="Recorded date format"></label><button class="btn-primary">Convert to one range</button></form>';
+                host.innerHTML='<form data-convert><p role="alert">Date batching has been removed. This schedule is paused. Enter one explicit range to create an ordinary recording, then save the Flow; testing is optional.</p><label>Start date <input name="start" required placeholder="Recorded date format"></label><label>End date <input name="end" required placeholder="Recorded date format"></label><button class="btn-primary">Convert to one range</button></form>';
                 host.querySelector('form').onsubmit=e=>{e.preventDefault();request(async()=>{const r=await apiPostJson(`${prefix}/revisions/${revisionId}/convert-single-range`,{start:e.target.elements.start.value,end:e.target.elements.end.value});revisionId=r.revision_id;draft=null;});};updateButtons();return;
             }
             if(selected&&!M.all(draft.steps).some(s=>s.id===selected))selected=undo.length?draft.steps[0]?.id:null;
@@ -341,7 +341,7 @@ window.RecordedFlowEditor = (() => {
         }
         function updateButtons() {
             if(!data)return;const busy=pending||Boolean(active()),batch=draft&&'date_batch' in draft;
-            for(const [selector,disabled] of [['start',busy],['begin',busy],['begin-template',busy],['template',busy||batch],['save',busy||!draft||batch],['test',busy||!draft||batch],['enable',busy||dirty||revision()?.status!=='validated'||batch],['undo',busy||!undo.length]]) {body.querySelectorAll(`[data-${selector}]`).forEach(button=>button.disabled=Boolean(disabled));}
+            for(const [selector,disabled] of [['start',busy],['begin',busy],['begin-template',busy],['template',busy||batch],['save',busy||!draft||batch],['test',busy||!draft||batch],['enable',busy||dirty||!revision()||batch],['undo',busy||!undo.length]]) {body.querySelectorAll(`[data-${selector}]`).forEach(button=>button.disabled=Boolean(disabled));}
             // One visible Undo at a time: the selected step's panel owns it while open.
             const topUndo=body.querySelector('[data-undo-top]');if(topUndo)topUndo.hidden=!undo.length||Boolean(draft&&M.owner(draft,selected));
             body.querySelector('[data-template-apply]')?.toggleAttribute('disabled',busy||!templatePreview);

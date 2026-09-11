@@ -59,19 +59,31 @@ def test_pending_snapshot_atomic_apply_and_active_evidence(flow_db,monkeypatch):
         assert frozen['validation_job']['flow']['name']=='Pending name'
         assert db.execute('SELECT name FROM flows WHERE id=?',(fid,)).fetchone()[0]==saved['name']
     complete(queued.json()['scan_id']);pending['recording_revision_id']=revision
-    bad={**pending,'filename_template':'other_{index}.xlsx'}
-    assert client.put(base,json=bad).status_code==409
+    # Settings that differ from the tested configuration save without a new test
+    # and run with the current settings; the job only records that no matching
+    # evidence exists.
+    changed={**pending,'filename_template':'other_{index}.xlsx'}
+    assert client.put(base,json=changed).status_code==200
     with database.get_db() as db:
-        row=db.execute('SELECT name,recording_revision_id FROM flows WHERE id=?',(fid,)).fetchone();assert row['name']==saved['name'] and row['recording_revision_id'] is None
+        row=db.execute('SELECT filename_template,recording_revision_id FROM flows WHERE id=?',(fid,)).fetchone()
+        assert row['filename_template']=='other_{index}.xlsx' and row['recording_revision_id']==revision
+        untested=flows._build_job(db,fid)
+        assert untested['recording']['revision']==revision and untested['recording']['tested'] is False
+        assert db.execute('SELECT status FROM flow_recording_revisions WHERE id=?',(revision,)).fetchone()[0]=='validated'
     applied=client.put(base,json=pending);assert applied.status_code==200,applied.text
+    with database.get_db() as db:
+        assert flows._build_job(db,fid)['recording']['tested'] is True
     # Evidence from the previous hash format remains runnable after upgrading.
     with database.get_db() as db:
         active_job=flows._build_job(db,fid)
         db.execute('UPDATE flow_recording_revisions SET config_hash=? WHERE id=?',(flow_recordings.config_hash(active_job,legacy=True),revision))
-        assert flows._build_job(db,fid)['recording']['revision']==revision
+        upgraded=flows._build_job(db,fid)
+        assert upgraded['recording']['revision']==revision and upgraded['recording']['tested'] is True
     # Schedule-only changes preserve evidence.
     scheduled={**pending,'schedule_type':'daily','schedule_time':'08:00'}
     assert client.put(base,json=scheduled).status_code==200
+    with database.get_db() as db:
+        assert flows._build_job(db,fid)['recording']['tested'] is True
     assert client.post(base+'/recordings/revisions',json={'definition':job['recording']['definition']}).json()['revision_id']==revision
     retry=client.post(f'{base}/recordings/revisions/{revision}/validate',json={'settings':pending}).json()
     assert retry['revision_id']!=revision
@@ -81,42 +93,45 @@ def test_pending_snapshot_atomic_apply_and_active_evidence(flow_db,monkeypatch):
         assert flows._build_job(db,fid)['recording']['revision']==revision
 
 
-def test_draft_can_be_saved_without_testing_only_after_explicit_approval(flow_db,monkeypatch):
+def test_untested_draft_saves_and_runs_without_confirmation(flow_db,monkeypatch):
     saved,job=draft_job();client=client_for(monkeypatch);fid=saved['id'];base=f'/api/flows/{fid}'
     revision=client.post(base+'/recordings/revisions',json={'definition':job['recording']['definition']}).json()['revision_id']
     pending=flows.FlowWrite.model_validate(saved).model_dump()
-    pending.update(name='Approved without test',recording_revision_id=revision,target_folder=None)
+    pending.update(name='Saved untested',recording_revision_id=revision,target_folder=None)
 
-    refused=client.put(base,json=pending)
-    assert refused.status_code==409,refused.text
-    with database.get_db() as db:
-        flow=db.execute('SELECT name,recording_revision_id FROM flows WHERE id=?',(fid,)).fetchone()
-        assert flow['name']==saved['name'] and flow['recording_revision_id'] is None
-        assert db.execute('SELECT status FROM flow_recording_revisions WHERE id=?',(revision,)).fetchone()[0]=='draft'
-
-    approved=client.put(base,json={**pending,'allow_untested_recording':True})
-    assert approved.status_code==200,approved.text
+    applied=client.put(base,json=pending)
+    assert applied.status_code==200,applied.text
     with database.get_db() as db:
         row=db.execute('SELECT * FROM flow_recording_revisions WHERE id=?',(revision,)).fetchone()
-        assert row['status']=='approved' and row['validated_at'] is None
-        assert json.loads(row['evidence_json'])['testing_waived'] is True
+        assert row['status']=='draft' and row['validated_at'] is None and row['config_hash'] is None
         runnable=flows._build_job(db,fid)
-        assert runnable['recording']['revision']==revision
-        assert runnable['flow']['name']=='Approved without test'
+        assert runnable['recording']['revision']==revision and runnable['recording']['tested'] is False
+        assert runnable['recording']['engine_hash'] is None
+        assert runnable['flow']['name']=='Saved untested'
+    # The retired waiver flag from older clients is accepted and ignored.
+    assert client.put(base,json={**pending,'allow_untested_recording':True}).status_code==200
+    # Enabling a schedule needs no test either.
+    enabled={**pending,'enabled':True,'schedule_type':'daily','schedule_time':'08:00'}
+    assert client.put(base,json=enabled).status_code==200
+    with database.get_db() as db:
+        assert db.execute('SELECT enabled FROM flows WHERE id=?',(fid,)).fetchone()[0]==1
+    # Testing stays available; a failed test never removes the active draft.
     queued=client.post(f'{base}/recordings/revisions/{revision}/validate',json={'settings':pending})
     assert queued.status_code==200,queued.text
-    assert queued.json()['revision_id']!=revision
+    assert queued.json()['revision_id']==revision
+    complete(queued.json()['scan_id'],status='failed')
     with database.get_db() as db:
-        assert db.execute('SELECT status FROM flow_recording_revisions WHERE id=?',(revision,)).fetchone()[0]=='approved'
+        assert db.execute('SELECT status FROM flow_recording_revisions WHERE id=?',(revision,)).fetchone()[0]=='draft'
+        assert flows._build_job(db,fid)['recording']['revision']==revision
 
 
-def test_save_without_testing_rejects_non_runnable_recording_and_rolls_back(flow_db,monkeypatch):
+def test_save_rejects_non_runnable_recording_and_rolls_back(flow_db,monkeypatch):
     saved,job=draft_job();client=client_for(monkeypatch);fid=saved['id'];base=f'/api/flows/{fid}'
     invalid=job['recording']['definition']
     invalid['steps']=[step for step in invalid['steps'] if step['action']!='download']
     revision=client.post(base+'/recordings/revisions',json={'definition':invalid}).json()['revision_id']
     pending=flows.FlowWrite.model_validate(saved).model_dump()
-    pending.update(name='Must roll back',recording_revision_id=revision,allow_untested_recording=True,target_folder=None)
+    pending.update(name='Must roll back',recording_revision_id=revision,target_folder=None)
 
     rejected=client.put(base,json=pending)
     assert rejected.status_code==422,rejected.text
@@ -188,7 +203,7 @@ def test_browser_real_api_save_test_return_apply(flow_db,monkeypatch,tmp_path,re
         browser.close()
 
 
-def test_transform_bytes_are_frozen_and_changed_source_can_be_retested(flow_db,monkeypatch,tmp_path):
+def test_changed_transform_source_saves_and_runs_with_current_bytes(flow_db,monkeypatch,tmp_path):
     saved,job=draft_job();client=client_for(monkeypatch);fid=saved['id'];base=f'/api/flows/{fid}'
     revision=client.post(base+'/recordings/revisions',json={'definition':job['recording']['definition']}).json()['revision_id']
     script=tmp_path/'transform.py';script.write_text('# version one\n')
@@ -196,14 +211,22 @@ def test_transform_bytes_are_frozen_and_changed_source_can_be_retested(flow_db,m
     pending.update(transform_enabled=True,transform_script_path=str(script))
     queued=client.post(f'{base}/recordings/revisions/{revision}/validate',json={'settings':pending});assert queued.status_code==200,queued.text
     complete(queued.json()['scan_id']);pending['recording_revision_id']=revision
+    # A transformation edited after the test saves without a retest and runs
+    # with the current bytes; only the evidence match is lost.
     script.write_text('# changed after test\n')
-    assert client.put(base,json=pending).status_code==409
-    script.write_text('# version one\n')
     result=client.put(base,json=pending);assert result.status_code==200,result.text
     saved_path=Path(result.json()['transform_script_path'])
-    assert saved_path!=script and saved_path.read_text()=='# version one\n'
-    # Imported location changes without changing tested bytes.
+    assert saved_path!=script and saved_path.read_text()=='# changed after test\n'
+    with database.get_db() as db:
+        current=flows._build_job(db,fid)
+        assert current['recording']['transformation_source']=='# changed after test\n' and current['recording']['tested'] is False
+    # Restoring the tested bytes restores the evidence match; the imported
+    # location itself is not part of the evidence.
     pending['transform_script_path']=str(saved_path)
+    saved_path.write_text('# version one\n')
+    assert client.put(base,json=pending).status_code==200
+    with database.get_db() as db:
+        assert flows._build_job(db,fid)['recording']['tested'] is True
     saved_path.write_text('# version two\n')
     retry=client.post(f'{base}/recordings/revisions/{revision}/validate',json={'settings':pending})
     assert retry.status_code==200,retry.text
