@@ -18,6 +18,7 @@ This is a standing instruction from the repository owner, recorded in
 | 2026-09-10: NASCA browser-source recovery | [Test plan](releases/2026-09-10-nasca-browser-source/test-plan.md) | [Test report](releases/2026-09-10-nasca-browser-source/test-report.md) |
 | 2026-09-10: NASCA active Excel session | [Test plan](releases/2026-09-10-nasca-active-excel-session/test-plan.md) | [Test report](releases/2026-09-10-nasca-active-excel-session/test-report.md) |
 | 2026-09-10: NASCA recording validation parity | [Test plan](releases/2026-09-10-nasca-recording-validation/test-plan.md) | [Test report](releases/2026-09-10-nasca-recording-validation/test-report.md) |
+| 2026-09-10: sharded CI and safe scope selection | [Test plan](releases/2026-09-10-sharded-ci/test-plan.md) | [Test report](releases/2026-09-10-sharded-ci/test-report.md) |
 | 2026-09-10: delivery foundation and merge gate | [Test plan](releases/2026-09-10-delivery-foundation/test-plan.md) | [Test report](releases/2026-09-10-delivery-foundation/test-report.md) |
 | 2026-09-10: NASCA Excel-COM Flow recovery | [Test plan](releases/2026-09-10-nasca-excel-com/test-plan.md) | [Test report](releases/2026-09-10-nasca-excel-com/test-report.md) |
 | 2026-09-10: recorded ASAP staging completion | [Test plan](releases/2026-09-10-recorded-asap-staging-completion/test-plan.md) | [Test report](releases/2026-09-10-recorded-asap-staging-completion/test-report.md) |
@@ -125,6 +126,32 @@ run URL and tested head SHA before a head-pinned merge.
 
 Report delivery as four distinct states: implementation ready, local checks
 complete, CI complete and merged. A merge is not a deployment.
+
+## CI scope, sharding and evidence
+
+`tools/ci/change_scope.py` classifies the full PR range. For a `main` push it
+compares the tree with the newest successful full-Windows validation on an
+ancestor, so a documentation push cannot hide an application revision whose
+earlier push run was cancelled. The reviewed Windows-sensitive manifest is
+`ci/windows-sensitive-paths.txt`; unknown backend paths default to Windows.
+Relevant SQL changes select PostgreSQL 14 and 18.
+
+Each selected OS receives six deterministic file shards. The partitioner uses
+checked-in OS-specific duration history, places the longest next file in the
+currently lightest group and gives every unlisted test a conservative default.
+The reconciliation job independently inventories `tests/test_*.py` and rejects
+missing or duplicate assignments/results, collection errors, failed/cancelled
+shards, stale plans and unexpected empty groups. Platform skips remain visible
+as explicit outcomes. Workflow-orchestration PRs additionally compare every
+node outcome with a serial run on the same head and OS.
+
+Browser setup probes the real required Chromium, Chrome and Edge channels and
+installs only a missing channel. Playwright-managed downloads use an exact
+version/platform cache; a browser name is never aliased to another executable.
+Every shard has a distinct database, temporary, profile and evidence root.
+Fixture evidence separates setup/call/teardown time; the shared empty SQLite
+template is copied only for fixtures that do not exercise initialization or
+migration behavior.
 
 ## Live testing is opt-in only
 

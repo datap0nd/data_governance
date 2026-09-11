@@ -24,10 +24,16 @@ def validate_needs(needs: Mapping[str, object]) -> list[str]:
     if not isinstance(outputs, Mapping):
         raise GateError("change scope outputs are missing")
 
+    regression = _enabled(outputs.get("regression"))
     selected = {
-        "python": _enabled(outputs.get("application")),
-        "frontend": _enabled(outputs.get("application")),
-        "postgres": _enabled(outputs.get("postgres")),
+        "inventory": regression,
+        "plan": regression,
+        "browsers": regression,
+        "python": regression,
+        "serial": _enabled(outputs.get("equivalence")),
+        "reconcile": regression,
+        "frontend": _enabled(outputs.get("frontend_required")),
+        "postgres": _enabled(outputs.get("postgres_required")),
     }
     accepted: list[str] = ["scope"]
     for job, required in selected.items():

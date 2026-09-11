@@ -167,7 +167,8 @@ def test_range_reacquires_virtualized_cells_after_each_scroll():
     </div><script>
       const pages=[['2026-W32','2026-W33'],['2026-W34','2026-W35'],['2026-W36','2026-W37'],['2026-W38']];
       const box=document.querySelector('#weeks');
-      function render(){const index=Math.min(pages.length-1,Math.floor(box.scrollTop/64));document.querySelector('.viewport').innerHTML=pages[index].map(w=>`<button class="week" aria-label="${w}" aria-pressed="false" ${w==='2026-W38'?'disabled':''} onclick="this.setAttribute('aria-pressed','true')">${w}</button>`).join('')}
+      window.selectedWeeks=new Set();
+      function render(){const index=Math.min(pages.length-1,Math.floor(box.scrollTop/64));document.querySelector('.viewport').innerHTML=pages[index].map(w=>`<button class="week" aria-label="${w}" aria-pressed="${window.selectedWeeks.has(w)}" ${w==='2026-W38'?'disabled':''} onclick="window.selectedWeeks.add('${w}');this.setAttribute('aria-pressed','true')">${w}</button>`).join('')}
       box.onscroll=render;render();
     </script>'''
     with _page(markup) as page:

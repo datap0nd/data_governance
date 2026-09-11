@@ -113,9 +113,13 @@ def test_setup_block_uses_inherited_password_and_stops_on_failure(tmp_path, corr
         + block + '\nWrite-Output "AUTHENTICATION_REACHED"\n',
         encoding="utf-8",
     )
+    # Windows-hosted runners can occasionally spend more than 30 seconds in
+    # cold PowerShell/DPAPI process startup under matrix contention. This is a
+    # hang guard, not a setup performance assertion; keep it bounded while
+    # allowing that startup variance.
     result = subprocess.run(
         ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
-        env=env, capture_output=True, text=True, timeout=30,
+        env=env, capture_output=True, text=True, timeout=60,
     )
     assert NEW_PASSWORD not in result.stdout + result.stderr
     if corrupt:

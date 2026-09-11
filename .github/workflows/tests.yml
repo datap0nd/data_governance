@@ -8,6 +8,10 @@ on:
     - cron: "17 3 * * *"
   workflow_dispatch:
 
+permissions:
+  actions: read
+  contents: read
+
 concurrency:
   group: tests-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
@@ -18,51 +22,194 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       application: ${{ steps.classify.outputs.application }}
+      windows: ${{ steps.classify.outputs.windows }}
       postgres: ${{ steps.classify.outputs.postgres }}
+      frontend: ${{ steps.classify.outputs.frontend }}
+      orchestration: ${{ steps.classify.outputs.orchestration }}
+      equivalence: ${{ steps.classify.outputs.equivalence }}
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+      regression: ${{ steps.classify.outputs.regression }}
+      os_csv: ${{ steps.classify.outputs.os_csv }}
+      frontend_required: ${{ steps.classify.outputs.frontend_required }}
+      postgres_required: ${{ steps.classify.outputs.postgres_required }}
+      equivalent_windows_sha: ${{ steps.classify.outputs.equivalent_windows_sha }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Resolve comparison range
+        id: range
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          head_sha="${{ github.sha }}"
+          base_sha=""
+          equivalent_windows_sha=""
+          force_full=false
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            base_sha="${{ github.event.pull_request.base.sha }}"
+            head_sha="${{ github.event.pull_request.head.sha }}"
+          elif [[ "${{ github.event_name }}" == "push" ]]; then
+            base_sha="$(python tools/ci/find_validation_baseline.py --repository '${{ github.repository }}' --current-sha "$head_sha")"
+            equivalent_windows_sha="$(python tools/ci/find_validation_baseline.py --mode equivalent --repository '${{ github.repository }}' --current-sha "$head_sha")"
+          else
+            force_full=true
+          fi
+          if [[ -n "$base_sha" ]]; then
+            git diff --name-only "$base_sha" "$head_sha" > changed-files.txt
+          elif [[ "$force_full" == false ]]; then
+            git ls-files > changed-files.txt
+          else
+            : > changed-files.txt
+          fi
+          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+          echo "force_full=$force_full" >> "$GITHUB_OUTPUT"
+          echo "equivalent_windows_sha=$equivalent_windows_sha" >> "$GITHUB_OUTPUT"
+          printf 'Comparison base: %s\nChanged files: %s\n' "${base_sha:-none}" "$(wc -l < changed-files.txt)"
+      - name: Validate changed documentation and whitespace
+        run: >-
+          python tools/ci/check_docs.py --paths-file changed-files.txt
+          ${{ steps.range.outputs.base_sha && format('--base {0} --head {1}', steps.range.outputs.base_sha, steps.range.outputs.head_sha) || '' }}
       - name: Classify changed files
         id: classify
         shell: bash
         run: |
-          application=true
-          postgres=false
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            application=false
-            while IFS= read -r path; do
-              case "$path" in
-                docs/*|AGENTS.md|CLAUDE.md|README.md|.github/PULL_REQUEST_TEMPLATE.md) ;;
-                *) application=true ;;
-              esac
-              case "$path" in
-                app/flow_sql.py|requirements-ci.*|tests/test_sql_ownership_postgres.py|.github/workflows/tests.yml)
-                  postgres=true ;;
-              esac
-            done < <(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}")
-            git diff --check "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"
-          fi
-          if [[ "${{ github.event_name }}" == "schedule" || "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            postgres=true
-          fi
-          if [[ "${{ github.event_name }}" == "push" ]]; then
-            postgres=true
-          fi
-          echo "application=$application" >> "$GITHUB_OUTPUT"
-          echo "postgres=$postgres" >> "$GITHUB_OUTPUT"
-          echo "Application regression required: $application"
-          echo "PostgreSQL integration required: $postgres"
+          arguments=(--paths-file changed-files.txt --windows-manifest ci/windows-sensitive-paths.txt --github-output "$GITHUB_OUTPUT")
+          if [[ "${{ steps.range.outputs.force_full }}" == true ]]; then arguments+=(--force-full); fi
+          if [[ "${{ github.event_name }}" == pull_request ]]; then arguments+=(--require-equivalence); fi
+          arguments+=(--event "${{ github.event_name }}" --equivalent-windows-sha "${{ steps.range.outputs.equivalent_windows_sha }}")
+          python tools/ci/change_scope.py "${arguments[@]}"
 
-  python:
-    name: Python (${{ matrix.os }})
+  inventory:
+    name: Independent test inventory
     needs: scope
-    if: needs.scope.outputs.application == 'true'
+    if: needs.scope.outputs.regression == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python tools/ci/sharding.py inventory --output test-inventory.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: independent-test-inventory
+          path: test-inventory.json
+          retention-days: 14
+
+  plan:
+    name: Test shard plan
+    needs: [scope, inventory]
+    if: needs.scope.outputs.regression == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      os_matrix: ${{ steps.plan.outputs.os_matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: independent-test-inventory
+      - name: Build deterministic longest-first plan
+        id: plan
+        shell: bash
+        run: |
+          args=()
+          IFS=',' read -ra os_keys <<< "${{ needs.scope.outputs.os_csv }}"
+          for os_key in "${os_keys[@]}"; do args+=(--os "$os_key"); done
+          python tools/ci/sharding.py plan "${args[@]}" --inventory test-inventory.json --output shard-plan.json --github-output "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: test-shard-plan
+          path: shard-plan.json
+          retention-days: 14
+
+  browsers:
+    name: Browser prerequisites ${{ matrix.os_key }}
+    needs: [scope, plan]
+    if: needs.scope.outputs.regression == 'true'
     strategy:
       fail-fast: false
-      matrix:
-        os: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || github.event_name == 'push' && '["windows-latest"]' || '["ubuntu-latest","windows-latest"]') }}
-    runs-on: ${{ matrix.os }}
+      matrix: ${{ fromJSON(needs.plan.outputs.os_matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-ci.lock
+      - run: pip install -r requirements-ci.lock
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/playwright-browsers
+          key: playwright-1.62.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('requirements-ci.lock') }}
+      - name: Probe real channels and install only missing browsers
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/playwright-browsers
+        run: python tools/ci/browser_setup.py --output browser-evidence.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: browser-${{ matrix.os_key }}-evidence
+          path: browser-evidence.json
+          retention-days: 14
+
+  python:
+    name: Python ${{ matrix.os_key }} ${{ matrix.shard }}/6
+    needs: [scope, plan, browsers]
+    if: needs.scope.outputs.regression == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-ci.lock
+      - run: pip install -r requirements-ci.lock
+      - uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/playwright-browsers
+          key: playwright-1.62.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('requirements-ci.lock') }}
+          fail-on-cache-miss: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: test-shard-plan
+      - name: Select assigned files
+        run: >-
+          python tools/ci/sharding.py select --plan shard-plan.json
+          --os ${{ matrix.os_key }} --shard ${{ matrix.shard }} --output selected-files.json
+      - name: Run assigned files sequentially
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/playwright-browsers
+          DG_DB_PATH: ${{ runner.temp }}/metronome-${{ matrix.os_key }}-${{ matrix.shard }}/governance.db
+          DG_TEST_RUN_ROOT: ${{ runner.temp }}/metronome-${{ matrix.os_key }}-${{ matrix.shard }}
+          DG_BROWSER_PROFILE_ROOT: ${{ runner.temp }}/metronome-${{ matrix.os_key }}-${{ matrix.shard }}/browser-profiles
+        run: >-
+          python tools/ci/run_tests.py --files-json selected-files.json
+          --output shard-result/result.json --junit shard-result/junit.xml
+          --os ${{ matrix.os_key }} --shard ${{ matrix.shard }}
+          --basetemp "${{ runner.temp }}/metronome-${{ matrix.os_key }}-${{ matrix.shard }}/pytest"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: python-${{ matrix.os_key }}-${{ matrix.shard }}
+          path: shard-result/
+          retention-days: 14
+
+  serial:
+    name: Serial equivalence ${{ matrix.os_key }}
+    needs: [scope, plan, browsers]
+    if: needs.scope.outputs.equivalence == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.os_matrix) }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -71,27 +218,72 @@ jobs:
           python-version: "3.13"
           cache: pip
           cache-dependency-path: requirements-ci.lock
-      - name: Install locked test dependencies
-        run: pip install -r requirements-ci.lock
-      - name: Install browsers for synthetic UI fixtures
-        run: python -m playwright install --with-deps chromium chrome
-      - name: Run Python test suite
+      - run: pip install -r requirements-ci.lock
+      - uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/playwright-browsers
+          key: playwright-1.62.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('requirements-ci.lock') }}
+          fail-on-cache-miss: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: test-shard-plan
+      - run: >-
+          python tools/ci/sharding.py select --plan shard-plan.json
+          --os ${{ matrix.os_key }} --shard serial --output selected-files.json
+      - name: Run serial equivalence baseline
         env:
-          DG_DB_PATH: ${{ runner.temp }}/metronome-${{ matrix.os }}/governance.db
-          DG_TEST_RUN_ROOT: ${{ runner.temp }}/metronome-${{ matrix.os }}
-          DG_BROWSER_PROFILE_ROOT: ${{ runner.temp }}/metronome-${{ matrix.os }}/browser-profiles
-        run: python -m pytest tests -q --durations=20 --junitxml=test-results.xml
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/playwright-browsers
+          DG_DB_PATH: ${{ runner.temp }}/metronome-serial-${{ matrix.os_key }}/governance.db
+          DG_TEST_RUN_ROOT: ${{ runner.temp }}/metronome-serial-${{ matrix.os_key }}
+          DG_BROWSER_PROFILE_ROOT: ${{ runner.temp }}/metronome-serial-${{ matrix.os_key }}/browser-profiles
+        run: >-
+          python tools/ci/run_tests.py --files-json selected-files.json
+          --output serial-result/result.json --junit serial-result/junit.xml
+          --os ${{ matrix.os_key }} --shard serial
+          --basetemp "${{ runner.temp }}/metronome-serial-${{ matrix.os_key }}/pytest"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: python-${{ matrix.os }}-results
-          path: test-results.xml
+          name: serial-${{ matrix.os_key }}
+          path: serial-result/
+          retention-days: 14
+
+  reconcile:
+    name: Test inventory reconciliation
+    needs: [scope, plan, python, serial]
+    if: always() && needs.scope.outputs.regression == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: test-shard-plan
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: python-*
+          path: shard-results
+      - uses: actions/download-artifact@v4
+        if: needs.scope.outputs.equivalence == 'true'
+        with:
+          pattern: serial-*
+          path: serial-results
+      - name: Reconcile assignment, collection and outcomes
+        run: >-
+          python tools/ci/sharding.py reconcile --plan shard-plan.json
+          --results-root shard-results --serial-root serial-results
+          --output reconciliation.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-reconciliation
+          path: reconciliation.json
           retention-days: 14
 
   frontend:
     name: Frontend contracts and syntax
     needs: scope
-    if: needs.scope.outputs.application == 'true'
+    if: needs.scope.outputs.frontend_required == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -110,7 +302,7 @@ jobs:
   postgres:
     name: PostgreSQL ${{ matrix.postgres }}
     needs: scope
-    if: needs.scope.outputs.postgres == 'true'
+    if: needs.scope.outputs.postgres_required == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
@@ -135,8 +327,7 @@ jobs:
           python-version: "3.13"
           cache: pip
           cache-dependency-path: requirements-ci.lock
-      - name: Install locked test dependencies
-        run: pip install -r requirements-ci.lock
+      - run: pip install -r requirements-ci.lock
       - name: Test SQL ownership on disposable PostgreSQL
         env:
           METRONOME_TEST_POSTGRES_DSN: postgresql+psycopg2://postgres@127.0.0.1:5432/metronome_test_ownership
@@ -145,7 +336,7 @@ jobs:
   merge-ready:
     name: Merge ready
     if: always()
-    needs: [scope, python, frontend, postgres]
+    needs: [scope, inventory, plan, browsers, python, serial, reconcile, frontend, postgres]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

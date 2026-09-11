@@ -15,8 +15,11 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $venvPython = Join-Path $repoRoot '.venv\Scripts\python.exe'
 $lockPath = Join-Path $repoRoot 'requirements-ci.lock'
+$browserPath = Join-Path $repoRoot '.playwright-browsers'
 $runId = '{0}-{1}-{2}' -f ([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ')), $PID, ([guid]::NewGuid().ToString('N').Substring(0, 8))
+$isolationId = '{0}-{1}' -f $PID, ([guid]::NewGuid().ToString('N').Substring(0, 8))
 $runRoot = Join-Path $repoRoot ".test-runs\$runId"
+$externalIsolationBase = Join-Path ([IO.Path]::GetTempPath()) 'mt'
 $started = [DateTimeOffset]::UtcNow
 $resultPath = Join-Path $runRoot 'result.json'
 $externalIsolationRoot = $null
@@ -58,7 +61,7 @@ function Save-Result {
     $result.duration_seconds = [math]::Round(($finished - $started).TotalSeconds, 3)
     $result.diagnostic = $Diagnostic
     if ($externalIsolationRoot -and (Test-Path -LiteralPath $externalIsolationRoot)) {
-        $allowedRoot = [IO.Path]::GetFullPath((Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'MetronomeTestRuns'))
+        $allowedRoot = [IO.Path]::GetFullPath($externalIsolationBase)
         $resolvedIsolationRoot = [IO.Path]::GetFullPath($externalIsolationRoot)
         if (-not $resolvedIsolationRoot.StartsWith($allowedRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
             throw "Refusing to clean unexpected Flow test root: $resolvedIsolationRoot"
@@ -205,25 +208,35 @@ try {
         $lockFingerprint = Get-LockFingerprint
         Set-Content -LiteralPath (Join-Path $repoRoot '.venv\.metronome-ci-lock.sha256') -Value $lockFingerprint -Encoding ascii
         if ($InstallBrowsers) {
-            & $venvPython -m playwright install chromium chrome msedge
+            $env:PLAYWRIGHT_BROWSERS_PATH = $browserPath
+            $browserEvidence = Join-Path $runRoot 'browser-setup.json'
+            & $venvPython (Join-Path $repoRoot 'tools/ci/browser_setup.py') --output $browserEvidence
             if ($LASTEXITCODE -ne 0) { Fail-Check 'Playwright browser setup failed.' }
+            $result.artifacts.browser_setup = $browserEvidence
         }
         $result.environment.python = $bootstrapVersion
         Save-Result -Status 'passed' -ExitCode 0 -Diagnostic $null
         exit 0
     }
 
-    Invoke-Preflight
-    if ($Mode -eq 'Preflight') {
-        Save-Result -Status 'passed' -ExitCode 0 -Diagnostic $null
-        exit 0
-    }
-
-    if ($Full -and [string]::IsNullOrWhiteSpace($DiagnosticReason)) {
+    if ($Mode -eq 'Verify' -and $Full -and [string]::IsNullOrWhiteSpace($DiagnosticReason)) {
         Fail-Check 'A local full suite is diagnostic-only. Supply -Full -DiagnosticReason with the failure or equivalence question being investigated.'
     }
-    if (-not $Full -and $TestPath.Count -eq 0) {
+    if ($Mode -eq 'Verify' -and -not $Full -and $TestPath.Count -eq 0) {
         Fail-Check "Verify requires explicit -TestPath selectors. Example: .\tools\check.ps1 -Mode Verify -TestPath tests/test_flows.py::test_name"
+    }
+
+    Invoke-Preflight
+    if ($Mode -eq 'Preflight') {
+        $env:PLAYWRIGHT_BROWSERS_PATH = $browserPath
+        $browserEvidence = Join-Path $runRoot 'browser-preflight.json'
+        & $venvPython (Join-Path $repoRoot 'tools/ci/browser_setup.py') --probe-only --output $browserEvidence
+        if ($LASTEXITCODE -ne 0) {
+            Fail-Check "Browser prerequisites are missing or unrunnable. Run '.\tools\check.ps1 -Mode Setup -InstallBrowsers'."
+        }
+        $result.artifacts.browser_preflight = $browserEvidence
+        Save-Result -Status 'passed' -ExitCode 0 -Diagnostic $null
+        exit 0
     }
     if ($Full) { $TestPath = @('tests') }
     $result.selection.tests = @($TestPath)
@@ -238,19 +251,32 @@ try {
         }
     }
 
-    $tempRoot = Join-Path $runRoot 'tmp'
-    $profileRoot = Join-Path $runRoot 'browser-profiles'
-    New-Item -ItemType Directory -Force -Path $tempRoot, $profileRoot | Out-Null
+    $externalIsolationRoot = Join-Path $externalIsolationBase $isolationId
+    $tempRoot = Join-Path $externalIsolationRoot 'tmp'
+    $profileRoot = Join-Path $externalIsolationRoot 'browser-profiles'
+    $externalFlowRoot = Join-Path $externalIsolationRoot 'flows'
+    New-Item -ItemType Directory -Force -Path $tempRoot, $profileRoot, $externalFlowRoot | Out-Null
     $env:TEMP = $tempRoot
     $env:TMP = $tempRoot
-    $env:DG_DB_PATH = Join-Path $runRoot 'governance-test.db'
-    $env:DG_TEST_RUN_ROOT = $runRoot
+    $env:DG_DB_PATH = Join-Path $externalIsolationRoot 'governance-test.db'
+    $env:DG_TEST_RUN_ROOT = $externalIsolationRoot
     $env:DG_BROWSER_PROFILE_ROOT = $profileRoot
-    $externalIsolationRoot = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) "MetronomeTestRuns\$runId"
-    $externalFlowRoot = Join-Path $externalIsolationRoot 'flows'
-    New-Item -ItemType Directory -Force -Path $externalFlowRoot | Out-Null
     $env:DG_FLOWS_ROOT = $externalFlowRoot
-    $env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $repoRoot '.playwright-browsers'
+    $env:PLAYWRIGHT_BROWSERS_PATH = $browserPath
+    $browserEvidence = Join-Path $runRoot 'browser-preflight.json'
+    $browserArguments = @((Join-Path $repoRoot 'tools/ci/browser_setup.py'), '--probe-only', '--output', $browserEvidence)
+    foreach ($testItem in $TestPath) {
+        if ($testItem -match '\[(chromium|chrome|msedge)\]$') {
+            $browserArguments += @('--browser', $Matches[1])
+        } else {
+            $browserArguments += @('--source', (($testItem -split '::', 2)[0]))
+        }
+    }
+    & $venvPython @browserArguments
+    if ($LASTEXITCODE -ne 0) {
+        Fail-Check "Selected test browser prerequisites are missing or unrunnable. Run '.\tools\check.ps1 -Mode Setup -InstallBrowsers'."
+    }
+    $result.artifacts.browser_preflight = $browserEvidence
     $junitPath = Join-Path $runRoot 'pytest.xml'
     $result.artifacts.junit = $junitPath
 

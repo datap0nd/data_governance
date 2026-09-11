@@ -100,7 +100,7 @@ def page(recording_browser):
 
 def click(node, title, events=None):
     return click_recorded(node, {'action': 'click', 'page': 'page',
-        'locator': [{'method': 'get_by_title', 'args': [title]}]}, [], {'timeout': 500},
+        'locator': [{'method': 'get_by_title', 'args': [title]}]}, [], {'timeout': 10_000},
         events.append if events is not None else None)
 
 

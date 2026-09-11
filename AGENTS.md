@@ -20,6 +20,13 @@ are ready. Required final-head CI is represented by the always-present
 head-pinned merge. Distinguish implementation ready, local checks complete, CI
 complete and merged; do not call a merge deployed.
 
+CI classifies the complete change range with `tools/ci/change_scope.py` and the
+reviewed `ci/windows-sensitive-paths.txt` manifest. Unknown backend paths are
+Windows-sensitive. Application runs use six deterministic file-level shards
+per selected OS and must pass independent inventory/result reconciliation;
+workflow-orchestration PRs also compare serial and sharded outcomes on the same
+head. Never weaken inventory coverage or the aggregate gate to improve timing.
+
 For **every PR merged to main**, including documentation, maintenance and fixes:
 
 1. Create or update a release-specific **test plan and test report** under
