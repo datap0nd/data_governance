@@ -23,7 +23,7 @@
 | RG-01, RG-02 (gate) | `python -m pytest tests/test_recording_journey.py tests/test_flow_recordings.py -q -k "gate or without_recording or without_confirmation or active_evidence or gating"` | same | PASS: 6 passed in 52.49 s (first run of the new journey case used a `.csv` template on an xlsx Flow and answered 422; corrected to `.xlsx`, `1 passed in 15.77 s`) | Edited tested Flow saves (200, `tested` False), `POST /run` queues with `tested` False, `PATCH /enabled` 200, `queue_due_flows` queues one run with the edited template and no `last_error`; create-time 409 uses `NO_RECORDING_DETAIL`; no `Record and validate`, `approve saving without testing`, `Save without testing` or `allow_untested_recording` text anywhere under `app/`. |
 | Baseline of the affected files before the change | same focused command on `df8d15b` (working tree before the worker patch) | Linux venv | 35 failed, 185 passed after the worker patch and before the test updates (all fixed-arity test doubles and the old timeout/message pins); 0 failed after the test updates | Establishes that every changed test pinned the old semantics. |
 | Syntax | `python -m py_compile app/flow_worker.py app/flow_recording_runtime.py app/flow_activity.py app/routers/flows.py app/flow_recordings.py` | same | PASS | Console. |
-| Regression: affected modules | `python -m pytest tests/test_flows.py tests/test_flow_recordings.py tests/test_recording_journey.py tests/test_flow_sql.py tests/test_flow_standalone.py tests/test_recorded_output_storage.py tests/test_flow_parallel.py tests/test_recording_v2_pipeline.py tests/test_recorded_browser_pipeline.py tests/test_recording_clicks.py tests/test_flow_portable_script.py tests/test_flow_handover.py tests/test_gscm.py tests/test_flow_email_delivery.py -q` | same | REGRESSION_RESULT_PLACEHOLDER | Console. |
+| Regression: affected modules | `python -m pytest tests/test_flows.py tests/test_flow_recordings.py tests/test_recording_journey.py tests/test_flow_sql.py tests/test_flow_standalone.py tests/test_recorded_output_storage.py tests/test_flow_parallel.py tests/test_recording_v2_pipeline.py tests/test_recorded_browser_pipeline.py tests/test_recording_clicks.py tests/test_flow_portable_script.py tests/test_flow_handover.py tests/test_gscm.py tests/test_flow_email_delivery.py -q` | same | 649 passed, 4 failed, 12 warnings in 477.01 s. `test_same_portable_pipeline_runs_real_download_on_both_browsers[msedge]`: Microsoft Edge is not installed in the container (CI installs it; the `[chrome]` parameter passed). The three `tests/test_flow_parallel.py` failures (`test_actual_task_download_keeps_full_index_and_never_finalizes`, `test_three_actual_task_executors_can_download_concurrently[headless|headed]`) were two more fixed-arity doubles of `_asap_download` that now receive `progress=`; after adding `**_kwargs` to both, `python -m pytest tests/test_flow_parallel.py -q` → 47 passed in 44.93 s. No application code changed for that retest. | Console. |
 
 ## Unperformed or blocked in-scope checks
 
@@ -51,5 +51,12 @@
 
 ## Merge evidence
 
-Final-head CI is pending at this cutoff. Record its run URL and exact head SHA
+- First-head CI (`a0b3de0`, [run 34635226686](https://github.com/datap0nd/data_governance/actions/runs/34635226686)):
+  Change scope, Frontend contracts and syntax PASS; PostgreSQL skipped by the
+  scope gate; `Python (ubuntu-latest)` FAIL with 3 failed, 2009 passed,
+  23 skipped in 18 min 11 s: the same three `tests/test_flow_parallel.py`
+  doubles named above (CI installs Edge, so the `[msedge]` case passed
+  there). Fixed in the retest commit; test-only change.
+
+Final-head CI on the retest head is pending at this cutoff. Record its run URL and exact head SHA
 in the PR before merging; the PR's merge record supplies the merge SHA.
