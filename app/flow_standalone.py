@@ -64,6 +64,13 @@ def launcher_source(code_dir: Path, bundle_name: str) -> str:
     )
 
 
+def echo_progress(status, detail) -> None:
+    """One console line per progress event; stdout stays reserved for the JSON result."""
+    stage = detail.get('stage') if isinstance(detail, dict) else None
+    message = detail.get('message') if isinstance(detail, dict) else None
+    print(f'[{stage or status}] {message or ""}'.rstrip(), file=sys.stderr, flush=True)
+
+
 def _atomic_text(path: Path, content: str):
     from app.flow_layout import _regular
     _regular(path)
@@ -143,7 +150,7 @@ def status(job: dict) -> dict:
 
 
 def run(job: dict, *, sql: bool | None = None, headed: bool | None = None, no_transform: bool = False,
-        retry_views: bool = False) -> dict:
+        retry_views: bool = False, echo: bool = False) -> dict:
     from contextlib import ExitStack
     from app import flow_worker, flow_paths, flow_view_refresh
     from app.flow_layout import _regular
@@ -187,6 +194,8 @@ def run(job: dict, *, sql: bool | None = None, headed: bool | None = None, no_tr
             log.write(json.dumps({'time': datetime.now(timezone.utc).isoformat(), 'status': status,
                 'progress': detail, 'artifacts': artifacts or [], 'timings': timings or [], **extra}, default=str) + '\n')
             log.flush()
+            if echo:
+                echo_progress(status, detail)
         register = lambda _folder: {'ops': []}
         try:
             page = staging = None
@@ -219,6 +228,7 @@ def offline_main(job: dict, argv=None) -> int:
     parser.add_argument('--no-transform', action='store_true')
     parser.add_argument('--no-sql', action='store_true')
     parser.add_argument('--retry-views', action='store_true', help='Only refresh the materialized views a previous local run left unfinished; no download or SQL insertion.')
+    parser.add_argument('--quiet', action='store_true', help='Do not echo progress to stderr while the Flow runs.')
     args = parser.parse_args(argv)
     if args.dry_run:
         from app import flow_view_refresh
@@ -233,10 +243,13 @@ def offline_main(job: dict, argv=None) -> int:
         return 0
     try:
         result = run(job, sql=False if args.no_sql else None, headed=args.headed, no_transform=args.no_transform,
-                     retry_views=args.retry_views)
+                     retry_views=args.retry_views, echo=not args.quiet)
         print(json.dumps({key: value for key, value in result.items() if key != 'artifacts'}))
         return 0
     except Exception as exc:
+        # The full traceback names this file's own line numbers; keep it visible for troubleshooting.
+        import traceback
+        traceback.print_exc(file=sys.stderr)
         print(f'Standalone Flow failed: {exc}', file=sys.stderr)
         return 1
 

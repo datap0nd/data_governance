@@ -202,13 +202,17 @@ or write SQL. Python transformations retain the existing `--input`/`--output`
 subprocess contract. Local imports, adjacent file literals and dynamic code
 dependencies must be made portable before validation.
 
-The generated file records its generator, dependency versions, definition/core
-hashes and Flow revision. Its content hash and current status are in the folder
-manifest. Saved Flow files update automatically after changes, including global
-browser selection; see [team handover instructions](flow_standalone.md). Modified launchers and immutable versions are preserved;
-editing a standalone file does not change scheduled execution. Workers use the
-same reviewed execution helpers and reject jobs pinned to a different core.
-After an execution-core change, save and validate a new recording revision.
+The generated file records its generator, dependency versions, the execution
+core it embeds, the core the active revision was last tested with, and the Flow
+revision. Its content hash and current status are in the folder manifest. Saved
+Flow files update automatically after changes, including global browser
+selection and application updates; see
+[team handover instructions](flow_standalone.md). An edited `run_flow.py` is
+archived under `Scripts/versions` and refreshed on the next save; editing a
+standalone file does not change scheduled execution. Workers and generated
+scripts always use the current reviewed execution helpers. The core a revision
+was tested with is kept as evidence only: after an application update, Flows
+keep running on the updated code and their scripts are regenerated with it.
 
 Flow, output, profile and SQL locks apply. A lost SQL outcome blocks retry until
 reconciled. Standalone runs leave `Scripts/standalone-logs/sql-outcome.json` when

@@ -11,11 +11,11 @@ Scripts/
   README.md
   requirements.txt
   versions/</pre><p id="snapshot"></p><button class="btn-secondary" id="close">Close folder preview</button></section>
-<details><summary>Preview scenarios</summary><label><input type="checkbox" id="offline"> Shared folder unavailable</label></details></main>
+<details><summary>Preview scenarios</summary><label><input type="checkbox" id="offline"> Shared folder unavailable</label><label><input type="checkbox" id="edited"> run_flow.py was edited by hand</label></details></main>
 <script>
-const byId=id=>document.getElementById(id);let current=true;
-byId('save').onclick=()=>{current=!byId('offline').checked;byId('feedback').textContent=current?'Flow saved':'Flow saved; its files could not be updated: shared folder unavailable. Restore access and save again.';if(current)byId('snapshot').textContent=`Saved JSON: ${byId('name').value} · ${byId('owner').value}. Python and documentation updated automatically.`;};
-byId('files').onclick=()=>byId('feedback').textContent=current?'Flow files are up to date: flow.json, Scripts/run_flow.py and Scripts/README.md. Use Open folder to find them.':'Flow files: error. Restore access to the shared folder and save again.';
+const byId=id=>document.getElementById(id);let current=true;const archived='run_flow-4f1c…9b2e-edited-20260911T075100Z.py';
+byId('save').onclick=()=>{current=!byId('offline').checked;const edited=byId('edited').checked&&current;byId('feedback').textContent=!current?'Flow saved; its files could not be updated: shared folder unavailable. Restore access and save again.':edited?`Flow saved; your edited run_flow.py was archived as Scripts/versions/${archived} and the script was refreshed.`:'Flow saved';if(edited)byId('edited').checked=false;if(current)byId('snapshot').textContent=`Saved JSON: ${byId('name').value} · ${byId('owner').value}. Python and documentation updated automatically.${edited?' Edited copy kept in Scripts/versions.':''}`;};
+byId('files').onclick=()=>byId('feedback').textContent=!current?'Flow files: error. Restore access to the shared folder and save again.':byId('edited').checked?'Flow files: modified. Saved Python file is missing or was edited. Save the Flow again: an edited copy is archived under Scripts/versions and run_flow.py is refreshed.':'Flow files are up to date: flow.json, Scripts/run_flow.py and Scripts/README.md. Use Open folder to find them.';
 byId('folder').onclick=()=>{if(byId('offline').checked){byId('feedback').textContent='Shared folder unavailable. Restore access and try again.';return;}byId('explorer').hidden=false;};
 byId('close').onclick=()=>byId('explorer').hidden=true;
 </script></html>

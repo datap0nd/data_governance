@@ -170,10 +170,9 @@ def attach_job(db, flow, job, *, allow_draft=False):
     if revision['transformation_source'] != source:
         raise HTTPException(409, 'The transformation changed. Test it or approve saving without testing again.')
     definition = flow_recording.validate_definition(json.loads(revision['definition_json']))
-    from app.flow_portable import execution_hash
+    # The execution core a revision was tested with is evidence, not a gate:
+    # runs and generated scripts always use the current application code.
     engine_hash = json.loads(revision['evidence_json'] or '{}').get('engine_hash')
-    if engine_hash != execution_hash():
-        raise HTTPException(409, 'The recorded execution core changed; test it or approve saving without testing again.')
     job['recording'] = {'revision': revision['id'], 'definition': definition,
                         'transformation_source': revision['transformation_source'],
                         'definition_hash': flow_recording.digest(definition), 'engine_hash': engine_hash}

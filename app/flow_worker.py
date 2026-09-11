@@ -7942,9 +7942,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                         from app.flow_parallel_worker import acquire_bundle as parallel_bundle
                         acquire_bundle = partial(parallel_bundle, client, worker_id, transport_state)
                     if run['job'].get('flow', {}).get('execution_method') == 'recorded' and run['job'].get('job_type') not in {'sql_retry', 'view_retry'}:
-                        from app import flow_recorder_worker, flow_portable
-                        if run['job'].get('recording', {}).get('engine_hash') != flow_portable.execution_hash():
-                            raise RuntimeError('This job is pinned to a different recorded execution core. Validate a new revision.')
+                        from app import flow_recorder_worker
                         definition = run['job']['recording']['definition']
                         context.close()
                         try:
