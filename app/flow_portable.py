@@ -487,8 +487,10 @@ def source(job):
         header.append(f"# Recording revision {job['recording'].get('revision')} was last tested with execution core {tested}"
                       + (' (the same code).' if tested == core else ' (an earlier version of the code).'))
     entry_module, entry_function = ('flow_recording_runtime', 'standalone_main') if recorded else ('flow_standalone', 'offline_main')
-    program = (PROGRAM.replace('__FLOW_JSON__', flow_json(job))
-               .replace('__ENTRY_MODULE__', entry_module).replace('__ENTRY_FUNCTION__', entry_function))
+    # Substitute the entry tokens before the configuration is inserted so a
+    # saved value that happens to contain a token is never rewritten.
+    program = (PROGRAM.replace('__ENTRY_MODULE__', entry_module).replace('__ENTRY_FUNCTION__', entry_function)
+               .replace('__FLOW_JSON__', flow_json(job)))
     sections = [f'{SECTION_MARK}{module}{SECTION_END}\n{code}' for module, code in sorted(sources.items())]
     text = '\n'.join(header) + '\n' + GUIDE + program + '\n'.join(sections)
     compile(text, 'run_flow.py', 'exec')

@@ -3,7 +3,7 @@
 - Change/PR: every managed Flow's `Scripts/run_flow.py` is regenerated on every save and after every application update, never blocked by a hand-edited copy (the edit is archived under `Scripts/versions`), and is plain Python whose module sections are copied verbatim from `app/<module>.py` with real line numbers in tracebacks, echoed progress and full tracebacks on failure. The execution-core fingerprint no longer gates recorded runs or script generation; it is recorded as evidence only.
 - Code baseline: `494cc156930941738c1eb40ab351327e2c62e2dd` (`main` at PR #112).
 - Related report: [test-report.md](test-report.md)
-- Intended environments: checkout-owned Python 3.13 with the locked dependencies (`tools/check.ps1 -Mode Setup` on Windows; `requirements-ci.lock` in a Linux venv for this task); synthetic local-file and recorded fixtures; bundled Chromium for the portable pipeline case. No live portal, Outlook, SQL or work-PC checks are in scope.
+- Intended environments: checkout-owned Python 3.13 `.venv` with the locked dependencies (`tools/check.ps1 -Mode Setup` on Windows; the same `requirements-ci.lock` install at the repository root where PowerShell is unavailable); synthetic local-file and recorded fixtures; Chromium through Playwright for the preview walkthrough and the `chrome` channel for the portable pipeline case.
 
 ## Prerequisites and test data
 
@@ -44,7 +44,9 @@ node --check app/static/app.js
 git diff --check
 ```
 
-Windows equivalent: `.\tools\check.ps1 -Mode Verify -TestPath <the same selectors, comma-separated> -SyntaxPath app/flow_portable.py,app/flow_handover.py,app/flow_recordings.py,app/flow_worker.py,app/flow_recording_runtime.py,app/flow_standalone.py,app/routers/flows.py,app/static/app.js`. Required final-head `Merge ready` supplies the full Python and frontend regression; do not repeat the full suite locally.
+On Windows use the verifier with the same selection: `.\tools\check.ps1 -Mode Verify -TestPath <the same selectors, comma-separated> -SyntaxPath app/flow_portable.py,app/flow_handover.py,app/flow_recordings.py,app/flow_worker.py,app/flow_recording_runtime.py,app/flow_standalone.py,app/routers/flows.py,app/static/app.js`. The Linux form above is for a session without PowerShell and mirrors the verifier's environment (checkout-owned `.venv` from `requirements-ci.lock`, Python 3.13) and isolation variables. Required final-head `Merge ready` supplies the full Python and frontend regression; do not repeat the full suite locally.
+
+U-01 can be driven with Playwright: serve the `app/` directory over HTTP (`python -m http.server 8765 --directory app`), open `/static/recording-preview/files.html` in Chromium at a 655 px viewport, and record the `#feedback` and `#snapshot` texts, the button list and `document.documentElement.scrollWidth` after each click.
 
 ## Acceptance and cleanup
 

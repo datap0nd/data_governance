@@ -42,6 +42,14 @@ def test_sections_are_verbatim_python_with_comments_and_readable_flow(flow_db, t
     assert saved_flow == frozen
 
 
+def test_configuration_values_that_look_like_generator_tokens_survive(flow_db, tmp_path):
+    _, job = local_job(tmp_path)
+    job['flow']['name'] = '__ENTRY_FUNCTION__ __ENTRY_MODULE__ __FLOW_JSON__'
+    text = flow_portable.source(job)
+    assert json.loads(_flow_block(text))['flow']['name'] == '__ENTRY_FUNCTION__ __ENTRY_MODULE__ __FLOW_JSON__'
+    assert 'from _mf.flow_standalone import offline_main\n    sys.exit(offline_main(FLOW))' in text
+
+
 def test_tracebacks_name_run_flow_lines(flow_db, tmp_path):
     saved, _ = local_job(tmp_path)
     script = tmp_path / 'copy.py'
