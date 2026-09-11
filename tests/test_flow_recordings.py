@@ -257,7 +257,7 @@ def test_browser_global_choice_is_frozen_and_does_not_rewrite_flows(flow_db):
     assert flow_browser.can_claim(job,{flow_browser.CAPABILITY:True})
 
 
-def test_revision_validation_and_activation_freezes_configuration(flow_db,monkeypatch):
+def test_revision_validation_and_activation_records_evidence_without_gating(flow_db,monkeypatch):
     _,job=draft_job()
     flow_id=job['flow']['id']
     revision=routes.save_revision(flow_id,routes.RevisionWrite(definition=job['recording']['definition']))['revision_id']
@@ -273,10 +273,14 @@ def test_revision_validation_and_activation_freezes_configuration(flow_db,monkey
     assert result['standalone']['kind']=='portable_recorded'
     with database.get_db() as db:
         queued=flows._build_job(db,flow_id)
-        assert queued['recording']['revision']==revision
+        assert queued['recording']['revision']==revision and queued['recording']['tested'] is True
         assert queued['downloads']['network_replay'] is False
+        # A settings change after the test is never a gate: the Flow still runs
+        # with the current settings and only loses the evidence match.
         db.execute("UPDATE flows SET filename_template='changed_{index}.csv' WHERE id=?",(flow_id,))
-        with pytest.raises(HTTPException,match='validate'): flows._build_job(db,flow_id)
+        changed=flows._build_job(db,flow_id)
+        assert changed['recording']['revision']==revision and changed['recording']['tested'] is False
+        assert changed['downloads']['filename_template']=='changed_{index}.csv'
 
 
 def test_recording_uses_capacity_and_requires_capable_visible_worker(flow_db,monkeypatch):
