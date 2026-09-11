@@ -15,7 +15,9 @@ production run-log page showing per-view outcomes and **Retry view refresh**.
 Production `app.js`, the recording editor and `flow_run_log.js` render every
 screen; only the API layer is fictional. The preview bar switches the
 discovery result (three views, verified empty, missing, incomplete, stale,
-cyclic) and the retry outcome. Serve `app` with
+cyclic) and the retry outcome, and switches the **Send again** outcome of the optional
+**Email the final file** step (recipients and subject as the last block of
+After download, run history status text, run-log section and recovery). Serve `app` with
 `python -m http.server 8769 --bind 127.0.0.1 --directory app` and open
 `http://127.0.0.1:8769/static/recording-preview/templates-refresh.html`.
 `tests/test_templates_refresh_preview.py` walks every control at 1280×900 and

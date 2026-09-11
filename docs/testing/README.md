@@ -9,6 +9,7 @@ This is a standing instruction from the repository owner, recorded in
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-09-11: Flow "Email the final file" step | [Test plan](releases/2026-09-11-flow-email-file/test-plan.md) | [Test report](releases/2026-09-11-flow-email-file/test-report.md) |
 | 2026-09-11: troubleshootable Flow scripts | [Test plan](releases/2026-09-11-troubleshootable-flow-scripts/test-plan.md) | [Test report](releases/2026-09-11-troubleshootable-flow-scripts/test-report.md) |
 | 2026-09-11: NASCA direct pywin32 reads | [Test plan](releases/2026-09-11-nasca-direct-com-read/test-plan.md) | [Test report](releases/2026-09-11-nasca-direct-com-read/test-report.md) |
 | 2026-09-11: browser filename handoff | [Test plan](releases/2026-09-11-browser-filename-handoff/test-plan.md) | [Test report](releases/2026-09-11-browser-filename-handoff/test-report.md) |

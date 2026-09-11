@@ -1169,6 +1169,14 @@ def reconcile_outlook_dispatches() -> dict:
         logging.getLogger(__name__).exception(
             "Could not reconcile scanner notification dispatches"
         )
+    # Flow "Email the final file" hand-offs mirror their receipt the same way.
+    try:
+        from app.flow_email_delivery import mirror_receipts
+
+        with get_db() as db:
+            mirror_receipts(db)
+    except Exception:
+        logging.getLogger(__name__).exception("Could not mirror Flow email receipts")
     return {"processed": processed, "unknown": unknown}
 
 

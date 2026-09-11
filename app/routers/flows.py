@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 from app.config import DB_PATH, UPLOAD_PGHOST, UPLOAD_PGPORT
 from app.database import get_db
 from app import flow_paths, flow_layout, flow_capacity, flow_tasks, flow_parallel, flow_browser, flow_recording, flow_view_refresh
+from app import flow_email_delivery
 from app.flow_credentials import asap_credential_status, save_asap_credentials
 from app.flow_asap_exports import (
     public_asap_download_types,
@@ -716,7 +717,19 @@ class FlowWrite(BaseModel):
     # None means "keep the saved setting": an older client that omits this
     # field must not switch an existing Flow back to Off.
     post_sql_refresh: dict[str, Any] | None = None
+    # Optional final step: email the final file. None keeps the saved setting
+    # for the same older-client reason. Independent of SQL insertion.
+    email_delivery: dict[str, Any] | None = None
     owner_person_id: int | None = Field(default=None, ge=1)
+
+    @field_validator("email_delivery")
+    @classmethod
+    def validate_email_delivery(cls, value):
+        # A field validator keeps the field name in the 422 location, which
+        # the builder uses to open the Email step and focus the recipients.
+        if value is None:
+            return None
+        return flow_email_delivery.normalize_config(value)
 
     @model_validator(mode="after")
     def validate_flow(self):
@@ -1168,6 +1181,7 @@ def _flow_out(db, flow_id: int, *, include_private_storage: bool = False) -> dic
         result[key] = None if result.get(key) is None else bool(result[key])
     result["selections"] = _loads(result.pop("selections_json"), {})
     result["post_sql_refresh"] = _post_sql_refresh_config(result.pop("post_sql_refresh_json", None))
+    result["email_delivery"] = flow_email_delivery.saved_config(result.pop("email_delivery_json", None))
     result["export_views"] = _loads(result.pop("export_views_json", None), [])
     result["download_links"] = _loads(result.pop("download_links_json", None), [])
     result["schedule_days"] = _loads(result.pop("schedule_days"), [])
@@ -1589,9 +1603,11 @@ def _build_job(db, flow_id: int, *, force_reprocess: bool = False, recording_dra
         _validate_flow_selections(db, body)
         _validate_sql_target(db, body)
         _validate_owner(db, body)
-        flow.update(body.model_dump(exclude={'recording_revision_id', 'post_sql_refresh'}))
+        flow.update(body.model_dump(exclude={'recording_revision_id', 'post_sql_refresh', 'email_delivery'}))
         if body.post_sql_refresh is not None:
             flow['post_sql_refresh'] = body.post_sql_refresh
+        if body.email_delivery is not None:
+            flow['email_delivery'] = body.email_delivery
         if body.recording_revision_id is not None:
             flow['recording_revision_id'] = body.recording_revision_id
     if flow.get('sql_reconciliation_required') and flow.get('sql_mode') == 'append':
@@ -1730,6 +1746,9 @@ def _build_job(db, flow_id: int, *, force_reprocess: bool = False, recording_dra
             job['sql_handoff']['owner_username'] = owner['sql_username']
     from app.flow_view_refresh_discovery import build_plan
     job["post_sql_refresh"] = build_plan(db, flow.get("post_sql_refresh"), job["sql_handoff"], _flow_server_identity())
+    # Frozen with the run like every other step; excluded from recording,
+    # script and handover hashes because only the app sends email.
+    job["email_delivery"] = flow_email_delivery.saved_config(flow.get("email_delivery"))
     if flow.get('execution_method') == 'recorded':
         from app.flow_recordings import attach_job
         attach_job(db, flow, job, allow_draft=recording_draft)
@@ -2175,13 +2194,15 @@ def list_runs(flow_id: int | None = None, limit: int = Query(default=100, ge=1, 
                 "SELECT phase, duration_ms, item_count, status FROM flow_operation_timings WHERE run_id=? ORDER BY id",
                 (row["id"],),
             ).fetchall()
+            job = _loads(row["job_json"], {})
             result.append({
-                **public_row, "job": _public_flow_job(_loads(row["job_json"], {})),
+                **public_row, "job": _public_flow_job(job),
                 "progress": _loads(row["progress_json"], {}),
                 "artifacts": _loads(row["artifact_json"], []),
                 "timings": [dict(item) for item in timings],
                 "sql_outcome": _loads(public_row.pop("sql_outcome_json", None), None),
                 "view_refresh": _view_refresh_summary(db, row),
+                "email": flow_email_delivery.run_summary(row, job),
             })
         return result
 
@@ -2232,7 +2253,18 @@ def get_run(run_id: int):
             "downloads": flow_parallel.snapshot(db, run_id),
             "sql_outcome": _loads(public_row.pop("sql_outcome_json", None), None),
             "view_refresh": _view_refresh_summary(db, row),
+            "email": _run_email_summary(db, row),
         }
+
+
+def _run_email_summary(db, row) -> dict | None:
+    """The run log's Email block, with file names only when the step is on."""
+    job = _loads(row["job_json"], {})
+    if not (job.get("email_delivery") or {}).get("enabled"):
+        return None
+    return flow_email_delivery.run_summary(
+        row, job, files=flow_email_delivery.final_files(db, int(row["id"])),
+    )
 
 
 def _view_refresh_rows(db, run_id: int) -> list[dict]:
@@ -2889,6 +2921,28 @@ def retry_run_views(run_id: int, request: Request):
             "worker": worker, "source_run_id": run_id, "remaining_views": len(remaining)}
 
 
+@router.post("/runs/{run_id}/resend-email")
+def resend_run_email(run_id: int, request: Request):
+    """Hand the run's final file to Outlook again; the recovery for a failed send."""
+    with get_db() as db:
+        row = db.execute(
+            "SELECT status, progress_json, job_json FROM flow_runs WHERE id=?", (run_id,)
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, "Run not found.")
+    if row["status"] != "succeeded":
+        raise HTTPException(409, "Only a succeeded run can send its final file again.")
+    job = _loads(row["job_json"], {})
+    if not (job.get("email_delivery") or {}).get("enabled"):
+        raise HTTPException(409, "This run has no Email step.")
+    if _loads(row["progress_json"], {}).get("no_op"):
+        raise HTTPException(409, "This run found nothing new, so there is no file to send.")
+    outcome = flow_email_delivery.deliver_run_file(run_id, resend=True, actor=get_actor(request))
+    if outcome.get("status") == "failed":
+        raise HTTPException(502, f"Email could not be handed to Outlook: {outcome.get('detail')}")
+    return {"run_id": run_id, **outcome}
+
+
 class ViewRefreshTarget(BaseModel):
     database: str = Field(min_length=1, max_length=63)
     schema_name: str = Field(min_length=1, max_length=63, alias="schema")
@@ -3134,6 +3188,8 @@ def create_flow(body: FlowWrite, request: Request):
             db.execute("UPDATE flows SET download_parallelism=? WHERE id=?", (body.download_parallelism or 1, flow_id))
             db.execute("UPDATE flows SET post_sql_refresh_json=? WHERE id=?",
                        (_json(body.post_sql_refresh or {"mode": "off", "views": []}), flow_id))
+            db.execute("UPDATE flows SET email_delivery_json=? WHERE id=?",
+                       (_json(body.email_delivery or flow_email_delivery.default_config()), flow_id))
             if managed:
                 adapter = db.execute("SELECT adapter FROM flow_sites WHERE id=?", (body.site_id,)).fetchone()[0]
                 allocated = flow_layout.create_flow_folder(flow_paths.get_flows_root(db), adapter, body.name, flow_id)
@@ -3147,7 +3203,11 @@ def create_flow(body: FlowWrite, request: Request):
             reconcile_file_binding(db, flow_id, reconcile_sources=False)
             if sql_target_source_id is not None:
                 reconcile_source(db, int(sql_target_source_id))
-            log_event(db, "flow", flow_id, body.name, "created", f"sql_handoff={body.sql_handoff_enabled}", get_actor(request))
+            log_event(
+                db, "flow", flow_id, body.name, "created",
+                f"sql_handoff={body.sql_handoff_enabled}; email_delivery={bool((body.email_delivery or {}).get('enabled'))}",
+                get_actor(request),
+            )
             saved = _flow_out(db, flow_id)
         return _generate_saved_standalone(saved)
     except sqlite3.IntegrityError as exc:
@@ -3367,7 +3427,7 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
                       sql_database, sql_schema, sql_table, sql_target_source_id,
                       target_folder, local_file_path, local_file_worksheet, flow_folder,
                       local_file_last_identity, local_file_config_revision, download_parallelism, execution_method, recording_revision_id,
-                      post_sql_refresh_json
+                      post_sql_refresh_json, email_delivery_json
                FROM flows WHERE id=?""",
             (flow_id,),
         ).fetchone()
@@ -3385,6 +3445,8 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
             body.post_sql_refresh = _post_sql_refresh_config(existing["post_sql_refresh_json"])
             if not body.sql_handoff_enabled:
                 body.post_sql_refresh = {"mode": "off", "views": []}
+        if body.email_delivery is None:
+            body.email_delivery = flow_email_delivery.saved_config(existing["email_delivery_json"])
         from app.routers.pipelines import assert_resource_unlocked
         assert_resource_unlocked(db, "flow", str(flow_id))
         if (existing["source_type"] or "portal") != body.source_type:
@@ -3489,6 +3551,7 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
             raise HTTPException(404, "Flow not found.")
         db.execute("UPDATE flows SET download_parallelism=? WHERE id=?", (body.download_parallelism, flow_id))
         db.execute("UPDATE flows SET post_sql_refresh_json=? WHERE id=?", (_json(body.post_sql_refresh), flow_id))
+        db.execute("UPDATE flows SET email_delivery_json=? WHERE id=?", (_json(body.email_delivery), flow_id))
         db.execute('UPDATE flows SET execution_method=? WHERE id=?', (body.execution_method, flow_id))
         if body.recording_revision_id is not None:
             if body.execution_method != 'recorded':
@@ -5899,6 +5962,7 @@ def update_run(worker_id: str, run_id: int, body: WorkerProgress):
     if body.status not in RUN_STATUSES:
         raise HTTPException(400, "Unsupported run status.")
     now = _iso(_now())
+    email_pending = False
     with get_db() as db:
         db.execute('BEGIN IMMEDIATE')
         row = db.execute("SELECT * FROM flow_runs WHERE id=? AND worker_id=?", (run_id, worker_id)).fetchone()
@@ -5965,6 +6029,17 @@ def update_run(worker_id: str, run_id: int, body: WorkerProgress):
             ),
         )
         job = _loads(row["job_json"], {})
+        # The Email step sends the final file only for a producing success. The
+        # hand-off itself happens after this transaction commits (see below).
+        email_pending = (
+            body.status == "succeeded" and not no_op
+            and bool((job.get("email_delivery") or {}).get("enabled"))
+        )
+        if email_pending:
+            db.execute(
+                "UPDATE flow_runs SET email_status='pending', email_detail=NULL WHERE id=?",
+                (run_id,),
+            )
         _store_timings(
             db, body.timings, operation_type="flow_download", run_id=run_id,
             site_id=job.get("site", {}).get("id"), report_id=job.get("report", {}).get("id"),
@@ -6060,7 +6135,8 @@ def update_run(worker_id: str, run_id: int, body: WorkerProgress):
                 (now, now, worker_id),
             )
     owner_alert = notify_flow_owner_of_failure(run_id) if body.status == "failed" else None
-    return {"run_id": run_id, "status": body.status, "owner_alert": owner_alert}
+    email = flow_email_delivery.deliver_run_file(run_id) if email_pending else None
+    return {"run_id": run_id, "status": body.status, "owner_alert": owner_alert, "email": email}
 
 
 def _record_sql_outcome(db, run_id: int, body: WorkerProgress, now: str) -> None:

@@ -7,6 +7,7 @@ const duration = ms => {
 const stamp = value => value ? new Date(/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/.test(String(value)) ? String(value).replace(' ', 'T') + 'Z' : value).toLocaleString('en-GB', {timeZone:'Asia/Dubai'}) : "Not recorded";
 const label = value => String(value || "unknown").replaceAll("_", " ");
 const runId = Number(location.pathname.match(/\/flow-runs\/(\d+)/)?.[1]);
+let loadRun = null;
 
 function render(run) {
     const sql = run.job?.sql_handoff || {};
@@ -19,6 +20,14 @@ function render(run) {
     const sqlRetrySource = run.job?.sql_retry?.source_run_id;
     const refresh = run.view_refresh;
     const canRetryViews = refresh?.retry?.status === "eligible";
+    const email = run.email;
+    const emailStatusText = !email ? "" : email.status === "pending" ? "Handed to Outlook, waiting for its receipt"
+        : email.status === "submitted" ? "Submitted by Outlook"
+        : email.status === "failed" ? "Not sent"
+        : email.status === "unknown" ? "No Outlook receipt within 24 hours; delivery is unknown"
+        : email.status === "skipped" ? "Skipped"
+        : "Not attempted yet";
+    const canResendEmail = Boolean(email) && run.status === "succeeded" && !run.progress?.no_op;
     const viewRows = (refresh?.views || []).map(item => `<tr><td>${item.sequence_no}</td><td><code>${esc(item.database)}.${esc(item.schema)}.${esc(item.name)}</code></td><td><span class="flow-log-view-status ${esc(item.status)}">${esc(label(item.status))}</span></td><td>${item.duration_ms === null || item.duration_ms === undefined ? "" : esc(duration(item.duration_ms))}</td><td>${esc(item.finished_at ? stamp(item.finished_at) : "")}</td><td>${item.error ? `<span class="flow-log-view-error">${esc(item.error)}</span>` : ""}</td></tr>`).join("");
     const sqlOutcome = run.sql_outcome;
     const sqlOutcomeText = !sql.enabled && !sqlRetrySource && !refresh?.source_run_id ? "SQL insertion disabled"
@@ -35,8 +44,9 @@ function render(run) {
         ${run.error ? `<section class="flow-log-failure"><h2>Final error</h2><p>${esc(run.error)}</p></section>` : ""}
         ${reconciliationBlocksRetry ? '<section class="flow-log-failure"><h2>SQL reconciliation required</h2><p>The prior append may have completed. Check and reconcile the target, then acknowledge reconciliation from the Flow’s More menu before running again.</p></section>' : ''}
         ${refresh ? `<section class="flow-log-section flow-log-views"><h2>SQL insertion → Refresh materialized views</h2><p><strong>${esc(sqlOutcomeText)}.</strong> ${refresh.deferred_to_pipeline ? "This run belongs to a full-pipeline run, which refreshes the configured views once after every upstream Flow finished." : refresh.blocked ? `Refresh blocked: ${esc(refresh.blocked)}` : `${refresh.completed} of ${refresh.total} materialized view(s) refreshed, each in its own transaction, upstream first.${refresh.source_run_id ? ` Refresh-only retry of run #${esc(refresh.source_run_id)}; nothing was downloaded, transformed or inserted again.` : ""}${refresh.discovered_at ? ` List frozen when the run was queued (${esc(stamp(refresh.discovered_at))}${refresh.metadata_at ? `, metadata verified ${esc(stamp(refresh.metadata_at))}` : ""}).` : ""}`}${refresh.retry && refresh.retry.status !== "eligible" ? ` ${esc(refresh.retry.message)}` : ""}</p>${viewRows ? `<div class="flow-table-wrap"><table class="flow-table"><thead><tr><th>#</th><th>Materialized view</th><th>Status</th><th>Duration</th><th>Finished</th><th>Error</th></tr></thead><tbody>${viewRows}</tbody></table></div>` : ""}</section>` : ""}
+        ${email ? `<section class="flow-log-section flow-log-email"><h2>Email the final file</h2><p><strong>Status:</strong> <span class="flow-log-email-status ${esc(email.status || "none")}">${esc(emailStatusText)}</span>${email.detail ? ` <span class="${email.status === "failed" || email.status === "unknown" ? "flow-log-view-error" : ""}">${esc(email.detail)}</span>` : ""}</p><dl><div><dt>Recipients</dt><dd>${esc((email.recipients || []).join("; ") || "None")}</dd></div><div><dt>Subject</dt><dd>${esc(email.subject || `Metronome flow file: ${run.flow_name} (run #${run.id})`)}</dd></div><div><dt>File(s)</dt><dd>${esc((email.files || []).join(", ") || "None recorded")}</dd></div></dl>${canResendEmail ? '<p><button class="btn-secondary" id="flow-resend-email">Send again</button> <span id="flow-resend-email-status" role="status"></span></p>' : ""}<p class="flow-log-muted">The email is handed to Outlook on the BI desktop after the run succeeds; Outlook's receipt updates this status. Files above 20 MB are described instead of attached.</p></section>` : ""}
         ${run.downloads ? `<section class="flow-log-section"><h2>Download tasks</h2><p>${run.downloads.completed} of ${run.downloads.total} completed · ${run.downloads.active} active slots · ${esc(label(run.downloads.state))}</p><div class="flow-table-wrap"><table class="flow-table"><thead><tr><th>Export</th><th>Status</th><th>Worker</th><th>Attempt</th><th>Error</th></tr></thead><tbody>${run.downloads.tasks.map(task => `<tr><td>${task.ordinal}</td><td>${esc(task.state)}</td><td>${esc(task.worker_id || 'Waiting')}</td><td>${task.attempt}</td><td>${esc(task.error || '')}</td></tr>`).join('')}</tbody></table></div></section>` : ''}
-        <section class="flow-log-summary"><dl><div><dt>Requested</dt><dd>${esc(stamp(run.created_at))}</dd></div><div><dt>Started</dt><dd>${esc(stamp(run.started_at))}</dd></div><div><dt>Finished</dt><dd>${esc(stamp(run.finished_at))}</dd></div><div><dt>Worker</dt><dd>${esc(run.worker_id || "Not claimed")}</dd></div><div><dt>Browser</dt><dd>${esc(label(run.job?.execution?.browser_mode || "unknown"))}</dd></div><div><dt>Transformation</dt><dd>${transformation.enabled ? `${esc(transformation.script_path)} → script_results` : "Disabled"}</dd></div><div><dt>SQL handoff</dt><dd>${sql.enabled ? `${esc(sql.mode)} to ${esc(sql.database)}.${esc(sql.schema)}.${esc(sql.table)}` : "Disabled"}</dd></div></dl></section>
+        <section class="flow-log-summary"><dl><div><dt>Requested</dt><dd>${esc(stamp(run.created_at))}</dd></div><div><dt>Started</dt><dd>${esc(stamp(run.started_at))}</dd></div><div><dt>Finished</dt><dd>${esc(stamp(run.finished_at))}</dd></div><div><dt>Worker</dt><dd>${esc(run.worker_id || "Not claimed")}</dd></div><div><dt>Browser</dt><dd>${esc(label(run.job?.execution?.browser_mode || "unknown"))}</dd></div><div><dt>Transformation</dt><dd>${transformation.enabled ? `${esc(transformation.script_path)} → script_results` : "Disabled"}</dd></div><div><dt>SQL handoff</dt><dd>${sql.enabled ? `${esc(sql.mode)} to ${esc(sql.database)}.${esc(sql.schema)}.${esc(sql.table)}` : "Disabled"}</dd></div><div><dt>Email</dt><dd>${email ? `${(email.recipients || []).length} recipient(s)` : "Disabled"}</dd></div></dl></section>
         ${sql.owner_username || sqlOutcome?.owner_username ? `<section class="flow-log-section"><h2>SQL table ownership</h2><p>${sqlOutcome?.committed && sqlOutcome.owner_username ? `Committed table owner: <code>${esc(sqlOutcome.owner_username)}</code>. Refresh table Properties in pgAdmin to see this owner.` : `Requested owner: <code>${esc(sql.owner_username)}</code>. Ownership is confirmed only after the SQL load commits.`}</p></section>` : ''}
         <section class="flow-log-section"><h2>Event timeline</h2>${events || '<p class="flow-inline-empty">This run predates expanded event capture. Its summary, timings, files, and final error are shown below.</p>'}</section>
         <section class="flow-log-section"><h2>Phase timings</h2><div class="flow-table-wrap"><table class="flow-table"><thead><tr><th>Phase</th><th>Duration</th><th>Status</th><th>Items</th></tr></thead><tbody>${timingRows || '<tr><td colspan="4">No timings recorded.</td></tr>'}</tbody></table></div></section>
@@ -58,6 +68,29 @@ function render(run) {
             window.alert(`View refresh was not queued: ${error.message}`);
             retryViewsButton.disabled = false;
             retryViewsButton.textContent = "Retry view refresh";
+        }
+    };
+    const resendButton = document.getElementById("flow-resend-email");
+    if (resendButton) resendButton.onclick = async () => {
+        const recipients = (email.recipients || []).join("; ");
+        const files = (email.files || []).join(", ") || "the recorded final file";
+        const duplicate = ["submitted", "unknown", "pending"].includes(email.status)
+            ? "\n\nOutlook may already have sent this email; sending again can deliver a duplicate."
+            : "";
+        if (!window.confirm(`Send ${files} again through Outlook to ${recipients}?${duplicate}\n\nNothing is downloaded, transformed or inserted into SQL again.`)) return;
+        resendButton.disabled = true;
+        resendButton.textContent = "Handing to Outlook...";
+        const status = document.getElementById("flow-resend-email-status");
+        try {
+            const response = await fetch(`/api/flows/runs/${run.id}/resend-email`, { method: "POST" });
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.detail || `HTTP ${response.status}`);
+            if (status) status.textContent = "Handed to Outlook; waiting for its receipt.";
+            if (loadRun) loadRun();
+        } catch (error) {
+            if (status) status.textContent = `Email not sent: ${error.message}`;
+            resendButton.disabled = false;
+            resendButton.textContent = "Send again";
         }
     };
     const retryButton = document.getElementById("flow-retry-sql");
@@ -86,7 +119,8 @@ if (!Number.isInteger(runId)) {
     document.getElementById("flow-run-log").innerHTML = '<div class="flow-log-failure"><h1>Invalid run</h1><p>The run ID in this URL is not valid.</p></div>';
 } else {
     let refreshTimer;
-    const loadRun = () => fetch(`/api/flows/runs/${runId}`).then(async response => {
+    let emailPolls = 0;
+    loadRun = () => fetch(`/api/flows/runs/${runId}`).then(async response => {
         if (!response.ok) throw new Error((await response.json()).detail || `HTTP ${response.status}`);
         return response.json();
     }).then(run => {
@@ -94,6 +128,9 @@ if (!Number.isInteger(runId)) {
         clearTimeout(refreshTimer);
         if (!["succeeded", "failed", "cancelled"].includes(run.status)) {
             refreshTimer = setTimeout(loadRun, 2000);
+        } else if (run.email?.status === "pending" && emailPolls++ < 24) {
+            // Outlook's receipt is reconciled by the server within about a minute.
+            refreshTimer = setTimeout(loadRun, 5000);
         }
     }).catch(error => {
         document.getElementById("flow-run-log").innerHTML = `<div class="flow-log-failure"><h1>Logs unavailable</h1><p>${esc(error.message)}</p></div>`;

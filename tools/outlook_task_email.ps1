@@ -3,7 +3,9 @@
     Creates or sends Outlook task summary emails from a JSON payload.
 .PARAMETER PayloadPath
     Path to JSON containing a messages array with to, subject, html_body, and
-    optional inline_images fields. Each inline image has path and cid fields.
+    optional inline_images and attachments fields. Each inline image has path
+    and cid fields; each attachment has a path field. A missing attachment
+    fails the whole dispatch so the receipt names the file.
 .PARAMETER ReceiptPath
     Atomic JSON receipt written after Outlook accepts Send/Display calls.
 .PARAMETER Send
@@ -60,6 +62,16 @@ try {
                 "http://schemas.microsoft.com/mapi/proptag/0x7FFE000B",
                 $true
             )
+        }
+        foreach ($attachment in @($message.attachments)) {
+            $attachmentPath = [string]$attachment.path
+            if (-not $attachmentPath) {
+                continue
+            }
+            if (-not (Test-Path -LiteralPath $attachmentPath -PathType Leaf)) {
+                throw "Attachment not found: $attachmentPath"
+            }
+            $mail.Attachments.Add($attachmentPath) | Out-Null
         }
         $mail.HTMLBody = [string]$message.html_body
         if ($Send) {

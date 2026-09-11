@@ -368,3 +368,93 @@ def test_copying_range_template_preserves_recording_version_three(preview):
     assert definition['version'] == 3
     assert any(step['action'] == 'select_range' for step in definition['steps'])
     validate_definition(definition)
+
+
+def test_email_step_builder_run_history_and_send_again(preview):
+    page, evidence, _ = preview
+    # Builder: the Email step is the last block of After download, independent of SQL.
+    toggle = page.locator('#flow-email-enabled')
+    expect(toggle).to_be_checked()
+    expect(page.locator('#flow-email-recipients')).to_have_value('ops@example.test; regional.lead@example.test')
+    titles = page.locator('#flow-step-body-after h3')
+    assert titles.last.inner_text() == 'Email the final file'
+    toggle.uncheck()
+    expect(page.locator('#flow-email-fields')).to_be_hidden()
+    toggle.check()
+    expect(page.locator('#flow-email-fields')).to_be_visible()
+    page.locator('#flow-sql-enabled').uncheck()
+    expect(page.locator('#flow-email-fields')).to_be_visible()
+    page.locator('#flow-sql-enabled').check()
+    shot(page, evidence, 'builder-email-step')
+    # An invalid address comes back from the server; the builder opens the step and focuses recipients.
+    page.locator('#flow-email-recipients').fill('planner')
+    page.get_by_role('button', name='Save changes', exact=True).click()
+    expect(page.locator('.flow-form-error')).to_contain_text('Invalid email address: planner')
+    assert page.evaluate("document.activeElement.id") == 'flow-email-recipients'
+    shot(page, evidence, 'builder-email-invalid')
+    # Empty recipients are caught before submission and keep the entered work.
+    page.locator('#flow-email-recipients').fill('')
+    page.get_by_role('button', name='Save changes', exact=True).click()
+    assert page.evaluate("document.activeElement.id") == 'flow-email-recipients'
+    page.locator('#flow-email-recipients').fill('planner@example.test; ops@example.test')
+    page.locator('#flow-email-subject').fill('Regional orders file')
+    page.get_by_role('button', name='Save changes', exact=True).click()
+    page.wait_for_function('window.previewPayload && window.previewPayload.email_delivery')
+    assert page.evaluate('window.previewPayload.email_delivery') == {
+        'enabled': True, 'recipients': ['planner@example.test', 'ops@example.test'], 'subject': 'Regional orders file',
+    }
+    expect(page.locator('#preview-status')).to_contain_text('Flow saved')
+    # New flows start with the step off.
+    page.evaluate("previewShow('new')")
+    expect(page.locator('#flow-email-enabled')).not_to_be_checked()
+    # Run history reuses one status text per run.
+    page.evaluate("previewShow('runs')")
+    expect(page.locator('tr', has_text='#40')).to_contain_text('Email submitted by Outlook')
+    expect(page.locator('tr', has_text='#39')).to_contain_text('Email not sent: Failed to launch Outlook email task')
+    expect(page.locator('tr', has_text='#38')).to_contain_text('Attachments skipped: 34.2 MB exceeds the 20 MB limit')
+    expect(page.locator('tr', has_text='#41')).to_contain_text('Email: not attempted yet')
+    shot(page, evidence, 'runs-email-status')
+    # Run log: a failed hand-off explains itself and offers Send again.
+    page.evaluate("previewShow('log', 39)")
+    frame = page.frame_locator('#preview-log')
+    section = frame.locator('.flow-log-email')
+    expect(section.locator('h2')).to_have_text('Email the final file')
+    expect(section).to_contain_text('Not sent')
+    expect(section).to_contain_text('Access is denied')
+    expect(section).to_contain_text('planner@example.test')
+    expect(section).to_contain_text('sellout.csv')
+    expect(frame.locator('#flow-resend-email')).to_be_visible()
+    shot(page, evidence, 'run-log-email-failed')
+    # Send again asks for confirmation; a failed hand-off reports beside the button and stays available.
+    page.select_option('#preview-email', 'fail')
+    page.once('dialog', lambda dialog: dialog.accept())
+    frame.locator('#flow-resend-email').click()
+    expect(frame.locator('#flow-resend-email-status')).to_contain_text('Email not sent: Email could not be handed to Outlook')
+    expect(frame.locator('#flow-resend-email')).to_be_enabled()
+    # Cancelling the confirmation sends nothing.
+    page.select_option('#preview-email', 'submitted')
+    page.once('dialog', lambda dialog: dialog.dismiss())
+    frame.locator('#flow-resend-email').click()
+    expect(section).to_contain_text('Not sent')
+    page.once('dialog', lambda dialog: dialog.accept())
+    frame.locator('#flow-resend-email').click()
+    expect(section.locator('.flow-log-email-status')).to_contain_text('Submitted by Outlook')
+    expect(page.locator('#preview-status')).to_contain_text('Send again in preview')
+    shot(page, evidence, 'run-log-email-sent')
+    # Over-cap runs say the file was described instead of attached; a failed run never attempted.
+    page.evaluate("previewShow('log', 38)")
+    expect(frame.locator('.flow-log-email')).to_contain_text('Attachments skipped: 34.2 MB exceeds the 20 MB limit')
+    page.evaluate("previewShow('log', 41)")
+    expect(frame.locator('.flow-log-email')).to_contain_text('Not attempted yet')
+    assert frame.locator('#flow-resend-email').count() == 0
+    # Narrow layout keeps the step and the run-log section readable.
+    page.set_viewport_size({'width': 390, 'height': 844})
+    page.evaluate("previewShow('builder')")
+    open_after(page)
+    page.locator('#flow-email-recipients').scroll_into_view_if_needed()
+    no_overflow(page)
+    shot(page, evidence, 'builder-email-narrow')
+    page.evaluate("previewShow('log', 39)")
+    expect(frame.locator('.flow-log-email')).to_be_visible()
+    assert page.evaluate("document.querySelector('#preview-log').contentDocument.documentElement.scrollWidth <= document.querySelector('#preview-log').clientWidth")
+    shot(page, evidence, 'run-log-email-narrow')

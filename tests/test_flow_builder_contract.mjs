@@ -45,3 +45,27 @@ set('flow-execution-method', 'recorded');
 assert.equal(context._flowCollectBuilder().recording_revision_id, 42);
 set('flow-execution-method', 'catalog');
 assert.equal(context._flowCollectBuilder().recording_revision_id, undefined);
+
+// Email the final file: recipients split on ; , and newlines; disabled sends the Off shape.
+const plain = value => JSON.parse(JSON.stringify(value));
+set('flow-email-enabled', '', {checked: true});
+set('flow-email-recipients', 'a@x.test; B@x.test,\nc@x.test ');
+set('flow-email-subject', ' Weekly file ');
+assert.deepEqual(plain(context._flowEmailRead()), {enabled: true, recipients: ['a@x.test', 'B@x.test', 'c@x.test'], subject: 'Weekly file'});
+assert.deepEqual(plain(context._flowCollectBuilder().email_delivery), {enabled: true, recipients: ['a@x.test', 'B@x.test', 'c@x.test'], subject: 'Weekly file'});
+set('flow-email-subject', '');
+assert.equal(context._flowEmailRead().subject, null);
+set('flow-email-enabled', '', {checked: false});
+assert.deepEqual(plain(context._flowCollectBuilder().email_delivery), {enabled: false, recipients: [], subject: null});
+for (const sourceType of ['file', 'outlook', 'portal']) {
+    form.dataset.sourceType = sourceType;
+    assert.deepEqual(plain(context._flowCollectBuilder().email_delivery), {enabled: false, recipients: [], subject: null});
+}
+const emailSeen = [];
+context._flowRevealStep = (_form, input) => emailSeen.push(input);
+const recipientsInput = {focus: () => emailSeen.push('focus')};
+context._flowRevealServerError({querySelector: id => id === '#flow-email-recipients' ? recipientsInput : null}, {validation: [{loc: ['body', 'email_delivery'], msg: 'Invalid email address: planner'}]});
+assert.deepEqual(emailSeen, [recipientsInput, 'focus']);
+assert.match(source, /<h3>|emailTitle\.textContent = "Email the final file"/);
+assert.match(source, /id="flow-email-enabled" type="checkbox"/);
+console.log('flow builder email step tests passed');

@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Reusable recordings and view refresh preview</title><link rel="stylesheet" href="/static/style.css?v=59">
+<title>Reusable recordings and view refresh preview</title><link rel="stylesheet" href="/static/style.css?v=60">
 <style>
 body{padding:24px}
 .preview-bar{max-width:1180px;margin:0 auto 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 16px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;font-size:.82rem}
@@ -17,6 +17,7 @@ body{padding:24px}
 <div class="preview-bar"><h1>Fictional preview · reusable recordings and downstream view refresh</h1>
 <label>Discovery result <select id="preview-discovery" aria-label="Fictional discovery result"><option value="ok">Three views found</option><option value="empty">Verified empty</option><option value="missing">Table missing from metadata</option><option value="incomplete">Incomplete lineage</option><option value="stale">Stale metadata</option><option value="cyclic">Dependency cycle</option></select></label>
 <label>Retry outcome <select id="preview-retry" aria-label="Fictional retry outcome"><option value="success">Remaining views succeed</option><option value="fail">A view fails again</option></select></label>
+<label>Send again outcome <select id="preview-email" aria-label="Fictional Send again outcome"><option value="submitted">Outlook submits the email</option><option value="fail">Outlook hand-off fails</option></select></label>
 <button id="preview-reset" class="btn-secondary">Reset preview</button></div>
 <nav class="preview-nav" aria-label="Preview screens"><button class="btn-secondary" data-screen="builder" aria-current="true">Edit Flow</button><button class="btn-secondary" data-screen="recording">Recording</button><button class="btn-secondary" data-screen="new">New flow (replicate)</button><button class="btn-secondary" data-screen="runs">Run history</button><button class="btn-secondary" data-screen="log">Run log</button></nav>
 <div id="preview-status" role="status"></div>
