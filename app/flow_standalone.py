@@ -26,7 +26,9 @@ def config_hash(job: dict) -> str:
 def freeze(job: dict) -> dict:
     frozen = copy.deepcopy(job)
     for key in list(frozen):
-        if key.startswith('_') or key in {'resume', 'sql_retry', 'view_retry', 'source_receipt', 'job_type'}:
+        # The Email step runs only inside the app (Outlook on the BI desktop);
+        # scripts never carry recipients, so it must not change their hash.
+        if key.startswith('_') or key in {'resume', 'sql_retry', 'view_retry', 'source_receipt', 'job_type', 'email_delivery'}:
             frozen.pop(key)
     # The launcher executes sequentially regardless of the server pool size.
     frozen.get('execution', {}).pop('worker_id', None)

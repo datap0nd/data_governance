@@ -8027,3 +8027,15 @@ body.remote-flow-control-enabled { padding-top: 32px; }
 .flow-log-view-status.running { color:var(--blue); }
 .flow-log-view-status.skipped, .flow-log-view-status.pending { color:var(--text-muted); }
 .flow-log-view-error { color:var(--red); font-size:.75rem; overflow-wrap:anywhere; }
+.flow-log-email p { font-size:.85rem; overflow-wrap:anywhere; }
+.flow-log-email dl { display:grid; gap:var(--space-md); grid-template-columns:repeat(3, minmax(0,1fr)); margin:var(--space-md) 0; }
+.flow-log-email dt { color:var(--text-muted); font-size:.68rem; font-weight:600; text-transform:uppercase; }
+.flow-log-email dd { font-size:.82rem; margin:.2rem 0 0; overflow-wrap:anywhere; }
+.flow-log-email .flow-log-muted { color:var(--text-muted); font-size:.75rem; }
+@media (max-width: 720px) { .flow-log-email dl { grid-template-columns:1fr; } }
+.flow-log-email-status, .flow-email-status { font-weight:600; }
+.flow-log-email-status.submitted, .flow-email-status.submitted { color:var(--green); }
+.flow-log-email-status.failed, .flow-email-status.failed { color:var(--red); }
+.flow-log-email-status.unknown, .flow-email-status.unknown { color:var(--orange); }
+.flow-log-email-status.pending, .flow-log-email-status.skipped, .flow-log-email-status.none,
+.flow-email-status.pending, .flow-email-status.skipped, .flow-email-status.none { color:var(--text-muted); }

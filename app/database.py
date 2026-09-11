@@ -1957,6 +1957,13 @@ MIGRATIONS = [
           AND NOT EXISTS (SELECT 1 FROM flow_run_events WHERE run_id=NEW.id AND stage='sql_insertion_complete')
         BEGIN UPDATE flows SET sql_reconciliation_required=1 WHERE id=NEW.flow_id; END""",
     "UPDATE flows SET sql_reconciliation_required=0 WHERE sql_reconciliation_required=1 AND LOWER(COALESCE(sql_mode,''))='replace'",
+    # Optional final Email step: the Flow's saved recipients/subject and, per
+    # run, the Outlook hand-off whose receipt is mirrored onto the run.
+    "ALTER TABLE flows ADD COLUMN email_delivery_json TEXT",
+    "ALTER TABLE flow_runs ADD COLUMN email_dispatch_id INTEGER",
+    "ALTER TABLE flow_runs ADD COLUMN email_status TEXT",
+    "ALTER TABLE flow_runs ADD COLUMN email_detail TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_flow_runs_email_dispatch ON flow_runs(email_dispatch_id)",
 ]
 
 

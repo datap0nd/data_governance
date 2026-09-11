@@ -101,3 +101,17 @@ assert.equal((five.match(/class="flow-worker-emoji"/g) || []).length, 5);
 assert.match(five, /5 workers/);
 for (let i=1;i<=5;i++) assert.match(five, new RegExp(`data-worker-id="worker-${i}"`));
 assert.equal((context._flowRowProgressHtml({...running, status:"queued",progress:{}}).match(/role="progressbar"/g) || []).length,0);
+
+// Email the final file: the Download cell names the recipients and run rows reuse one status text.
+context.window._flowsState.classification = "production";
+assert.match(render({ email_delivery: { enabled: true, recipients: ["ops@example.test"] } }), /· Email 1 recipient\(s\)/);
+assert.doesNotMatch(render({ email_delivery: { enabled: false, recipients: [] } }), /· Email/);
+assert.equal(context._flowEmailStatusText({ status: "pending" }), "Email: handed to Outlook, waiting for its receipt");
+assert.equal(context._flowEmailStatusText({ status: "submitted" }), "Email submitted by Outlook");
+assert.equal(context._flowEmailStatusText({ status: "submitted", detail: "Attachments skipped: 30.0 MB exceeds the 20 MB limit" }), "Email submitted by Outlook: Attachments skipped: 30.0 MB exceeds the 20 MB limit");
+assert.equal(context._flowEmailStatusText({ status: "failed", detail: "Access is denied." }), "Email not sent: Access is denied.");
+assert.equal(context._flowEmailStatusText({ status: "unknown" }), "Email: no Outlook receipt within 24 hours");
+assert.equal(context._flowEmailStatusText({ status: "skipped", detail: "Nothing new was found" }), "Email skipped: Nothing new was found");
+assert.equal(context._flowEmailStatusText({ status: null }), "Email: not attempted yet");
+assert.equal(context._flowEmailStatusText(null), "");
+console.log("flows display email tests passed");

@@ -24,7 +24,7 @@ The corresponding page registrations are in
 | --- | --- | --- |
 | Main | Dashboard / `#dashboard` | Report/source counts, active-alert count, last scan, source-health bar, 30-day health trend, team activity, and owner-filtered alert/action tables. |
 | Main | Pipelines / `#lineage` | Report selector and graphical lineage; connected upstream systems, files, SQL relations, materialized views, report tables and visuals; refresh planning, pipeline runs and connection explanations. |
-| Main | Flows / `#flows` | File, Outlook and website acquisition; recorded and catalog-based flows; schedules, owners, transformations, SQL insertion and downstream materialized-view refresh. Tabs: Flows, Catalog, Run history, Settings. |
+| Main | Flows / `#flows` | File, Outlook and website acquisition; recorded and catalog-based flows; schedules, owners, transformations, SQL insertion, downstream materialized-view refresh and emailing the final file to configured recipients. Tabs: Flows, Catalog, Run history, Settings. |
 | Data | Reports / `#reports` | Report catalog, owners, health/freshness, metadata, usage, documentation, refresh actions and archive controls. |
 | Data | Sources / `#sources` | Source catalog, freshness and probe results, ownership, upstream relationships and archive controls. |
 | Tools | Create Artifacts / `#create` | **Assets** tab creates a Report, Data Source or Upstream System. **People** tab adds/deletes BI and Business profiles. Also shows manual-entry history. |

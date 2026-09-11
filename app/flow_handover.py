@@ -41,7 +41,9 @@ def snapshot(db, flow_id):
     flow = flows._flow_out(db, flow_id, include_private_storage=True)
     report = flows._report_out(db, flow['report_id'])
     site = dict(db.execute('SELECT * FROM flow_sites WHERE id=?', (flow['site_id'],)).fetchone())
-    settings = {key: flow.get(key) for key in flows.FlowWrite.model_fields if key in flow}
+    # Recipient addresses stay in the database: shared-folder handover files
+    # describe execution settings, and scripts never email.
+    settings = {key: flow.get(key) for key in flows.FlowWrite.model_fields if key in flow and key != 'email_delivery'}
     revisions = []
     for row in db.execute('''SELECT id,status,definition_json,created_at FROM flow_recording_revisions
             WHERE flow_id=? AND (id=? OR id=(SELECT MAX(id) FROM flow_recording_revisions WHERE flow_id=?))

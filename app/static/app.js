@@ -10766,6 +10766,19 @@ function _flowOpenGroups() {
     return window._flowOpenGroupMemory = new Set(Array.isArray(value) ? value.filter(item => _flowGroups().includes(item)) : []);
 }
 
+function _flowEmailStatusText(email) {
+    if (!email) return "";
+    const detail = email.detail ? `: ${email.detail}` : "";
+    switch (email.status) {
+        case "pending": return `Email: handed to Outlook, waiting for its receipt${detail}`;
+        case "submitted": return `Email submitted by Outlook${detail}`;
+        case "failed": return `Email not sent${detail}`;
+        case "unknown": return `Email: no Outlook receipt within 24 hours${detail}`;
+        case "skipped": return `Email skipped${detail}`;
+        default: return "Email: not attempted yet";
+    }
+}
+
 function _flowRowModel(flow, runs = [], catalog = {}) {
     const group = flow.source_type === "file" ? "Local" : flow.source_type === "outlook" ? "Outlook" : ({asap_portal: "ASAP", gscm_portal: "GSCM"}[flow.source_adapter] || "Web");
     const source = group === "Local" ? flow.local_file_path : group === "Outlook" ? flow.outlook_subject_contains : (flow.category_path?.length ? flow.category_path.join(" › ") : flow.report_name || flow.site_name);
@@ -10785,7 +10798,7 @@ function _flowRowHtml(row) {
         <td><label class="flow-switch" title="${flow.schedule_type === "manual" ? "Choose a schedule to activate this flow" : "Activate or pause this flow"}"><input class="flow-enabled-switch" data-flow-focus="active-${flow.id}" type="checkbox" aria-label="Active: ${esc(flow.name)}" data-id="${flow.id}" ${flow.enabled ? "checked" : ""} ${flow.schedule_type === "manual" ? "disabled" : ""}><span aria-hidden="true"></span></label></td>
         <td><select class="flow-inline-edit" data-id="${flow.id}" data-field="owner_person_id" data-flow-focus="owner-${flow.id}" aria-label="Owner: ${esc(flow.name)}"><option value="">Unassigned</option>${(window._flowsState?.people || []).map(person => `<option value="${person.id}" ${person.id === flow.owner_person_id ? "selected" : ""}>${esc(person.name)}</option>`).join("")}</select></td>
         <td class="flow-path-cell">${esc(row.source || "—")}</td>
-        <td>${flow.source_type === "outlook" ? `CSV or Excel attachment<small>Original filename · default Inbox</small>` : flow.source_type === "file" ? `CSV or Excel file<small>${flow.local_file_worksheet ? `Worksheet: ${esc(flow.local_file_worksheet)} · ` : ""}Private snapshots · latest 3</small>` : `${esc(flow.download_mode === "one_per_period" || flow.download_mode === "one_per_week" ? `One ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} every ${flow.window_weeks || 1} week(s)` : `${flow.export_views?.length || 1} ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} export(s)`)}<small>${flow.period_strategy === "none" ? "No period prompt" : flow.period_strategy === "latest" ? "Start to latest available" : flow.period_strategy === "rolling" ? "Rolling window" : "Fixed start + end"}</small>`}<small>${flow.output_mode === "direct_replace" ? "Direct files · exact-name replacement" : "Run folders · newest 3"}</small><small>${esc(row.to || "")}${flow.sql_handoff_enabled ? ` · SQL ${esc(flow.sql_mode)}` : ""}</small></td>
+        <td>${flow.source_type === "outlook" ? `CSV or Excel attachment<small>Original filename · default Inbox</small>` : flow.source_type === "file" ? `CSV or Excel file<small>${flow.local_file_worksheet ? `Worksheet: ${esc(flow.local_file_worksheet)} · ` : ""}Private snapshots · latest 3</small>` : `${esc(flow.download_mode === "one_per_period" || flow.download_mode === "one_per_week" ? `One ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} every ${flow.window_weeks || 1} week(s)` : `${flow.export_views?.length || 1} ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} export(s)`)}<small>${flow.period_strategy === "none" ? "No period prompt" : flow.period_strategy === "latest" ? "Start to latest available" : flow.period_strategy === "rolling" ? "Rolling window" : "Fixed start + end"}</small>`}<small>${flow.output_mode === "direct_replace" ? "Direct files · exact-name replacement" : "Run folders · newest 3"}</small><small>${esc(row.to || "")}${flow.sql_handoff_enabled ? ` · SQL ${esc(flow.sql_mode)}` : ""}${flow.email_delivery?.enabled ? ` · Email ${flow.email_delivery.recipients?.length || 0} recipient(s)` : ""}</small></td>
         <td>${["outlook", "file"].includes(flow.source_type) ? "—" : `<select class="flow-inline-edit" data-id="${flow.id}" data-field="browser_mode" data-flow-focus="browser-${flow.id}" aria-label="Browser: ${esc(flow.name)}"><option value="headless" ${flow.browser_mode !== "headed" ? "selected" : ""}>Headless</option><option value="headed" ${flow.browser_mode === "headed" ? "selected" : ""}>Headed</option></select>`}</td>
         <td>${esc(_flowScheduleLabel(flow))}</td>
         <td><div class="flow-last-run">${_flowLastRunHtml(activeRun || { status: flow.last_status, created_at: flow.last_run_at })}</div>${flow.sql_reconciliation_required && flow.sql_mode === "append" ? '<small class="flow-error">SQL reconciliation required</small>' : ""}</td>
@@ -11321,6 +11334,15 @@ function _flowSyncParallelism() {
     ].filter(Boolean).join(' ');
 }
 
+function _flowEmailHtml(existing) {
+    const config = existing?.email_delivery || { enabled: false, recipients: [], subject: null };
+    return `<label class="flow-check flow-span-2"><input id="flow-email-enabled" type="checkbox" ${config.enabled ? "checked" : ""}><span>Email the final file when the run completes</span></label>
+                        <div id="flow-email-fields" class="flow-form-grid flow-span-2">
+                            <label class="flow-span-2"><span>Recipients</span><input id="flow-email-recipients" maxlength="2000" value="${esc((config.recipients || []).join("; "))}" placeholder="name@example.com; team@example.com"><small>Sends the file SQL insertion receives (the normalized CSV, or the transformed result) through Outlook on the BI desktop after every successful run, including scheduled runs. Separate addresses with semicolons. Files over 20 MB are described instead of attached. Nothing is sent when a run fails or finds nothing new.</small></label>
+                            <label class="flow-span-2"><span>Subject (optional)</span><input id="flow-email-subject" maxlength="200" value="${esc(config.subject || "")}" placeholder="Metronome flow file: ${esc(existing?.name || "Flow name")} (run #123)"><small>Leave empty to use the default subject with the Flow name and run number.</small></label>
+                        </div>`;
+}
+
 function _flowOutlookBuilderHtml(existing = null) {
     const isFile = existing?.source_type === "file" || existing?._source_type === "file";
     const scheduleDays = new Set(existing?.schedule_days || []);
@@ -11385,6 +11407,7 @@ function _flowOutlookBuilderHtml(existing = null) {
                             ${_flowViewRefreshHtml(existing)}
                             <button type="button" class="btn-secondary" id="flow-sql-refresh">Refresh SQL targets</button>
                         </div>
+                        ${_flowEmailHtml(existing)}
                     </div>
                 </div>
                 <div class="flow-form-error" role="alert"></div><div class="flow-builder-actions"><button type="button" class="btn-secondary" id="flow-builder-cancel">Cancel</button><button type="submit" class="btn-primary">${existing?.id ? "Save changes" : "Create flow"}</button></div>
@@ -11544,6 +11567,7 @@ function _flowBuilderHtml(catalog, existing = null) {
                                 ${_flowSqlLinkHtml(existing)}
                                 ${_flowViewRefreshHtml(existing)}
                             </div>
+                            ${_flowEmailHtml(existing)}
                             <div class="flow-span-2 flow-dialog-help">${sqlCatalog.configured ? `SQL catalog: ${sqlCatalog.targets.length} table(s), last scan ${sqlCatalog.scan?.last_scan_at ? esc(timeAgo(sqlCatalog.scan.last_scan_at)) : "not run"}${Number.isFinite(Number(sqlCatalog.scan?.duration_ms)) ? ` (${_flowDuration(sqlCatalog.scan.duration_ms)})` : ""}.` : `SQL handoff unavailable. ${esc((sqlCatalog.missing || []).join(", "))}`} <button type="button" class="btn-sm" id="flow-sql-refresh" ${!sqlCatalog.configured ? "disabled" : ""}>Refresh SQL targets</button></div>
                         </div>
                     </div>
@@ -11701,7 +11725,7 @@ function _flowRunsHtml(runs) {
         const resumable = sourceType === "portal"
             && ["failed", "cancelled"].includes(run.status)
             && doneFiles > 0 && doneFiles < totalFiles;
-        return `<tr><td>#${run.id}<small>${esc(timeAgo(run.created_at))}</small></td><td>${esc(run.flow_name)}</td><td>${_flowStatusBadge(run.status)}</td><td>${esc(run.requested_by || run.trigger_type)}</td><td>${esc(run.worker_id || "Waiting")}<small>${workerMode}</small></td><td>${duration === null ? "Pending" : _flowDuration(duration)}<small>${_flowTimingSummary(run.timings)}</small></td><td>${run.error ? `<span class="flow-error">${esc(run.error)}</span>` : esc(run.progress?.message || `${run.artifacts?.length || 0} file(s)`)}${run.view_refresh ? `<small>${run.view_refresh.deferred_to_pipeline ? "Materialized views refresh in the parent pipeline" : `Materialized views: ${run.view_refresh.completed} of ${run.view_refresh.total} refreshed${run.view_refresh.sql_committed ? " · SQL insertion committed" : ""}`}</small>` : ""}</td><td class="flow-row-actions">${resumable ? `<button class="btn-sm flow-resume" data-id="${run.id}" title="Queue a run that skips the ${doneFiles} file(s) already saved">Resume · ${doneFiles} of ${totalFiles} saved</button>` : ""}${run.view_refresh?.retry?.status === "eligible" ? `<button class="btn-sm flow-retry-views" data-id="${run.id}" title="${esc(run.view_refresh.retry.message)}">Retry view refresh</button>` : ""}<a class="btn-sm btn-outline" href="/flow-runs/${run.id}" target="_blank" rel="noopener">Expanded logs</a></td></tr>`;
+        return `<tr><td>#${run.id}<small>${esc(timeAgo(run.created_at))}</small></td><td>${esc(run.flow_name)}</td><td>${_flowStatusBadge(run.status)}</td><td>${esc(run.requested_by || run.trigger_type)}</td><td>${esc(run.worker_id || "Waiting")}<small>${workerMode}</small></td><td>${duration === null ? "Pending" : _flowDuration(duration)}<small>${_flowTimingSummary(run.timings)}</small></td><td>${run.error ? `<span class="flow-error">${esc(run.error)}</span>` : esc(run.progress?.message || `${run.artifacts?.length || 0} file(s)`)}${run.view_refresh ? `<small>${run.view_refresh.deferred_to_pipeline ? "Materialized views refresh in the parent pipeline" : `Materialized views: ${run.view_refresh.completed} of ${run.view_refresh.total} refreshed${run.view_refresh.sql_committed ? " · SQL insertion committed" : ""}`}</small>` : ""}${run.email ? `<small class="flow-email-status ${esc(run.email.status || "none")}">${esc(_flowEmailStatusText(run.email))}</small>` : ""}</td><td class="flow-row-actions">${resumable ? `<button class="btn-sm flow-resume" data-id="${run.id}" title="Queue a run that skips the ${doneFiles} file(s) already saved">Resume · ${doneFiles} of ${totalFiles} saved</button>` : ""}${run.view_refresh?.retry?.status === "eligible" ? `<button class="btn-sm flow-retry-views" data-id="${run.id}" title="${esc(run.view_refresh.retry.message)}">Retry view refresh</button>` : ""}<a class="btn-sm btn-outline" href="/flow-runs/${run.id}" target="_blank" rel="noopener">Expanded logs</a></td></tr>`;
     }).join("");
     return `<div class="flow-table-wrap"><table class="flow-table"><thead><tr><th>Run</th><th>Flow</th><th>Status</th><th>Requested</th><th>Worker</th><th>Duration</th><th>Result</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
@@ -12049,6 +12073,7 @@ function _flowCollectBuilder() {
                 || null)
             : null,
         post_sql_refresh: sqlEnabled ? _flowViewRefreshRead() : { mode: "off", views: [] },
+        email_delivery: _flowEmailRead(),
         owner_person_id: Number($("#flow-owner")?.value) || null,
     };
     if (form?.dataset.sourceType === "file") {
@@ -12124,6 +12149,20 @@ function _flowViewRefreshRead() {
     let views = [];
     try { views = JSON.parse(fieldset.dataset.views || "[]"); } catch (_) { views = []; }
     return { mode, views: mode === "manual" ? views : [] };
+}
+
+function _flowEmailRecipients(value) {
+    return String(value || "").split(/[;,\n]/).map(part => part.trim()).filter(Boolean);
+}
+
+function _flowEmailRead() {
+    const enabled = $("#flow-email-enabled")?.checked || false;
+    if (!enabled) return { enabled: false, recipients: [], subject: null };
+    return {
+        enabled: true,
+        recipients: _flowEmailRecipients($("#flow-email-recipients")?.value),
+        subject: ($("#flow-email-subject")?.value || "").trim() || null,
+    };
 }
 
 function _pipelineDuration(seconds) {
@@ -12241,7 +12280,7 @@ function _flowStepSummary(form, key) {
     if (key === "source") return value("flow-name") || "Name this flow";
     if (key === "download") return [label("flow-file-format"), label("flow-period-strategy")].filter(Boolean).join(" · ");
     if (key === "destination") return form.dataset.sourceType === "file" ? "Private snapshots · source unchanged" : label("flow-output-mode") || "Managed Downloads folder";
-    if (key === "after") { const refresh = control("flow-sql-enabled")?.checked ? _flowViewRefreshRead() : null; return `${control("flow-transform-enabled")?.checked ? "Transform enabled" : "No transformation"} · ${control("flow-sql-enabled")?.checked ? [value("flow-sql-database"), value("flow-sql-schema"), value("flow-sql-table")].filter(Boolean).join(".") : "No SQL handoff"}${refresh && refresh.mode !== "off" ? ` · refresh views: ${refresh.mode === "manual" ? `${refresh.views.length} chosen` : "automatic"}` : ""}`; }
+    if (key === "after") { const refresh = control("flow-sql-enabled")?.checked ? _flowViewRefreshRead() : null; return `${control("flow-transform-enabled")?.checked ? "Transform enabled" : "No transformation"} · ${control("flow-sql-enabled")?.checked ? [value("flow-sql-database"), value("flow-sql-schema"), value("flow-sql-table")].filter(Boolean).join(".") : "No SQL handoff"}${refresh && refresh.mode !== "off" ? ` · refresh views: ${refresh.mode === "manual" ? `${refresh.views.length} chosen` : "automatic"}` : ""}${control("flow-email-enabled")?.checked ? ` · email: ${_flowEmailRecipients(value("flow-email-recipients")).length} recipient(s)` : ""}`; }
     return [label("flow-schedule-type"), value("flow-schedule-type") !== "manual" ? value("flow-schedule-time") : "", label("flow-owner")].filter(Boolean).join(" · ");
 }
 
@@ -12256,7 +12295,7 @@ function _flowRevealStep(form, target) {
 }
 
 function _flowRevealServerError(form, error) {
-    const ids = {name: "flow-name", local_file_path: "flow-local-file-path", local_file_worksheet: "flow-local-file-worksheet", outlook_subject_contains: "flow-outlook-subject", site_id: "flow-site", report_id: "flow-report", target_folder: "flow-target-folder", filename_template: "flow-filename", transform_script_path: "flow-transform-script", schedule_type: "flow-schedule-type", schedule_time: "flow-schedule-time", schedule_days: "flow-schedule-type", schedule_day: "flow-schedule-day", owner_person_id: "flow-owner", sql_table: "flow-sql-table", sql_schema: "flow-sql-schema", sql_database: "flow-sql-database", sql_mode: "flow-sql-mode", start_week: "flow-start-week", end_week: "flow-end-week", period_strategy: "flow-period-strategy", file_format: "flow-file-format"};
+    const ids = {name: "flow-name", local_file_path: "flow-local-file-path", local_file_worksheet: "flow-local-file-worksheet", outlook_subject_contains: "flow-outlook-subject", site_id: "flow-site", report_id: "flow-report", target_folder: "flow-target-folder", filename_template: "flow-filename", transform_script_path: "flow-transform-script", schedule_type: "flow-schedule-type", schedule_time: "flow-schedule-time", schedule_days: "flow-schedule-type", schedule_day: "flow-schedule-day", owner_person_id: "flow-owner", sql_table: "flow-sql-table", sql_schema: "flow-sql-schema", sql_database: "flow-sql-database", sql_mode: "flow-sql-mode", start_week: "flow-start-week", end_week: "flow-end-week", period_strategy: "flow-period-strategy", file_format: "flow-file-format", email_delivery: "flow-email-recipients"};
     for (const item of error.validation || []) {
         const field = item.loc?.find(part => ids[part]);
         const input = field && form.querySelector(`#${ids[field]}`);
@@ -12305,6 +12344,14 @@ function _flowBuildSteps(form) {
     const refresh = form.querySelector("#flow-sql-refresh");
     if (refresh && !sql.contains(refresh)) sql.append(refresh.closest(".flow-dialog-help") || refresh);
     transform?.append(sqlTitle, sql);
+    // The Email step is the last block of "After download", independent of SQL.
+    const email = document.createElement("div"); email.className = "flow-form-grid";
+    const emailTitle = document.createElement("h3"); emailTitle.textContent = "Email the final file";
+    for (const id of ["flow-email-enabled", "flow-email-fields"]) {
+        const input = form.querySelector(`#${id}`);
+        if (input) email.append(id === "flow-email-enabled" ? input.closest("label") : input);
+    }
+    if (email.childElementCount) transform?.append(emailTitle, email);
     const scheduleHeading = schedule?.querySelector("h2");
     if (scheduleHeading) scheduleHeading.textContent = "Schedule";
     const groups = [
@@ -12921,6 +12968,15 @@ function _bindFlowWorkspace() {
     $("#flow-sql-refresh")?.addEventListener("click", async event => { const button = event.currentTarget; button.disabled = true; try { await apiPost("/api/flows/sql/catalog/refresh"); state.sqlCatalog = await api("/api/flows/sql/catalog"); repopulateSql(); updateSqlFields(); toast("SQL targets refreshed; your draft is preserved."); } catch (err) { toast("SQL targets not refreshed: " + err.message); } finally { button.disabled = false; } });
     if ($("#flow-sql-fields")) updateSqlFields();
     _flowBindViewRefresh();
+    const updateEmailFields = () => {
+        const enabled = $("#flow-email-enabled")?.checked || false;
+        const fields = $("#flow-email-fields");
+        const input = $("#flow-email-recipients");
+        if (fields) fields.hidden = !enabled;
+        if (input) input.required = enabled;
+    };
+    $("#flow-email-enabled")?.addEventListener("change", updateEmailFields);
+    if ($("#flow-email-fields")) updateEmailFields();
     $("#flow-schedule-type")?.addEventListener("change", event => {
         const manual = event.target.value === "manual";
         const weekly = event.target.value === "weekly";

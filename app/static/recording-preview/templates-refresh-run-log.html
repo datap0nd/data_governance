@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Run log preview</title>
-    <link rel="stylesheet" href="/static/style.css?v=59">
+    <link rel="stylesheet" href="/static/style.css?v=60">
 </head>
 <body class="flow-log-body">
     <main class="flow-log-page" id="flow-run-log" aria-live="polite"><div class="loading">Loading fictional run…</div></main>
@@ -13,8 +13,16 @@
     // The preview answers both from fictional data owned by the parent page.
     window.previewRuns = {};
     window.fetch = async (url, options) => {
-        const match = String(url).match(/\/api\/flows\/runs\/(\d+)(\/retry-views)?$/);
+        const match = String(url).match(/\/api\/flows\/runs\/(\d+)(\/retry-views|\/resend-email)?$/);
         const run = match && window.previewRuns[match[1]];
+        if (match && match[2] === '/resend-email' && run) {
+            if (window.parent.document.getElementById('preview-email')?.value === 'fail') {
+                return { ok: false, status: 502, json: async () => ({ detail: 'Email could not be handed to Outlook: Failed to launch Outlook email task: Access is denied.' }) };
+            }
+            run.email = { ...run.email, status: 'pending', detail: null };
+            window.parent.postMessage({ type: 'resend-email', runId: Number(match[1]) }, '*');
+            return { ok: true, json: async () => ({ run_id: Number(match[1]), status: 'pending' }) };
+        }
         if (match && match[2] && run) { window.parent.postMessage({ type: 'retry-views', runId: Number(match[1]) }, '*'); return { ok: true, json: async () => ({ id: 44 }) }; }
         if (run) return { ok: true, json: async () => run };
         return { ok: false, status: 404, json: async () => ({ detail: 'Preview only.' }) };
@@ -27,6 +35,6 @@
         if (retry) retry.onclick = () => { window.parent.postMessage({ type: 'retry-views', runId: event.data.runId }, '*'); };
     });
     </script>
-    <script src="/static/flow_run_log.js?v=4"></script>
+    <script src="/static/flow_run_log.js?v=6"></script>
 </body>
 </html>
