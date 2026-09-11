@@ -12427,8 +12427,10 @@ async function _flowSubmitBuilder(event) {
             body.allow_untested_recording = true;
         }
         const saved = await (form.dataset.id ? apiPut(`/api/flows/${form.dataset.id}`, body) : apiPostJson("/api/flows", body));
+        const archivedEdit = saved.standalone?.archived_edit ? String(saved.standalone.archived_edit).split(/[\\/]/).pop() : "";
         toast(saved.standalone?.state === "error"
             ? `Flow saved; its files could not be updated: ${saved.standalone.message}`
+            : archivedEdit ? `Flow saved; your edited run_flow.py was archived as Scripts/versions/${archivedEdit} and the script was refreshed.`
             : hasUntested ? "Flow saved without testing; check the first run output." : "Flow saved");
         window._flowRecordingSelections?.delete(saved.id);
         window._flowUntestedRecordingSelections?.delete(saved.id);

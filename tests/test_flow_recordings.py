@@ -171,7 +171,9 @@ def test_portable_script_dry_run_has_no_metronome_import_or_adjacent_configurati
     assert status(changed)['state']=='stale'
     assert flow_portable.generate(job)['launcher_hash']==generated['launcher_hash']
     Path(generated['launcher']).write_text('# user changes\n',encoding='utf-8')
-    with pytest.raises(ValueError,match='modified'): flow_portable.generate(job)
+    regenerated=flow_portable.generate(job)
+    assert regenerated['launcher_hash']==generated['launcher_hash']
+    assert Path(regenerated['archived_edit']).read_text(encoding='utf-8')=='# user changes\n'
     assert Path(generated['script_revision']).is_file()
 
 

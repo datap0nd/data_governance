@@ -109,10 +109,14 @@ def test_bundles_reject_credentials_and_foreign_launcher(flow_db, tmp_path):
     with pytest.raises(ValueError, match='credential'):
         standalone.freeze(job)
     job['report']['automation'].pop('password')
-    Path(saved['standalone']['launcher']).write_text('print("user file")')
-    with pytest.raises(ValueError, match='modified'):
-        standalone.generate(job)
-    assert 'user file' in Path(saved['standalone']['launcher']).read_text()
+    launcher = Path(saved['standalone']['launcher'])
+    launcher.write_text('print("user file")')
+    # Operator edits are archived under versions/ and the script is refreshed, never left stale.
+    result = standalone.generate(job)
+    assert result['state'] == 'current' and 'user file' not in launcher.read_text()
+    archived = Path(result['archived_edit'])
+    assert archived.parent == launcher.parent / 'versions' and archived.read_text() == 'print("user file")'
+    assert archived.name.startswith('run_flow-') and '-edited-' in archived.name and archived.suffix == '.py'
 
 
 def test_dry_run_reports_saved_sql_enabled_without_connecting(flow_db, tmp_path, capsys):

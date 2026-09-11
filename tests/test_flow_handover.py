@@ -109,16 +109,25 @@ def test_generation_failure_preserves_database_and_recovers_automatically(flow_d
     assert manifest(saved)['handover']['state'] == 'current'
 
 
-def test_modified_script_preserved_and_missing_script_recreated(flow_db, tmp_path):
+def test_modified_script_archived_then_refreshed_and_missing_script_recreated(flow_db, tmp_path):
     saved, _ = local_job(tmp_path)
     script = Path(saved['standalone']['launcher'])
+    generated = script.read_text(encoding='utf-8')
     script.write_text('# my manual edits\n')
+    assert flows.standalone_status(saved['id'])['state'] == 'modified'
     flow_handover.after_commit(database.DB_PATH)
-    assert script.read_text() == '# my manual edits\n'
-    assert flows.standalone_status(saved['id'])['state'] == 'error'
+    # The edit is preserved as an immutable archive and the script is current again.
+    archives = list((script.parent / 'versions').glob('run_flow-*-edited-*.py'))
+    assert [archive.read_text(encoding='utf-8') for archive in archives] == ['# my manual edits\n']
+    assert script.read_text(encoding='utf-8') == generated
+    assert flows.standalone_status(saved['id'])['state'] == 'current'
+    assert manifest(saved)['handover']['archived_edit'] == str(archives[0])
+    flow_handover.after_commit(database.DB_PATH)
+    assert len(list((script.parent / 'versions').glob('run_flow-*-edited-*.py'))) == 1
     script.rename(script.with_name('operator-copy.py'))
     flow_handover.after_commit(database.DB_PATH)
     assert flows.standalone_status(saved['id'])['state'] == 'current'
+    assert script.read_text(encoding='utf-8') == generated
 
 
 def test_metadata_excludes_secrets_and_retains_source_identity():
