@@ -26,6 +26,38 @@ Start visible workers also opens those windows explicitly. Windows use the
 signed-in BI desktop session and close after work ends and 60 seconds idle.
 Helpers stay available while a coordinator prepares the run or waits for SSO.
 
+## Download and render waits
+
+A worker never caps a transfer that is still moving. During a portal download it
+compares the staging folder with the previous check every 5 minutes
+(`DOWNLOAD_PROGRESS_CHECK_SECONDS`) and posts one event per check to the run:
+`download_waiting` while no file exists yet, `download_progress` with the file
+name, its size and the bytes added since the last check while it grows, and
+`download_stall_warning` (check *k* of 3) when nothing changed. Three
+consecutive checks without any change (size or modification time, temporary
+`.crdownload`/`.tmp` files included) fail that file after 15 minutes
+(`DOWNLOAD_STALL_TIMEOUT_SECONDS`); the existing per-file retry then restarts
+it. The only remaining budgets cover phases with nothing to observe: 15 minutes
+for a dashboard download to create its first staging file, 60 seconds for the
+browser-to-staging handoff after a native download event, and 60 minutes for
+the browser to accept a transfer at all where Playwright's download event is
+the only signal (GSCM Excel, generic portals, recorded non-ASAP downloads).
+Those native-download paths keep the browser as the completion authority; a
+helper thread reports staging-folder growth every 5 minutes meanwhile and
+never fails the download itself.
+
+ASAP report rendering has no cap in a Flow run: while the loading overlay is
+visible the worker keeps waiting, posting `report_rendering` every 5 minutes,
+and stops only when the page closes or when the overlay has been clear for 5
+minutes without any result rows (an empty rendering, re-run once). Catalog
+scans keep a 30-minute overlay bound because they have their own time budget.
+
+The server-side watchdog is unrelated to these waits: it fails a run only when
+its worker has sent no liveness heartbeat for 10 minutes, and the heartbeat
+thread runs independently of any wait. Stopping a run from the Flows page
+remains the only way to end a transfer that is still growing. Workers must be
+updated to the release that carries these waits.
+
 Run `setup.ps1` on the BI desktop after adding background slots. It reads the saved setting.
 `setup.ps1 -FlowHeadlessSlots 3` explicitly saves and installs capacity 3.
 New services need the Windows account password during interactive setup;

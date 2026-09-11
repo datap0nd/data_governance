@@ -486,7 +486,7 @@ def test_execute_job_falls_back_to_the_browser_when_replay_fails(tmp_path, monke
     monkeypatch.setattr(flow_worker, "_asap_apply_configuration", lambda *_args: None)
     monkeypatch.setattr(flow_worker, "_has_named_control", lambda *_args: False)
 
-    def fake_download(_page, _frame, _job, staging_dir):
+    def fake_download(_page, _frame, _job, staging_dir, **_kwargs):
         path = Path(staging_dir) / "source.csv"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("value,units\nitem,1\n", encoding="utf-8")

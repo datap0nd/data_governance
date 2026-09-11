@@ -260,3 +260,16 @@ def test_five_parallel_exports_have_independent_worker_progress(bundle):
     remaining = flows.flow_activity()['active_runs'][0]['progress']['runners']
     assert len(remaining) == 4
     assert 'worker-2' not in [r['id'] for r in remaining]
+
+
+@pytest.mark.parametrize("stage", ["download_waiting", "download_progress", "download_stall_warning", "report_rendering"])
+def test_long_wait_progress_events_keep_the_download_phase(activity_client, stage):
+    client, flow = activity_client
+    run_id = progress_run(flow["id"])
+    def read():
+        return client.get("/api/flows/activity").json()["latest_runs"][0]["progress"]
+    report_progress(run_id, "file_export")
+    assert read()["completed"] == 1
+    report_progress(run_id, stage)
+    assert read()["completed"] == 1
+    assert read()["message"] == f"Now {stage}"

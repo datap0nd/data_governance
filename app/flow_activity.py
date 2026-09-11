@@ -49,7 +49,8 @@ def row_progress(db, run):
         acquired = count
     if source in {"file", "outlook"} and stages & {"file_normalization", "file_validation"}:
         acquired = count
-    prepare_stages = {"configuring", "report_execution", "file_export", "file_transfer", "file_normalization",
+    prepare_stages = {"configuring", "report_execution", "report_rendering", "file_export", "download_waiting",
+                      "download_progress", "download_stall_warning", "file_transfer", "file_normalization",
                       "file_validation", "local_file_copy", "outlook_attachment_transfer", "parallel_downloads"}
     prepared = bool(acquired or after_download or stages & prepare_stages)
     normalized = after_download or (acquired == count and bool(saved or tasks))

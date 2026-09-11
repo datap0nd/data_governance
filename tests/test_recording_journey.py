@@ -231,3 +231,50 @@ def test_changed_transform_source_saves_and_runs_with_current_bytes(flow_db,monk
     retry=client.post(f'{base}/recordings/revisions/{revision}/validate',json={'settings':pending})
     assert retry.status_code==200,retry.text
     assert retry.json()['revision_id']!=revision
+
+
+def test_edited_tested_recorded_flow_saves_runs_and_schedules_without_gate(flow_db,monkeypatch):
+    # The owner's report: after editing a Flow whose recording had been tested,
+    # Run answered "Run not queued: Record and validate this Flow configuration…".
+    # Testing is evidence only: an edited Flow saves, runs, enables and is
+    # queued by the scheduler with its current settings.
+    saved,job=draft_job();client=client_for(monkeypatch);fid=saved['id'];base=f'/api/flows/{fid}'
+    monkeypatch.setattr(flows,'launch_local_worker',lambda mode,**kwargs:{'status':'starting'})
+    revision=client.post(base+'/recordings/revisions',json={'definition':job['recording']['definition']}).json()['revision_id']
+    pending=flows.FlowWrite.model_validate(saved).model_dump()
+    pending.update(target_folder=None,schedule_type='daily',schedule_time='08:00')
+    queued=client.post(f'{base}/recordings/revisions/{revision}/validate',json={'settings':pending});assert queued.status_code==200,queued.text
+    complete(queued.json()['scan_id']);pending['recording_revision_id']=revision
+    assert client.put(base,json=pending).status_code==200
+    with database.get_db() as db:
+        assert flows._build_job(db,fid)['recording']['tested'] is True
+    edited={**pending,'name':'Edited after test','filename_template':'edited_{index}.xlsx'}
+    applied=client.put(base,json=edited)
+    assert applied.status_code==200,applied.text
+    assert 'Record and validate' not in applied.text
+    with database.get_db() as db:
+        # Edit Flow has no destination picker; a moved managed folder changes
+        # the frozen configuration the same way.
+        db.execute('UPDATE flows SET target_folder=? WHERE id=?',(str(Path(saved['target_folder']).parent/'moved'),fid))
+        untested=flows._build_job(db,fid)
+        assert untested['recording']['tested'] is False and untested['downloads']['filename_template']=='edited_{index}.xlsx'
+    run=client.post(base+'/run')
+    assert run.status_code==200,run.text
+    assert 'Record and validate' not in run.text
+    with database.get_db() as db:
+        row=db.execute('SELECT id,status,job_json FROM flow_runs WHERE flow_id=? ORDER BY id DESC LIMIT 1',(fid,)).fetchone()
+        assert row['status']=='queued'
+        assert json.loads(row['job_json'])['recording']['tested'] is False
+        db.execute("UPDATE flow_runs SET status='succeeded' WHERE id=?",(row['id'],))
+    enabled=client.patch(base+'/enabled',json={'enabled':True})
+    assert enabled.status_code==200,enabled.text
+    with database.get_db() as db:
+        assert db.execute('SELECT enabled FROM flows WHERE id=?',(fid,)).fetchone()[0]==1
+        db.execute("UPDATE flows SET next_run_at='2020-01-01T08:00:00' WHERE id=?",(fid,))
+    assert flows.queue_due_flows()['count']==1
+    with database.get_db() as db:
+        row=db.execute('SELECT status,job_json,trigger_type FROM flow_runs WHERE flow_id=? ORDER BY id DESC LIMIT 1',(fid,)).fetchone()
+        assert row['status']=='queued' and row['trigger_type']!='manual'
+        scheduled=json.loads(row['job_json'])
+        assert scheduled['downloads']['filename_template']=='edited_{index}.xlsx' and scheduled['recording']['tested'] is False
+        assert db.execute('SELECT last_error FROM flows WHERE id=?',(fid,)).fetchone()[0] in (None,'')

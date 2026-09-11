@@ -149,6 +149,12 @@ def config_hash(job, *, legacy=False):
     return flow_recording.digest(clean)
 
 
+# The only recording-related reason a Flow cannot run, enable or schedule: it
+# has no saved recording at all. Testing a recording is optional evidence and
+# never a gate (see tested_with).
+NO_RECORDING_DETAIL = 'Choose a saved recording for this Flow before running or enabling it.'
+
+
 def attach_job(db, flow, job, *, allow_draft=False):
     job['execution']['download_parallelism'] = 1
     job['execution']['recording_wait_seconds'] = flow_recording_timing.configured(db)
@@ -161,7 +167,7 @@ def attach_job(db, flow, job, *, allow_draft=False):
     revision = db.execute('SELECT * FROM flow_recording_revisions WHERE id=? AND flow_id=?',
                           (flow.get('recording_revision_id'), flow['id'])).fetchone()
     if not revision:
-        raise HTTPException(409, 'Choose a saved recording for this Flow before running or enabling it.')
+        raise HTTPException(409, NO_RECORDING_DETAIL)
     try:
         definition = flow_recording.validate_definition(json.loads(revision['definition_json']))
     except (ValueError, KeyError, TypeError) as exc:

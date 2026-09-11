@@ -196,8 +196,8 @@ def test_recording_validation_normalizes_nasca_input_for_configured_sql(
 
     original_staged_download = flow_worker._asap_dashboard_event_staged_download
 
-    def capture_staged_download(staging, before, label):
-        completed = original_staged_download(staging, before, label)
+    def capture_staged_download(staging, before, label, **kwargs):
+        completed = original_staged_download(staging, before, label, **kwargs)
         completed_paths.append(completed.resolve())
         return completed
 
@@ -237,10 +237,10 @@ def test_recorded_asap_download_uses_scan_path_staging_completion(
     assert download_step['output'].get('completion') is None
     staged_calls = []
 
-    def stable_staging(staging, before, label):
-        staged_calls.append((staging, before, label))
+    def stable_staging(staging, before, label, **kwargs):
+        staged_calls.append((staging, before, label, kwargs))
         return flow_worker._wait_for_staged_download(
-            staging, before, timeout_seconds=10, start_timeout_seconds=10,
+            staging, before, start_timeout_seconds=10,
         )
 
     monkeypatch.setattr(
@@ -257,6 +257,8 @@ def test_recorded_asap_download_uses_scan_path_staging_completion(
 
     assert len(staged_calls) == 1
     assert staged_calls[0][2] == 'download-1'
+    # Long recorded transfers report through the step's own progress channel.
+    assert callable(staged_calls[0][3].get('progress'))
     assert state['artifacts'][0]['publish_status'] == 'published'
     output = Path(job['downloads']['target_folder']) / 'output_1.xlsx'
     assert output.read_bytes() == exports['/1.xlsx']

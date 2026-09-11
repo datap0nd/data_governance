@@ -537,7 +537,7 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
                     if parameter.get('target') and not parameter.get('step_id') and parameters.get(name) is not None:
                         raise ValueError('Fixed/calculated parameters require a recorded step before report generation.')
                 files_before = flow_worker._download_staging_snapshot(staging)
-                event_timeout = 1_800_000 + pacing.event_budget_ms(step['steps'])
+                event_timeout = flow_worker.DOWNLOAD_EVENT_TIMEOUT_SECONDS * 1_000 + pacing.event_budget_ms(step['steps'])
                 notify(step, 'Waiting for download.', outcome='running', diagnostic={
                     'phase': 'event_listener', 'timing': {'event_timeout_ms': event_timeout}})
                 with pages[step['page']].expect_download(timeout=event_timeout) as pending:
@@ -545,6 +545,11 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
                     active_step = step
                 download = pending.value
                 output_index += 1
+
+                def download_progress(stage, message, step=step):
+                    # Long transfers stay visible: one recorded_action event
+                    # per progress check, carrying the download stage.
+                    notify(step, message, outcome='running', diagnostic={'phase': stage})
                 adapter = definition.get('adapter', job.get('site', {}).get('adapter'))
                 staged_completion = (
                     step['output'].get('completion') == 'staging'
@@ -557,9 +562,12 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
                     # ASAP path has always completed from the stable file in
                     # the configured staging directory. Recorded navigation
                     # must hand off to that same post-click contract.
-                    completed = flow_worker._asap_dashboard_event_staged_download(staging, files_before, step['id'])
+                    completed = flow_worker._asap_dashboard_event_staged_download(
+                        staging, files_before, step['id'], progress=download_progress)
                 else:
-                    completed = flow_worker._completed_edge_download(download, step['id'])
+                    completed = flow_worker._completed_edge_download(
+                        download, step['id'], staging_dir=staging, files_before=files_before,
+                        progress=download_progress)
                 preserve_staged_excel = bool(
                     staged_completion
                     and step['output']['format'] == 'xlsx'
