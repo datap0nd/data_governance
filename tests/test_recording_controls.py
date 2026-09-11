@@ -220,8 +220,15 @@ def test_close_recorder_terminates_its_owned_process_tree(tmp_path):
                 finally: ctypes.windll.kernel32.CloseHandle(handle)
         else:
             status = Path(f'/proc/{pid}/stat')
-            # A terminated child may remain a zombie until the container's init reaps it.
-            assert not status.exists() or status.read_text().split()[2] == 'Z'
+            # A terminated child may remain a zombie until the container's init
+            # reaps it, and that reap can land between an existence check and
+            # the read (/proc then raises ESRCH), so read once and treat a
+            # vanished entry as terminated.
+            try:
+                state = status.read_text().split()[2]
+            except (FileNotFoundError, ProcessLookupError):
+                state = 'Z'
+            assert state == 'Z'
     finally:
         recorder._close_recorder(process)
 

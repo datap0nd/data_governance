@@ -24,7 +24,9 @@
      over-long launcher path fails the dispatch with a clear message before
      schtasks runs, and the launcher is removed with the payload and receipt.
   Files: `app/flow_worker.py`, `app/routers/email.py`, `tests/test_flow_sql.py`,
-  `tests/test_outlook_dispatch.py`, this package and the testing index.
+  `tests/test_outlook_dispatch.py`, a race-free assertion in
+  `tests/test_recording_controls.py` (CI retest), this package and the
+  testing index.
   PR link: recorded in the test report's Merge evidence section.
 - Code baseline: `fa2639a` (main after PR #114).
 - Related report: [test-report.md](test-report.md)

@@ -51,5 +51,21 @@
 
 ## Merge evidence
 
-Final-head CI is pending at this cutoff. Record its run URL and exact head SHA
-in the PR before merging; the PR's merge record supplies the merge SHA.
+- First-head CI (`39fe421`, [run 34612379655](https://github.com/datap0nd/data_governance/actions/runs/34612379655)):
+  Change scope, Frontend contracts and syntax PASS; PostgreSQL skipped by the
+  scope gate; `Python (ubuntu-latest)` FAIL with 1 failed, 1989 passed,
+  23 skipped in 17 min 9 s. The one failure,
+  `tests/test_recording_controls.py::test_close_recorder_terminates_its_owned_process_tree`,
+  raised `ProcessLookupError: [Errno 3] No such process` reading
+  `/proc/<pid>/stat`: the test's own assertion checked that the entry existed
+  and then read it, and the zombie child was reaped in between. The test is
+  unrelated to this change (recorder process teardown); its assertion now
+  reads the entry once and treats a vanished entry as terminated (the branch
+  the comment already allowed). Locally the case passed three consecutive
+  runs after the fix (`1 passed` each). No application code changed for this
+  retest; the focused set and syntax checks above remain valid for the
+  application files.
+
+Final-head CI on the retest head is pending at this cutoff. Record its run
+URL and exact head SHA in the PR before merging; the PR's merge record
+supplies the merge SHA.
