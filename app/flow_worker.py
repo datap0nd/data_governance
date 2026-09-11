@@ -4349,10 +4349,11 @@ def _validated_html_table(
     return header, data_rows
 
 
-def _normalize_html_excel(source: Path, output: Path) -> dict:
+def _normalize_html_excel(source: Path, output: Path, *, source_label: str | None = None) -> dict:
     """Normalize a Salesforce-style HTML/XML table delivered as legacy XLS."""
     decoded, encoding_used = _decode_downloaded_text(
-        source.read_bytes(), source_label=f"HTML-as-XLS attachment {source.name}",
+        source.read_bytes(),
+        source_label=f"HTML-as-XLS attachment {source_label or source.name}",
     )
     parser = _ExcelHtmlTableParser()
     parser.feed(decoded.lstrip("\ufeff"))
@@ -5029,8 +5030,18 @@ def _modern_excel_reader_detail(exc: Exception) -> str:
     return f"the workbook reader reported {type(exc).__name__}"
 
 
-def _open_excel_workbook(source: Path, workbook_format: str):
-    """Open an Excel family with a consistent read-only worksheet interface."""
+# File names openpyxl accepts before it looks at the content.
+OPENPYXL_SUFFIXES = frozenset({".xlsx", ".xlsm", ".xltx", ".xltm"})
+
+
+def _open_excel_workbook(source: Path, workbook_format: str, *, display_name: str | None = None):
+    """Open an Excel family with a consistent read-only worksheet interface.
+
+    ``display_name`` is the name error messages use when ``source`` is a
+    staged browser download (Playwright stages under a GUID) rather than the
+    delivered file.
+    """
+    name = display_name or source.name
     if workbook_format == "xlsx":
         try:
             from openpyxl import load_workbook
@@ -5042,9 +5053,22 @@ def _open_excel_workbook(source: Path, workbook_format: str):
             # data_only reads cached formula results and never executes VBA.
             # External links are irrelevant to normalization. Ignoring them
             # also lets Excel-tolerated files with stale link parts open.
-            return load_workbook(
-                source, read_only=True, data_only=True, keep_links=False,
-            )
+            if source.suffix.casefold() in OPENPYXL_SUFFIXES:
+                return load_workbook(
+                    source, read_only=True, data_only=True, keep_links=False,
+                )
+            # openpyxl rejects a file *name* without an Excel extension before
+            # reading it. The settled staging download usually has none, so
+            # hand it an open handle, which openpyxl validates by content.
+            handle = source.open("rb")
+            try:
+                workbook = load_workbook(
+                    handle, read_only=True, data_only=True, keep_links=False,
+                )
+            except Exception:
+                handle.close()
+                raise
+            return _TemporaryOpenpyxlWorkbook(workbook, handle)
         except Exception as first_error:
             if _is_strict_ooxml(source):
                 compatibility_copy = None
@@ -5064,7 +5088,7 @@ def _open_excel_workbook(source: Path, workbook_format: str):
             except RuntimeError:
                 raise
             raise RuntimeError(
-                f"Downloaded modern Excel workbook could not be opened: {source.name}. "
+                f"Downloaded modern Excel workbook could not be opened: {name}. "
                 f"{_modern_excel_reader_detail(first_error).capitalize()}. The original "
                 "download was preserved and no VBA was executed."
             ) from first_error
@@ -5081,7 +5105,7 @@ def _open_excel_workbook(source: Path, workbook_format: str):
             )
         except Exception as exc:
             raise RuntimeError(
-                f"Downloaded legacy Excel workbook could not be opened: {source.name}. "
+                f"Downloaded legacy Excel workbook could not be opened: {name}. "
                 "It may be damaged, password-protected/encrypted, or a modern encrypted workbook."
             ) from exc
     if workbook_format == "xlsb":
@@ -5095,7 +5119,7 @@ def _open_excel_workbook(source: Path, workbook_format: str):
             return _XlsbWorkbook(open_workbook(str(source)))
         except Exception as exc:
             raise RuntimeError(
-                f"Downloaded binary Excel workbook could not be opened: {source.name}. "
+                f"Downloaded binary Excel workbook could not be opened: {name}. "
                 "It may be damaged or password-protected/encrypted."
             ) from exc
     raise RuntimeError(f"Unsupported Excel workbook format: {workbook_format}")
@@ -5289,6 +5313,7 @@ def _normalize_xlsx(
     workbook_format: str | None = None, excel_trim: str = "none",
     worksheet_name: str | None = None,
     allow_empty_data: bool = False,
+    source_label: str | None = None,
 ) -> dict:
     """Convert populated Excel-family sheets into one normalized UTF-8 CSV.
 
@@ -5306,7 +5331,7 @@ def _normalize_xlsx(
         # (one Qty per week) converts instead of being rejected.
         header_mode = "first_row"
     workbook_format = str(workbook_format or _detect_download_format(source)).casefold()
-    workbook = _open_excel_workbook(source, workbook_format)
+    workbook = _open_excel_workbook(source, workbook_format, display_name=source_label)
     worksheets = list(workbook.worksheets)
     if worksheet_name is not None:
         matches = [sheet for sheet in worksheets if sheet.title == worksheet_name]
@@ -5513,7 +5538,15 @@ def _csv_metadata(path: Path) -> dict:
 
 
 def _copy_with_checksum(source_path: Path, output: Path) -> dict:
-    """Exclusively copy one file while computing metadata in the same pass."""
+    """Exclusively copy one file while computing metadata in the same pass.
+
+    The destination is flushed to its file system before the handle closes.
+    On a network share that is the SMB flush that makes the server commit the
+    bytes, so a copy that returns from here has been delivered rather than
+    merely queued in the Windows client's write-behind cache. A write or
+    flush error raises here, which is what makes the copy stream itself the
+    proof of a complete copy.
+    """
     digest = hashlib.sha256()
     copied = 0
     with source_path.open("rb") as source, output.open("xb") as destination:
@@ -5521,6 +5554,8 @@ def _copy_with_checksum(source_path: Path, output: Path) -> dict:
             destination.write(chunk)
             digest.update(chunk)
             copied += len(chunk)
+        destination.flush()
+        os.fsync(destination.fileno())
     return {"file_size": copied, "checksum": digest.hexdigest()}
 
 
@@ -5559,25 +5594,39 @@ def _stable_source_snapshot(source_path: Path) -> dict:
     )
 
 
+# How long a freshly copied target may keep serving a stale view before the
+# run proceeds with a recorded warning instead of waiting further.
+COPY_SETTLE_BUDGET_SECONDS = 60.0
+
+
 def _verify_copied_file(
     output: Path, expected_size: int, expected_checksum: str, *, label: str,
-) -> None:
-    """Prove the target copy is complete without trusting ``stat`` at all.
+    progress: Callable[[str, str], None] | None = None,
+    settle_budget: float = COPY_SETTLE_BUDGET_SECONDS,
+) -> dict:
+    """Wait for the target to serve the copied bytes; never fail a delivered copy.
 
-    The target folder usually lives on an SMB share, and Windows' SMB client
-    can serve stale directory metadata after the written handle closes - in
-    either direction: a short size for a complete copy, or the expected size
-    for a truncated one. Directory attributes are therefore never evidence.
-    Re-read the file and require the bytes on the share to match the copy
-    stream's size and checksum.
+    The proof that a copy is complete is the copy stream itself: every byte
+    was written, flushed to the server and the handle closed without an error
+    (``_copy_with_checksum``). Reading the target back is still worthwhile,
+    because later steps and the owner open the file through the same path,
+    but it is not evidence against that stream. The target folder usually
+    lives on an SMB share, and after the writing handle closes the Windows
+    SMB client can keep serving a stale view of the file for a while: stale
+    directory attributes in either direction, and a short read-back of a
+    complete file. Directory attributes are therefore never consulted, and a
+    read-back that has not caught up within ``settle_budget`` seconds records
+    a warning through ``progress`` instead of failing the run. Only a target
+    that cannot be opened at all raises.
     """
+    started = time.monotonic()
+    deadline = started + max(0.0, float(settle_budget))
+    attempt = 0
     observed = 0
-    attempts = 5
-    for attempt in range(attempts):
-        if attempt:
-            # Write-behind flushing on a congested share can take several
-            # seconds for a large workbook; back off instead of giving up.
-            time.sleep(min(4.0, 0.5 * 2 ** (attempt - 1)))
+    observed_checksum: str | None = None
+    last_error: OSError | None = None
+    while True:
+        attempt += 1
         digest = hashlib.sha256()
         observed = 0
         try:
@@ -5585,16 +5634,46 @@ def _verify_copied_file(
                 for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                     digest.update(chunk)
                     observed += len(chunk)
-        except OSError:
-            if attempt == attempts - 1:
-                raise
-            continue
-        if observed == expected_size and digest.hexdigest() == expected_checksum:
-            return
-    raise RuntimeError(
-        f"{label} was not copied completely to {output}: "
-        f"read {observed} of the expected {expected_size} bytes back."
+        except OSError as exc:
+            last_error = exc
+            observed_checksum = None
+        else:
+            last_error = None
+            observed_checksum = digest.hexdigest()
+            if observed == expected_size and observed_checksum == expected_checksum:
+                return {
+                    "confirmed": True, "observed_size": observed, "attempts": attempt,
+                    "elapsed_seconds": round(time.monotonic() - started, 3),
+                }
+        now = time.monotonic()
+        if now >= deadline:
+            break
+        # Write-behind flushing and cache refreshes on a congested share can
+        # take several seconds for a large workbook; back off, then poll.
+        time.sleep(max(0.0, min(5.0, 0.5 * 2 ** (attempt - 1), deadline - now)))
+    elapsed = round(time.monotonic() - started, 1)
+    if last_error is not None:
+        raise RuntimeError(
+            f"{label} could not be read back from {output} after {attempt} attempt(s) "
+            f"over {elapsed} s: {last_error}"
+        ) from last_error
+    if observed == expected_size:
+        detail = "served bytes whose checksum differs from the copy stream"
+    else:
+        detail = f"served {observed} of the {expected_size} copied bytes"
+    message = (
+        f"{label} was written and flushed to {output} ({expected_size} bytes), but reading it "
+        f"back through the target folder still {detail} after {elapsed} s and {attempt} "
+        "attempt(s). The copy stream completed without an error, so the file is treated as "
+        "delivered; the target folder's file cache (typically the network share client on "
+        "this PC) has not refreshed its view of the new file yet."
     )
+    if progress is not None:
+        progress("copy_verification_warning", message)
+    return {
+        "confirmed": False, "observed_size": observed, "attempts": attempt,
+        "elapsed_seconds": elapsed, "warning": message,
+    }
 
 
 def _raw_xlsx_metadata(
@@ -5829,7 +5908,10 @@ def _store_completed_download(
         copied = _copy_with_checksum(local_path, output)
         if copied != snapshot:
             raise RuntimeError('The recorded download changed while being copied.')
-        _verify_copied_file(output, snapshot['file_size'], snapshot['checksum'], label='Recorded download')
+        _verify_copied_file(
+            output, snapshot['file_size'], snapshot['checksum'], label='Recorded download',
+            progress=processing_progress,
+        )
         return {**metadata, **copied, 'file_path': str(output), 'filename': output.name,
                 'original_file_path': str(output), 'original_filename': output.name,
                 'original_file_size': copied['file_size'],
@@ -5906,7 +5988,7 @@ def _store_completed_download(
             output,
             original_size,
             copied["checksum"],
-            label="Downloaded NASCA-encrypted Excel workbook",
+            label="Downloaded NASCA-encrypted Excel workbook", progress=processing_progress,
         )
         if processing_progress is not None:
             processing_progress(
@@ -5944,7 +6026,8 @@ def _store_completed_download(
         ):
             raise RuntimeError("The staged ASAP HTML export changed while it was being copied.")
         _verify_copied_file(
-            output, snapshot["file_size"], snapshot["checksum"], label="Downloaded ASAP HTML export",
+            output, snapshot["file_size"], snapshot["checksum"],
+            label="Downloaded ASAP HTML export", progress=processing_progress,
         )
         return {
             **validation,
@@ -5968,7 +6051,8 @@ def _store_completed_download(
         ):
             raise RuntimeError("The staged ASAP Plain text export changed while it was being copied.")
         _verify_copied_file(
-            output, snapshot["file_size"], snapshot["checksum"], label="Downloaded ASAP Plain text export",
+            output, snapshot["file_size"], snapshot["checksum"],
+            label="Downloaded ASAP Plain text export", progress=processing_progress,
         )
         return {
             **validation,
@@ -6012,7 +6096,7 @@ def _store_completed_download(
             )
         _verify_copied_file(
             output, original_size, copied["checksum"],
-            label="Downloaded legacy Excel attachment",
+            label="Downloaded legacy Excel attachment", progress=processing_progress,
         )
         normalized_output = _safe_output_path(
             output.parent, f"{output.stem}_normalized.csv",
@@ -6022,7 +6106,11 @@ def _store_completed_download(
                 "file_normalization",
                 f"Saved {output.name}; extracting its embedded data table.",
             )
-        normalization = _normalize_html_excel(output, normalized_output)
+        # Normalize from the settled local download: the target copy holds the
+        # same bytes, but a share can serve a stale view of it for a while.
+        normalization = _normalize_html_excel(
+            local_path, normalized_output, source_label=output.name,
+        )
         if processing_progress is not None:
             processing_progress(
                 "file_metadata",
@@ -6068,7 +6156,8 @@ def _store_completed_download(
                 f"streamed {copied['file_size']} of {original_size} settled bytes."
             )
         _verify_copied_file(
-            output, original_size, copied["checksum"], label="Downloaded Excel workbook",
+            output, original_size, copied["checksum"],
+            label="Downloaded Excel workbook", progress=processing_progress,
         )
         if not require_normalized_csv:
             return _raw_xlsx_metadata(
@@ -6090,11 +6179,15 @@ def _store_completed_download(
                 f"normalized CSV.{trim_note}",
             )
         try:
+            # Normalize from the settled local download: the target copy holds
+            # the same bytes, but a share can serve a stale view of it for a
+            # while after the copy, and a truncated view must never reach the
+            # workbook reader.
             normalization = _normalize_xlsx(
-                output, normalized_output, requested_weeks=requested_weeks,
+                local_path, normalized_output, requested_weeks=requested_weeks,
                 header_mode=xlsx_header_mode, strict_headers=strict_headers,
                 workbook_format=detected, excel_trim=excel_trim,
-                allow_empty_data=recorded_output,
+                allow_empty_data=recorded_output, source_label=output.name,
             )
         except Exception as exc:
             if not allow_raw_xlsx_fallback:
@@ -6141,7 +6234,7 @@ def _store_completed_download(
             raise RuntimeError("The staged raw ASAP CSV changed while it was being copied.")
         _verify_copied_file(
             raw_output, snapshot["file_size"], snapshot["checksum"],
-            label="Raw ASAP CSV export",
+            label="Raw ASAP CSV export", progress=processing_progress,
         )
         normalization = _normalize_csv(
             local_path, output=output, preamble=csv_preamble,
@@ -6168,7 +6261,8 @@ def _store_completed_download(
             f"streamed {copied['file_size']} of {metadata['file_size']} bytes."
         )
     _verify_copied_file(
-        output, metadata["file_size"], copied["checksum"], label="Downloaded CSV",
+        output, metadata["file_size"], copied["checksum"],
+        label="Downloaded CSV", progress=processing_progress,
     )
     return {
         **metadata, "file_path": str(output), "filename": output.name,
@@ -6643,6 +6737,9 @@ def execute_local_file_job(
         _verify_copied_file(
             raw_output, snapshot["file_size"], snapshot["checksum"],
             label="Configured source file",
+            progress=lambda stage, message: report_progress(
+                "running", {"stage": stage, "message": message},
+            ),
         )
     detected = _detect_download_format(raw_output)
     if detected != expected_format:
