@@ -483,9 +483,15 @@ def source(job):
               '# Configuration and readable execution source are included below. Credentials are not.',
               f'# Execution core copied into this file: {core}']
     if recorded:
-        tested = job['recording'].get('engine_hash') or 'not recorded'
-        header.append(f"# Recording revision {job['recording'].get('revision')} was last tested with execution core {tested}"
-                      + (' (the same code).' if tested == core else ' (an earlier version of the code).'))
+        recording = job['recording']
+        engine = recording.get('engine_hash')
+        if not engine:
+            header.append(f"# Recording revision {recording.get('revision')} has not been tested; check the first run output.")
+        else:
+            header.append(f"# Recording revision {recording.get('revision')} was last tested with execution core {engine}"
+                          + (' (the same code).' if engine == core else ' (an earlier version of the code).'))
+            if recording.get('tested') is False:
+                header.append('# That test used different Flow settings or transformation bytes; check the first run output.')
     entry_module, entry_function = ('flow_recording_runtime', 'standalone_main') if recorded else ('flow_standalone', 'offline_main')
     # Substitute the entry tokens before the configuration is inserted so a
     # saved value that happens to contain a token is never rewritten.

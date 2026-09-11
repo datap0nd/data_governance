@@ -36,16 +36,17 @@ controls** remains available. Existing flows retain their method.
    button from Country to Main, without changing its selector structure. Raw
    selectors expose their repair controls beside the target. Undo and movement
    controls stay with the selected step; frame diagnostics remain under Advanced.
-4. **Save draft** preserves incomplete recordings. **Test recording** is optional:
-   it asks only for missing essential report/ready information, then saves and tests
-   the exact recording with the pending Edit Flow settings. Progress and errors
-   appear beside the actions. Polling preserves edits and selection.
-5. Choose **Back to Edit Flow → Save**. If the selected recording was not tested,
-   confirm **Save without testing**. Settings and that revision apply atomically and
-   the Flow can run; check the first run output because no test evidence exists.
-   Cancelling the confirmation preserves the form and recording draft. A tested
-   save still applies normally, and testing alone neither activates the recording
-   nor enables scheduling.
+4. **Save draft** preserves incomplete recordings. **Test recording** is optional
+   and never required: it asks only for missing essential report/ready information,
+   then saves and tests the exact recording with the pending Edit Flow settings.
+   Progress and errors appear beside the actions. Polling preserves edits and selection.
+5. Choose **Back to Edit Flow → Save**. The Flow saves immediately whether or not
+   the selected recording was tested, and later settings, transformation or
+   schedule changes save, run and enable without a new test. Metronome never asks
+   for a test: an untested recording, or one tested with different settings, runs
+   with the current settings and the current transformation, so check the first
+   run output because no matching test evidence exists. Testing alone neither
+   activates the recording nor enables scheduling.
 6. **Record again** in the main action row immediately starts a replacement;
    unsaved editor-only changes are not saved first. **More → Saved versions**
    opens preserved revisions. Failed tests and abandoned edits keep the active version.
@@ -76,7 +77,7 @@ It does not automatically stop at the first download.
 Date batching is removed. Older batched flows are paused; queued batched jobs
 are cancelled with a review reason. Historical revisions, artifacts and copied
 portable scripts remain historical evidence. Use **Convert to one range** with
-explicit start/end values to create a new draft, then test it before enabling.
+explicit start/end values to create a new draft, then save the Flow; testing is optional.
 Conversion never turns the old whole batch into an automatic large export.
 
 Definition version 3 adds semantic week ranges. In **Review recording**, select
