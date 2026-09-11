@@ -353,8 +353,8 @@ the wrong default for Metronome:
 * It requires a human-owned Chrome to be running and signed in, so scheduled
   and headless runs cannot work.
 * Downloads land wherever that Chrome puts them, outside the staging folder the
-  worker monitors — losing the completeness and stall detection that
-  `_wait_for_staged_download` provides.
+  worker monitors — losing the completeness and growth-based stall detection
+  (15 minutes without change) that `_wait_for_staged_download` provides.
 * It would make GSCM the only site in Flows that cannot run unattended.
 
 The persistent worker profile gives the same SSO reuse with none of that. If

@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -136,7 +137,7 @@ def test_menu_discovery_waits_for_loading_overlay_before_click(monkeypatch):
     monkeypatch.setattr(
         flow_worker,
         "_asap_wait_for_loading_clear",
-        lambda _page: events.append("wait"),
+        lambda _page, **_kwargs: events.append("wait"),
     )
     monkeypatch.setattr(
         flow_worker,
@@ -169,7 +170,7 @@ def test_menu_discovery_fails_closed_when_one_root_reveals_no_reports(monkeypatc
     monkeypatch.setattr(flow_worker, "_wait_for_navigation_roots", lambda _page: [root])
     monkeypatch.setattr(flow_worker, "_visible_anchor_records", lambda _page: [root])
     monkeypatch.setattr(flow_worker, "_navigation_roots", lambda _records: [root])
-    monkeypatch.setattr(flow_worker, "_asap_wait_for_loading_clear", lambda _page: None)
+    monkeypatch.setattr(flow_worker, "_asap_wait_for_loading_clear", lambda _page, **_kwargs: None)
     moments = iter([0, 20, 30, 50])
     monkeypatch.setattr(flow_worker.time, "monotonic", lambda: next(moments))
 
@@ -195,7 +196,7 @@ def test_blank_menu_branch_is_recovered_from_the_live_portal_menu_tree(monkeypat
     monkeypatch.setattr(flow_worker, "_wait_for_navigation_roots", lambda _page: [root])
     monkeypatch.setattr(flow_worker, "_visible_anchor_records", lambda _page: [root])
     monkeypatch.setattr(flow_worker, "_navigation_roots", lambda _records: [root])
-    monkeypatch.setattr(flow_worker, "_asap_wait_for_loading_clear", lambda _page: None)
+    monkeypatch.setattr(flow_worker, "_asap_wait_for_loading_clear", lambda _page, **_kwargs: None)
     monkeypatch.setattr(
         flow_worker, "_asap_portal_menu_paths",
         lambda _page, _diagnostics=None: [["Retail", "F8 Experience (Launching Daily)", "Flagship Experience"]],
@@ -227,7 +228,7 @@ def test_portal_menu_tree_is_captured_before_any_header_click(monkeypatch):
     monkeypatch.setattr(flow_worker, "_wait_for_navigation_roots", lambda _page: [root])
     monkeypatch.setattr(flow_worker, "_visible_anchor_records", lambda _page: [root])
     monkeypatch.setattr(flow_worker, "_navigation_roots", lambda _records: [root])
-    monkeypatch.setattr(flow_worker, "_asap_wait_for_loading_clear", lambda _page: None)
+    monkeypatch.setattr(flow_worker, "_asap_wait_for_loading_clear", lambda _page, **_kwargs: None)
 
     def portal_paths(_page, _diagnostics=None):
         assert events == []
@@ -566,7 +567,7 @@ def test_asap_loading_wait_requires_four_clear_samples(monkeypatch):
         def wait_for_timeout(self, milliseconds):
             waits.append(milliseconds)
 
-    flow_worker._asap_wait_for_loading_clear(Page(), timeout_ms=5_000)
+    flow_worker._asap_wait_for_loading_clear(Page(), max_seconds=5)
 
     assert waits == [250, 250, 250, 250]
 
@@ -622,7 +623,7 @@ def test_asap_results_accept_populated_raw_table_without_data_rows_marker(monkey
         def wait_for_timeout(self, _milliseconds):
             raise AssertionError("the populated raw table should be accepted immediately")
 
-    assert flow_worker._asap_wait_for_results(Page(), timeout_ms=1_000) is frame
+    assert flow_worker._asap_wait_for_results(Page()) is frame
 
 
 class _WaitPage:
@@ -635,8 +636,8 @@ class _WaitPage:
 
 def _empty_render_error():
     return RuntimeError(
-        "ASAP report rows did not render within 600 seconds. "
-        + flow_worker.ASAP_EMPTY_RESULT_DETAIL
+        "ASAP report rows did not render: the loading overlay stayed clear for 300 "
+        "seconds without result rows. " + flow_worker.ASAP_EMPTY_RESULT_DETAIL
     )
 
 
@@ -644,7 +645,7 @@ def test_asap_run_report_retries_once_after_silently_empty_rendering(monkeypatch
     frame = object()
     attempts = []
 
-    def fake_run(_page):
+    def fake_run(_page, **_kwargs):
         attempts.append(1)
         if len(attempts) == 1:
             raise _empty_render_error()
@@ -663,16 +664,15 @@ def test_asap_run_report_retries_once_after_silently_empty_rendering(monkeypatch
 def test_asap_run_report_does_not_retry_while_overlay_still_visible(monkeypatch):
     attempts = []
 
-    def fake_run(_page):
+    def fake_run(_page, **_kwargs):
         attempts.append(1)
         raise RuntimeError(
-            "ASAP report rows did not render within 600 seconds."
-            " The ASAP loading overlay was still visible."
+            "ASAP page closed while waiting for the ASAP report to render after 12 minutes."
         )
 
     monkeypatch.setattr(flow_worker, "_asap_run_report", fake_run)
 
-    with pytest.raises(RuntimeError, match="still visible"):
+    with pytest.raises(RuntimeError, match="page closed"):
         flow_worker._asap_run_report_with_retry(_WaitPage())
     assert len(attempts) == 1
 
@@ -680,7 +680,7 @@ def test_asap_run_report_does_not_retry_while_overlay_still_visible(monkeypatch)
 def test_asap_run_report_raises_after_second_empty_rendering(monkeypatch):
     attempts = []
 
-    def fake_run(_page):
+    def fake_run(_page, **_kwargs):
         attempts.append(1)
         raise _empty_render_error()
 
@@ -700,8 +700,8 @@ def test_export_task_retry_restarts_a_failed_file_and_keeps_its_result():
             raise RuntimeError("ASAP report menu item was not visible: installed base (MENA)")
         if len(attempts) == 2:
             raise RuntimeError(
-                "The Edge download did not produce a stable finished file "
-                "within 600 seconds in the local staging folder."
+                "The ASAP export download stopped growing: no growth for 15 minutes "
+                "(3 checks) in the local staging folder."
             )
         return {"status": "saved"}
 
@@ -715,7 +715,7 @@ def test_export_task_retry_restarts_a_failed_file_and_keeps_its_result():
     assert attempts == [1, 2, 3]
     assert [attempt for attempt, _ in retries] == [1, 2]
     assert "menu item was not visible" in retries[0][1]
-    assert "stable finished file" in retries[1][1]
+    assert "no growth for 15 minutes" in retries[1][1]
     assert page.waits == [5_000, 5_000]
 
 
@@ -992,7 +992,7 @@ def test_edge_native_download_event_is_the_completion_authority(tmp_path):
 
     class Page:
         def expect_download(self, *, timeout):
-            assert timeout == flow_worker.DOWNLOAD_MAX_TIMEOUT_SECONDS * 1_000
+            assert timeout == flow_worker.DOWNLOAD_EVENT_TIMEOUT_SECONDS * 1_000
             return ExpectDownload()
 
     triggered = []
@@ -1058,9 +1058,15 @@ def test_dashboard_edge_event_uses_a_bounded_staging_handoff(tmp_path, monkeypat
     assert calls == [(
         tmp_path,
         before,
-        {"start_timeout_seconds": flow_worker.DOWNLOAD_EVENT_STAGING_TIMEOUT_SECONDS},
+        {
+            "start_timeout_seconds": flow_worker.DOWNLOAD_EVENT_STAGING_TIMEOUT_SECONDS,
+            "progress": None,
+            "label": "The ASAP dashboard download 'Download Main Data (xlsx)'",
+        },
     )]
     assert flow_worker.DOWNLOAD_EVENT_STAGING_TIMEOUT_SECONDS == 60
+    # The handoff budget bounds the *start* only; a growing file is never capped.
+    assert "timeout_seconds" not in calls[0][2]
 
 
 def test_dashboard_edge_event_reports_a_missing_staging_handoff(
@@ -1341,7 +1347,7 @@ def test_asap_wizard_resolver_rejects_controls_and_export_split_across_roots(mon
 def test_asap_download_retries_one_wizard_recognition_failure(monkeypatch, tmp_path):
     attempts = []
 
-    def download(*_args):
+    def download(*_args, **_kwargs):
         attempts.append(len(attempts) + 1)
         if len(attempts) == 1:
             raise RuntimeError(
@@ -1376,7 +1382,7 @@ def test_asap_download_stops_after_second_wizard_recognition_failure(monkeypatch
         "recognized. Format option found: False. Export action found: False."
     )
 
-    def download(*_args):
+    def download(*_args, **_kwargs):
         attempts.append(len(attempts) + 1)
         raise RuntimeError(error)
 
@@ -1395,7 +1401,7 @@ def test_asap_download_stops_after_second_wizard_recognition_failure(monkeypatch
 def test_asap_download_does_not_retry_other_failures(monkeypatch, tmp_path):
     attempts = []
 
-    def download(*_args):
+    def download(*_args, **_kwargs):
         attempts.append(len(attempts) + 1)
         raise RuntimeError("ASAP export started, but no download was emitted.")
 
@@ -1416,7 +1422,7 @@ def test_asap_download_retries_once_with_replaced_frame(monkeypatch, tmp_path):
     original_frame = object()
     replacement_frame = object()
 
-    def download(_page, frame, _job, _staging_dir):
+    def download(_page, frame, _job, _staging_dir, **_kwargs):
         attempts.append(frame)
         if len(attempts) == 1:
             raise flow_worker.PlaywrightError("Frame was detached")
@@ -1445,7 +1451,7 @@ def test_asap_download_retries_once_with_replaced_frame(monkeypatch, tmp_path):
 def test_asap_download_does_not_retry_other_playwright_errors(monkeypatch, tmp_path):
     attempts = []
 
-    def download(*_args):
+    def download(*_args, **_kwargs):
         attempts.append(len(attempts) + 1)
         raise flow_worker.PlaywrightError("Target page, context or browser has been closed")
 
@@ -1602,7 +1608,7 @@ def test_export_view_waits_for_loading_overlay_before_and_after_click(monkeypatc
     frame_values = iter(["fresh-before-click", active_frame])
     monkeypatch.setattr(
         flow_worker, "_asap_wait_for_loading_clear",
-        lambda _page: waits.append("clear"),
+        lambda _page, **_kwargs: waits.append("clear"),
     )
     monkeypatch.setattr(flow_worker, "_asap_frame", lambda _page: next(frame_values))
 
@@ -1849,7 +1855,7 @@ def test_execute_job_downloads_every_export_view_before_returning(monkeypatch, t
     monkeypatch.setattr(flow_worker, "_asap_apply_configuration", lambda *_args: None)
     monkeypatch.setattr(flow_worker, "_has_named_control", lambda *_args: False)
 
-    def fake_download(_page, _frame, _job, staging_dir):
+    def fake_download(_page, _frame, _job, staging_dir, **_kwargs):
         path = Path(staging_dir) / f"source-{len(staged) + 1}.csv"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("value,units\nitem,1\n", encoding="utf-8")
@@ -2288,7 +2294,7 @@ def test_revealed_menu_headers_diff_by_text_and_position():
 
 def _stub_dashboard_execution(monkeypatch):
     monkeypatch.setattr(flow_worker, "_asap_open_report", lambda *_args: object())
-    monkeypatch.setattr(flow_worker, "_asap_wait_for_loading_clear", lambda _page: None)
+    monkeypatch.setattr(flow_worker, "_asap_wait_for_loading_clear", lambda _page, **_kwargs: None)
     monkeypatch.setattr(flow_worker, "_asap_frame", lambda _page: object())
     monkeypatch.setattr(flow_worker, "_asap_apply_configuration", lambda *_args: None)
     monkeypatch.setattr(flow_worker, "_has_named_control", lambda *_args: False)
@@ -2408,7 +2414,7 @@ def test_progress_posters_truncate_error_fields():
 def test_execute_job_downloads_each_selected_dashboard_link(tmp_path, monkeypatch):
     clicked = []
     monkeypatch.setattr(flow_worker, "_asap_open_report", lambda *_a: object())
-    monkeypatch.setattr(flow_worker, "_asap_wait_for_loading_clear", lambda _page: None)
+    monkeypatch.setattr(flow_worker, "_asap_wait_for_loading_clear", lambda _page, **_kwargs: None)
     monkeypatch.setattr(flow_worker, "_asap_frame", lambda _page: object())
     monkeypatch.setattr(flow_worker, "_asap_apply_configuration", lambda *_a: None)
     monkeypatch.setattr(flow_worker, "_has_named_control", lambda _root, _text: False)
@@ -2417,7 +2423,7 @@ def test_execute_job_downloads_each_selected_dashboard_link(tmp_path, monkeypatc
         lambda *_a: (_ for _ in ()).throw(AssertionError("dashboards have no export views")),
     )
 
-    def fake_link_download(_page, label, staging, job=None):
+    def fake_link_download(_page, label, staging, job=None, **_kwargs):
         # The job is threaded through so the run can match on the catalogued
         # href when the label alone cannot find the control.
         assert job is not None
@@ -2773,7 +2779,7 @@ def test_execute_job_stores_dashboard_csv_without_closing_download_popup(
 
     control = Control()
     monkeypatch.setattr(flow_worker, "_asap_open_report", lambda *_args: object())
-    monkeypatch.setattr(flow_worker, "_asap_wait_for_loading_clear", lambda _page: None)
+    monkeypatch.setattr(flow_worker, "_asap_wait_for_loading_clear", lambda _page, **_kwargs: None)
     monkeypatch.setattr(flow_worker, "_asap_frame", lambda _page: object())
     monkeypatch.setattr(flow_worker, "_asap_apply_configuration", lambda *_args: None)
     monkeypatch.setattr(flow_worker, "_has_named_control", lambda *_args: False)
@@ -2849,7 +2855,7 @@ def test_gscm_retry_reloads_portal_after_an_empty_favorite_dialog(
         order.append("reload")
         _page.stale_dialog = False
 
-    def edge_download(_page, trigger):
+    def edge_download(_page, trigger, **_kwargs):
         trigger()
         order.append("download")
         return staged
@@ -3019,7 +3025,7 @@ def test_dashboard_uses_staging_after_edge_event_even_if_folder_signal_won(
     )
     monkeypatch.setattr(
         flow_worker, "_asap_dashboard_event_staged_download",
-        lambda staging, before, label: (
+        lambda staging, before, label, **_kwargs: (
             staged_calls.append((staging, before, label)) or staged_path
         ),
     )
@@ -3143,7 +3149,7 @@ def test_dashboard_accepts_download_emitted_while_inspecting_popup(
     monkeypatch.setattr(flow_worker, "_asap_export_action", lambda _popup: None)
     monkeypatch.setattr(
         flow_worker, "_asap_dashboard_event_staged_download",
-        lambda staging, before, label: (
+        lambda staging, before, label, **_kwargs: (
             staged_calls.append((staging, before, label)) or staged_path
         ),
     )
@@ -3267,7 +3273,7 @@ def test_dashboard_accepts_download_emitted_at_second_click_timeout_boundary(
     )
     monkeypatch.setattr(
         flow_worker, "_asap_dashboard_event_staged_download",
-        lambda staging, before, label: (
+        lambda staging, before, label, **_kwargs: (
             staged_calls.append((staging, before, label)) or staged_path
         ),
     )
@@ -3404,7 +3410,7 @@ def test_catalogued_href_is_available_to_the_run():
 
 def test_dashboard_download_passes_the_job_so_href_matching_can_work():
     source = Path(flow_worker.__file__).read_text()
-    assert "_asap_download_dashboard_link(\n                        page, download_link, staging, job,\n                    )" in source
+    assert "_asap_download_dashboard_link(\n                        page, download_link, staging, job, progress=_processing_progress,\n                    )" in source
 
 
 # --- Run folders and retention operations ---
@@ -3588,7 +3594,7 @@ def test_execute_job_places_files_in_a_run_folder_and_prunes_assigned_ops(
     _stub_dashboard_execution(monkeypatch)
     monkeypatch.setattr(
         flow_worker, "_asap_download_dashboard_link",
-        lambda _page, _link, staging_dir, _job: (
+        lambda _page, _link, staging_dir, _job, **_kwargs: (
             staging_dir.mkdir(parents=True, exist_ok=True) or None,
             (staging_dir / "mtracker.csv").write_text("a,b\n1,2\n", encoding="utf-8"),
         ) and (staging_dir / "mtracker.csv"),
@@ -3671,7 +3677,7 @@ def test_execute_job_registers_the_folder_before_reporting_progress(
     _stub_dashboard_execution(monkeypatch)
     monkeypatch.setattr(
         flow_worker, "_asap_download_dashboard_link",
-        lambda _page, _link, staging_dir, _job: (
+        lambda _page, _link, staging_dir, _job, **_kwargs: (
             staging_dir.mkdir(parents=True, exist_ok=True) or None,
             (staging_dir / "mtracker.csv").write_text("a,b\n1,2\n", encoding="utf-8"),
         ) and (staging_dir / "mtracker.csv"),
@@ -3726,3 +3732,351 @@ def test_execute_ops_skips_a_real_windows_junction(tmp_path):
             tomb_junction.rmdir()
     finally:
         junction.rmdir()
+
+
+# --- progress-based download and render waits ---------------------------------
+
+
+class _Clock:
+    """Fake monotonic clock: ``sleep`` and page waits advance it instantly."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+def _fake_clock(monkeypatch, sleep=None):
+    clock = _Clock()
+    monkeypatch.setattr(flow_worker.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(flow_worker.time, "sleep", sleep or clock.sleep)
+    return clock
+
+
+def test_staged_download_posts_progress_every_five_minutes_with_byte_deltas(tmp_path, monkeypatch):
+    before = flow_worker._download_staging_snapshot(tmp_path)
+    partial = tmp_path / "export.crdownload"
+    final = tmp_path / "export.csv"
+    events = []
+    clock = _Clock()
+
+    def sleep(seconds):
+        clock.now += seconds
+        if clock.now < 12 * 60:
+            with partial.open("ab") as handle:
+                handle.write(b"x" * 1024)
+        elif not final.exists():
+            partial.rename(final)
+
+    _fake_clock(monkeypatch, sleep=sleep)
+    monkeypatch.setattr(flow_worker.time, "monotonic", clock.monotonic)
+
+    result = flow_worker._wait_for_staged_download(
+        tmp_path, before, progress=lambda stage, message: events.append((stage, message)),
+        poll_seconds=30,
+    )
+
+    assert result == final
+    assert [stage for stage, _ in events] == ["download_progress", "download_progress"]
+    assert "export.crdownload is" in events[0][1] and "(+" in events[0][1]
+    assert "5 minutes elapsed" in events[0][1] and "10 minutes elapsed" in events[1][1]
+    assert "keeps waiting while the file grows" in events[0][1]
+
+
+def test_staged_download_keeps_waiting_past_sixty_minutes_while_the_file_grows(tmp_path, monkeypatch):
+    before = flow_worker._download_staging_snapshot(tmp_path)
+    growing = tmp_path / "export.csv"
+    events = []
+    clock = _Clock()
+
+    def sleep(seconds):
+        clock.now += seconds
+        if clock.now <= 65 * 60:
+            with growing.open("ab") as handle:
+                handle.write(b"row\n")
+
+    _fake_clock(monkeypatch, sleep=sleep)
+    monkeypatch.setattr(flow_worker.time, "monotonic", clock.monotonic)
+
+    result = flow_worker._wait_for_staged_download(
+        tmp_path, before, progress=lambda stage, message: events.append(stage), poll_seconds=30,
+    )
+
+    assert result == growing
+    assert events == ["download_progress"] * 13
+    assert clock.now > 60 * 60
+
+
+def test_staged_download_fails_after_three_zero_growth_checks(tmp_path, monkeypatch):
+    before = flow_worker._download_staging_snapshot(tmp_path)
+    (tmp_path / "export.crdownload").write_bytes(b"x" * 10)
+    events = []
+    _fake_clock(monkeypatch)
+
+    with pytest.raises(RuntimeError, match=r"no growth for 15 minutes \(3 checks\)") as error:
+        flow_worker._wait_for_staged_download(
+            tmp_path, before, progress=lambda stage, message: events.append((stage, message)),
+            poll_seconds=30,
+        )
+
+    # The first check reports the file's arrival; the next three see no growth.
+    assert [stage for stage, _ in events] == [
+        "download_progress", "download_stall_warning", "download_stall_warning",
+    ]
+    assert "Check 1 of 3" in events[1][1] and "Check 2 of 3" in events[2][1]
+    assert "fails only after 15 minutes without growth" in events[1][1]
+    assert "export.crdownload (10 bytes)" in str(error.value)
+    assert "completed" not in str(error.value).casefold()
+
+
+def test_staged_download_growth_resets_the_stall_counter(tmp_path, monkeypatch):
+    before = flow_worker._download_staging_snapshot(tmp_path)
+    partial = tmp_path / "export.crdownload"
+    partial.write_bytes(b"x" * 10)
+    final = tmp_path / "export.csv"
+    events = []
+    clock = _Clock()
+
+    def sleep(seconds):
+        clock.now += seconds
+        if 940 <= clock.now < 1000:
+            with partial.open("ab") as handle:
+                handle.write(b"more")
+        elif clock.now >= 1850 and not final.exists():
+            partial.rename(final)
+
+    _fake_clock(monkeypatch, sleep=sleep)
+    monkeypatch.setattr(flow_worker.time, "monotonic", clock.monotonic)
+
+    result = flow_worker._wait_for_staged_download(
+        tmp_path, before, progress=lambda stage, message: events.append(stage), poll_seconds=30,
+    )
+
+    assert result == final
+    assert events == ["download_progress", "download_stall_warning", "download_stall_warning",
+                      "download_progress", "download_stall_warning", "download_stall_warning"]
+
+
+def test_staged_download_reports_waiting_before_the_first_file(tmp_path, monkeypatch):
+    events = []
+    _fake_clock(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="no new or updated file appeared"):
+        flow_worker._wait_for_staged_download(
+            tmp_path, {}, start_timeout_seconds=900,
+            progress=lambda stage, message: events.append((stage, message)), poll_seconds=30,
+        )
+
+    assert [stage for stage, _ in events] == ["download_waiting", "download_waiting"]
+    assert "after 5 minutes" in events[0][1] and "gives up after 15 minutes" in events[0][1]
+
+
+def test_dashboard_signal_posts_waiting_events(tmp_path, monkeypatch):
+    clock = _fake_clock(monkeypatch)
+    events = []
+
+    class Page:
+        def wait_for_timeout(self, milliseconds):
+            clock.now += milliseconds / 1_000
+
+    signal = flow_worker._asap_wait_for_dashboard_download_signal(
+        Page(), tmp_path, flow_worker._download_staging_snapshot(tmp_path), [], [],
+        timeout_seconds=900, progress=lambda stage, message: events.append((stage, message)),
+        label="Download Main Data (xlsx)",
+    )
+
+    assert signal == "timeout"
+    assert [stage for stage, _ in events] == ["download_waiting", "download_waiting"]
+    assert "'Download Main Data (xlsx)'" in events[0][1] and "gives up after 15 minutes" in events[0][1]
+
+
+def test_staging_progress_watch_reports_without_failing(tmp_path):
+    before = flow_worker._download_staging_snapshot(tmp_path)
+    events = []
+    growing = tmp_path / "GUID"
+
+    def progress(stage, message):
+        events.append((stage, message))
+        if len(events) == 1:
+            raise RuntimeError("reporting failures never reach the transfer")
+
+    with flow_worker._StagingProgressWatch(
+        tmp_path, before, progress, label="The GSCM Excel download",
+        check_interval_seconds=0.2, poll_seconds=0.02,
+    ) as watch:
+        for _ in range(4):
+            with growing.open("ab") as handle:
+                handle.write(b"x" * 100)
+            time.sleep(0.15)
+        thread = watch._thread
+    assert thread is not None and not thread.is_alive()
+    assert events and all(stage == "download_progress" for stage, _ in events)
+    assert "The GSCM Excel download is still transferring: GUID is" in events[0][1]
+
+
+def test_staging_progress_watch_is_inert_without_a_callback(tmp_path):
+    with flow_worker._StagingProgressWatch(tmp_path, {}, None, label="x") as watch:
+        assert watch._thread is None
+
+
+def test_edge_completed_download_watches_staging_while_blocking(tmp_path, monkeypatch):
+    monkeypatch.setattr(flow_worker, "DOWNLOAD_PROGRESS_CHECK_SECONDS", 0.2)
+    events = []
+    completed = tmp_path / "GUID"
+
+    class Download:
+        def failure(self):
+            # Longer than the watch's 0.5 s poll so at least two polls land.
+            for _ in range(4):
+                with completed.open("ab") as handle:
+                    handle.write(b"x" * 64)
+                time.sleep(0.3)
+            return None
+
+        def path(self):
+            return str(completed)
+
+    class Pending:
+        value = Download()
+
+    class ExpectDownload:
+        def __enter__(self):
+            return Pending()
+
+        def __exit__(self, *_args):
+            return False
+
+    class Page:
+        def expect_download(self, *, timeout):
+            assert timeout == flow_worker.DOWNLOAD_EVENT_TIMEOUT_SECONDS * 1_000
+            return ExpectDownload()
+
+    result = flow_worker._edge_completed_download(
+        Page(), lambda: None, staging_dir=tmp_path,
+        progress=lambda stage, message: events.append((stage, message)),
+    )
+
+    assert result == completed
+    assert events and events[0][0] == "download_progress"
+    assert "The GSCM Excel download is still transferring: GUID is" in events[0][1]
+
+
+class _RenderPage:
+    """ASAP page double whose waits advance the fake clock."""
+
+    def __init__(self, clock, frames, closed_after=None):
+        self.clock = clock
+        self.frames = frames
+        self.closed_after = closed_after
+        self.waits = 0
+
+    def wait_for_timeout(self, milliseconds):
+        self.waits += 1
+        self.clock.now += milliseconds / 1_000
+
+    def is_closed(self):
+        return self.closed_after is not None and self.clock.now >= self.closed_after
+
+
+class _RowsFrame:
+    def __init__(self, ready):
+        self.ready = ready
+
+    def get_by_text(self, *_args, **_kwargs):
+        frame = self
+
+        class Rows:
+            @property
+            def first(self):
+                return self
+
+            def count(self):
+                return 1 if frame.ready() else 0
+
+            def is_visible(self):
+                return frame.ready()
+
+        return Rows()
+
+
+def test_asap_results_post_still_rendering_every_five_minutes(monkeypatch):
+    clock = _fake_clock(monkeypatch)
+    monkeypatch.setattr(flow_worker, "_asap_loading_overlay_visible", lambda _page: clock.now < 12 * 60)
+    monkeypatch.setattr(flow_worker, "_asap_raw_table_ready", lambda _frame: False)
+    frame = _RowsFrame(lambda: clock.now >= 12 * 60)
+    events = []
+
+    result = flow_worker._asap_wait_for_results(
+        _RenderPage(clock, [frame]), progress=lambda stage, message: events.append((stage, message)),
+    )
+
+    assert result is frame
+    assert [stage for stage, _ in events] == ["report_rendering", "report_rendering"]
+    assert "after 5 minutes" in events[0][1] and "still visible" in events[0][1]
+    assert "keeps waiting while the page is open" in events[0][1]
+
+
+def test_asap_results_never_time_out_while_overlay_is_visible(monkeypatch):
+    clock = _fake_clock(monkeypatch)
+    monkeypatch.setattr(flow_worker, "_asap_loading_overlay_visible", lambda _page: clock.now < 90 * 60)
+    monkeypatch.setattr(flow_worker, "_asap_raw_table_ready", lambda _frame: False)
+    frame = _RowsFrame(lambda: clock.now > 90 * 60)
+    events = []
+
+    assert flow_worker._asap_wait_for_results(
+        _RenderPage(clock, [frame]), progress=lambda stage, _message: events.append(stage),
+    ) is frame
+    assert events == ["report_rendering"] * 18
+
+
+def test_asap_results_fail_when_the_page_closes(monkeypatch):
+    clock = _fake_clock(monkeypatch)
+    monkeypatch.setattr(flow_worker, "_asap_loading_overlay_visible", lambda _page: True)
+    monkeypatch.setattr(flow_worker, "_asap_raw_table_ready", lambda _frame: False)
+    page = _RenderPage(clock, [_RowsFrame(lambda: False)], closed_after=7 * 60)
+
+    with pytest.raises(RuntimeError, match="ASAP page closed while waiting for the ASAP report to render after 7 minutes"):
+        flow_worker._asap_wait_for_results(page)
+
+
+def test_asap_results_declare_empty_result_after_overlay_clear_settle(monkeypatch):
+    clock = _fake_clock(monkeypatch)
+    monkeypatch.setattr(flow_worker, "_asap_loading_overlay_visible", lambda _page: False)
+    monkeypatch.setattr(flow_worker, "_asap_raw_table_ready", lambda _frame: False)
+    page = _RenderPage(clock, [_RowsFrame(lambda: False)])
+
+    with pytest.raises(RuntimeError) as error:
+        flow_worker._asap_wait_for_results(page)
+
+    message = str(error.value)
+    assert message.startswith("ASAP report rows did not render: the loading overlay stayed clear for 300 seconds")
+    assert flow_worker.ASAP_EMPTY_RESULT_DETAIL in message
+    assert 295 <= clock.now <= 305
+
+
+def test_asap_loading_wait_fails_when_the_page_closes(monkeypatch):
+    clock = _fake_clock(monkeypatch)
+    monkeypatch.setattr(flow_worker, "_asap_loading_overlay_visible", lambda _page: True)
+    events = []
+    page = _RenderPage(clock, [], closed_after=11 * 60)
+
+    with pytest.raises(RuntimeError, match="ASAP page closed while waiting for the ASAP loading overlay to clear after 11 minutes"):
+        flow_worker._asap_wait_for_loading_clear(page, progress=lambda stage, message: events.append((stage, message)))
+
+    assert [stage for stage, _ in events] == ["report_rendering", "report_rendering"]
+    assert "still busy" in events[0][1]
+
+
+def test_asap_loading_wait_keeps_a_bound_only_for_catalog_scans(monkeypatch):
+    clock = _fake_clock(monkeypatch)
+    monkeypatch.setattr(flow_worker, "_asap_loading_overlay_visible", lambda _page: True)
+
+    with pytest.raises(RuntimeError, match="did not clear within 1800 seconds"):
+        flow_worker._asap_wait_for_loading_clear(
+            _RenderPage(clock, []), max_seconds=flow_worker.ASAP_SCAN_OVERLAY_TIMEOUT_SECONDS,
+        )
+    assert flow_worker.ASAP_SCAN_OVERLAY_TIMEOUT_SECONDS == 30 * 60

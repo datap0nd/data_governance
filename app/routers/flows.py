@@ -1461,7 +1461,10 @@ def _validate_flow_selections(db, body: FlowWrite, *, new_flow: bool = False):
         if not route or route['site_id'] != body.site_id:
             raise HTTPException(400, 'The recorded route belongs to a different website.')
         if new_flow and body.enabled:
-            raise HTTPException(409, 'Record and validate the draft before enabling its schedule.')
+            # A brand-new recorded Flow has no saved recording yet; name the next
+            # action with the same words a run or enable attempt would use.
+            from app.flow_recordings import NO_RECORDING_DETAIL
+            raise HTTPException(409, NO_RECORDING_DETAIL)
         return
     report = db.execute(
         """SELECT r.site_id, r.automation_json, s.adapter FROM flow_reports r

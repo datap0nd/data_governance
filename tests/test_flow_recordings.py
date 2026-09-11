@@ -504,3 +504,27 @@ def test_recording_lease_expiry_accepts_utc_and_offset_timestamps(flow_db,monkey
         db.execute('UPDATE flow_catalog_scans SET heartbeat_at=? WHERE id=?',(stamp.isoformat(),started['scan_id']))
         flow_recordings.reap(db)
         assert db.execute('SELECT status FROM flow_catalog_scans WHERE id=?',(started['scan_id'],)).fetchone()[0]=='failed'
+
+
+def test_new_recorded_flow_enabled_without_recording_names_the_next_action(flow_db):
+    saved,_=draft_job()
+    body=flows.FlowWrite.model_validate(saved).model_dump()
+    body.update(enabled=True,schedule_type='daily',schedule_time='08:00',target_folder=None)
+    with database.get_db() as db:
+        with pytest.raises(HTTPException) as excinfo:
+            flows._validate_flow_selections(db,flows.FlowWrite(**body),new_flow=True)
+    assert excinfo.value.status_code==409
+    assert excinfo.value.detail==flow_recordings.NO_RECORDING_DETAIL
+    assert 'Record and validate' not in excinfo.value.detail
+
+
+def test_recording_test_gate_wording_is_gone():
+    # Testing a recording is optional evidence; no code path may ask for it again.
+    root=Path(__file__).resolve().parents[1]/'app'
+    offenders=[]
+    for path in list(root.rglob('*.py'))+list(root.rglob('*.js'))+list(root.rglob('*.html')):
+        text=path.read_text(encoding='utf-8',errors='ignore')
+        for needle in ('Record and validate','approve saving without testing','Save without testing','allow_untested_recording'):
+            if needle in text:
+                offenders.append(f'{path.relative_to(root)}: {needle}')
+    assert offenders==[]

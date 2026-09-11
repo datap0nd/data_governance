@@ -80,8 +80,16 @@ GSCM_AUTH_MARKER = ".gscm_authenticated"
 ASAP_LOADING_OVERLAY_SELECTOR = (
     "#loading-spinner-container, .loading-spinner-container, .loading-overlay"
 )
-# A wide report over a long period can render for a long time. Wait it out.
-ASAP_REPORT_RESULT_TIMEOUT_MS = 30 * 60 * 1_000
+# Long waits (report rendering, downloads) post one progress event per
+# interval so the run log shows that the worker is still busy, on what, and
+# whether anything is moving.
+PROGRESS_CHECK_SECONDS = 5 * 60
+# A wide report over a long period can render for a long time. A Flow run
+# waits for it as long as the page stays open; only a catalog scan keeps a
+# bound. An overlay that has stayed clear this long without any rows means the
+# report finished with an empty rendering (the caller re-runs it once).
+ASAP_EMPTY_RESULT_SETTLE_SECONDS = 5 * 60
+ASAP_SCAN_OVERLAY_TIMEOUT_SECONDS = 30 * 60
 EXPORT_TASK_ATTEMPTS = 3
 GSCM_EXPORT_TASK_ATTEMPTS = 2
 GSCM_INITIAL_LOAD_BUFFER_MS = 60_000
@@ -698,11 +706,44 @@ def _asap_loading_overlay_visible(page: Page) -> bool:
     return False
 
 
-def _asap_wait_for_loading_clear(page: Page, timeout_ms: int = ASAP_REPORT_RESULT_TIMEOUT_MS):
-    """Wait for a sustained clear state before clicking an ASAP control."""
-    deadline = time.monotonic() + (timeout_ms / 1_000)
+def _elapsed_minutes(started: float) -> int:
+    return int(max(0.0, time.monotonic() - started) // 60)
+
+
+def _page_is_closed(page) -> bool:
+    """Whether the browser page is gone; tolerant of minimal test doubles."""
+    is_closed = getattr(page, "is_closed", None)
+    if not callable(is_closed):
+        return False
+    try:
+        return bool(is_closed())
+    except Exception:
+        return True
+
+
+def _asap_wait_for_loading_clear(
+    page: Page,
+    *,
+    progress: Callable[[str, str], None] | None = None,
+    label: str = "the ASAP loading overlay",
+    max_seconds: float | None = None,
+    check_interval_seconds: float = PROGRESS_CHECK_SECONDS,
+):
+    """Wait for a sustained clear state before clicking an ASAP control.
+
+    A Flow run waits as long as the page stays open and reports through
+    ``progress`` every ``check_interval_seconds``. ``max_seconds`` bounds the
+    wait for catalog scans, which have their own time budget.
+    """
+    started = time.monotonic()
+    next_check_at = started + check_interval_seconds
     clear_polls = 0
-    while time.monotonic() < deadline:
+    while True:
+        if _page_is_closed(page):
+            raise RuntimeError(
+                f"ASAP page closed while waiting for {label} to clear after "
+                f"{_elapsed_minutes(started)} minutes."
+            )
         if _asap_loading_overlay_visible(page):
             clear_polls = 0
         else:
@@ -711,10 +752,20 @@ def _asap_wait_for_loading_clear(page: Page, timeout_ms: int = ASAP_REPORT_RESUL
             # Require one full second without the blocking overlay.
             if clear_polls >= 4:
                 return
+        now = time.monotonic()
+        if max_seconds is not None and now - started >= max_seconds:
+            raise RuntimeError(
+                f"ASAP loading overlay did not clear within {int(max_seconds)} seconds."
+            )
+        if now >= next_check_at:
+            next_check_at += check_interval_seconds
+            if progress is not None:
+                progress(
+                    "report_rendering",
+                    f"ASAP is still busy ({label} visible) after {_elapsed_minutes(started)} "
+                    "minutes; the run keeps waiting while the page is open.",
+                )
         page.wait_for_timeout(250)
-    raise RuntimeError(
-        f"ASAP loading overlay did not clear within {timeout_ms // 1_000} seconds."
-    )
 
 
 def _asap_wait_for_visible(
@@ -849,7 +900,12 @@ def _asap_raw_table_ready(frame: Frame) -> bool:
 
 
 def _asap_wait_for_results(
-    page: Page, timeout_ms: int = ASAP_REPORT_RESULT_TIMEOUT_MS,
+    page: Page,
+    *,
+    progress: Callable[[str, str], None] | None = None,
+    label: str = "the ASAP report",
+    check_interval_seconds: float = PROGRESS_CHECK_SECONDS,
+    empty_settle_seconds: float = ASAP_EMPTY_RESULT_SETTLE_SECONDS,
 ) -> Frame:
     """Return the live report frame once ASAP has rendered result rows.
 
@@ -857,11 +913,24 @@ def _asap_wait_for_results(
     A Frame captured before clicking RUN can therefore remain detached while the
     replacement frame already shows the completed report. Re-resolve the iframe
     during the wait and return the replacement so export uses the same live UI.
+
+    There is no rendering cap: while the loading overlay is visible the report
+    is still executing and the run waits, posting ``report_rendering`` through
+    ``progress`` every ``check_interval_seconds``. The wait ends only when rows
+    appear, when the page closes, or when the overlay has stayed clear for
+    ``empty_settle_seconds`` without any rows (an empty rendering).
     """
-    deadline = time.monotonic() + (timeout_ms / 1_000)
+    started = time.monotonic()
+    next_check_at = started + check_interval_seconds
     last_error: Exception | None = None
     last_loading_state = False
-    while time.monotonic() < deadline:
+    clear_since: float | None = None
+    while True:
+        if _page_is_closed(page):
+            raise RuntimeError(
+                f"ASAP page closed while waiting for {label} to render after "
+                f"{_elapsed_minutes(started)} minutes."
+            )
         try:
             last_loading_state = _asap_loading_overlay_visible(page)
             # MicroStrategy may briefly retain the old iframe element and add
@@ -881,45 +950,62 @@ def _asap_wait_for_results(
             # Frame replacement can race any locator operation. The next poll
             # resolves the new element instead of retaining the detached frame.
             last_error = exc
+        now = time.monotonic()
+        if last_loading_state:
+            clear_since = None
+        elif clear_since is None:
+            clear_since = now
+        if clear_since is not None and now - clear_since >= empty_settle_seconds:
+            detail = f" Last frame error: {last_error}" if last_error else ""
+            raise RuntimeError(
+                "ASAP report rows did not render: the loading overlay stayed clear for "
+                f"{int(empty_settle_seconds)} seconds without result rows.{detail} "
+                f"{ASAP_EMPTY_RESULT_DETAIL}"
+            )
+        if now >= next_check_at:
+            next_check_at += check_interval_seconds
+            if progress is not None:
+                overlay = "still visible" if last_loading_state else "clear"
+                progress(
+                    "report_rendering",
+                    f"ASAP is still rendering {label} after {_elapsed_minutes(started)} "
+                    f"minutes; the loading overlay is {overlay}. The run keeps waiting "
+                    "while the page is open.",
+                )
         page.wait_for_timeout(500)
-    detail = f" Last frame error: {last_error}" if last_error else ""
-    detail += (
-        " The ASAP loading overlay was still visible."
-        if last_loading_state else
-        f" {ASAP_EMPTY_RESULT_DETAIL}"
-    )
-    raise RuntimeError(f"ASAP report rows did not render within {timeout_ms // 1000} seconds.{detail}")
 
 
-def _asap_run_report(page: Page) -> Frame:
+def _asap_run_report(page: Page, *, progress: Callable[[str, str], None] | None = None) -> Frame:
     """Click RUN in the live report frame and wait for the rendered rows."""
-    _asap_wait_for_loading_clear(page)
+    _asap_wait_for_loading_clear(page, progress=progress)
     run_frame = _asap_frame(page)
     _click_named(run_frame, "RUN")
     page.wait_for_timeout(1_000)
-    frame = _asap_wait_for_results(page)
+    frame = _asap_wait_for_results(page, progress=progress)
     return frame
 
 
-def _asap_run_report_with_retry(page: Page, on_retry=None) -> Frame:
+def _asap_run_report_with_retry(
+    page: Page, on_retry=None, *, progress: Callable[[str, str], None] | None = None,
+) -> Frame:
     """Retry one silently-empty report run.
 
     After RUN, MicroStrategy occasionally clears its loading overlay without
     ever rendering the Data rows marker or a populated raw table: the run
     finished with an empty rendering rather than a slow one. Clicking RUN a
-    second time is safe at the point where that specific timeout is raised —
-    no export has started and RUN re-executes the same configuration. A wait
-    that ends with the loading overlay still visible is never retried; the
-    report is genuinely still executing and a second RUN could interrupt it.
+    second time is safe at the point where that specific error is raised — no
+    export has started and RUN re-executes the same configuration. A visible
+    loading overlay never ends the wait; the report is genuinely still
+    executing and a second RUN could interrupt it.
     """
     for attempt in range(2):
         try:
-            return _asap_run_report(page)
+            return _asap_run_report(page, progress=progress)
         except RuntimeError as exc:
             message = str(exc)
             if (
                 attempt == 1
-                or not message.startswith("ASAP report rows did not render within")
+                or not message.startswith("ASAP report rows did not render")
                 or ASAP_EMPTY_RESULT_DETAIL not in message
             ):
                 raise
@@ -1455,13 +1541,20 @@ def _asap_apply_configuration(frame: Frame, job: dict, period: str | list[str] |
             )
 
 
-# Download budgets are backstops for a browser that will never produce a file,
-# not an opinion about how fast a portal should be. A multi-million-row export
-# can sit for many minutes while the server builds the workbook before the
-# first byte ever reaches the staging folder.
+# Download budgets exist only for phases with nothing observable: before the
+# first byte reaches the staging folder, or before the browser accepts a
+# transfer at all. A file that keeps growing is never capped, however long it
+# takes; the worker reports its size every DOWNLOAD_PROGRESS_CHECK_SECONDS and
+# gives up only after DOWNLOAD_STALL_CHECKS consecutive checks with no growth.
+# A multi-million-row export can sit for many minutes while the server builds
+# the workbook before the first byte ever reaches the staging folder.
 DOWNLOAD_START_TIMEOUT_SECONDS = 15 * 60
-DOWNLOAD_STALL_TIMEOUT_SECONDS = 10 * 60
-DOWNLOAD_MAX_TIMEOUT_SECONDS = 60 * 60
+DOWNLOAD_PROGRESS_CHECK_SECONDS = PROGRESS_CHECK_SECONDS
+DOWNLOAD_STALL_CHECKS = 3
+DOWNLOAD_STALL_TIMEOUT_SECONDS = DOWNLOAD_PROGRESS_CHECK_SECONDS * DOWNLOAD_STALL_CHECKS
+# Playwright's download event cannot be observed incrementally, so the wait
+# for the browser to accept a transfer keeps one bound.
+DOWNLOAD_EVENT_TIMEOUT_SECONDS = 60 * 60
 # Once Edge emits its native download event, the browser has accepted the
 # transfer.  The worker-configured staging file must then appear promptly.  A
 # missing browser-to-staging handoff is an error, not a reason to block on the
@@ -1502,6 +1595,9 @@ def _asap_wait_for_dashboard_download_signal(
     *,
     timeout_seconds: int = DOWNLOAD_START_TIMEOUT_SECONDS,
     popup_grace_seconds: int | None = 20,
+    progress: Callable[[str, str], None] | None = None,
+    label: str = "",
+    check_interval_seconds: float = DOWNLOAD_PROGRESS_CHECK_SECONDS,
 ) -> str:
     """Pump Playwright while waiting for a dashboard download to start.
 
@@ -1512,6 +1608,7 @@ def _asap_wait_for_dashboard_download_signal(
     completed the transfer or an intermediate popup was ready.
     """
     started = time.monotonic()
+    next_check_at = started + check_interval_seconds
     popup_seen_at = None
     while time.monotonic() - started < timeout_seconds:
         if _download_staging_changed(staging_dir, files_before):
@@ -1522,6 +1619,16 @@ def _asap_wait_for_dashboard_download_signal(
             popup_seen_at = popup_seen_at or time.monotonic()
             if time.monotonic() - popup_seen_at >= popup_grace_seconds:
                 return "popup"
+        if time.monotonic() >= next_check_at:
+            next_check_at += check_interval_seconds
+            if progress is not None:
+                progress(
+                    "download_waiting",
+                    f"Still waiting for the ASAP dashboard link {label!r} to start a download "
+                    f"after {_elapsed_minutes(started)} minutes (no browser event, popup or "
+                    f"staging file yet); the run gives up after {timeout_seconds // 60} minutes "
+                    "without a start.",
+                )
         # Unlike time.sleep, this keeps context ``page`` and ``download``
         # callbacks flowing while Edge and the dashboard work independently.
         page.wait_for_timeout(250)
@@ -1548,22 +1655,45 @@ def _asap_wait_for_download_start(
     return False
 
 
+def _staging_summary(observed: dict[Path, tuple[int, int]]) -> str:
+    return ", ".join(
+        f"{path.name} ({state[1]} bytes)" for path, state in observed.items()
+    ) or "none"
+
+
 def _wait_for_staged_download(
     staging_dir: Path,
     files_before: dict[Path, tuple[int, int]],
-    timeout_seconds: int = DOWNLOAD_MAX_TIMEOUT_SECONDS,
+    *,
     start_timeout_seconds: int = DOWNLOAD_START_TIMEOUT_SECONDS,
-    stall_timeout_seconds: int = DOWNLOAD_STALL_TIMEOUT_SECONDS,
+    progress: Callable[[str, str], None] | None = None,
+    label: str = "The Browser download",
+    check_interval_seconds: float = DOWNLOAD_PROGRESS_CHECK_SECONDS,
+    stall_checks: int = DOWNLOAD_STALL_CHECKS,
+    poll_seconds: float = 0.5,
 ) -> Path:
-    """Return a new or overwritten stable local file without Playwright path calls."""
+    """Return a new or overwritten stable local file without Playwright path calls.
+
+    A transfer that keeps growing is never capped. Every
+    ``check_interval_seconds`` the worker compares the staging folder with the
+    previous check and reports through ``progress``: ``download_waiting``
+    before any file exists, ``download_progress`` while bytes keep arriving,
+    ``download_stall_warning`` when nothing changed. Only ``stall_checks``
+    consecutive checks without any change (size or mtime, temporary
+    ``.crdownload``/``.tmp`` files included) fail the download; a start budget
+    still applies while no file exists at all.
+    """
     started = time.monotonic()
-    deadline = started + timeout_seconds
     last_activity = started
+    next_check_at = started + check_interval_seconds
     observed: dict[Path, tuple[int, int]] = {}
     last_candidate = None
     last_candidate_state = None
     stable_checks = 0
-    while time.monotonic() < deadline:
+    changed_since_check = False
+    bytes_at_last_check = 0
+    zero_growth_checks = 0
+    while True:
         candidates = []
         for candidate in staging_dir.iterdir():
             try:
@@ -1578,6 +1708,7 @@ def _wait_for_staged_download(
             if observed.get(resolved) != state:
                 observed[resolved] = state
                 last_activity = time.monotonic()
+                changed_since_check = True
             if not candidate.name.casefold().endswith((".crdownload", ".tmp")):
                 candidates.append((candidate, state))
         if candidates:
@@ -1600,33 +1731,173 @@ def _wait_for_staged_download(
                 "ASAP started an Browser download, but no new or updated file appeared "
                 f"in the local staging folder within {start_timeout_seconds} seconds: {staging_dir}"
             )
-        if observed and now - last_activity >= stall_timeout_seconds:
-            observed_summary = ", ".join(
-                f"{path.name} ({state[1]} bytes)" for path, state in observed.items()
-            )
-            raise RuntimeError(
-                f"The Browser download stopped changing for {stall_timeout_seconds} seconds in "
-                f"the local staging folder: {staging_dir}. Observed: {observed_summary}"
-            )
-        time.sleep(0.5)
-    observed_summary = ", ".join(
-        f"{path.name} ({state[1]} bytes)" for path, state in observed.items()
-    ) or "none"
-    raise RuntimeError(
-        f"The Browser download did not produce a stable finished file within {timeout_seconds} "
-        f"seconds in the local staging folder: {staging_dir}. Observed: {observed_summary}"
-    )
+        if now >= next_check_at:
+            next_check_at += check_interval_seconds
+            elapsed_minutes = _elapsed_minutes(started)
+            interval_minutes = int(check_interval_seconds // 60)
+            total = sum(state[1] for state in observed.values())
+            if not observed:
+                if progress is not None:
+                    progress(
+                        "download_waiting",
+                        f"Still waiting for {label} to create a file in the staging folder "
+                        f"after {elapsed_minutes} minutes: {staging_dir}. The run gives up "
+                        f"after {start_timeout_seconds // 60} minutes without a file.",
+                    )
+            elif changed_since_check:
+                zero_growth_checks = 0
+                newest = max(observed.items(), key=lambda item: item[1][0])[0].name
+                if progress is not None:
+                    progress(
+                        "download_progress",
+                        f"{label} is still transferring: {newest} is {total} bytes "
+                        f"(+{total - bytes_at_last_check} bytes in the last {interval_minutes} "
+                        f"minutes, {elapsed_minutes} minutes elapsed). The run keeps waiting "
+                        "while the file grows.",
+                    )
+            else:
+                zero_growth_checks += 1
+                if zero_growth_checks >= stall_checks:
+                    raise RuntimeError(
+                        f"{label} stopped growing: no growth for "
+                        f"{int(stall_checks * check_interval_seconds // 60)} minutes "
+                        f"({stall_checks} checks) in the local staging folder: {staging_dir}. "
+                        f"Observed: {_staging_summary(observed)}"
+                    )
+                newest = max(observed.items(), key=lambda item: item[1][0])[0].name
+                if progress is not None:
+                    progress(
+                        "download_stall_warning",
+                        f"{label} has not changed for "
+                        f"{int(zero_growth_checks * check_interval_seconds // 60)} minutes: "
+                        f"{newest} stays at {total} bytes ({elapsed_minutes} minutes elapsed). "
+                        f"Check {zero_growth_checks} of {stall_checks}; the run fails only after "
+                        f"{int(stall_checks * check_interval_seconds // 60)} minutes without growth.",
+                    )
+            bytes_at_last_check = total
+            changed_since_check = False
+        time.sleep(poll_seconds)
 
 
-def _completed_edge_download(download, description: str) -> Path:
+class _StagingProgressWatch:
+    """Post download progress while the main thread blocks on a native Download.
+
+    GSCM and recorded non-ASAP downloads complete through Playwright's
+    ``Download.failure()``/``Download.path()``, which block the worker thread
+    and cannot be polled. The browser remains the completion and failure
+    authority; this watch only reads the staging folder from a helper thread
+    and reports growth every ``check_interval_seconds`` so a long transfer is
+    visible in the run log. It never fails the download.
+    """
+
+    def __init__(
+        self,
+        staging_dir: Path | None,
+        files_before: dict[Path, tuple[int, int]] | None,
+        progress: Callable[[str, str], None] | None,
+        *,
+        label: str,
+        check_interval_seconds: float | None = None,
+        poll_seconds: float = 0.5,
+    ):
+        self._staging_dir = staging_dir
+        self._files_before = dict(files_before or {})
+        self._progress = progress
+        self._label = label
+        # Read at construction so tests can shorten the cadence.
+        self._interval = (
+            check_interval_seconds if check_interval_seconds is not None
+            else DOWNLOAD_PROGRESS_CHECK_SECONDS
+        )
+        self._poll = poll_seconds
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def _run(self) -> None:
+        started = time.monotonic()
+        next_check_at = started + self._interval
+        observed: dict[Path, tuple[int, int]] = {}
+        bytes_at_last_check = 0
+        changed_since_check = False
+        zero_growth_checks = 0
+        while not self._stop.wait(self._poll):
+            try:
+                for resolved, state in _download_staging_snapshot(self._staging_dir).items():
+                    if self._files_before.get(resolved) == state:
+                        continue
+                    if observed.get(resolved) != state:
+                        observed[resolved] = state
+                        changed_since_check = True
+                if time.monotonic() < next_check_at:
+                    continue
+                next_check_at += self._interval
+                elapsed_minutes = _elapsed_minutes(started)
+                total = sum(state[1] for state in observed.values())
+                if not observed:
+                    self._progress(
+                        "download_waiting",
+                        f"Still waiting for {self._label} to create a file in the staging "
+                        f"folder after {elapsed_minutes} minutes: {self._staging_dir}.",
+                    )
+                elif changed_since_check:
+                    zero_growth_checks = 0
+                    newest = max(observed.items(), key=lambda item: item[1][0])[0].name
+                    self._progress(
+                        "download_progress",
+                        f"{self._label} is still transferring: {newest} is {total} bytes "
+                        f"(+{total - bytes_at_last_check} bytes in the last "
+                        f"{int(self._interval // 60)} minutes, {elapsed_minutes} minutes "
+                        "elapsed). The run keeps waiting while the file grows.",
+                    )
+                else:
+                    zero_growth_checks += 1
+                    newest = max(observed.items(), key=lambda item: item[1][0])[0].name
+                    self._progress(
+                        "download_stall_warning",
+                        f"{self._label} has not changed for "
+                        f"{int(zero_growth_checks * self._interval // 60)} minutes: {newest} "
+                        f"stays at {total} bytes ({elapsed_minutes} minutes elapsed). The "
+                        "browser decides when this transfer has failed.",
+                    )
+                bytes_at_last_check = total
+                changed_since_check = False
+            except Exception:
+                # Reporting must never break the transfer it describes.
+                continue
+
+    def __enter__(self):
+        if self._progress is not None and self._staging_dir is not None:
+            self._thread = threading.Thread(
+                target=self._run, name="download-progress-watch", daemon=True,
+            )
+            self._thread.start()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+        return None
+
+
+def _completed_edge_download(
+    download,
+    description: str,
+    *,
+    staging_dir: Path | None = None,
+    files_before: dict[Path, tuple[int, int]] | None = None,
+    progress: Callable[[str, str], None] | None = None,
+) -> Path:
     """Validate one native browser Download and return its completed local path."""
     # ``failure`` waits for Edge's terminal download state. ``path`` then
     # returns the browser-managed completed file, not a guessed directory
-    # candidate based on timestamps.
-    failure = download.failure()
-    if failure:
-        raise RuntimeError(f"Browser reported that {description} failed: {failure}")
-    completed_path = download.path()
+    # candidate based on timestamps. Both block without a timeout; the watch
+    # only reports staging-folder growth meanwhile.
+    with _StagingProgressWatch(staging_dir, files_before, progress, label=f"{description[0].upper()}{description[1:]}"):
+        failure = download.failure()
+        if failure:
+            raise RuntimeError(f"Browser reported that {description} failed: {failure}")
+        completed_path = download.path()
     if not completed_path:
         raise RuntimeError(
             f"Browser reported that {description} completed but returned no local file path."
@@ -1644,6 +1915,8 @@ def _asap_dashboard_event_staged_download(
     staging_dir: Path,
     files_before: dict[Path, tuple[int, int]],
     label: str,
+    *,
+    progress: Callable[[str, str], None] | None = None,
 ) -> Path:
     """Finish a dashboard download through its worker staging directory.
 
@@ -1659,6 +1932,8 @@ def _asap_dashboard_event_staged_download(
             staging_dir,
             files_before,
             start_timeout_seconds=DOWNLOAD_EVENT_STAGING_TIMEOUT_SECONDS,
+            progress=progress,
+            label=f"The ASAP dashboard download {label!r}",
         )
     except RuntimeError as exc:
         if "no new or updated file appeared" not in str(exc):
@@ -1672,11 +1947,18 @@ def _asap_dashboard_event_staged_download(
         ) from exc
 
 
-def _edge_completed_download(page: Page, trigger_download) -> Path:
+def _edge_completed_download(
+    page: Page,
+    trigger_download,
+    *,
+    staging_dir: Path | None = None,
+    progress: Callable[[str, str], None] | None = None,
+) -> Path:
     """Use Edge's native download lifecycle as the completion authority."""
+    files_before = _download_staging_snapshot(staging_dir) if staging_dir is not None else None
     try:
         with page.expect_download(
-            timeout=DOWNLOAD_MAX_TIMEOUT_SECONDS * 1_000,
+            timeout=DOWNLOAD_EVENT_TIMEOUT_SECONDS * 1_000,
         ) as pending:
             trigger_download()
         download = pending.value
@@ -1684,7 +1966,10 @@ def _edge_completed_download(page: Page, trigger_download) -> Path:
         raise RuntimeError(
             "Browser did not emit its native download event after the GSCM Excel action."
         ) from exc
-    return _completed_edge_download(download, "the GSCM Excel download")
+    return _completed_edge_download(
+        download, "the GSCM Excel download",
+        staging_dir=staging_dir, files_before=files_before, progress=progress,
+    )
 
 
 def _asap_table_control_score(
@@ -2089,7 +2374,10 @@ def _asap_direct_excel_allowed(download_type: str, checkbox_values: dict[str, An
     )
 
 
-def _asap_download(page: Page, frame: Frame, job: dict, staging_dir: Path):
+def _asap_download(
+    page: Page, frame: Frame, job: dict, staging_dir: Path,
+    *, progress: Callable[[str, str], None] | None = None,
+):
     export_control = None
     opens_export_menu = False
     downloads_config = job.get("downloads", {})
@@ -2280,7 +2568,9 @@ def _asap_download(page: Page, frame: Frame, job: dict, staging_dir: Path):
             # The frame can disappear after the browser has accepted the
             # export click. Recover the emitted file rather than clicking a
             # second time and creating a duplicate CSV.
-            staged_file = _wait_for_staged_download(staging_dir, files_before)
+            staged_file = _wait_for_staged_download(
+                staging_dir, files_before, progress=progress, label="The ASAP export download",
+            )
             export_pages = [
                 candidate for candidate in wizard_pages
                 if candidate not in pages_before and candidate is not page
@@ -2291,7 +2581,9 @@ def _asap_download(page: Page, frame: Frame, job: dict, staging_dir: Path):
             page.wait_for_timeout(100)
         if not downloads:
             raise RuntimeError("ASAP export started, but Browser did not expose the completed download within 3 minutes.")
-        staged_file = _wait_for_staged_download(staging_dir, files_before)
+        staged_file = _wait_for_staged_download(
+                staging_dir, files_before, progress=progress, label="The ASAP export download",
+            )
         export_pages = [
             candidate for candidate in wizard_pages
             if candidate not in pages_before and candidate is not page
@@ -2428,6 +2720,7 @@ def _asap_dashboard_link_locator(
 
 def _asap_download_dashboard_link(
     page: Page, label: str, staging_dir: Path, job: dict | None = None,
+    *, progress: Callable[[str, str], None] | None = None,
 ) -> Path:
     """Click one HTML-dashboard download link and capture the resulting file.
 
@@ -2477,6 +2770,7 @@ def _asap_download_dashboard_link(
         control.click(timeout=30_000)
         signal = _asap_wait_for_dashboard_download_signal(
             page, staging_dir, files_before, downloads, opened,
+            progress=progress, label=label,
         )
         # A native event is authoritative proof that the transfer started, but
         # dashboard completion comes from the stable worker staging file. This
@@ -2484,10 +2778,13 @@ def _asap_download_dashboard_link(
         # budget is consistently enforced.
         if downloads:
             return _asap_dashboard_event_staged_download(
-                staging_dir, files_before, label,
+                staging_dir, files_before, label, progress=progress,
             )
         if signal == "staging":
-            return _wait_for_staged_download(staging_dir, files_before)
+            return _wait_for_staged_download(
+                staging_dir, files_before, progress=progress,
+                label=f"The ASAP dashboard download {label!r}",
+            )
         if signal == "timeout":
             raise RuntimeError(
                 "ASAP dashboard download did not emit an Browser download event, "
@@ -2524,10 +2821,13 @@ def _asap_download_dashboard_link(
         # duplicate download).
         if downloads:
             return _asap_dashboard_event_staged_download(
-                staging_dir, files_before, label,
+                staging_dir, files_before, label, progress=progress,
             )
         if _download_staging_changed(staging_dir, files_before):
-            return _wait_for_staged_download(staging_dir, files_before)
+            return _wait_for_staged_download(
+                staging_dir, files_before, progress=progress,
+                label=f"The ASAP dashboard download {label!r}",
+            )
         if popup_control is None:
             raise RuntimeError(
                 "ASAP dashboard opened an intermediate page, but no download "
@@ -2536,21 +2836,27 @@ def _asap_download_dashboard_link(
         popup_control.click(timeout=30_000)
         signal = _asap_wait_for_dashboard_download_signal(
             page, staging_dir, files_before, downloads, opened,
-            popup_grace_seconds=None,
+            popup_grace_seconds=None, progress=progress, label=label,
         )
         if downloads:
             return _asap_dashboard_event_staged_download(
-                staging_dir, files_before, label,
+                staging_dir, files_before, label, progress=progress,
             )
         if _download_staging_changed(staging_dir, files_before):
-            return _wait_for_staged_download(staging_dir, files_before)
+            return _wait_for_staged_download(
+                staging_dir, files_before, progress=progress,
+                label=f"The ASAP dashboard download {label!r}",
+            )
         if signal == "timeout":
             raise RuntimeError(
                 "ASAP dashboard intermediate page did not emit an Browser download "
                 "event or create a local staging file within "
                 f"{DOWNLOAD_START_TIMEOUT_SECONDS} seconds: {label}."
             )
-        return _wait_for_staged_download(staging_dir, files_before)
+        return _wait_for_staged_download(
+                staging_dir, files_before, progress=progress,
+                label=f"The ASAP dashboard download {label!r}",
+            )
     finally:
         try:
             context.remove_listener("page", _track_page)
@@ -2569,6 +2875,7 @@ def _asap_download_dashboard_link(
 
 def _asap_download_with_retry(
     page: Page, frame: Frame, job: dict, staging_dir: Path,
+    *, progress: Callable[[str, str], None] | None = None,
 ):
     """Retry one transient export-wizard or detached-frame failure.
 
@@ -2580,7 +2887,7 @@ def _asap_download_with_retry(
     retryable_prefix = "ASAP Export Wizard opened, but "
     for attempt in range(2):
         try:
-            return _asap_download(page, frame, job, staging_dir)
+            return _asap_download(page, frame, job, staging_dir, progress=progress)
         except PlaywrightError as exc:
             if attempt == 1 or not _asap_frame_was_detached(exc):
                 raise
@@ -3101,7 +3408,7 @@ def _asap_discover_menu_reports(page: Page, scope: list[str]) -> list[list[str]]
         # loading overlay. Playwright can therefore resolve a menu link while
         # the overlay still intercepts the click. Wait for a sustained clear
         # state before resolving the live link used for this interaction.
-        _asap_wait_for_loading_clear(page)
+        _asap_wait_for_loading_clear(page, max_seconds=ASAP_SCAN_OVERLAY_TIMEOUT_SECONDS)
         # Mega-menu contents change the number and order of matching elements.
         # Re-resolve the navigation trigger instead of retaining an nth-based
         # Playwright locator from the initial DOM snapshot.
@@ -6877,6 +7184,21 @@ def execute_job(
         period = task["period"]
         export_view = task["export_view"]
         download_link = task.get("download_link")
+
+        def _processing_progress(stage: str, message: str):
+            report_progress(
+                "running",
+                {
+                    "stage": stage,
+                    "message": message,
+                    "period": period,
+                    "export_view": export_view,
+                    "item_index": index,
+                    "item_count": len(tasks),
+                },
+                artifacts,
+            )
+
         with timings.measure("navigation", report_id=job["report"].get("id")):
             if is_gscm:
                 # A GSCM bookmark already carries its filters, period, and
@@ -6930,7 +7252,7 @@ def execute_job(
                 frame = _asap_open_report(page, job, profile_dir)
                 if download_link:
                     # Dashboard reports have no export-view tabs to activate.
-                    _asap_wait_for_loading_clear(page)
+                    _asap_wait_for_loading_clear(page, progress=_processing_progress)
                     frame = _asap_frame(page)
                 else:
                     frame, selected_view = _asap_activate_export_view(page, frame, export_view)
@@ -6977,6 +7299,8 @@ def execute_job(
             with timings.measure("file_export", report_id=job["report"].get("id")):
                 staged_file = _edge_completed_download(
                     page, lambda: flow_gscm.trigger_excel_export(page, job),
+                    staging_dir=download_staging_dir or profile_dir / "downloads",
+                    progress=_processing_progress,
                 )
                 export_pages = []
         elif is_asap:
@@ -7014,7 +7338,9 @@ def execute_job(
                     )
 
                 with timings.measure("report_execution", report_id=job["report"].get("id")):
-                    frame = _asap_run_report_with_retry(page, on_retry=_report_rerun)
+                    frame = _asap_run_report_with_retry(
+                        page, on_retry=_report_rerun, progress=_processing_progress,
+                    )
             report_progress(
                 "running",
                 {
@@ -7032,16 +7358,16 @@ def execute_job(
                 staging = download_staging_dir or profile_dir / "downloads"
                 if download_link:
                     staged_file = _asap_download_dashboard_link(
-                        page, download_link, staging, job,
+                        page, download_link, staging, job, progress=_processing_progress,
                     )
                     export_pages = []
                 else:
                     staged_file, export_pages = _asap_download_with_retry(
-                        page, frame, job, staging,
+                        page, frame, job, staging, progress=_processing_progress,
                     )
         else:
             _apply_configuration(page, job, period)
-            with page.expect_download(timeout=DOWNLOAD_MAX_TIMEOUT_SECONDS * 1_000) as pending:
+            with page.expect_download(timeout=DOWNLOAD_EVENT_TIMEOUT_SECONDS * 1_000) as pending:
                 _click_named(page, job["report"]["download_text"])
             download = pending.value
             export_pages = []
@@ -7081,20 +7407,6 @@ def execute_job(
                     f"Browser completed the {portal} download, but reporting the target-storage "
                     f"stage failed. {portal} will not be reopened: {exc}"
                 ) from exc
-
-        def _processing_progress(stage: str, message: str):
-            report_progress(
-                "running",
-                {
-                    "stage": stage,
-                    "message": message,
-                    "period": period,
-                    "export_view": export_view,
-                    "item_index": index,
-                    "item_count": len(tasks),
-                },
-                artifacts,
-            )
 
         with timings.measure("file_transfer", report_id=job["report"].get("id")):
             # ASAP closes its own export wizard after emitting the download.

@@ -294,7 +294,7 @@ def test_actual_task_download_keeps_full_index_and_never_finalizes(bundle,tmp_pa
     monkeypatch.setattr(worker,'_asap_activate_export_view',lambda page,frame,label:(frame,label))
     monkeypatch.setattr(worker,'_asap_apply_configuration',lambda *a:None)
     monkeypatch.setattr(worker,'_has_named_control',lambda *a:False)
-    def download(page,frame,job,staging):
+    def download(page,frame,job,staging,**_kwargs):
         path=tmp_path/'fake.csv'; path.write_text('Code,Qty\nAbc,3\n'); calls.append(path); return path,[]
     monkeypatch.setattr(worker,'_asap_download',download)
     monkeypatch.setattr(worker,'_run_transformations',lambda *a:pytest.fail('Task transformed data'))
@@ -490,7 +490,7 @@ def test_three_actual_task_executors_can_download_concurrently(bundle,monkeypatc
     monkeypatch.setattr(worker,'_asap_activate_export_view',lambda page,frame,label:(frame,label))
     monkeypatch.setattr(worker,'_asap_apply_configuration',lambda *a:None)
     monkeypatch.setattr(worker,'_has_named_control',lambda *a:False)
-    def download(page,frame,job,staging):
+    def download(page,frame,job,staging,**_kwargs):
         barrier.wait(timeout=10)
         staging.mkdir(parents=True,exist_ok=True)
         path=staging/'fake.csv'; path.write_text('Code,Quantity\nMixedCase,3\n'); return path,[]

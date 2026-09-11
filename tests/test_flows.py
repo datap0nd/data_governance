@@ -3402,7 +3402,7 @@ def test_worker_source_contains_no_delete_or_overwrite_operation():
 def test_asap_execution_uses_rendered_ui_not_internal_response_url():
     source = Path(__file__).parents[1].joinpath("app", "flow_worker.py").read_text()
     assert "expect_response" not in source
-    assert "frame = _asap_wait_for_results(page)" in source
+    assert "frame = _asap_wait_for_results(page, progress=progress)" in source
     assert '"stage": "report_execution"' in source
     assert '"stage": "file_export"' in source
     assert '"button.report-export"' not in source
@@ -4556,7 +4556,7 @@ def test_staged_download_waits_for_a_new_stable_file(tmp_path, monkeypatch):
     new_file.write_text("Week,Value\n202627,10\n", encoding="utf-8")
     monkeypatch.setattr(flow_worker.time, "sleep", lambda _seconds: None)
 
-    assert flow_worker._wait_for_staged_download(tmp_path, before, timeout_seconds=1) == new_file
+    assert flow_worker._wait_for_staged_download(tmp_path, before) == new_file
 
 
 def test_staged_download_accepts_an_existing_path_overwritten_by_edge(tmp_path, monkeypatch):
@@ -4569,20 +4569,16 @@ def test_staged_download_accepts_an_existing_path_overwritten_by_edge(tmp_path, 
     assert reused_file.stat().st_mtime_ns != old_mtime or reused_file.stat().st_size != before[reused_file.resolve()][1]
     monkeypatch.setattr(flow_worker.time, "sleep", lambda _seconds: None)
 
-    assert flow_worker._wait_for_staged_download(
-        tmp_path, before, timeout_seconds=1,
-    ) == reused_file
+    assert flow_worker._wait_for_staged_download(tmp_path, before) == reused_file
 
 
 def test_download_wait_error_does_not_claim_the_download_completed(tmp_path, monkeypatch):
-    ticks = iter([0.0, 0.0, 1.1, 1.1])
-    monkeypatch.setattr(flow_worker.time, "monotonic", lambda: next(ticks))
-    monkeypatch.setattr(flow_worker.time, "sleep", lambda _seconds: None)
+    clock = {"now": 0.0}
+    monkeypatch.setattr(flow_worker.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(flow_worker.time, "sleep", lambda seconds: clock.__setitem__("now", clock["now"] + seconds))
 
     with pytest.raises(RuntimeError, match="no new or updated file appeared") as error:
-        flow_worker._wait_for_staged_download(
-            tmp_path, {}, timeout_seconds=5, start_timeout_seconds=1,
-        )
+        flow_worker._wait_for_staged_download(tmp_path, {}, start_timeout_seconds=1)
 
     assert "completed" not in str(error.value).casefold()
 
