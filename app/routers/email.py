@@ -28,6 +28,11 @@ router = APIRouter(prefix="/api/email", tags=["email"])
 
 OUTLOOK_SCRIPT = BASE_DIR / "tools" / "outlook_task_email.ps1"
 TASK_NAME = "DG_Outlook_Task_Email"
+# schtasks.exe rejects a /TR task command longer than this ("ERROR: The value
+# for /TR option cannot be more than 261 character(s)"). The helper script,
+# payload and receipt paths together easily exceed it, so the task runs a short
+# per-dispatch launcher that carries those paths instead.
+SCHTASKS_COMMAND_LIMIT = 261
 
 # Every scheduled alert email leads with the product name so it is recognisable
 # in a crowded inbox and filterable by rule.
@@ -103,6 +108,40 @@ def _payload_path() -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
     return directory / f"outlook-task-email-{stamp}.json"
+
+
+def _launcher_path(payload_path: Path) -> Path:
+    """The per-dispatch PowerShell launcher that sits beside its payload."""
+    return payload_path.with_suffix(".launch.ps1")
+
+
+def _write_launcher(launcher_path: Path, payload_path: Path, receipt_path: Path, *, send: bool) -> str:
+    """Write the launcher and return the short schtasks task command for it.
+
+    The launcher is the only path in the scheduled task's /TR command, so the
+    repository location, ProgramData folder and timestamped payload/receipt
+    names can be as long as they need to be.
+    """
+    def literal(value) -> str:
+        return "'" + str(value).replace("'", "''") + "'"
+
+    launcher_path.write_text(
+        "& " + literal(OUTLOOK_SCRIPT)
+        + " -PayloadPath " + literal(payload_path)
+        + " -ReceiptPath " + literal(receipt_path)
+        + (" -Send" if send else "")
+        + "\nexit $LASTEXITCODE\n",
+        encoding="utf-8-sig",
+    )
+    task_command = f'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{launcher_path}"'
+    if len(task_command) > SCHTASKS_COMMAND_LIMIT:
+        raise OutlookEmailError(
+            "The Outlook task command is too long for Windows Task Scheduler: "
+            f"{len(task_command)} characters, limit {SCHTASKS_COMMAND_LIMIT}. "
+            f"The launcher path {launcher_path} is too long; shorten the ProgramData "
+            "or temporary folder path."
+        )
+    return task_command
 
 
 def _is_url(value: str | None) -> bool:
@@ -1003,12 +1042,19 @@ def launch_outlook_dispatch(
     payload["dispatch_id"] = dispatch_id
     payload_path.write_text(json.dumps(payload), encoding="utf-8")
 
-    ps_cmd = (
-        f'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{OUTLOOK_SCRIPT}" '
-        f'-PayloadPath "{payload_path}" -ReceiptPath "{receipt_path}"'
-    )
-    if mode == "send":
-        ps_cmd += " -Send"
+    try:
+        ps_cmd = _write_launcher(
+            _launcher_path(payload_path), payload_path, receipt_path, send=mode == "send",
+        )
+    except (OutlookEmailError, OSError) as exc:
+        with get_db() as db:
+            db.execute(
+                "UPDATE outlook_dispatches SET status='failed', error=?, processed_at=CURRENT_TIMESTAMP WHERE id=?",
+                (str(exc)[:4000], dispatch_id),
+            )
+        if isinstance(exc, OutlookEmailError):
+            raise
+        raise OutlookEmailError(f"Could not write the Outlook task launcher: {exc}") from exc
 
     try:
         subprocess.run(
@@ -1093,6 +1139,7 @@ def reconcile_outlook_dispatches() -> dict:
             cleaned = _delete_outlook_task(row["task_name"])
             receipt_path.unlink(missing_ok=True)
             Path(row["payload_path"]).unlink(missing_ok=True)
+            _launcher_path(Path(row["payload_path"])).unlink(missing_ok=True)
             if cleaned:
                 with get_db() as db:
                     db.execute(
@@ -1111,6 +1158,7 @@ def reconcile_outlook_dispatches() -> dict:
                 )
             cleaned = _delete_outlook_task(row["task_name"])
             Path(row["payload_path"]).unlink(missing_ok=True)
+            _launcher_path(Path(row["payload_path"])).unlink(missing_ok=True)
             receipt_path.unlink(missing_ok=True)
             if cleaned:
                 with get_db() as db:
@@ -1129,6 +1177,7 @@ def reconcile_outlook_dispatches() -> dict:
     for row in old_rows:
         cleaned = _delete_outlook_task(row["task_name"])
         Path(row["payload_path"]).unlink(missing_ok=True)
+        _launcher_path(Path(row["payload_path"])).unlink(missing_ok=True)
         Path(row["receipt_path"]).unlink(missing_ok=True)
         if cleaned:
             with get_db() as db:

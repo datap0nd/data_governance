@@ -1,5 +1,6 @@
 import hashlib
 import io
+import itertools
 import sys
 import zipfile
 from pathlib import Path
@@ -162,25 +163,144 @@ def test_copy_verification_ignores_understated_stale_metadata(tmp_path):
     )
 
 
-def test_copy_verification_rejects_a_truncated_target_despite_matching_metadata(
+def _fake_clock(monkeypatch, step=10.0):
+    """Advance ``time.monotonic`` by ``step`` per call; never really sleep."""
+    ticks = itertools.count(0.0, step)
+    monkeypatch.setattr(flow_worker.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(flow_worker.time, "sleep", lambda _seconds: None)
+
+
+def test_copy_verification_waits_for_a_share_that_serves_a_short_view(tmp_path, monkeypatch):
+    # Right after the copied handle closes, the Windows SMB client can keep
+    # serving a read-back that is short of the complete file on the share
+    # (directory attributes can lie either way). The settle wait must keep
+    # re-reading until the share catches up instead of failing the run.
+    payload = b"the complete workbook bytes"
+    output = tmp_path / "MTracker_subs.xlsx"
+    output.write_bytes(payload)
+    lagging = _SettlingPath(output, [0, len(payload) - 3])
+    stale = _StaleStatPath(lagging, [len(payload)] * 3)
+    _fake_clock(monkeypatch, step=1.0)
+
+    result = flow_worker._verify_copied_file(
+        stale, len(payload), hashlib.sha256(payload).hexdigest(),
+        label="Downloaded Excel workbook",
+    )
+
+    assert result["confirmed"] is True
+    assert result["attempts"] == 3
+
+
+def test_copy_verification_records_a_warning_instead_of_failing_a_delivered_copy(
     tmp_path, monkeypatch,
 ):
-    # The stale cache lies in the other direction too: directory attributes
-    # can report the expected size for a target that is actually short, so
-    # a matching stat must never stand in for re-reading the bytes.
+    # The flushed copy stream is the proof of delivery. A share whose view
+    # never catches up within the settle budget (observed on the BI desktop
+    # for complete files) records a warning on the run and lets it proceed;
+    # the old RuntimeError failed whole flows for files that were complete.
     expected = b"the complete payload"
     output = tmp_path / "MTracker_subs.xlsx"
     output.write_bytes(expected[:5])
     stale = _StaleStatPath(output, [len(expected)] * 3)
-    monkeypatch.setattr(flow_worker.time, "sleep", lambda _seconds: None)
+    _fake_clock(monkeypatch, step=10.0)
+    events = []
 
-    with pytest.raises(
-        RuntimeError, match="Downloaded Excel workbook was not copied completely",
-    ):
+    result = flow_worker._verify_copied_file(
+        stale, len(expected), hashlib.sha256(expected).hexdigest(),
+        label="Downloaded Excel workbook",
+        progress=lambda stage, message: events.append((stage, message)),
+        settle_budget=30.0,
+    )
+
+    assert result["confirmed"] is False
+    assert result["observed_size"] == 5
+    assert result["attempts"] > 1
+    assert [stage for stage, _message in events] == ["copy_verification_warning"]
+    message = events[0][1]
+    assert "Downloaded Excel workbook was written and flushed" in message
+    assert f"served 5 of the {len(expected)} copied bytes" in message
+    assert "treated as delivered" in message
+    assert result["warning"] == message
+
+
+def test_copy_verification_still_fails_a_target_that_cannot_be_read(tmp_path, monkeypatch):
+    output = tmp_path / "missing.xlsx"
+    _fake_clock(monkeypatch, step=10.0)
+
+    with pytest.raises(RuntimeError, match="could not be read back"):
         flow_worker._verify_copied_file(
-            stale, len(expected), hashlib.sha256(expected).hexdigest(),
-            label="Downloaded Excel workbook",
+            output, 12, hashlib.sha256(b"x" * 12).hexdigest(),
+            label="Downloaded Excel workbook", settle_budget=15.0,
         )
+
+
+def test_copy_stream_flushes_the_target_before_closing(tmp_path, monkeypatch):
+    # A copy is only "delivered" once the bytes reached the server: fsync on
+    # a network share is the SMB flush, and it must happen while the handle
+    # is still open.
+    source = tmp_path / "staged.bin"
+    source.write_bytes(b"payload " * 1000)
+    output = tmp_path / "target.bin"
+    synced = []
+    real_fsync = flow_worker.os.fsync
+
+    def recording_fsync(fd):
+        synced.append(flow_worker.os.fstat(fd).st_size)
+        real_fsync(fd)
+
+    monkeypatch.setattr(flow_worker.os, "fsync", recording_fsync)
+
+    copied = flow_worker._copy_with_checksum(source, output)
+
+    assert synced == [len(source.read_bytes())]
+    assert copied == {"file_size": len(source.read_bytes()),
+                      "checksum": hashlib.sha256(source.read_bytes()).hexdigest()}
+    assert output.read_bytes() == source.read_bytes()
+
+
+def test_excel_normalization_reads_the_settled_local_download_not_the_share_copy(
+    tmp_path, monkeypatch,
+):
+    # The target copy holds the same bytes, but the share can serve a stale
+    # view of it for a while; the workbook reader must use the local staging
+    # file, and a lagging share only records the warning on the run.
+    from openpyxl import Workbook
+
+    source = tmp_path / "browser-download"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["Market", "Units"])
+    sheet.append(["Global", 12])
+    workbook.save(source)
+    output = tmp_path / "MTracker.xlsx"
+    read_from = []
+
+    real_normalize = flow_worker._normalize_xlsx
+
+    def recording_normalize(path, *args, **kwargs):
+        read_from.append(Path(path))
+        return real_normalize(path, *args, **kwargs)
+
+    monkeypatch.setattr(flow_worker, "_normalize_xlsx", recording_normalize)
+    monkeypatch.setattr(
+        flow_worker, "_verify_copied_file",
+        lambda *_args, progress=None, **_kwargs: (
+            progress("copy_verification_warning", "share view still short"),
+            {"confirmed": False},
+        )[1],
+    )
+    events = []
+
+    metadata = flow_worker._store_completed_download(
+        source, output, file_format="xlsx",
+        processing_progress=lambda stage, message: events.append((stage, message)),
+    )
+
+    assert read_from == [source]
+    assert output.read_bytes() == source.read_bytes()
+    assert metadata["original_file_path"] == str(output)
+    assert metadata["row_count"] == 1
+    assert ("copy_verification_warning", "share view still short") in events
 
 
 class _SettlingPath:
@@ -226,20 +346,23 @@ def test_source_snapshot_rejects_a_file_that_never_settles(tmp_path, monkeypatch
         flow_worker._stable_source_snapshot(settling)
 
 
-def test_copy_verification_rejects_same_size_corruption(tmp_path, monkeypatch):
+def test_copy_verification_names_same_size_different_bytes_in_its_warning(tmp_path, monkeypatch):
     expected = b"correct workbook bytes"
     output = tmp_path / "MTracker_subs.xlsx"
     output.write_bytes(b"corrupt workbook bytes")
     assert output.stat().st_size == len(expected)
-    monkeypatch.setattr(flow_worker.time, "sleep", lambda _seconds: None)
+    _fake_clock(monkeypatch, step=10.0)
+    events = []
 
-    with pytest.raises(
-        RuntimeError, match="Downloaded Excel workbook was not copied completely",
-    ):
-        flow_worker._verify_copied_file(
-            output, len(expected), hashlib.sha256(expected).hexdigest(),
-            label="Downloaded Excel workbook",
-        )
+    result = flow_worker._verify_copied_file(
+        output, len(expected), hashlib.sha256(expected).hexdigest(),
+        label="Downloaded Excel workbook",
+        progress=lambda stage, message: events.append(message), settle_budget=20.0,
+    )
+
+    assert result["confirmed"] is False
+    assert len(events) == 1
+    assert "checksum differs from the copy stream" in events[0]
 
 
 def test_raw_xlsx_passthrough_rejects_an_incomplete_zip_container(tmp_path):
