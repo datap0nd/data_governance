@@ -14,7 +14,7 @@ Metronome has evolved from a read-only governance panel into a production automa
 
 This plan describes how to make that system safe and supportable without a full rewrite. It deliberately separates immediate containment from architectural evolution so urgent risk reduction does not wait for a platform migration.
 
-This document supersedes the production-architecture assumptions in [`plan.md`](../plan.md), particularly the statements that Metronome never writes to production databases and is not an ETL tool. The historical document should be relabeled or reconciled before the production-readiness gate.
+This document supersedes the production-architecture assumptions in the archived [`plan.md`](archive/plan.md), particularly the statements that Metronome never writes to production databases and is not an ETL tool. That document is now kept only as history under [`docs/archive/`](archive/README.md).
 
 ## 2. Executive decision
 

@@ -22,7 +22,13 @@ Live cases are omitted unless explicitly requested.>
 ## Automated checks
 
 <Exact commands, runtime/dependency setup and scope. Never describe planned
-execution as a completed result.>
+execution as a completed result. Either verifier is acceptable: the
+`tools/check.py` result path on Linux/macOS or the `tools/check.ps1` result path
+on Windows.>
+
+## Usability evidence
+
+<Omit this section entirely when no user interface changed.>
 
 ## Acceptance and cleanup
 
