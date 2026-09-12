@@ -2567,7 +2567,9 @@ def test_dashboard_xlsx_normalizes_only_for_configured_downstream_processing(
     assert normalized.is_file()
     assert artifacts[0]["file_path"] == str(normalized)
     assert artifacts[0]["row_count"] == 1
-    assert raw_seen_before_normalization == [True]
+    # Inventory and per-sheet progress now share this stage. The source must
+    # already be retained at every normalization event, not just its first one.
+    assert raw_seen_before_normalization and all(raw_seen_before_normalization)
     assert normalized_seen_before_metadata == [True]
     stages = [event["stage"] for event in events]
     assert stages.index("file_export") < stages.index("file_transfer")

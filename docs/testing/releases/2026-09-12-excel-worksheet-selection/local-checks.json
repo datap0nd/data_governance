@@ -33,8 +33,8 @@
         "tests": [],
         "syntax": []
       },
-      "started_utc": "2026-09-12T15:52:25.1701303+00:00",
-      "finished_utc": "2026-09-12T15:52:55.5075788+00:00",
+      "started_utc": "2026-09-12T19:52:25.1701303+04:00",
+      "finished_utc": "2026-09-12T19:52:55.5075788+04:00",
       "duration_seconds": 30.337,
       "exit_code": 0,
       "test_summary": null,
@@ -79,8 +79,8 @@
           "app/database.py"
         ]
       },
-      "started_utc": "2026-09-12T16:26:25.3407577+00:00",
-      "finished_utc": "2026-09-12T16:27:10.7940964+00:00",
+      "started_utc": "2026-09-12T20:26:25.3407577+04:00",
+      "finished_utc": "2026-09-12T20:27:10.7940964+04:00",
       "duration_seconds": 45.453,
       "exit_code": 0,
       "test_summary": {
@@ -121,8 +121,8 @@
           "app/flow_recording_runtime.py"
         ]
       },
-      "started_utc": "2026-09-12T16:36:59.8698906+00:00",
-      "finished_utc": "2026-09-12T16:38:02.6855815+00:00",
+      "started_utc": "2026-09-12T20:36:59.8698906+04:00",
+      "finished_utc": "2026-09-12T20:38:02.6855815+04:00",
       "duration_seconds": 62.816,
       "exit_code": 1,
       "test_summary": {
@@ -154,8 +154,8 @@
           "app/flow_worker.py"
         ]
       },
-      "started_utc": "2026-09-12T16:41:37.9837453+00:00",
-      "finished_utc": "2026-09-12T16:42:21.1376660+00:00",
+      "started_utc": "2026-09-12T20:41:37.9837453+04:00",
+      "finished_utc": "2026-09-12T20:42:21.137666+04:00",
       "duration_seconds": 43.154,
       "exit_code": 0,
       "test_summary": {
@@ -187,8 +187,8 @@
           "app/flow_worker.py"
         ]
       },
-      "started_utc": "2026-09-12T16:41:37.9947855+00:00",
-      "finished_utc": "2026-09-12T16:42:21.1377016+00:00",
+      "started_utc": "2026-09-12T20:41:37.9947855+04:00",
+      "finished_utc": "2026-09-12T20:42:21.1377016+04:00",
       "duration_seconds": 43.143,
       "exit_code": 0,
       "test_summary": {
@@ -218,8 +218,8 @@
         ],
         "syntax": []
       },
-      "started_utc": "2026-09-12T16:44:48.6877822+00:00",
-      "finished_utc": "2026-09-12T16:45:32.9382142+00:00",
+      "started_utc": "2026-09-12T20:44:48.6877822+04:00",
+      "finished_utc": "2026-09-12T20:45:32.9382142+04:00",
       "duration_seconds": 44.25,
       "exit_code": 0,
       "test_summary": {
@@ -249,8 +249,8 @@
         ],
         "syntax": []
       },
-      "started_utc": "2026-09-12T16:44:48.7010322+00:00",
-      "finished_utc": "2026-09-12T16:45:32.9384871+00:00",
+      "started_utc": "2026-09-12T20:44:48.7010322+04:00",
+      "finished_utc": "2026-09-12T20:45:32.9384871+04:00",
       "duration_seconds": 44.237,
       "exit_code": 0,
       "test_summary": {
@@ -280,8 +280,8 @@
         ],
         "syntax": []
       },
-      "started_utc": "2026-09-12T16:44:48.7021746+00:00",
-      "finished_utc": "2026-09-12T16:44:59.7141148+00:00",
+      "started_utc": "2026-09-12T20:44:48.7021746+04:00",
+      "finished_utc": "2026-09-12T20:44:59.7141148+04:00",
       "duration_seconds": 11.012,
       "exit_code": 0,
       "test_summary": {
@@ -311,8 +311,8 @@
         ],
         "syntax": []
       },
-      "started_utc": "2026-09-12T16:44:48.7070669+00:00",
-      "finished_utc": "2026-09-12T16:44:59.6140146+00:00",
+      "started_utc": "2026-09-12T20:44:48.7070669+04:00",
+      "finished_utc": "2026-09-12T20:44:59.6140146+04:00",
       "duration_seconds": 10.907,
       "exit_code": 0,
       "test_summary": {
@@ -342,8 +342,8 @@
         ],
         "syntax": []
       },
-      "started_utc": "2026-09-12T16:47:19.1667914+00:00",
-      "finished_utc": "2026-09-12T16:47:32.6348640+00:00",
+      "started_utc": "2026-09-12T20:47:19.1667914+04:00",
+      "finished_utc": "2026-09-12T20:47:32.634864+04:00",
       "duration_seconds": 13.468,
       "exit_code": 1,
       "test_summary": {
@@ -373,8 +373,8 @@
         ],
         "syntax": []
       },
-      "started_utc": "2026-09-12T16:47:19.1673784+00:00",
-      "finished_utc": "2026-09-12T16:47:28.6952142+00:00",
+      "started_utc": "2026-09-12T20:47:19.1673784+04:00",
+      "finished_utc": "2026-09-12T20:47:28.6952142+04:00",
       "duration_seconds": 9.528,
       "exit_code": 1,
       "test_summary": {
@@ -404,8 +404,8 @@
         ],
         "syntax": []
       },
-      "started_utc": "2026-09-12T16:47:19.1667965+00:00",
-      "finished_utc": "2026-09-12T16:47:30.3440381+00:00",
+      "started_utc": "2026-09-12T20:47:19.1667965+04:00",
+      "finished_utc": "2026-09-12T20:47:30.3440381+04:00",
       "duration_seconds": 11.177,
       "exit_code": 0,
       "test_summary": {
@@ -435,8 +435,8 @@
         ],
         "syntax": []
       },
-      "started_utc": "2026-09-12T16:47:19.1747730+00:00",
-      "finished_utc": "2026-09-12T16:47:28.5368091+00:00",
+      "started_utc": "2026-09-12T20:47:19.174773+04:00",
+      "finished_utc": "2026-09-12T20:47:28.5368091+04:00",
       "duration_seconds": 9.362,
       "exit_code": 1,
       "test_summary": {
@@ -475,8 +475,8 @@
           "app/database.py"
         ]
       },
-      "started_utc": "2026-09-12T16:54:41.3342087+00:00",
-      "finished_utc": "2026-09-12T16:54:49.8257992+00:00",
+      "started_utc": "2026-09-12T20:54:41.3342087+04:00",
+      "finished_utc": "2026-09-12T20:54:49.8257992+04:00",
       "duration_seconds": 8.492,
       "exit_code": 1,
       "test_summary": {
@@ -508,8 +508,8 @@
           "app/flow_worker.py"
         ]
       },
-      "started_utc": "2026-09-12T16:56:53.1478094+00:00",
-      "finished_utc": "2026-09-12T16:56:56.5706531+00:00",
+      "started_utc": "2026-09-12T20:56:53.1478094+04:00",
+      "finished_utc": "2026-09-12T20:56:56.5706531+04:00",
       "duration_seconds": 3.423,
       "exit_code": 0,
       "test_summary": {
@@ -519,6 +519,137 @@
         "tests": 2
       },
       "evidence_file": ".test-runs/20260912T165653140Z-39964-502237a4/result.json"
+    },
+    {
+      "run_id": "20260912T172438765Z-12380-ed17a46b",
+      "mode": "verify",
+      "status": "failed",
+      "revision": "4c9c57dec767afd7fdf3b4ca7e5462d343dd8ab4",
+      "source_fingerprint": "63b3cc92f5e72371e8804c7290b3ba26fbd77a26eb67ce94955ccde90c11f040",
+      "environment": {
+        "os": "Microsoft Windows 10.0.26200",
+        "powershell": "7.6.5",
+        "python": "3.13.15"
+      },
+      "selection": {
+        "full_suite": false,
+        "diagnostic_reason": "",
+        "tests": [
+          "tests/test_flow_excel_ui.py"
+        ],
+        "syntax": [
+          "app/static/app.js",
+          "app/static/flow_run_log.js",
+          "tests/test_flow_builder_contract.mjs",
+          "tests/test_flow_excel_ui.py"
+        ]
+      },
+      "started_utc": "2026-09-12T21:24:38.7728937+04:00",
+      "finished_utc": "2026-09-12T21:25:48.1385613+04:00",
+      "duration_seconds": 69.366,
+      "exit_code": 1,
+      "test_summary": null,
+      "evidence_file": ".test-runs/20260912T172438765Z-12380-ed17a46b/result.json"
+    },
+    {
+      "run_id": "20260912T172707725Z-12068-579711f1",
+      "mode": "verify",
+      "status": "passed",
+      "revision": "4c9c57dec767afd7fdf3b4ca7e5462d343dd8ab4",
+      "source_fingerprint": "0c065e23c26beb2820b8d2bf8b94e470c599ed75cce66a54bf7328964f25db2e",
+      "environment": {
+        "os": "Microsoft Windows 10.0.26200",
+        "powershell": "7.6.5",
+        "python": "3.13.15"
+      },
+      "selection": {
+        "full_suite": false,
+        "diagnostic_reason": "",
+        "tests": [
+          "tests/test_flow_excel_ui.py::test_excel_failure_recovery_and_saved_choices",
+          "tests/test_flow_excel_ui.py::test_excel_setting_in_each_builder_defaults_off"
+        ],
+        "syntax": [
+          "app/static/app.js",
+          "app/static/flow_run_log.js",
+          "tests/test_flow_excel_ui.py"
+        ]
+      },
+      "started_utc": "2026-09-12T21:27:07.7330541+04:00",
+      "finished_utc": "2026-09-12T21:27:18.4504966+04:00",
+      "duration_seconds": 10.717,
+      "exit_code": 0,
+      "test_summary": {
+        "tests": 3,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "evidence_file": ".test-runs/20260912T172707725Z-12068-579711f1/result.json"
+    },
+    {
+      "run_id": "20260912T172857061Z-40676-4dabd419",
+      "mode": "verify",
+      "status": "passed",
+      "revision": "4c9c57dec767afd7fdf3b4ca7e5462d343dd8ab4",
+      "source_fingerprint": "599df0b49f3b13351607be0ea0b5bdf901bbd90318eded7c3f71524fa6ee30f9",
+      "environment": {
+        "os": "Microsoft Windows 10.0.26200",
+        "powershell": "7.6.5",
+        "python": "3.13.15"
+      },
+      "selection": {
+        "full_suite": false,
+        "diagnostic_reason": "",
+        "tests": [
+          "tests/test_flow_worker_discovery.py::test_dashboard_xlsx_normalizes_only_for_configured_downstream_processing"
+        ],
+        "syntax": [
+          "tests/test_flow_worker_discovery.py"
+        ]
+      },
+      "started_utc": "2026-09-12T21:28:57.0697086+04:00",
+      "finished_utc": "2026-09-12T21:29:00.5249278+04:00",
+      "duration_seconds": 3.455,
+      "exit_code": 0,
+      "test_summary": {
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "evidence_file": ".test-runs/20260912T172857061Z-40676-4dabd419/result.json"
     }
-  ]
+  ],
+  "implemented_ui_files": [
+    {
+      "path": "app/static/app.js",
+      "sha256": "2a08cc078a4864622bfcabff9e9e6a7d9aafb2ebbc629700cfb75033f65dcf4d"
+    },
+    {
+      "path": "app/static/flow_run_log.js",
+      "sha256": "e5b20f1ad51c25a834fc75a740ebc8684f38084a70a9f31f2d4bd7229cbad004"
+    },
+    {
+      "path": "app/static/style.css",
+      "sha256": "4eee8f32ab8d3ac89434eecc7a8367844212665060f7b3b497a8babed2f6f7ea"
+    },
+    {
+      "path": "tests/test_flow_excel_ui.py",
+      "sha256": "0304f27d6768904087da14de3cebb1c26baee422fd8b3c5b460228cec93ea00b"
+    },
+    {
+      "path": "docs\\testing\\releases\\2026-09-12-excel-worksheet-selection\\evidence/worksheet-error.png",
+      "sha256": "3967dcbfecf9a4cb5b3d32d2ab53c1c226b282cf76eb54128cee879139b54f26"
+    },
+    {
+      "path": "docs\\testing\\releases\\2026-09-12-excel-worksheet-selection\\evidence/worksheet-settings-desktop.png",
+      "sha256": "e9561807babd7f24893140096afc3f5e880d6eb225347e37e63fd3f630060cde"
+    },
+    {
+      "path": "docs\\testing\\releases\\2026-09-12-excel-worksheet-selection\\evidence/worksheet-settings-mobile.png",
+      "sha256": "8d9b4012e39372018cf3de8894b2477ad0c9a11ff1359728d59b7721405eb4aa"
+    }
+  ],
+  "implementation_recorded_utc": "2026-09-12T17:33:26.8632983Z"
 }

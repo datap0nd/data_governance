@@ -1,10 +1,10 @@
-# Excel worksheet selection: draft test report
+# Excel worksheet selection: test report
 
 - [Plan](test-plan.md); [browser evidence](browser-evidence.md); [exact local verification records](local-checks.json).
 - Evidence cutoff: 2026-09-12 17:00 UTC. Later results belong in a dated addition and in the PR testing section.
 - Baseline: `c3f0869adf03e4ead1d497af22a20a1a8115bedd`, with the uncommitted changes in this branch. Per-invocation source fingerprints distinguish the working versions tested; these results do not claim that the final PR head has passed CI.
 - Environment: Windows 10.0.26200, PowerShell 7.6.5, checkout-owned Python 3.13.15, Playwright 1.62.0, synthetic Chromium downloads and synthetic COM worksheet objects.
-- Delivery state: backend implemented; production UI pending owner preview feedback. Not merged.
+- Initial delivery state at 17:00 UTC: backend implemented; production UI pending owner preview feedback. See the dated addition below for implementation and UI results.
 
 ## Executed checks
 
@@ -22,7 +22,7 @@
 
 Exact commands, timestamps, selections, fingerprints and JUnit totals are in `local-checks.json`. Counts above are per invocation; repeated checks are not presented as unique coverage. No skips occurred in the listed completed checks. The retained failures are not relabeled as passes.
 
-## Pending checks
+## Checks pending at the initial cutoff
 
 | Check | State | Next action |
 | --- | --- | --- |
@@ -38,6 +38,19 @@ The tests preserve all selected rows, including small sheets, duplicate rows and
 
 Backend review covered selection validation, exact names/order, raw-workbook fallback, source retention, capability compatibility, local-file receipt identity, and error propagation. The generic portal path was found to bypass the shared Excel reader and was connected to it; its two focused cases passed after correcting test setup.
 
-## Merge evidence
+## 2026-09-12 17:31 UTC — implemented UI and regression follow-up
 
-Pending. This draft report stops before owner UI approval and final-head CI. No merge or deployment is claimed.
+The owner approved the demonstrated journey with “implement and merge to main.” The actual portal, Outlook and local-file builders now expose the worksheet checkbox and its two choices under **After download**. Run logs identify Excel processing failures and link back to that Flow with detected names. SQL-only retry is hidden for these failures. Existing SQL modes are preserved.
+
+These checks ran against `4c9c57dec767afd7fdf3b4ca7e5462d343dd8ab4` plus the uncommitted UI/test changes, distinguished by fingerprints in `local-checks.json`:
+
+| Evidence | Actual result |
+| --- | --- |
+| `20260912T172438765Z-12380-ed17a46b` | **1 passed, 2 failed, 1 error.** The Node payload/error contract passed. The UI harness launched Chromium before pytest initialized its temporary directory, causing a Windows file lock; two builder cases tried Edit before expanding the existing collapsed group. Neither failure was a worksheet-processing error. |
+| `20260912T172707725Z-12068-579711f1` | **3 passed**, zero skips, 8.41s pytest time, after fixing that fixture setup and walking the group control. Actual error-to-settings navigation, both save/reopen modes, exact spaces, missing/duplicate/count validation, interrupted and rejected saves, Cancel without persistence, disabling selection, portal/file/Outlook forms and 390px layout passed. JS/Python syntax checks passed. Browser: Chrome 152.0.7977.83, Playwright 1.62.0. |
+| [Initial CI run](https://github.com/datap0nd/data_governance/actions/runs/34707186679) at `4c9c57dec767afd7fdf3b4ca7e5462d343dd8ab4` | **2066 passed, 2 failed, 22 skipped, 14 warnings**, 1134.67s. Both failures were in `test_dashboard_xlsx_normalizes_only_for_configured_downstream_processing`: the prior assertion expected one progress event, but worksheet inventory and row-count events now produce three. The other cases, including the previously environment-limited portable checks, passed. This run's Merge ready check failed. |
+| `20260912T172857061Z-40676-4dabd419` | **2 passed**, zero skips, 1.54s pytest time, plus syntax. The CI-failing assertions now require that the original workbook exists at **every** normalization event. Output/row count and stage-order assertions remain. |
+
+The bounded UI review covered checkbox-off serialization, exact name/order preservation, all three source builders, old local-file selections, failed-save focus and preserved edits, run/Flow identity checks, responsive layout and prevention of SQL retry after worksheet failure. Actual fictional browser screenshots and observations are in [browser evidence](browser-evidence.md). No new implementation issue remained after the focused retests.
+
+Final-head CI remains pending at this addition's cutoff. Its exact tested SHA, run URL and result must be recorded in the PR before a head-pinned merge. No later CI outcome, main merge or deployment is implied by this committed report.

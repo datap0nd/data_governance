@@ -2,7 +2,7 @@
 
 - Baseline: `c3f0869adf03e4ead1d497af22a20a1a8115bedd`.
 - Related [report](test-report.md) and [browser evidence](browser-evidence.md).
-- Draft scope: backend worksheet selection and a fictional clickable preview. The production Flow settings controls await owner feedback required by `DESIGN.md`.
+- Scope: explicit worksheet selection in every Flow builder, shared Excel processing, and actionable run-error recovery. The owner approved the demonstrated preview with “implement and merge to main” before the application controls were implemented.
 - Environments: isolated Python 3.13 fixtures; synthetic Chromium downloads; in-app browser preview. SQL calls in synthetic browser tests are captured, with no database connection.
 
 ## Prerequisites and data
@@ -27,7 +27,7 @@ Create fictional workbooks with these sheets: `North` and `South` have matching 
 | XL-09 | Save a choice, reload it, update through an older client omitting the new field, then explicitly set it to `null`. | Choices survive omission and are frozen into jobs/scripts. Explicit null restores one-workbook/one-sheet behavior. Existing exact local-file selections remain valid. |
 | XL-10 | Queue named-sheet processing to a worker lacking the capability; register a compatible worker. | Old worker cannot silently ignore the choice. Compatible worker receives the exact frozen configuration. |
 | XL-11 | Exercise recorded, catalog, generic portal and local-file processing; use synthetic desktop Excel objects for NASCA and real fixture readers for XLS/XLSB/OOXML. | Same selection and mismatch rules. Existing CSV, preamble, trimming, original-copy and COM cleanup behavior remains covered. An explicit named selection cannot silently process non-workbook bytes. |
-| XL-12 | In preview, trigger failure, use **Choose worksheets**, correct names, save, and simulate again. Simulate failed save and Cancel. | Clear recovery action; visible error beside Save; failed save preserves edits; Cancel restores saved values. |
+| XL-12 | In run logs, use **Choose worksheets**. In **After download → Excel worksheets**, choose either mode, enter exact names, and save. Reopen; switch modes with several names, submit duplicates, interrupt a save, then correct and save. Cancel another edit and reload. Repeat at 390px width. | Exactly two modes; detected-name buttons preserve exact spaces. Invalid choices and failed saves retain edits with an inline error. Saved choice and SQL mode survive reload. Cancel does not persist edits. Reopening from a fresh page restores saved values. SQL-only retry is absent for worksheet failures. |
 
 ## Commands
 
@@ -48,8 +48,16 @@ For the clickable fictional preview:
 Open `http://127.0.0.1:8768/static/recording-preview/excel-worksheets.html`.
 The page makes no application API requests; its Save and Run controls operate only on fictional data in that tab.
 
+For the implemented controls, start the fictional HTTP fixture with:
+
+```powershell
+.\.venv\Scripts\python.exe tests/test_flow_excel_ui.py
+```
+
+Open `http://127.0.0.1:8772/flow-runs/902`. This serves the actual app assets with in-memory fictional API responses. Use **Choose worksheets**, select ` North ` and `South`, save, then reopen to inspect the choice. It cannot reach a portal or SQL database. Automated execution uses `tools/check.ps1 -Mode Verify -TestPath tests/test_flow_excel_ui.py -SyntaxPath app/static/app.js,app/static/flow_run_log.js,tests/test_flow_excel_ui.py`.
+
 ## Acceptance and cleanup
 
-Before merge, obtain owner feedback on the preview, implement and walk the actual Flow controls, complete the affected UI checks, and record the passing final-head CI URL and SHA in the PR. The draft backend alone must not be merged: users need the configuration control when a multi-sheet workbook fails.
+Owner preview approval, implementation and the actual control walkthrough are complete. Before merge, record the passing final-head **Merge ready** CI URL and exact SHA in the PR. The committed report identifies its evidence cutoff; the PR records subsequent CI and merge evidence.
 
 The verifier owns its isolated test directories. Close the preview server when review is finished. Keep the original downloaded workbook and failed partial output for diagnosis; do not delete or modify owner reports. Restore test-only configuration if testing in a disposable app instance. SQL append/replace semantics and schedules are outside this change.
