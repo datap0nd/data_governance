@@ -98,6 +98,55 @@ def run_browser(job, profile, *, state=None, events=None):
             context.close()
 
 
+@pytest.mark.parametrize('choice,expected_rows', [
+    (None, None),
+    ({'mode': 'append', 'names': ['South', 'North']}, [['Code', 'Units'], ['S', '7'], ['N', '4']]),
+    ({'mode': 'single', 'names': ['Totals']}, [['Year', 'Total'], ['2026', '11']]),
+    ({'mode': 'single', 'names': ['Missing']}, None),
+    ({'mode': 'append', 'names': ['North', 'Totals']}, None),
+])
+def test_recorded_excel_worksheet_choice_controls_exact_sql_input(
+    flow_db, tmp_path, downloads_server, monkeypatch, choice, expected_rows,
+):
+    from app import flow_excel
+    url, exports = downloads_server
+    book = openpyxl.Workbook()
+    book.remove(book.active)
+    for name, header, row in [('North', ['Code', 'Units'], ['N', 4]),
+                              ('South', ['Code', 'Units'], ['S', 7]),
+                              ('Totals', ['Year', 'Total'], [2026, 11])]:
+        sheet = book.create_sheet(name)
+        sheet.append(header)
+        sheet.append(row)
+    buffer = io.BytesIO()
+    book.save(buffer)
+    book.close()
+    exports['/1.xlsx'] = buffer.getvalue()
+    job = replay_job(url, [dict(format='xlsx')])
+    job['downloads']['excel_worksheets'] = choice
+    job['sql_handoff']['enabled'] = True
+    events, loaded = [], []
+
+    def capture_sql(artifacts, config, progress=None):
+        assert expected_rows is not None, 'Worksheet failures must stop before SQL.'
+        with Path(artifacts[0]['file_path']).open(encoding='utf-8-sig', newline='') as handle:
+            loaded.extend(csv.reader(handle))
+        return {'status': 'loaded', 'rows_written': len(loaded) - 1, 'files_loaded': 1}
+
+    monkeypatch.setattr(flow_sql, 'load_artifacts', capture_sql)
+    if expected_rows is None:
+        with pytest.raises(flow_excel.WorksheetError):
+            run_browser(job, tmp_path / 'profile', events=events)
+        failure = next(event for event in events if event['stage'] == 'file_normalization_failed')
+        assert 'SQL was not started' in failure['message']
+        assert not loaded
+    else:
+        state = run_browser(job, tmp_path / 'profile', events=events)
+        assert state['sql_result']['rows_written'] == len(expected_rows) - 1
+        assert loaded == expected_rows
+        assert any(event['stage'] == 'file_normalization' and 'Loading:' in event['message'] for event in events)
+
+
 @pytest.mark.parametrize('minimum', [-1, True, 1.5, '3', None])
 def test_minimum_rows_must_be_nonnegative_integer(minimum):
     value = definition()

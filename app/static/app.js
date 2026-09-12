@@ -11343,6 +11343,65 @@ function _flowEmailHtml(existing) {
                         </div>`;
 }
 
+function _flowExcelHtml(existing) {
+    const config = existing?.excel_worksheets;
+    const evidence = existing?._excel_evidence;
+    return `<fieldset id="flow-excel-worksheets" class="flow-excel-worksheets flow-span-2">
+        <legend>Excel worksheets</legend>
+        <p class="flow-excel-help">By default, one workbook must contain exactly one worksheet. A workbook with more than one sheet stops the flow before SQL insertion.</p>
+        <label class="flow-check"><input id="flow-excel-enabled" type="checkbox" ${config ? "checked" : ""}><span>Choose how to load Excel worksheets</span></label>
+        <div id="flow-excel-fields" ${config ? "" : "hidden"}>
+            <fieldset class="flow-excel-modes"><legend>How should these sheets be loaded?</legend>
+                <label class="flow-check"><input type="radio" name="flow-excel-mode" value="append" ${config?.mode !== "single" ? "checked" : ""}><span>Append named worksheets<small>Load all rows from the chosen sheets in the order listed. Columns must match.</small></span></label>
+                <label class="flow-check"><input type="radio" name="flow-excel-mode" value="single" ${config?.mode === "single" ? "checked" : ""}><span>Load one named worksheet<small>Load only the sheet you name.</small></span></label>
+            </fieldset>
+            <label for="flow-excel-names">Worksheet names</label>
+            <textarea id="flow-excel-names" rows="4" aria-describedby="flow-excel-names-help flow-excel-error" placeholder="North&#10;South">${esc((config?.names || []).join("\n"))}</textarea>
+            <p id="flow-excel-names-help" class="flow-excel-help">Enter exact names, one per line. Case and spaces must match the workbook.</p>
+            ${evidence ? `<p class="flow-excel-help">Worksheets found in <strong>${esc(evidence.workbook)}</strong>:</p><div class="flow-excel-chips">${(evidence.available_sheets || []).map(name => `<button type="button" class="btn-secondary" data-excel-sheet="${esc(name)}" aria-pressed="false">${esc(name)}</button>`).join("")}</div>` : ""}
+            <p id="flow-excel-error" class="flow-excel-error" role="alert"></p>
+        </div>
+    </fieldset>`;
+}
+
+function _flowBindExcel(form) {
+    if (!form) return;
+    const enabled = form.querySelector('#flow-excel-enabled');
+    const names = form.querySelector('#flow-excel-names');
+    if (!enabled || !names) return;
+    const update = () => {
+        const csv = form.dataset.sourceType === 'file' && form.querySelector('#flow-local-file-path')?.value.trim().toLowerCase().endsWith('.csv');
+        form.querySelector('#flow-excel-worksheets').hidden = Boolean(csv);
+        enabled.disabled = Boolean(csv);
+        const active = enabled.checked && !csv;
+        form.querySelector('#flow-excel-fields').hidden = !active;
+        names.disabled = !active;
+        form.querySelectorAll('[name="flow-excel-mode"]').forEach(input => input.disabled = !active);
+        const single = form.querySelector('[name="flow-excel-mode"]:checked')?.value === 'single';
+        names.rows = single ? 1 : 4;
+        names.placeholder = single ? 'North' : 'North\nSouth';
+        form.querySelector('#flow-excel-names-help').textContent = single
+            ? 'Enter one exact worksheet name. Case and spaces must match the workbook.'
+            : 'Enter at least two exact names, one per line, in append order. Case and spaces must match the workbook.';
+        form.querySelector('#flow-excel-error').textContent = '';
+        names.removeAttribute('aria-invalid');
+        const selected = names.value.split(/\r?\n/);
+        form.querySelectorAll('[data-excel-sheet]').forEach(button => button.setAttribute('aria-pressed', String(selected.includes(button.dataset.excelSheet))));
+    };
+    enabled.addEventListener('change', update);
+    names.addEventListener('input', update);
+    form.querySelectorAll('[name="flow-excel-mode"]').forEach(input => input.addEventListener('change', update));
+    form.querySelector('#flow-local-file-path')?.addEventListener('input', update);
+    form.querySelectorAll('[data-excel-sheet]').forEach(button => button.addEventListener('click', () => {
+        const name = button.dataset.excelSheet;
+        const selected = names.value.split(/\r?\n/).filter(item => item.trim().length);
+        names.value = form.querySelector('[name="flow-excel-mode"]:checked')?.value === 'single' ? name
+            : (selected.includes(name) ? selected.filter(item => item !== name) : [...selected, name]).join('\n');
+        names.dispatchEvent(new Event('input', {bubbles: true}));
+    }));
+    update();
+}
+
 function _flowOutlookBuilderHtml(existing = null) {
     const isFile = existing?.source_type === "file" || existing?._source_type === "file";
     const scheduleDays = new Set(existing?.schedule_days || []);
@@ -11364,7 +11423,6 @@ function _flowOutlookBuilderHtml(existing = null) {
                     <div class="flow-form-grid">
                         <label><span>Flow name</span><input id="flow-name" required maxlength="200" value="${esc(existing?.name || "")}" placeholder="Daily file ETL"></label>
                         <label class="flow-span-2"><span>Source file</span><input id="flow-local-file-path" required maxlength="2000" value="${esc(existing?.local_file_path || "")}" placeholder="\\\\server\\share\\folder\\data.xlsx"><small>Enter one absolute local or UNC path ending in .csv, .xls, .xlt, .xlsb, .xlsx, .xlsm, .xltx, or .xltm. Access is determined by the worker service account.</small></label>
-                        <label class="flow-span-2" id="flow-local-file-worksheet-field"><span>Excel worksheet</span><input id="flow-local-file-worksheet" maxlength="500" value="${esc(existing?.local_file_worksheet || "")}" placeholder="Data"><small>The title must match exactly, including case and spaces. CSV files do not use this field.</small></label>
                         <div class="flow-span-2 flow-dialog-help">Producing runs keep the original bytes and normalized CSV in the private worker store. Only the newest 3 snapshots are retained; unchanged scheduled checks create no snapshot.</div>
                         ${_flowDestinationHtml(existing)}
                     </div>` : `
@@ -11380,6 +11438,7 @@ function _flowOutlookBuilderHtml(existing = null) {
                     <div class="flow-section-head"><h2>Transformation</h2></div>
                     <div class="flow-form-grid">
                         <label class="flow-check flow-span-2"><input id="flow-transform-enabled" type="checkbox" ${existing?.transform_enabled ? "checked" : ""}><span>Transform the normalized CSV before SQL insertion</span></label>
+                        ${_flowExcelHtml(existing)}
                         <div id="flow-transform-fields" class="flow-form-grid flow-span-2">
                             <label class="flow-span-2"><span>Transformation script</span><div class="flow-file-control"><input id="flow-transform-script" required value="${esc(existing?.transform_script_path || "")}" placeholder="Absolute worker path to a .py, .ps1, or .exe script"><button type="button" class="btn-secondary" id="flow-transform-browse">Browse...</button><input id="flow-transform-file" type="file" accept=".py,.ps1,.exe" hidden></div><small>The script must create one CSV in script_results. That output becomes the SQL input.</small></label>
                         </div>
@@ -11539,6 +11598,7 @@ function _flowBuilderHtml(catalog, existing = null) {
                         <div class="flow-section-head"><h2>Transformation</h2></div>
                         <div class="flow-form-grid">
                             <label class="flow-check flow-span-2"><input id="flow-transform-enabled" type="checkbox" ${existing?.transform_enabled ? "checked" : ""}><span>Transform downloaded files before SQL insertion</span></label>
+                            ${_flowExcelHtml(existing)}
                             <div id="flow-transform-fields" class="flow-form-grid flow-span-2">
                                 <label class="flow-span-2"><span>Transformation script</span><div class="flow-file-control"><input id="flow-transform-script" required value="${esc(existing?.transform_script_path || "")}" placeholder="Absolute worker path to a .py, .ps1, or .exe script"><button type="button" class="btn-secondary" id="flow-transform-browse">Browse...</button><input id="flow-transform-file" type="file" accept=".py,.ps1,.exe" hidden></div><small>Enter an absolute worker-visible path, including an MX Share UNC path, or upload a script. Python/EXE scripts receive --input and --output; PowerShell receives -InputPath and -OutputPath. The script must create one CSV in script_results per download. Those outputs become the SQL input.</small></label>
                             </div>
@@ -12074,6 +12134,7 @@ function _flowCollectBuilder() {
             : null,
         post_sql_refresh: sqlEnabled ? _flowViewRefreshRead() : { mode: "off", views: [] },
         email_delivery: _flowEmailRead(),
+        excel_worksheets: _flowExcelRead(),
         owner_person_id: Number($("#flow-owner")?.value) || null,
     };
     if (form?.dataset.sourceType === "file") {
@@ -12082,7 +12143,7 @@ function _flowCollectBuilder() {
         return {
             ...shared, source_type: "file",
             local_file_path: path,
-            local_file_worksheet: csv ? null : $("#flow-local-file-worksheet").value,
+            local_file_worksheet: !csv && shared.excel_worksheets?.mode === "single" ? shared.excel_worksheets.names[0] : null,
             target_folder: null, output_mode: "private_snapshot",
             outlook_subject_contains: null,
             site_id: null, report_id: null, export_views: [], download_links: [], selections: {},
@@ -12140,6 +12201,32 @@ function _flowCollectBuilder() {
         end_week: periodStrategy === "fixed" ? ($("#flow-end-week").value || null) : null,
         filename_template: $("#flow-filename").value.trim(),
     };
+}
+
+function _flowExcelRead() {
+    const enabled = $('#flow-excel-enabled');
+    if (!enabled?.checked || enabled.disabled) return null;
+    return {
+        mode: $('input[name="flow-excel-mode"]:checked')?.value || 'append',
+        names: ($('#flow-excel-names')?.value || '').split(/\r?\n/).filter(name => name.trim().length > 0),
+    };
+}
+
+function _flowExcelValidate(form) {
+    const config = _flowExcelRead();
+    if (!config) return;
+    const message = !config.names.length ? 'Enter the worksheet names to load.'
+        : new Set(config.names).size !== config.names.length ? 'Each worksheet name must appear only once.'
+        : config.mode === 'single' && config.names.length !== 1 ? 'Enter exactly one worksheet name, or choose Append named worksheets.'
+        : config.mode === 'append' && config.names.length < 2 ? 'Enter at least two worksheet names, or choose Load one named worksheet.' : '';
+    if (message) {
+        form.querySelector('#flow-excel-error').textContent = message;
+        const names = form.querySelector('#flow-excel-names');
+        names.setAttribute('aria-invalid', 'true');
+        _flowRevealStep(form, names);
+        names.focus();
+        throw new Error(message);
+    }
 }
 
 function _flowViewRefreshRead() {
@@ -12297,8 +12384,17 @@ function _flowRevealStep(form, target) {
 function _flowRevealServerError(form, error) {
     const ids = {name: "flow-name", local_file_path: "flow-local-file-path", local_file_worksheet: "flow-local-file-worksheet", outlook_subject_contains: "flow-outlook-subject", site_id: "flow-site", report_id: "flow-report", target_folder: "flow-target-folder", filename_template: "flow-filename", transform_script_path: "flow-transform-script", schedule_type: "flow-schedule-type", schedule_time: "flow-schedule-time", schedule_days: "flow-schedule-type", schedule_day: "flow-schedule-day", owner_person_id: "flow-owner", sql_table: "flow-sql-table", sql_schema: "flow-sql-schema", sql_database: "flow-sql-database", sql_mode: "flow-sql-mode", start_week: "flow-start-week", end_week: "flow-end-week", period_strategy: "flow-period-strategy", file_format: "flow-file-format", email_delivery: "flow-email-recipients"};
     for (const item of error.validation || []) {
+        ids.excel_worksheets = 'flow-excel-names';
+        ids.local_file_worksheet = 'flow-excel-names';
         const field = item.loc?.find(part => ids[part]);
         const input = field && form.querySelector(`#${ids[field]}`);
+        if (field === 'excel_worksheets') {
+            const enabled = form.querySelector('#flow-excel-enabled');
+            enabled.checked = true;
+            enabled.dispatchEvent(new Event('change'));
+            form.querySelector('#flow-excel-error').textContent = item.msg || error.message;
+            input?.setAttribute('aria-invalid', 'true');
+        }
         if (input) { _flowRevealStep(form, input); input.focus(); return; }
     }
 }
@@ -12317,6 +12413,8 @@ function _flowBuildSteps(form) {
     if (browser) sourceGrid.append(browser);
     const trim = form.querySelector('#flow-excel-trim')?.closest('label');
     if (trim) transform?.querySelector('.flow-form-grid')?.prepend(trim);
+    const worksheets = form.querySelector('#flow-excel-worksheets');
+    if (worksheets) transform?.querySelector('.flow-form-grid')?.prepend(worksheets);
     const name = form.querySelector('#flow-name')?.closest('label');
     if (name) {
         name.classList.add('flow-name-field');
@@ -12413,6 +12511,7 @@ async function _flowSubmitBuilder(event) {
     button.disabled = true;
     error.textContent = "";
     try {
+        _flowExcelValidate(form);
         const body = _flowCollectBuilder();
         const hasUntested = body.execution_method === 'recorded'
             && window._flowUntestedRecordingSelections?.has(flowId);
@@ -12767,19 +12866,7 @@ function _bindFlowWorkspace() {
             : "Keep the newest 3 visible run folders";
     });
     $("#flow-output-mode")?.dispatchEvent(new Event("change"));
-    const syncLocalFileWorksheet = () => {
-        const path = $("#flow-local-file-path")?.value || "";
-        const csv = path.trim().toLowerCase().endsWith(".csv");
-        const field = $("#flow-local-file-worksheet-field");
-        const input = $("#flow-local-file-worksheet");
-        if (field) field.hidden = csv;
-        if (input) {
-            input.required = !csv;
-            input.disabled = csv;
-        }
-    };
-    $("#flow-local-file-path")?.addEventListener("input", syncLocalFileWorksheet);
-    syncLocalFileWorksheet();
+    _flowBindExcel($("#flow-builder-form"));
     $("#flow-file-format")?.addEventListener("change", event => {
         const filename = $("#flow-filename");
         const spec = (state.catalog.asap_download_types || []).find(
@@ -13020,6 +13107,35 @@ function bindFlowsPage() {
     document.querySelectorAll(".flow-tabs button").forEach(button => button.onclick = () => _flowShowView(button.dataset.flowView));
     $("#flow-create")?.addEventListener("click", () => _flowShowView("source-picker"));
     _bindFlowWorkspace();
+    _flowOpenWorksheetRecovery();
+}
+
+async function _flowOpenWorksheetRecovery() {
+    const url = new URL(location.href);
+    const id = Number(url.searchParams.get('edit_flow'));
+    if (!Number.isInteger(id) || id <= 0) return;
+    const runId = Number(url.searchParams.get('worksheet_run'));
+    url.searchParams.delete('edit_flow');
+    url.searchParams.delete('worksheet_run');
+    history.replaceState(history.state, '', url);
+    const state = window._flowsState;
+    const flow = state?.flows.find(item => item.id === id);
+    if (!flow) { toast('This Flow is no longer available.'); return; }
+    let evidence = null;
+    if (Number.isInteger(runId) && runId > 0) {
+        try {
+            const run = await api(`/api/flows/runs/${runId}`);
+            if (run.flow_id === id) evidence = [...(run.events || [])].reverse().find(item => item.details?.excel)?.details.excel || null;
+        } catch (_) { toast('Worksheet names could not be loaded. Enter the exact names from the workbook.'); }
+    }
+    if (window._flowsState !== state || state.view !== 'list' || currentPage !== 'flows') return;
+    _flowShowView('builder', {...flow, _excel_evidence: evidence});
+    const form = $('#flow-builder-form');
+    const enabled = $('#flow-excel-enabled');
+    enabled.checked = true;
+    enabled.dispatchEvent(new Event('change'));
+    _flowRevealStep(form, enabled);
+    $('#flow-excel-names').focus();
 }
 
 // ── System > Paths ──

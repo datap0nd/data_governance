@@ -6,6 +6,9 @@ const controls = {};
 const set = (id, value, rest = {}) => controls[`#${id}`] = {value, dataset: {}, ...rest};
 for (const [id, value] of Object.entries({name:' Draft ', 'schedule-type':'manual', 'schedule-time':'09:15', 'schedule-day':'2', 'owner':'', 'sql-mode':'append', 'sql-database':'CaseDB', 'sql-schema':'CaseSchema', 'sql-table':'MyTable', 'local-file-path':' C:\\input.xlsx ', 'local-file-worksheet':' Exact Sheet ', 'outlook-subject':' Daily report ', site:'7', report:'9', 'period-strategy':'none', 'download-mode':'single', 'file-format':'csv_file_format', 'browser-mode':'headless', 'excel-trim':'none', filename:'{flow}_{export}.csv', 'start-week':'2026-W01', 'end-week':'2026-W05'})) set(`flow-${id}`,value);
 set('flow-sql-enabled','',{checked:true}); set('flow-transform-enabled','',{checked:false}); set('flow-sql-uppercase','',{checked:true});
+set('flow-excel-enabled', '', {checked:true});
+set('flow-excel-names', ' Exact Sheet ');
+controls['input[name="flow-excel-mode"]:checked'] = {value:'single'};
 set('flow-export-report-title','',{checked:true,dataset:{inherit:'true'}}); set('flow-export-filter-details','',{checked:false,disabled:true});
 const form = {dataset:{sourceType:'file',id:''}};
 controls['#flow-builder-form'] = form;
@@ -17,7 +20,9 @@ assert.equal(body.name,'Draft'); assert.equal(body.local_file_worksheet,' Exact 
 assert.equal(body.target_folder,null); assert.equal(body.output_mode,'private_snapshot');
 assert.equal(body.owner_person_id,null); assert.equal(body.enabled,false);
 assert.equal(body.sql_database,'CaseDB'); assert.equal(body.sql_table,'MyTable'); assert.equal(body.sql_uppercase,true);
-set('flow-local-file-path','C:\\input.csv'); assert.equal(context._flowCollectBuilder().local_file_worksheet,null);
+set('flow-local-file-path','C:\\input.csv'); set('flow-excel-enabled', '', {checked:true,disabled:true}); assert.equal(context._flowCollectBuilder().local_file_worksheet,null);
+assert.equal(context._flowCollectBuilder().excel_worksheets,null);
+set('flow-excel-enabled', '', {checked:false});
 form.dataset.sourceType = 'outlook'; body=context._flowCollectBuilder();
 assert.equal(body.outlook_subject_contains,'Daily report'); assert.equal(body.filename_template,null); // server fixes original-name semantics
 form.dataset.sourceType = 'portal'; body=context._flowCollectBuilder();
@@ -32,7 +37,7 @@ vm.runInContext(source.slice(source.indexOf('function _flowStepSummary'), source
 const seen=[];
 context._flowRevealStep = (_form,input) => seen.push(input);
 const input={focus:()=>seen.push('focus')};
-context._flowRevealServerError({querySelector:id=>id==='#flow-local-file-worksheet'?input:null}, {validation:[{loc:['body','local_file_worksheet'],msg:'Exact worksheet required'}]});
+context._flowRevealServerError({querySelector:id=>id==='#flow-excel-names'?input:null}, {validation:[{loc:['body','local_file_worksheet'],msg:'Exact worksheet required'}]});
 assert.deepEqual(seen,[input,'focus']);
 assert.match(source,/queueMicrotask\(\(\) => \{ _flowRevealStep\(form, target\); target.focus\(\)/);
 assert.match(source,/next.type = "button"/);
@@ -69,3 +74,15 @@ assert.deepEqual(emailSeen, [recipientsInput, 'focus']);
 assert.match(source, /<h3>|emailTitle\.textContent = "Email the final file"/);
 assert.match(source, /id="flow-email-enabled" type="checkbox"/);
 console.log('flow builder email step tests passed');
+
+// Every source freezes the exact ordered names and explicitly restores the default.
+set('flow-excel-enabled', '', {checked:true});
+set('flow-excel-names', ' North \nSouth\n');
+controls['input[name="flow-excel-mode"]:checked'] = {value:'append'};
+for (const sourceType of ['file', 'outlook', 'portal']) {
+    form.dataset.sourceType = sourceType;
+    assert.deepEqual(plain(context._flowCollectBuilder().excel_worksheets), {mode:'append', names:[' North ', 'South']});
+}
+set('flow-excel-enabled', '', {checked:false});
+assert.equal(context._flowCollectBuilder().excel_worksheets, null);
+console.log('flow builder worksheet payload tests passed');

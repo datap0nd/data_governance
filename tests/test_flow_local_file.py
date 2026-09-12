@@ -435,8 +435,10 @@ def test_file_builder_exposes_conditional_sheet_and_portal_only_controls():
     source = Path("app/static/app.js").read_text(encoding="utf-8")
     assert 'id="flow-source-file"' in source
     assert 'id="flow-local-file-path"' in source
-    assert 'id="flow-local-file-worksheet-field"' in source
-    assert 'input.required = !csv' in source
+    # Excel now uses the shared optional selector. Its default-off, CSV toggle,
+    # and exact-name save behavior are exercised in test_flow_excel_ui.py.
+    assert 'id="flow-excel-enabled" type="checkbox"' in source
+    assert 'id="flow-excel-names"' in source
     assert 'filter(item => item.source_type === "portal")' in source
     assert 'const resumable = sourceType === "portal"' in source
     assert "Private snapshots · latest 3" in source

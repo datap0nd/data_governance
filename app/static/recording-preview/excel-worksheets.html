@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Excel worksheets — Metronome preview</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/recording-preview/excel-worksheets.css">
+</head>
+<body>
+  <div class="worksheet-preview-bar"><strong>Interactive preview</strong><span>Fictional files · changes stay in this tab</span><label>Downloaded workbook<select id="scenario"><option value="multiple">Multiple sheets</option><option value="single">One sheet · 12 data rows</option><option value="missing">Selected sheet renamed</option><option value="invalid">Row wider than its header</option></select></label></div>
+  <main>
+    <header class="worksheet-page-header"><div><p class="worksheet-eyebrow">FLOWS / REGIONAL ORDERS</p><h1 id="page-title">Edit flow</h1></div><div class="worksheet-actions"><button class="btn-secondary" id="show-settings">Flow settings</button><button class="btn-secondary" id="show-run">Run details</button></div></header>
+    <section id="settings-view">
+      <div class="flow-builder-shell flow-builder-minimal"><div class="flow-builder-main"><form id="worksheet-form">
+        <label class="flow-name-field"><span>How do you want to name your flow?</span><input value="Regional orders" id="flow-name" required></label>
+        <section class="flow-step"><h2><button class="flow-step-toggle" type="button" data-section="source" aria-expanded="false"><span class="flow-step-number">1</span><span>Source</span><span aria-hidden="true">⌄</span></button></h2><div class="flow-step-body" id="source" hidden><p>Website: Example reporting portal</p><p>Report: Regional orders</p></div></section>
+        <section class="flow-step"><h2><button class="flow-step-toggle" type="button" data-section="output" aria-expanded="false"><span class="flow-step-number">2</span><span>Output</span><span aria-hidden="true">⌄</span></button></h2><div class="flow-step-body" id="output" hidden><p>Keep the original downloaded workbook in this flow’s Downloads folder.</p></div></section>
+        <section class="flow-step"><h2><button class="flow-step-toggle" type="button" data-section="after" aria-expanded="true"><span class="flow-step-number">3</span><span>After download</span><span aria-hidden="true">⌄</span></button></h2><div class="flow-step-body" id="after">
+          <fieldset class="worksheet-settings"><legend>Excel worksheets</legend><p class="worksheet-help">By default, one workbook must contain one worksheet. If more are found, the flow stops and asks you to enable this option.</p>
+            <label class="worksheet-choice"><input type="checkbox" id="worksheet-enabled"><span><strong>Choose how to load Excel worksheets</strong><small>Enable for a workbook containing more than one worksheet.</small></span></label>
+            <div id="named-fields" hidden>
+              <label class="worksheet-choice"><input type="radio" name="worksheet-mode" value="append" checked><span><strong>Append named worksheets</strong><small>Combine rows from the worksheets you specify, then load them.</small></span></label>
+              <label class="worksheet-choice"><input type="radio" name="worksheet-mode" value="one"><span><strong>Load one named worksheet</strong><small>Load only the worksheet you specify.</small></span></label>
+              <label for="worksheet-names"><span id="names-label">Worksheet names</span> <small id="names-help">One exact name per line, in the order to append.</small></label>
+              <textarea id="worksheet-names" rows="4" placeholder="North&#10;South" aria-describedby="selection-help selection-error"></textarea>
+              <p class="worksheet-help" id="selection-help">The named worksheets must have matching columns. All their data rows are included. Your SQL write mode stays the same.</p>
+              <div id="detected" hidden><p class="worksheet-help">Worksheets detected in <strong id="detected-file"></strong>. Select a name to add it:</p><div class="worksheet-actions" id="detected-buttons"></div></div>
+              <p id="selection-error" class="worksheet-error" role="alert"></p>
+            </div>
+          </fieldset>
+          <div class="worksheet-existing"><h3>Transformation</h3><p>No transformation script selected</p><h3>SQL handoff</h3><p>Replace all rows · reporting.regional_orders</p></div>
+        </div></section>
+        <section class="flow-step"><h2><button class="flow-step-toggle" type="button" data-section="schedule" aria-expanded="false"><span class="flow-step-number">4</span><span>Schedule and owner</span><span aria-hidden="true">⌄</span></button></h2><div class="flow-step-body" id="schedule" hidden><p>Daily at 08:00 · Maya Chen</p></div></section>
+        <p id="save-feedback" role="status" aria-live="polite"></p>
+        <div class="flow-builder-actions"><button type="button" class="btn-secondary" id="cancel-edit">Cancel</button><button type="submit" class="btn-primary">Save changes</button></div>
+      </form></div></div>
+    </section>
+    <section id="run-view" hidden>
+      <div class="worksheet-run-heading"><div><h2>Regional orders · Run #801</h2><p id="run-status">Ready to simulate</p></div><button class="btn-primary" id="simulate-run">Simulate run</button></div>
+      <div id="run-result" aria-live="polite"><p class="worksheet-help">Run the fictional workbook through the saved worksheet setting.</p></div>
+    </section>
+    <details class="worksheet-preview-controls"><summary>Preview controls</summary><label class="worksheet-choice"><input type="checkbox" id="fail-save"><span>Simulate a failed settings save</span></label><button class="btn-secondary" id="reset-preview">Reset preview</button></details>
+  </main>
+  <script src="/static/recording-preview/excel-worksheets.js"></script>
+</body></html>

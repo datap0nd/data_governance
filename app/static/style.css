@@ -8039,3 +8039,24 @@ body.remote-flow-control-enabled { padding-top: 32px; }
 .flow-log-email-status.unknown, .flow-email-status.unknown { color:var(--orange); }
 .flow-log-email-status.pending, .flow-log-email-status.skipped, .flow-log-email-status.none,
 .flow-email-status.pending, .flow-email-status.skipped, .flow-email-status.none { color:var(--text-muted); }
+/* Explicit worksheet choices use the existing Flow builder controls and tokens. */
+.flow-excel-worksheets { border: 0; padding: 0; margin: 0 0 16px; min-width: 0; }
+.flow-excel-worksheets > legend { font-size: 1.05rem; font-weight: 700; }
+.flow-excel-worksheets .flow-check { display: flex; flex-direction: row; gap: 8px; align-items: flex-start; }
+.flow-excel-worksheets .flow-check input { flex: none; width: 16px; height: 16px; margin-top: 2px; accent-color: var(--accent); }
+.flow-excel-help { font-size: .82rem; color: var(--text-secondary); line-height: 1.6; margin: 8px 0 12px; }
+#flow-excel-fields { margin: 16px 0 0 26px; }
+.flow-excel-modes { border: 0; padding: 0; margin: 0 0 16px; }
+.flow-excel-modes legend { font-size: .85rem; font-weight: 600; margin-bottom: 8px; }
+.flow-excel-modes .flow-check { margin: 12px 0; align-items: flex-start; }
+.flow-excel-modes small { display: block; font-size: .82rem; margin-top: 4px; color: var(--text-secondary); }
+#flow-excel-fields > label { display: block; font-size: .85rem; font-weight: 600; }
+#flow-excel-names { box-sizing: border-box; width: 100%; margin-top: 8px; padding: 10px 12px; resize: vertical; font: inherit; line-height: 1.6; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 5px; }
+#flow-excel-names[aria-invalid=true] { border-color: var(--red); }
+.flow-excel-error { font-size: .86rem; color: var(--red); margin-top: 8px; }
+.flow-excel-error:empty { display: none; }
+.flow-excel-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.flow-excel-chips button { white-space: pre-wrap; overflow-wrap: anywhere; }
+.flow-excel-chips button[aria-pressed=true] { color: var(--accent); border-color: var(--accent); background: var(--accent-bg); }
+.flow-log-failure code { white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 720px) { #flow-excel-fields { margin-left: 0; } }

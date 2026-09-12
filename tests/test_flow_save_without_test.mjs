@@ -25,6 +25,7 @@ const calls = [];
 const toasts = [];
 let confirmCalls = 0;
 const context = {
+    $:()=>null, // worksheet option is off in this recording-save regression
     window:{
         _flowRecordingSelections:new Map([[12,null]]),
         _flowUntestedRecordingSelections:new Map([[12,88]]),
@@ -43,6 +44,7 @@ const context = {
     Number,
 };
 vm.createContext(context);
+vm.runInContext(source.slice(source.indexOf('function _flowExcelRead()'), source.indexOf('function _flowViewRefreshRead()')), context);
 vm.runInContext(source.slice(start,end),context);
 
 // An untested saved draft saves immediately as the Flow's recording.
