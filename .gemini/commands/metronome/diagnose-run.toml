@@ -1,0 +1,38 @@
+description = "Build the redacted diagnosis bundle for one Flow run and explain the first abnormal stage"
+prompt = """
+Diagnose Metronome Flow run {{args}}.
+
+Step 1. Build the bundle (this reads only the application database and writes
+redacted JSON; it never opens report files or browser profiles):
+
+!{.\\.venv\\Scripts\\python.exe tools\\diagnose_run.py --run-id {{args}} --output diagnosis}
+
+Step 2. Read these files completely before writing anything:
+
+@{diagnosis/run-{{args}}/bundle.json}
+
+@{diagnosis/run-{{args}}/steps.json}
+
+Step 3. Identify the first abnormal event: the earliest event whose status is
+failed, or whose stage is download_stall_warning, copy_verification_warning,
+publish_failed, worker_restarted or time_budget_reached, or a recorded_action
+whose step outcome is failed. Compare with the baseline run in `comparison`
+and say which configuration fields changed, if any.
+
+Step 4. Classify it as exactly one of: operational failure, expected timing,
+configuration issue, dependency issue, external-service issue, no current
+issue, insufficient evidence. Use the recovery_preflight statuses as given;
+do not invent a replay path.
+
+Step 5. Write the result into diagnosis/run-{{args}}/findings.md using its
+headings. Each section is one paragraph under 100 words. Every claim cites a
+field such as events[2].error, recording.failing_step.step_id or
+comparison.changed_configuration_fields. One suggested action or one
+discriminating check only. If a live reproduction would settle it, name the
+playbook to run next: /metronome:repro-step, /metronome:verify-share-copy or
+/metronome:capture-date-range.
+
+Never copy URLs, share paths, cookies, report rows or screenshots into the
+findings. Refer to screenshots by the file names listed under
+recording.context.screenshot_files.
+"""
