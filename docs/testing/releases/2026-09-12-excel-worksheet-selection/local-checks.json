@@ -1,0 +1,524 @@
+{
+  "recorded_utc": "2026-09-12T17:01:16.9452521Z",
+  "note": "Sanitized verifier summaries; individual fingerprints identify successive uncommitted working versions. No raw test logs or business data included.",
+  "preview_files": [
+    {
+      "path": "app/static/recording-preview/excel-worksheets.js",
+      "sha256": "2d0ec852440fc2d590332d5956fdbfbf703286e79e12cc110419cb2c41ec7415"
+    },
+    {
+      "path": "app/static/recording-preview/excel-worksheets.html",
+      "sha256": "6a5ad680eb591d8b92a893ced8f7149e2634fc45d5daee1d476ad339820d0a17"
+    },
+    {
+      "path": "app/static/recording-preview/excel-worksheets.css",
+      "sha256": "d96f5bfb31e10a93fd48c3d5859f799be7fecfc703229a233b7f6b37ab88cb62"
+    }
+  ],
+  "checks": [
+    {
+      "run_id": "20260912T155225156Z-36404-c8e7b282",
+      "mode": "setup",
+      "status": "passed",
+      "revision": "c3f0869adf03e4ead1d497af22a20a1a8115bedd",
+      "source_fingerprint": null,
+      "environment": {
+        "os": "Microsoft Windows 10.0.26200",
+        "powershell": "7.6.5",
+        "python": "3.13.15"
+      },
+      "selection": {
+        "full_suite": false,
+        "diagnostic_reason": "",
+        "tests": [],
+        "syntax": []
+      },
+      "started_utc": "2026-09-12T15:52:25.1701303+00:00",
+      "finished_utc": "2026-09-12T15:52:55.5075788+00:00",
+      "duration_seconds": 30.337,
+      "exit_code": 0,
+      "test_summary": null,
+      "evidence_file": ".test-runs/20260912T155225156Z-36404-c8e7b282/result.json"
+    },
+    {
+      "run_id": "20260912T162625333Z-4872-c25aa436",
+      "mode": "verify",
+      "status": "passed",
+      "revision": "c3f0869adf03e4ead1d497af22a20a1a8115bedd",
+      "source_fingerprint": "b6a3fdc887fb0a36d04802a2855add04fb5f612968d3161d054e4084d238f923",
+      "environment": {
+        "os": "Microsoft Windows 10.0.26200",
+        "powershell": "7.6.5",
+        "python": "3.13.15"
+      },
+      "selection": {
+        "full_suite": false,
+        "diagnostic_reason": "",
+        "tests": [
+          "tests/test_flow_excel_worksheets.py",
+          "tests/test_flow_excel_formats.py",
+          "tests/test_flows.py::test_excel_worksheet_choices_are_saved_frozen_preserved_and_reset",
+          "tests/test_flows.py::test_excel_worksheet_api_errors_identify_the_setting",
+          "tests/test_flow_sql.py::test_excel_normalization_appends_named_sheets_in_one_streamed_pass",
+          "tests/test_flow_sql.py::test_raw_xlsx_passthrough_skips_unused_csv_normalization",
+          "tests/test_flow_sql.py::test_gscm_raw_workbook_is_kept_when_optional_normalization_fails",
+          "tests/test_flow_sql.py::test_nasca_excel_honors_explicit_sheets_and_default_guard",
+          "tests/test_flow_sql.py::test_nasca_com_failure_identifies_stage_and_restores_desktop",
+          "tests/test_flow_sql.py::test_nasca_encrypted_modern_excel_uses_desktop_excel_for_sql_csv",
+          "tests/test_flow_sql.py::test_nasca_excel_recovery_borrows_and_restores_active_excel",
+          "tests/test_flow_local_file.py::test_local_excel_uses_only_exact_selected_worksheet",
+          "tests/test_flow_local_file.py::test_local_csv_is_never_modified_and_no_op_creates_no_folder",
+          "tests/test_flow_local_file.py::test_file_flow_edit_preserves_store_and_resets_identity",
+          "tests/test_flow_local_file.py::test_file_flow_api_canonicalizes_csv_and_rejects_unsafe_paths"
+        ],
+        "syntax": [
+          "app/flow_excel.py",
+          "app/flow_worker.py",
+          "app/flow_recording_runtime.py",
+          "app/routers/flows.py",
+          "app/database.py"
+        ]
+      },
+      "started_utc": "2026-09-12T16:26:25.3407577+00:00",
+      "finished_utc": "2026-09-12T16:27:10.7940964+00:00",
+      "duration_seconds": 45.453,
+      "exit_code": 0,
+      "test_summary": {
+        "errors": 0,
+        "skipped": 0,
+        "failures": 0,
+        "tests": 80
+      },
+      "evidence_file": ".test-runs/20260912T162625333Z-4872-c25aa436/result.json"
+    },
+    {
+      "run_id": "20260912T163659862Z-14488-31745db7",
+      "mode": "verify",
+      "status": "failed",
+      "revision": "c3f0869adf03e4ead1d497af22a20a1a8115bedd",
+      "source_fingerprint": "9355ebe6f71e28744f3202031ba77a083a586b107316586d654f9dc09b71e488",
+      "environment": {
+        "os": "Microsoft Windows 10.0.26200",
+        "powershell": "7.6.5",
+        "python": "3.13.15"
+      },
+      "selection": {
+        "full_suite": false,
+        "diagnostic_reason": "",
+        "tests": [
+          "tests/test_recording_optional_checks.py::test_recorded_excel_worksheet_choice_controls_exact_sql_input",
+          "tests/test_recording_optional_checks.py::test_excel_named_text_download_reuses_shared_normalization_for_sql",
+          "tests/test_recording_optional_checks.py::test_recording_validation_normalizes_nasca_input_for_configured_sql",
+          "tests/test_recording_optional_checks.py::test_portable_replays_without_page_questions_and_honors_optional_rows",
+          "tests/test_flow_excel_worksheets.py::test_invalid_choices_fail_instead_of_guessing",
+          "tests/test_flow_excel_worksheets.py::test_multiple_sheets_fail_by_default_even_if_empty_hidden_or_compatible",
+          "tests/test_flow_excel_worksheets.py::test_named_worksheet_option_cannot_silently_load_a_non_workbook",
+          "tests/test_flow_excel_worksheets.py::test_append_mismatch_fails_with_file_sheets_and_columns_without_csv_fallback"
+        ],
+        "syntax": [
+          "app/flow_excel.py",
+          "app/flow_worker.py",
+          "app/flow_recording_runtime.py"
+        ]
+      },
+      "started_utc": "2026-09-12T16:36:59.8698906+00:00",
+      "finished_utc": "2026-09-12T16:38:02.6855815+00:00",
+      "duration_seconds": 62.816,
+      "exit_code": 1,
+      "test_summary": {
+        "errors": 0,
+        "skipped": 0,
+        "failures": 10,
+        "tests": 29
+      },
+      "evidence_file": ".test-runs/20260912T163659862Z-14488-31745db7/result.json"
+    },
+    {
+      "run_id": "20260912T164137974Z-33904-2dfc6a19",
+      "mode": "verify",
+      "status": "passed",
+      "revision": "c3f0869adf03e4ead1d497af22a20a1a8115bedd",
+      "source_fingerprint": "45bfda5798dc9abd079ca1340d7f42febabdd4e968498a29b4b0446184018b38",
+      "environment": {
+        "os": "Microsoft Windows 10.0.26200",
+        "powershell": "7.6.5",
+        "python": "3.13.15"
+      },
+      "selection": {
+        "full_suite": false,
+        "diagnostic_reason": "",
+        "tests": [
+          "tests/test_recording_optional_checks.py::test_recorded_excel_worksheet_choice_controls_exact_sql_input[choice1-expected_rows1]"
+        ],
+        "syntax": [
+          "app/flow_worker.py"
+        ]
+      },
+      "started_utc": "2026-09-12T16:41:37.9837453+00:00",
+      "finished_utc": "2026-09-12T16:42:21.1376660+00:00",
+      "duration_seconds": 43.154,
+      "exit_code": 0,
+      "test_summary": {
+        "errors": 0,
+        "skipped": 0,
+        "failures": 0,
+        "tests": 1
+      },
+      "evidence_file": ".test-runs/20260912T164137974Z-33904-2dfc6a19/result.json"
+    },
+    {
+      "run_id": "20260912T164137986Z-24840-c0f3b5b2",
+      "mode": "verify",
+      "status": "passed",
+      "revision": "c3f0869adf03e4ead1d497af22a20a1a8115bedd",
+      "source_fingerprint": "45bfda5798dc9abd079ca1340d7f42febabdd4e968498a29b4b0446184018b38",
+      "environment": {
+        "os": "Microsoft Windows 10.0.26200",
+        "powershell": "7.6.5",
+        "python": "3.13.15"
+      },
+      "selection": {
+        "full_suite": false,
+        "diagnostic_reason": "",
+        "tests": [
+          "tests/test_recording_optional_checks.py::test_recorded_excel_worksheet_choice_controls_exact_sql_input[choice2-expected_rows2]"
+        ],
+        "syntax": [
+          "app/flow_worker.py"
+        ]
+      },
+      "started_utc": "2026-09-12T16:41:37.9947855+00:00",
+      "finished_utc": "2026-09-12T16:42:21.1377016+00:00",
+      "duration_seconds": 43.143,
+      "exit_code": 0,
+      "test_summary": {
+        "errors": 0,
+        "skipped": 0,
+        "failures": 0,
+        "tests": 1
+      },
+      "evidence_file": ".test-runs/20260912T164137986Z-24840-c0f3b5b2/result.json"
+    },
+    {
+      "run_id": "20260912T164448679Z-25448-9b1994dc",
+      "mode": "verify",
+      "status": "passed",
+      "revision": "c3f0869adf03e4ead1d497af22a20a1a8115bedd",
+      "source_fingerprint": "d44ad2cde970ba6cc0c565023454d80ebd724d33125bb1d1446d2ab20f9ec849",
+      "environment": {
+        "os": "Microsoft Windows 10.0.26200",
+        "powershell": "7.6.5",
+        "python": "3.13.15"
+      },
+      "selection": {
+        "full_suite": false,
+        "diagnostic_reason": "",
+        "tests": [
+          "tests/test_recording_optional_checks.py::test_recorded_excel_worksheet_choice_controls_exact_sql_input[choice4-None]"
+        ],
+        "syntax": []
+      },
+      "started_utc": "2026-09-12T16:44:48.6877822+00:00",
+      "finished_utc": "2026-09-12T16:45:32.9382142+00:00",
+      "duration_seconds": 44.25,
+      "exit_code": 0,
+      "test_summary": {
+        "errors": 0,
+        "skipped": 0,
+        "failures": 0,
+        "tests": 1
+      },
+      "evidence_file": ".test-runs/20260912T164448679Z-25448-9b1994dc/result.json"
+    },
+    {
+      "run_id": "20260912T164448693Z-28500-e3fb87ac",
+      "mode": "verify",
+      "status": "passed",
+      "revision": "c3f0869adf03e4ead1d497af22a20a1a8115bedd",
+      "source_fingerprint": "d44ad2cde970ba6cc0c565023454d80ebd724d33125bb1d1446d2ab20f9ec849",
+      "environment": {
+        "os": "Microsoft Windows 10.0.26200",
+        "powershell": "7.6.5",
+        "python": "3.13.15"
+      },
+      "selection": {
+        "full_suite": false,
+        "diagnostic_reason": "",
+        "tests": [
+          "tests/test_recording_optional_checks.py::test_recorded_excel_worksheet_choice_controls_exact_sql_input[choice3-None]"
+        ],
+        "syntax": []
+      },
+      "started_utc": "2026-09-12T16:44:48.7010322+00:00",
+      "finished_utc": "2026-09-12T16:45:32.9384871+00:00",
+      "duration_seconds": 44.237,
+      "exit_code": 0,
+      "test_summary": {
+        "errors": 0,
+        "skipped": 0,
+        "failures": 0,
+        "tests": 1
+      },
+      "evidence_file": ".test-runs/20260912T164448693Z-28500-e3fb87ac/result.json"
+    },
+    {
+      "run_id": "20260912T164448694Z-10536-aee2730c",
+      "mode": "verify",
+      "status": "passed",
+      "revision": "c3f0869adf03e4ead1d497af22a20a1a8115bedd",
+      "source_fingerprint": "d44ad2cde970ba6cc0c565023454d80ebd724d33125bb1d1446d2ab20f9ec849",
+      "environment": {
+        "os": "Microsoft Windows 10.0.26200",
+        "powershell": "7.6.5",
+        "python": "3.13.15"
+      },
+      "selection": {
+        "full_suite": false,
+        "diagnostic_reason": "",
+        "tests": [
+          "tests/test_recording_optional_checks.py::test_excel_named_text_download_reuses_shared_normalization_for_sql"
+        ],
+        "syntax": []
+      },
+      "started_utc": "2026-09-12T16:44:48.7021746+00:00",
+      "finished_utc": "2026-09-12T16:44:59.7141148+00:00",
+      "duration_seconds": 11.012,
+      "exit_code": 0,
+      "test_summary": {
+        "errors": 0,
+        "skipped": 0,
+        "failures": 0,
+        "tests": 1
+      },
+      "evidence_file": ".test-runs/20260912T164448694Z-10536-aee2730c/result.json"
+    },
+    {
+      "run_id": "20260912T164448699Z-11412-5e46c771",
+      "mode": "verify",
+      "status": "passed",
+      "revision": "c3f0869adf03e4ead1d497af22a20a1a8115bedd",
+      "source_fingerprint": "d44ad2cde970ba6cc0c565023454d80ebd724d33125bb1d1446d2ab20f9ec849",
+      "environment": {
+        "os": "Microsoft Windows 10.0.26200",
+        "powershell": "7.6.5",
+        "python": "3.13.15"
+      },
+      "selection": {
+        "full_suite": false,
+        "diagnostic_reason": "",
+        "tests": [
+          "tests/test_recording_optional_checks.py::test_recording_validation_normalizes_nasca_input_for_configured_sql[ole-wrapper]"
+        ],
+        "syntax": []
+      },
+      "started_utc": "2026-09-12T16:44:48.7070669+00:00",
+      "finished_utc": "2026-09-12T16:44:59.6140146+00:00",
+      "duration_seconds": 10.907,
+      "exit_code": 0,
+      "test_summary": {
+        "errors": 0,
+        "skipped": 0,
+        "failures": 0,
+        "tests": 1
+      },
+      "evidence_file": ".test-runs/20260912T164448699Z-11412-5e46c771/result.json"
+    },
+    {
+      "run_id": "20260912T164719158Z-27860-b1e28972",
+      "mode": "verify",
+      "status": "failed",
+      "revision": "c3f0869adf03e4ead1d497af22a20a1a8115bedd",
+      "source_fingerprint": "d44ad2cde970ba6cc0c565023454d80ebd724d33125bb1d1446d2ab20f9ec849",
+      "environment": {
+        "os": "Microsoft Windows 10.0.26200",
+        "powershell": "7.6.5",
+        "python": "3.13.15"
+      },
+      "selection": {
+        "full_suite": false,
+        "diagnostic_reason": "",
+        "tests": [
+          "tests/test_recording_optional_checks.py::test_portable_replays_without_page_questions_and_honors_optional_rows[csv-3-3]"
+        ],
+        "syntax": []
+      },
+      "started_utc": "2026-09-12T16:47:19.1667914+00:00",
+      "finished_utc": "2026-09-12T16:47:32.6348640+00:00",
+      "duration_seconds": 13.468,
+      "exit_code": 1,
+      "test_summary": {
+        "errors": 0,
+        "skipped": 0,
+        "failures": 1,
+        "tests": 1
+      },
+      "evidence_file": ".test-runs/20260912T164719158Z-27860-b1e28972/result.json"
+    },
+    {
+      "run_id": "20260912T164719158Z-35580-19d3628f",
+      "mode": "verify",
+      "status": "failed",
+      "revision": "c3f0869adf03e4ead1d497af22a20a1a8115bedd",
+      "source_fingerprint": "d44ad2cde970ba6cc0c565023454d80ebd724d33125bb1d1446d2ab20f9ec849",
+      "environment": {
+        "os": "Microsoft Windows 10.0.26200",
+        "powershell": "7.6.5",
+        "python": "3.13.15"
+      },
+      "selection": {
+        "full_suite": false,
+        "diagnostic_reason": "",
+        "tests": [
+          "tests/test_recording_optional_checks.py::test_portable_replays_without_page_questions_and_honors_optional_rows[xlsx-0-0]"
+        ],
+        "syntax": []
+      },
+      "started_utc": "2026-09-12T16:47:19.1673784+00:00",
+      "finished_utc": "2026-09-12T16:47:28.6952142+00:00",
+      "duration_seconds": 9.528,
+      "exit_code": 1,
+      "test_summary": {
+        "errors": 0,
+        "skipped": 0,
+        "failures": 1,
+        "tests": 1
+      },
+      "evidence_file": ".test-runs/20260912T164719158Z-35580-19d3628f/result.json"
+    },
+    {
+      "run_id": "20260912T164719158Z-36392-3ddd7759",
+      "mode": "verify",
+      "status": "passed",
+      "revision": "c3f0869adf03e4ead1d497af22a20a1a8115bedd",
+      "source_fingerprint": "d44ad2cde970ba6cc0c565023454d80ebd724d33125bb1d1446d2ab20f9ec849",
+      "environment": {
+        "os": "Microsoft Windows 10.0.26200",
+        "powershell": "7.6.5",
+        "python": "3.13.15"
+      },
+      "selection": {
+        "full_suite": false,
+        "diagnostic_reason": "",
+        "tests": [
+          "tests/test_recording_optional_checks.py::test_recording_validation_normalizes_nasca_input_for_configured_sql[opaque-extensionless-wrapper]"
+        ],
+        "syntax": []
+      },
+      "started_utc": "2026-09-12T16:47:19.1667965+00:00",
+      "finished_utc": "2026-09-12T16:47:30.3440381+00:00",
+      "duration_seconds": 11.177,
+      "exit_code": 0,
+      "test_summary": {
+        "errors": 0,
+        "skipped": 0,
+        "failures": 0,
+        "tests": 1
+      },
+      "evidence_file": ".test-runs/20260912T164719158Z-36392-3ddd7759/result.json"
+    },
+    {
+      "run_id": "20260912T164719166Z-36696-5806b687",
+      "mode": "verify",
+      "status": "failed",
+      "revision": "c3f0869adf03e4ead1d497af22a20a1a8115bedd",
+      "source_fingerprint": "d44ad2cde970ba6cc0c565023454d80ebd724d33125bb1d1446d2ab20f9ec849",
+      "environment": {
+        "os": "Microsoft Windows 10.0.26200",
+        "powershell": "7.6.5",
+        "python": "3.13.15"
+      },
+      "selection": {
+        "full_suite": false,
+        "diagnostic_reason": "",
+        "tests": [
+          "tests/test_recording_optional_checks.py::test_portable_replays_without_page_questions_and_honors_optional_rows[csv-3-2]"
+        ],
+        "syntax": []
+      },
+      "started_utc": "2026-09-12T16:47:19.1747730+00:00",
+      "finished_utc": "2026-09-12T16:47:28.5368091+00:00",
+      "duration_seconds": 9.362,
+      "exit_code": 1,
+      "test_summary": {
+        "errors": 0,
+        "skipped": 0,
+        "failures": 1,
+        "tests": 1
+      },
+      "evidence_file": ".test-runs/20260912T164719166Z-36696-5806b687/result.json"
+    },
+    {
+      "run_id": "20260912T165441326Z-40396-195f0731",
+      "mode": "verify",
+      "status": "failed",
+      "revision": "c3f0869adf03e4ead1d497af22a20a1a8115bedd",
+      "source_fingerprint": "1e95314d16466ec95ca07a292686bfdd685ee07305c3d6b990d5ccf2d1860a11",
+      "environment": {
+        "os": "Microsoft Windows 10.0.26200",
+        "powershell": "7.6.5",
+        "python": "3.13.15"
+      },
+      "selection": {
+        "full_suite": false,
+        "diagnostic_reason": "",
+        "tests": [
+          "tests/test_flow_excel_worksheets.py::test_generic_portal_download_uses_the_same_worksheet_rule",
+          "tests/test_flow_excel_worksheets.py::test_empty_data_failure_keeps_workbook_and_sheet_in_log",
+          "tests/test_flow_excel_worksheets.py::test_wrapped_portal_failure_keeps_structured_worksheet_evidence",
+          "tests/test_flows.py::test_worker_cannot_ignore_a_saved_worksheet_selection"
+        ],
+        "syntax": [
+          "app/flow_excel.py",
+          "app/flow_worker.py",
+          "app/routers/flows.py",
+          "app/flow_recording_runtime.py",
+          "app/database.py"
+        ]
+      },
+      "started_utc": "2026-09-12T16:54:41.3342087+00:00",
+      "finished_utc": "2026-09-12T16:54:49.8257992+00:00",
+      "duration_seconds": 8.492,
+      "exit_code": 1,
+      "test_summary": {
+        "errors": 0,
+        "skipped": 0,
+        "failures": 2,
+        "tests": 5
+      },
+      "evidence_file": ".test-runs/20260912T165441326Z-40396-195f0731/result.json"
+    },
+    {
+      "run_id": "20260912T165653140Z-39964-502237a4",
+      "mode": "verify",
+      "status": "passed",
+      "revision": "c3f0869adf03e4ead1d497af22a20a1a8115bedd",
+      "source_fingerprint": "f0458e7d958772344c14b6ecf2fd088ed0eb69442d157f9c22fcbba04c91b436",
+      "environment": {
+        "os": "Microsoft Windows 10.0.26200",
+        "powershell": "7.6.5",
+        "python": "3.13.15"
+      },
+      "selection": {
+        "full_suite": false,
+        "diagnostic_reason": "",
+        "tests": [
+          "tests/test_flow_excel_worksheets.py::test_generic_portal_download_uses_the_same_worksheet_rule"
+        ],
+        "syntax": [
+          "app/flow_worker.py"
+        ]
+      },
+      "started_utc": "2026-09-12T16:56:53.1478094+00:00",
+      "finished_utc": "2026-09-12T16:56:56.5706531+00:00",
+      "duration_seconds": 3.423,
+      "exit_code": 0,
+      "test_summary": {
+        "errors": 0,
+        "skipped": 0,
+        "failures": 0,
+        "tests": 2
+      },
+      "evidence_file": ".test-runs/20260912T165653140Z-39964-502237a4/result.json"
+    }
+  ]
+}

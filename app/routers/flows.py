@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 from app.config import DB_PATH, UPLOAD_PGHOST, UPLOAD_PGPORT
 from app.database import get_db
 from app import flow_paths, flow_layout, flow_capacity, flow_tasks, flow_parallel, flow_browser, flow_recording, flow_view_refresh
-from app import flow_email_delivery
+from app import flow_email_delivery, flow_excel
 from app.flow_credentials import asap_credential_status, save_asap_credentials
 from app.flow_asap_exports import (
     public_asap_download_types,
@@ -693,6 +693,9 @@ class FlowWrite(BaseModel):
     export_report_title: bool | None = None
     export_filter_details: bool | None = None
     excel_trim: str = "none"
+    # An omitted field preserves saved choices; explicit null restores the
+    # one-workbook/one-worksheet default.
+    excel_worksheets: dict[str, Any] | None = None
     browser_mode: str = "headless"
     download_parallelism: int | None = Field(default=None, ge=1, le=flow_capacity.MAX_SLOTS, strict=True)
     start_week: str | None = None
@@ -720,6 +723,11 @@ class FlowWrite(BaseModel):
     # for the same older-client reason. Independent of SQL insertion.
     email_delivery: dict[str, Any] | None = None
     owner_person_id: int | None = Field(default=None, ge=1)
+
+    @field_validator("excel_worksheets")
+    @classmethod
+    def validate_excel_worksheets(cls, value):
+        return flow_excel.normalize_config(value)
 
     @field_validator("email_delivery")
     @classmethod
@@ -775,8 +783,17 @@ class FlowWrite(BaseModel):
                 raise ValueError("Source file must be a supported CSV or Excel workbook.")
             if suffix == ".csv":
                 self.local_file_worksheet = None
-            elif self.local_file_worksheet is None or not self.local_file_worksheet.strip():
-                raise ValueError("Enter the exact Excel worksheet name to load.")
+            elif "excel_worksheets" in self.model_fields_set:
+                self.local_file_worksheet = (
+                    self.excel_worksheets["names"][0]
+                    if self.excel_worksheets and self.excel_worksheets["mode"] == "single"
+                    else None
+                )
+            elif self.local_file_worksheet:
+                # Preserve the exact worksheet already chosen by older clients.
+                self.excel_worksheets = flow_excel.normalize_config(
+                    {"mode": "single", "names": [self.local_file_worksheet]}
+                )
             self.outlook_subject_contains = None
             self.site_id = None
             self.report_id = None
@@ -1175,6 +1192,9 @@ def _flow_out(db, flow_id: int, *, include_private_storage: bool = False) -> dic
     for key in ("export_report_title", "export_filter_details"):
         result[key] = None if result.get(key) is None else bool(result[key])
     result["selections"] = _loads(result.pop("selections_json"), {})
+    result["excel_worksheets"] = flow_excel.saved_config(result.pop("excel_worksheets_json", None))
+    if result["excel_worksheets"] is None and result.get("local_file_worksheet"):
+        result["excel_worksheets"] = {"mode": "single", "names": [result["local_file_worksheet"]]}
     result["post_sql_refresh"] = _post_sql_refresh_config(result.pop("post_sql_refresh_json", None))
     result["email_delivery"] = flow_email_delivery.saved_config(result.pop("email_delivery_json", None))
     result["export_views"] = _loads(result.pop("export_views_json", None), [])
@@ -1695,6 +1715,7 @@ def _build_job(db, flow_id: int, *, force_reprocess: bool = False, recording_dra
             "period_size": flow.get("window_weeks") or len(weeks),
             "file_format": flow.get("file_format") or "csv",
             "excel_trim": flow.get("excel_trim") or "none",
+            "excel_worksheets": flow.get("excel_worksheets"),
             **(
                 {
                     "asap_download_type": flow.get("asap_download_type")
@@ -3182,6 +3203,8 @@ def create_flow(body: FlowWrite, request: Request):
                  iso_utc(utc_now()) if body.enabled and body.schedule_type != "manual" else None),
             )
             flow_id = cursor.lastrowid
+            db.execute("UPDATE flows SET excel_worksheets_json=? WHERE id=?",
+                       (_json(body.excel_worksheets), flow_id))
             db.execute('UPDATE flows SET execution_method=? WHERE id=?', (body.execution_method or 'catalog', flow_id))
             db.execute("UPDATE flows SET download_parallelism=? WHERE id=?", (body.download_parallelism or 1, flow_id))
             db.execute("UPDATE flows SET post_sql_refresh_json=? WHERE id=?",
@@ -3425,12 +3448,14 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
                       sql_database, sql_schema, sql_table, sql_target_source_id,
                       target_folder, local_file_path, local_file_worksheet, flow_folder,
                       local_file_last_identity, local_file_config_revision, download_parallelism, execution_method, recording_revision_id,
-                      post_sql_refresh_json, email_delivery_json
+                      post_sql_refresh_json, email_delivery_json, excel_worksheets_json
                FROM flows WHERE id=?""",
             (flow_id,),
         ).fetchone()
         if not existing:
             raise HTTPException(404, "Flow not found.")
+        if "excel_worksheets" not in body.model_fields_set and body.excel_worksheets is None:
+            body.excel_worksheets = flow_excel.saved_config(existing["excel_worksheets_json"])
         if body.execution_method is None:
             body.execution_method = existing['execution_method']
             if body.execution_method == 'recorded':
@@ -3483,6 +3508,7 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
                 normalize_target_path(existing["local_file_path"] or "")
                 != normalize_target_path(body.local_file_path or "")
                 or existing["local_file_worksheet"] != body.local_file_worksheet
+                or flow_excel.saved_config(existing["excel_worksheets_json"]) != body.excel_worksheets
             )
             if source_changed:
                 local_file_revision += 1
@@ -3547,6 +3573,7 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
         if not cursor.rowcount:
             raise HTTPException(404, "Flow not found.")
         db.execute("UPDATE flows SET download_parallelism=? WHERE id=?", (body.download_parallelism, flow_id))
+        db.execute("UPDATE flows SET excel_worksheets_json=? WHERE id=?", (_json(body.excel_worksheets), flow_id))
         db.execute("UPDATE flows SET post_sql_refresh_json=? WHERE id=?", (_json(body.post_sql_refresh), flow_id))
         db.execute("UPDATE flows SET email_delivery_json=? WHERE id=?", (_json(body.email_delivery), flow_id))
         db.execute('UPDATE flows SET execution_method=? WHERE id=?', (body.execution_method, flow_id))
@@ -5480,6 +5507,7 @@ def claim_run(worker_id: str):
                 and (not required_adapter or required_adapter in adapters)
                 and (not (job.get("paths") or {}).get("artifact_store_root") or capabilities.get("shared_flow_artifacts"))
                 and (not flow_view_refresh.plan_views(job) or capabilities.get(flow_view_refresh.CAPABILITY))
+                and flow_excel.worker_supported(job, capabilities)
                 and ownership_supported(job, capabilities)
                 and set(execution.get("required_artifact_store_ids") or []).issubset(artifact_stores)
                 and (

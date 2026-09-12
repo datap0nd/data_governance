@@ -44,7 +44,7 @@ if str(_CODE_DIR) not in sys.path:
 
 from app.flow_clock import dubai_today
 from app.flow_paths import assert_job_paths
-from app import flow_layout
+from app import flow_layout, flow_excel
 
 try:
     from app import flow_gscm, flow_outlook, flow_publish, flow_replay, flow_retention
@@ -5474,6 +5474,9 @@ def _normalize_nasca_excel_with_com(
     header_mode: str,
     allow_empty_data: bool,
     workbook_format: str = "xlsx",
+    excel_worksheets: dict | None = None,
+    processing_progress: Callable[[str, str], None] | None = None,
+    source_label: str | None = None,
 ) -> dict:
     """Open a NASCA-wrapped modern workbook through desktop Excel.
 
@@ -5499,6 +5502,7 @@ def _normalize_nasca_excel_with_com(
     temporary_export = tempfile.TemporaryDirectory(prefix="metronome-nasca-")
     temporary_csv = Path(temporary_export.name) / "decrypted.csv"
     initialized = False
+    partial_handle = None
     stage = "initializing Excel"
     try:
         pythoncom.CoInitialize()
@@ -5550,29 +5554,70 @@ def _normalize_nasca_excel_with_com(
             AddToMru=False,
         )
         stage = "reading worksheet cells"
-        worksheet = workbook.Worksheets(1)
-        sheet_name = str(worksheet.Name)
-        with temporary_csv.open("w", encoding="utf-8-sig", newline="") as handle:
-            csv.writer(handle).writerows(_excel_com_rows(worksheet))
-        stage = "normalizing worksheet rows"
+        worksheets = [workbook.Worksheets(index) for index in range(1, int(workbook.Worksheets.Count) + 1)]
+        available = [str(sheet.Name) for sheet in worksheets]
+        name = source_label or source.name
+        selected = flow_excel.select_names(available, excel_worksheets, workbook=name)
+        if processing_progress:
+            processing_progress("file_normalization", f"Workbook {name!r}; worksheets: {available!r}. Loading: {selected!r}.")
         preamble = "none" if header_mode == "first_row" else csv_preamble
-        normalization = _normalize_csv(
-            temporary_csv,
-            output=output,
-            preamble=preamble,
-            strict_headers=strict_headers,
-            allow_empty_data=allow_empty_data,
-        )
+        partial = output.with_name(f".{output.name}.partial")
+        common_header = None
+        sheet_row_counts = {}
+        preamble_rows_removed = 0
+        for index, sheet_name in enumerate(selected):
+            worksheet = worksheets[available.index(sheet_name)]
+            stage = "reading worksheet cells"
+            with temporary_csv.open("w", encoding="utf-8-sig", newline="") as handle:
+                csv.writer(handle).writerows(_excel_com_rows(worksheet))
+            stage = "normalizing worksheet rows"
+            normalized_sheet = Path(temporary_export.name) / f"sheet-{index}.csv"
+            normalization = _normalize_csv(
+                temporary_csv, output=normalized_sheet, preamble=preamble,
+                strict_headers=strict_headers, allow_empty_data=allow_empty_data,
+            )
+            with normalized_sheet.open(encoding="utf-8-sig", newline="") as handle:
+                rows = csv.reader(handle)
+                header = next(rows)
+                if common_header is None:
+                    common_header = header
+                    partial_handle = partial.open("x", encoding="utf-8-sig", newline="")
+                    writer = csv.writer(partial_handle, lineterminator="\n")
+                    writer.writerow(header)
+                else:
+                    flow_excel.require_compatible_headers(
+                        common_header, header, workbook=name, first=selected[0],
+                        current=sheet_name, available=available, selected=selected,
+                    )
+                count = 0
+                for row in rows:
+                    writer.writerow(row)
+                    count += 1
+                sheet_row_counts[sheet_name] = count
+            preamble_rows_removed += normalization.get("preamble_rows_removed", 0)
+            if processing_progress:
+                processing_progress("file_normalization", f"Workbook {name!r}, worksheet {sheet_name!r}: {count} rows, {len(header)} columns.")
+        partial_handle.close()
+        partial.replace(output)
         return {
             **normalization,
             "excel_trim": "none",
             "xlsx_header_mode": header_mode,
             "source_encoding": "excel_com",
             "source_delimiter": ",",
-            "source_sheets": [sheet_name],
+            "source_sheets": selected,
+            "available_sheets": available,
+            "sheet_row_counts": sheet_row_counts,
+            "columns": common_header,
+            "preamble_rows_removed": preamble_rows_removed,
+            "excel_worksheets": excel_worksheets,
             "recovered_week_columns": [],
             "removed_metric_label": None,
         }
+    except flow_excel.WorksheetError as exc:
+        if processing_progress:
+            processing_progress("file_normalization_failed", str(exc))
+        raise
     except RuntimeError:
         raise
     except Exception as exc:
@@ -5584,6 +5629,8 @@ def _normalize_nasca_excel_with_com(
             "The protected download was preserved; SQL was not started."
         ) from exc
     finally:
+        if partial_handle is not None and not partial_handle.closed:
+            partial_handle.close()
         if workbook is not None:
             try:
                 workbook.Close(False)
@@ -5621,6 +5668,8 @@ def _normalize_xlsx(
     worksheet_name: str | None = None,
     allow_empty_data: bool = False,
     source_label: str | None = None,
+    excel_worksheets: dict | None = None,
+    processing_progress: Callable[[str, str], None] | None = None,
 ) -> dict:
     """Convert populated Excel-family sheets into one normalized UTF-8 CSV.
 
@@ -5639,20 +5688,10 @@ def _normalize_xlsx(
         header_mode = "first_row"
     workbook_format = str(workbook_format or _detect_download_format(source)).casefold()
     workbook = _open_excel_workbook(source, workbook_format, display_name=source_label)
-    worksheets = list(workbook.worksheets)
-    if worksheet_name is not None:
-        matches = [sheet for sheet in worksheets if sheet.title == worksheet_name]
-        if len(matches) != 1:
-            available = ", ".join(repr(sheet.title) for sheet in worksheets[:20]) or "none"
-            workbook.close()
-            raise RuntimeError(
-                f"Excel worksheet {worksheet_name!r} was not found exactly once. "
-                f"Available worksheets: {available}."
-            )
-        worksheets = matches
+    name = source_label or source.name
     common_header: list[str] | None = None
-    common_normalized: list[str] | None = None
     source_sheets = []
+    sheet_row_counts = {}
     recovered_week_columns: list[str] = []
     removed_metric_label: str | None = None
     preamble_rows_removed = 0
@@ -5662,10 +5701,18 @@ def _normalize_xlsx(
     # CSV where a complete one belongs. The worker never deletes, so a failed
     # conversion leaves its partial behind as evidence.
     partial = output.with_name(f".{output.name}.partial")
-    handle = partial.open("x", encoding="utf-8-sig", newline="")
+    handle = None
     try:
+        worksheets = list(workbook.worksheets)
+        available = [sheet.title for sheet in worksheets]
+        if worksheet_name is not None and excel_worksheets is None:
+            excel_worksheets = {"mode": "single", "names": [worksheet_name]}
+        selected = flow_excel.select_names(available, excel_worksheets, workbook=name)
+        worksheets = [next(sheet for sheet in worksheets if sheet.title == name) for name in selected]
+        if processing_progress:
+            processing_progress("file_normalization", f"Workbook {name!r}; worksheets: {available!r}. Loading: {selected!r}.")
+        handle = partial.open("x", encoding="utf-8-sig", newline="")
         writer = csv.writer(handle, lineterminator="\n")
-        skipped_sheets: list[str] = []
         for worksheet in worksheets:
             worksheet = _trim_worksheet(worksheet, excel_trim)
             plan = _xlsx_sheet_plan(
@@ -5674,10 +5721,13 @@ def _normalize_xlsx(
                 allow_empty_data=allow_empty_data,
             )
             if plan is None:
-                skipped_sheets.append(
-                    f"{worksheet.title}: {_sheet_header_scan(worksheet)}"
+                raise flow_excel.WorksheetError(
+                    f"Selected worksheet {worksheet.title!r} did not contain a usable table with data rows. "
+                    f"Sheet scan, after pre-processing: {_sheet_header_scan(worksheet)}. "
+                    "Check its header and the worksheet names in Flows > After download.",
+                    workbook=name, available=available, selected=selected,
+                    code="excel_sheet_no_table",
                 )
-                continue
             header = plan["header"]
             if plan["metric_label"]:
                 if removed_metric_label and removed_metric_label != plan["metric_label"]:
@@ -5693,20 +5743,16 @@ def _normalize_xlsx(
                         f"its populated sheets: {recovered_week_columns} and {plan['week_columns']}."
                     )
                 recovered_week_columns = plan["week_columns"]
-            normalized = [
-                re.sub(r"\W+", "_", value).strip("_").casefold() or f"col_{index}"
-                for index, value in enumerate(header)
-            ]
             if common_header is None:
                 common_header = header
-                common_normalized = normalized
                 writer.writerow(common_header)
-            elif normalized != common_normalized:
-                raise RuntimeError(
-                    "Downloaded Excel workbook has populated sheets with different columns: "
-                    f"{', '.join(source_sheets)} and {worksheet.title}."
+            else:
+                flow_excel.require_compatible_headers(
+                    common_header, header, workbook=name, first=source_sheets[0],
+                    current=worksheet.title, available=available, selected=selected,
                 )
             width = len(common_header)
+            sheet_start_rows = rows_written
             drop_index = plan["drop_index"]
             header_index = plan["header_index"]
             for index, row in enumerate(_xlsx_rows(worksheet)):
@@ -5717,28 +5763,39 @@ def _normalize_xlsx(
                 if len(row) > width and any(
                     str(value).strip() for value in row[width:]
                 ):
-                    raise RuntimeError(
+                    raise flow_excel.WorksheetError(
                         "Downloaded Excel row contains populated cells beyond the resolved header "
                         f"on sheet {worksheet.title!r}, row {index + 1}. Header width: {width}; "
-                        f"row width: {len(row)}. Refusing to discard data."
+                        f"row width: {len(row)}. Refusing to discard data.",
+                        workbook=name, available=available, selected=selected,
+                        code="excel_row_width",
                     )
                 values = list(row[:width]) + [""] * max(0, width - len(row))
                 if any(str(value).strip() for value in values):
                     writer.writerow(values)
                     rows_written += 1
             source_sheets.append(worksheet.title)
+            sheet_row_counts[worksheet.title] = rows_written - sheet_start_rows
+            if processing_progress:
+                processing_progress("file_normalization", f"Workbook {name!r}, worksheet {worksheet.title!r}: {sheet_row_counts[worksheet.title]} rows, {width} columns.")
             preamble_rows_removed += header_index
+    except flow_excel.WorksheetError as exc:
+        if processing_progress:
+            processing_progress("file_normalization_failed", str(exc))
+        raise
     finally:
         workbook.close()
-        if not handle.closed:
+        if handle is not None and not handle.closed:
             handle.close()
     if common_header is None or (not rows_written and not allow_empty_data):
-        detail = " | ".join(skipped_sheets) or "no populated sheets"
-        raise RuntimeError(
+        error = flow_excel.WorksheetError(
             "Downloaded Excel workbook did not contain a usable table with "
-            f"data rows (Excel pre-processing: {excel_trim}). Sheet scan, "
-            f"after pre-processing: {detail}."
+            f"data rows (Excel pre-processing: {excel_trim}). Selected worksheets have no data rows.",
+            workbook=name, available=available, selected=selected, code="excel_sheet_no_data",
         )
+        if processing_progress:
+            processing_progress("file_normalization_failed", str(error))
+        raise error
     partial.replace(output)
     return {
         "excel_trim": excel_trim,
@@ -5747,6 +5804,9 @@ def _normalize_xlsx(
         "source_encoding": workbook_format,
         "source_delimiter": None,
         "source_sheets": source_sheets,
+        "available_sheets": available,
+        "sheet_row_counts": sheet_row_counts,
+        "excel_worksheets": excel_worksheets,
         "columns": common_header,
         "recovered_week_columns": recovered_week_columns,
         "removed_metric_label": removed_metric_label,
@@ -6154,6 +6214,22 @@ def _excel_output_suffix(local_path: Path, output: Path, workbook_format: str) -
     return {"xlsx": ".xlsx", "xls": ".xls", "xlsb": ".xlsb"}[workbook_format]
 
 
+def _inspect_excel_worksheets(source: Path, workbook_format: str, name: str,
+                              processing_progress=None) -> dict:
+    """Check a download-only workbook without scanning or normalizing its rows."""
+    book = _open_excel_workbook(source, workbook_format, display_name=name)
+    try:
+        available = [sheet.title for sheet in book.worksheets]
+        selected = flow_excel.select_names(available, None, workbook=name)
+        return {"available_sheets": available, "source_sheets": selected}
+    except flow_excel.WorksheetError as exc:
+        if processing_progress:
+            processing_progress("file_normalization_failed", str(exc))
+        raise
+    finally:
+        book.close()
+
+
 def _store_completed_download(
     local_path: Path, output: Path, *, file_format: str = "csv",
     asap_download_type: str | None = None,
@@ -6164,6 +6240,7 @@ def _store_completed_download(
     strict_headers: bool = False,
     xlsx_header_mode: str = "auto",
     excel_trim: str = "none",
+    excel_worksheets: dict | None = None,
     processing_progress: Callable[[str, str], None] | None = None,
     recorded_output: bool = False,
     source_filename: str | None = None,
@@ -6186,6 +6263,20 @@ def _store_completed_download(
     # final bytes, not a mid-flush view of a share-backed staging folder.
     snapshot = _stable_source_snapshot(local_path)
     detected = _detect_download_format(local_path, source_filename=source_filename)
+    if excel_worksheets is not None:
+        excel_worksheets = flow_excel.normalize_config(excel_worksheets)
+        allow_raw_xlsx_fallback = False
+        if detected not in EXCEL_DOWNLOAD_FORMATS:
+            error = flow_excel.WorksheetError(
+                f"This download is {detected.upper()}, so the named Excel worksheets cannot be selected. "
+                "Check the download format and worksheet option in Flows > After download.",
+                workbook=source_filename or output.name, available=[], selected=excel_worksheets['names'],
+                code="excel_workbook_required",
+            )
+            if processing_progress:
+                processing_progress("file_normalization_failed", str(error))
+            raise error
+        require_normalized_csv = True
     if recorded_output and not require_normalized_csv:
         # Recording-only downloads keep their bytes. Table shape and row
         # counts become requirements only when a data check or processing
@@ -6219,6 +6310,9 @@ def _store_completed_download(
             output, snapshot['file_size'], snapshot['checksum'], label='Recorded download',
             progress=processing_progress,
         )
+        if detected in EXCEL_DOWNLOAD_FORMATS:
+            # Keep the original in the run folder even when the sheet check fails.
+            metadata.update(_inspect_excel_worksheets(local_path, detected, output.name, processing_progress))
         return {**metadata, **copied, 'file_path': str(output), 'filename': output.name,
                 'original_file_path': str(output), 'original_filename': output.name,
                 'original_file_size': copied['file_size'],
@@ -6284,6 +6378,9 @@ def _store_completed_download(
             header_mode=xlsx_header_mode,
             allow_empty_data=recorded_output,
             workbook_format=modern_format,
+            excel_worksheets=excel_worksheets,
+            processing_progress=processing_progress,
+            source_label=source_filename or output.name,
         )
         # Publish the retained protected original only after Excel has read the
         # untouched browser download. The normalized CSV remains the existing
@@ -6467,9 +6564,10 @@ def _store_completed_download(
             label="Downloaded Excel workbook", progress=processing_progress,
         )
         if not require_normalized_csv:
-            return _raw_xlsx_metadata(
-                output, original_size, copied["checksum"], saved_format,
-            )
+            return {
+                **_raw_xlsx_metadata(output, original_size, copied["checksum"], saved_format),
+                **_inspect_excel_worksheets(local_path, detected, output.name, processing_progress),
+            }
         normalized_output = _safe_output_path(
             output.parent, f"{output.stem}_normalized.csv",
         )
@@ -6495,9 +6593,11 @@ def _store_completed_download(
                 header_mode=xlsx_header_mode, strict_headers=strict_headers,
                 workbook_format=detected, excel_trim=excel_trim,
                 allow_empty_data=recorded_output, source_label=output.name,
+                excel_worksheets=excel_worksheets,
+                processing_progress=processing_progress,
             )
         except Exception as exc:
-            if not allow_raw_xlsx_fallback:
+            if not allow_raw_xlsx_fallback or isinstance(exc, flow_excel.WorksheetError):
                 raise
             # GSCM's native workbook is the requested deliverable. Some GSCM
             # exports omit Excel's default style metadata or lay out their
@@ -6954,6 +7054,7 @@ def execute_outlook_job(
             csv_preamble="none",
             strict_headers=True,
             xlsx_header_mode="first_row",
+            excel_worksheets=job["downloads"].get("excel_worksheets"),
             processing_progress=processing_progress,
         )
     receipt = acquisition["receipt"]
@@ -6985,10 +7086,15 @@ def execute_local_file_job(
     if not expected_format:
         raise RuntimeError(f"Configured source file has an unsupported extension: {source_path.name}")
     worksheet = source.get("worksheet")
+    excel_worksheets = job.get("downloads", {}).get("excel_worksheets")
     if expected_format == "csv" and worksheet is not None:
         raise RuntimeError("CSV file jobs must not specify an Excel worksheet.")
-    if expected_format != "csv" and (worksheet is None or not str(worksheet).strip()):
-        raise RuntimeError("Excel file jobs must specify the exact worksheet name.")
+    if expected_format == "csv" and excel_worksheets:
+        raise flow_excel.WorksheetError(
+            "This source file is CSV and has no named Excel worksheets. Check the worksheet option in Flows > After download.",
+            workbook=source_path.name, available=[], selected=excel_worksheets["names"],
+            code="excel_workbook_required",
+        )
     normalized_path = flow_publish.normalize_target_path(source_path)
     if normalized_path != source.get("normalized_path"):
         raise RuntimeError("The local-file job path identity is malformed or incomplete.")
@@ -7005,6 +7111,7 @@ def execute_local_file_job(
             "checksum": snapshot["checksum"],
             "path": normalized_path,
             "worksheet": worksheet,
+            **({"excel_worksheets": excel_worksheets} if excel_worksheets and excel_worksheets["mode"] == "append" else {}),
         },
         ensure_ascii=False, separators=(",", ":"), sort_keys=True,
     ).encode("utf-8")
@@ -7071,7 +7178,9 @@ def execute_local_file_job(
                 raw_output, normalized_output, requested_weeks=[],
                 header_mode="first_row", strict_headers=True,
                 workbook_format=expected_format, excel_trim="none",
-                worksheet_name=str(worksheet),
+                worksheet_name=worksheet,
+                excel_worksheets=excel_worksheets,
+                processing_progress=lambda stage, message: report_progress("running", {"stage": stage, "message": message}),
             )
     metadata = {**_csv_metadata(normalized_output), **normalization}
     try:
@@ -7420,6 +7529,7 @@ def execute_job(
                         file_format=job["downloads"].get("file_format") or "csv",
                         asap_download_type=job["downloads"].get("asap_download_type") if is_asap else None,
                         excel_trim=job["downloads"].get("excel_trim") or "none",
+                        excel_worksheets=job["downloads"].get("excel_worksheets"),
                         requested_period=period,
                         allow_raw_xlsx_fallback=(
                             is_gscm
@@ -7429,6 +7539,8 @@ def execute_job(
                         processing_progress=_processing_progress,
                     )
                 except Exception as exc:
+                    if isinstance(exc, flow_excel.WorksheetError):
+                        raise _CompletedDownloadProcessingError(str(exc)) from exc
                     if is_gscm:
                         raise _CompletedDownloadProcessingError(
                             "Browser completed the GSCM workbook download, but local processing "
@@ -7441,12 +7553,21 @@ def execute_job(
                         ) from exc
                     raise
             else:
-                download.save_as(output)
-                normalization = _normalize_csv(output)
-                metadata = {
-                    **_csv_metadata(output), **normalization,
-                    "file_path": str(output), "filename": output.name,
-                }
+                staging = download_staging_dir or profile_dir / "downloads"
+                staging.mkdir(parents=True, exist_ok=True)
+                staged_file = Path(tempfile.mkdtemp(prefix="export-", dir=staging)) / "download"
+                download.save_as(staged_file)
+                try:
+                    metadata = _store_completed_download(
+                        staged_file, output,
+                        file_format=job["downloads"].get("file_format") or "csv",
+                        excel_worksheets=job["downloads"].get("excel_worksheets"),
+                        excel_trim=job["downloads"].get("excel_trim") or "none",
+                        requested_period=period, processing_progress=_processing_progress,
+                        source_filename=getattr(download, "suggested_filename", output.name),
+                    )
+                except flow_excel.WorksheetError as exc:
+                    raise _CompletedDownloadProcessingError(str(exc)) from exc
         return {
             "period_key": period,
             "export_view": export_view,
@@ -7560,6 +7681,7 @@ def execute_job(
                     file_format=job["downloads"].get("file_format") or "csv",
                     asap_download_type=job["downloads"].get("asap_download_type") if is_asap else None,
                     excel_trim=job["downloads"].get("excel_trim") or "none",
+                    excel_worksheets=job["downloads"].get("excel_worksheets"),
                     requested_period=period,
                     allow_raw_xlsx_fallback=(is_gscm and not downstream_requires_csv),
                     require_normalized_csv=require_normalized_csv,
@@ -7569,6 +7691,8 @@ def execute_job(
             # Unlike a browser download, a replayed file that fails processing
             # costs nothing to redo: the portal was never opened, so fall back
             # to the full UI export instead of failing the run.
+            if isinstance(exc, flow_excel.WorksheetError):
+                raise
             flow_replay.forget_recipe(profile_dir, job, task_key)
             report_progress(
                 "running",
@@ -8089,6 +8213,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
         registration['capabilities'][flow_tasks.HEADED_CAPABILITY] = True
         registration['capabilities'][flow_browser.CAPABILITY] = True
         registration['capabilities']['recorded_flows_v1'] = True
+        registration['capabilities'][flow_excel.CAPABILITY] = True
         registration['capabilities']['recorded_flows_v2'] = True
         registration['capabilities']['recorded_flows_v3'] = True
         registration['capabilities']['gscm_bookmark_targets_v1'] = True
@@ -8382,6 +8507,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                     if screenshot_path:
                         failure_message += f" Screenshot: {screenshot_path}"
                     failure_detail = {"stage": "failed", "message": failure_message}
+                    failure_detail.update(flow_excel.failure_details(exc))
                     try:
                         progress(
                             "failed", failure_detail,

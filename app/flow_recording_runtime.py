@@ -579,6 +579,7 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
                         or step['output'].get('headers')
                         or step['output'].get('period_checks')
                         or job['downloads'].get('excel_trim', 'none') != 'none'
+                        or job['downloads'].get('excel_worksheets')
                     )
                 )
                 if preserve_staged_excel:
@@ -672,7 +673,8 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
             if downstream and fmt in {'html', 'txt'}:
                 raise ValueError('HTML/text downloads cannot be transformed or loaded into SQL.')
             needs_table = bool(downstream or specification.get('min_rows') or specification.get('headers')
-                or specification.get('period_checks') or job['downloads'].get('excel_trim', 'none') != 'none')
+                or specification.get('period_checks') or job['downloads'].get('excel_trim', 'none') != 'none'
+                or job['downloads'].get('excel_worksheets'))
             metadata = flow_worker._store_completed_download(staged, output,
                 source_filename=source_filename,
                 # The recording proves what the browser clicked, not which
@@ -683,6 +685,8 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
                 file_format=fmt,
                 require_normalized_csv=fmt in {'csv', 'xlsx'} and needs_table, recorded_output=True,
                 allow_raw_xlsx_fallback=False, excel_trim=job['downloads'].get('excel_trim', 'none'),
+                excel_worksheets=job['downloads'].get('excel_worksheets'),
+                processing_progress=lambda stage, message: progress('running', {'stage': stage, 'message': message}, artifacts),
                 # Recorded ASAP downloads still use ASAP's report/filter
                 # preamble even though navigation came from a recording.
                 # Reuse the scan-selected normalization contract so only the

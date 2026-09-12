@@ -1338,7 +1338,7 @@ def test_sql_copy_error_is_clean_and_rollback_is_logged(tmp_path, monkeypatch):
     assert events[-1]["sql_stage"] == "copy"
 
 
-def test_excel_normalization_merges_populated_sheets_in_one_streamed_pass(tmp_path):
+def test_excel_normalization_appends_named_sheets_in_one_streamed_pass(tmp_path):
     # Rows go straight from the workbook to the CSV writer, so a workbook whose
     # rows are split across sheets - which is how an export larger than Excel's
     # 1,048,576-row sheet limit has to arrive - still lands as one table.
@@ -1356,7 +1356,10 @@ def test_excel_normalization_merges_populated_sheets_in_one_streamed_pass(tmp_pa
     workbook.save(source)
 
     output = tmp_path / "bundle.xlsx"
-    metadata = flow_worker._store_completed_download(source, output, file_format="xlsx")
+    metadata = flow_worker._store_completed_download(
+        source, output, file_format="xlsx",
+        excel_worksheets={"mode": "append", "names": ["Part 1", "Part 2"]},
+    )
 
     assert metadata["source_sheets"] == ["Part 1", "Part 2"]
     assert metadata["row_count"] == 2
@@ -1502,6 +1505,65 @@ class _ComSheetFixture:
         return SimpleNamespace(Value=values)
 
 
+class _ComWorksheetsFixture:
+    def __init__(self, get_sheet, count=1):
+        self.Count = count
+        self.get_sheet = get_sheet
+
+    def __call__(self, index):
+        return self.get_sheet(index)
+
+
+@pytest.mark.parametrize(("choice", "expected_sheets", "expected_rows"), [
+    (None, None, 0),
+    ({"mode": "append", "names": ["South", "North"]}, ["South", "North"], 3),
+    ({"mode": "single", "names": ["etc."]}, ["etc."], 17),
+    ({"mode": "append", "names": ["North", "etc."]}, None, 0),
+])
+def test_nasca_excel_honors_explicit_sheets_and_default_guard(tmp_path, monkeypatch, choice, expected_sheets, expected_rows):
+    from app import flow_excel
+    source = tmp_path / "protected.xlsx"
+    source.write_bytes(b"NASCA protected workbook payload")
+    sheets = [
+        _ComSheetFixture([("Code", "Units"), ("N", 4), ("N", 4)]),
+        _ComSheetFixture([("Code", "Units"), ("S", 7)]),
+        _ComSheetFixture([("Year", "Quarter", "Total")] + [(2026, i, i) for i in range(17)]),
+    ]
+    for sheet, name in zip(sheets, ["North", "South", "etc."]):
+        sheet.Name = name
+    closed = []
+    book = SimpleNamespace(Worksheets=_ComWorksheetsFixture(lambda index: sheets[index - 1], 3),
+                           Close=lambda save: closed.append(save))
+    excel = SimpleNamespace(Workbooks=SimpleNamespace(Open=lambda *args, **kwargs: book),
+                            Quit=lambda: None)
+    pythoncom = ModuleType("pythoncom")
+    pythoncom.CoInitialize = lambda: None
+    pythoncom.CoUninitialize = lambda: None
+    client = ModuleType("win32com.client")
+    client.DispatchEx = lambda name: excel
+    win32com = ModuleType("win32com")
+    win32com.client = client
+    for name, module in [("pythoncom", pythoncom), ("win32com", win32com), ("win32com.client", client)]:
+        monkeypatch.setitem(sys.modules, name, module)
+
+    def run():
+        return flow_worker._store_completed_download(
+            source, tmp_path / "saved.xlsx", file_format="xlsx", recorded_output=True,
+            excel_worksheets=choice, csv_preamble="none", xlsx_header_mode="first_row",
+        )
+
+    if expected_sheets is None:
+        with pytest.raises(flow_excel.WorksheetError):
+            run()
+        assert not (tmp_path / "saved_normalized.csv").exists()
+    else:
+        result = run()
+        assert result["source_sheets"] == expected_sheets
+        assert result["row_count"] == expected_rows
+        assert Path(result["original_file_path"]).read_bytes() == source.read_bytes()
+    assert closed == [False]
+
+
 def test_excel_com_rows_preserve_values_blanks_duplicates_and_batch_boundaries():
     rows = [("Country", "Units"), ("الإمارات", 120.0), (None, 0.0),
             ("الإمارات", 120.0), ("Missing", -2146826246)]
@@ -1524,7 +1586,11 @@ def test_nasca_com_failure_identifies_stage_and_restores_desktop(tmp_path, monke
         hresult = -2146827284
 
     class Workbook:
-        def Worksheets(self, index):
+        @property
+        def Worksheets(self):
+            return _ComWorksheetsFixture(self._worksheet)
+
+        def _worksheet(self, index):
             raise ComFailure("private provider text must not appear in diagnostics")
 
         def Close(self, save):
@@ -1587,7 +1653,11 @@ def test_nasca_encrypted_modern_excel_uses_desktop_excel_for_sql_csv(
     class Workbook:
         CheckCompatibility = True
 
-        def Worksheets(self, index):
+        @property
+        def Worksheets(self):
+            return _ComWorksheetsFixture(self._worksheet)
+
+        def _worksheet(self, index):
             assert index == 1
             return _ComSheetFixture([
                 ("MTracker subscribers", None), (None, None),
@@ -1723,7 +1793,11 @@ def test_nasca_excel_recovery_borrows_and_restores_active_excel(tmp_path, monkey
     class Workbook:
         CheckCompatibility = True
 
-        def Worksheets(self, index):
+        @property
+        def Worksheets(self):
+            return _ComWorksheetsFixture(self._worksheet)
+
+        def _worksheet(self, index):
             assert index == 1
             return _ComSheetFixture([("Subsidiary", "Units"), ("SEEG", 120.0)])
 

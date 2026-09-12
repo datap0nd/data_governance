@@ -570,6 +570,7 @@ CREATE TABLE IF NOT EXISTS flows (
     export_report_title INTEGER,
     export_filter_details INTEGER,
     excel_trim          TEXT NOT NULL DEFAULT 'none',
+    excel_worksheets_json TEXT,
     browser_mode        TEXT NOT NULL DEFAULT 'headless',
     start_week          TEXT,
     end_week            TEXT,
@@ -1297,6 +1298,7 @@ MIGRATIONS = [
         WHERE asap_download_type IS NULL
           AND site_id IN (SELECT id FROM flow_sites WHERE adapter='asap_portal')""",
     "ALTER TABLE flows ADD COLUMN excel_trim TEXT NOT NULL DEFAULT 'none'",
+    "ALTER TABLE flows ADD COLUMN excel_worksheets_json TEXT",
     "ALTER TABLE flows ADD COLUMN sql_mode TEXT",
     "ALTER TABLE flows ADD COLUMN sql_database TEXT",
     "ALTER TABLE flows ADD COLUMN sql_schema TEXT",

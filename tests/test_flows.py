@@ -5620,3 +5620,48 @@ def test_excel_trim_defaults_to_none_and_rejects_unknown_options():
     assert _flow(1, 1).excel_trim == "none"
     with pytest.raises(ValueError, match="pre-processing"):
         _flow(1, 1, excel_trim="drop_everything")
+
+
+def test_excel_worksheet_choices_are_saved_frozen_preserved_and_reset(flow_db):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    choice = {"mode": "append", "names": ["North", "South"]}
+    saved = flows.create_flow(_flow(site["id"], report["id"], excel_worksheets=choice), _request())
+    assert saved["excel_worksheets"] == choice
+    with database.get_db() as db:
+        job = flows._build_job(db, saved["id"])
+    assert job["downloads"]["excel_worksheets"] == choice
+    assert job["sql_handoff"]["enabled"] == saved["sql_handoff_enabled"]
+    # An older client omitting the new setting must not erase the selection.
+    updated = flows.update_flow(saved["id"], _flow(site["id"], report["id"]), _request())
+    assert updated["excel_worksheets"] == choice
+    # Explicit null is the checkbox being turned off.
+    reset = flows.update_flow(saved["id"], _flow(site["id"], report["id"], excel_worksheets=None), _request())
+    assert reset["excel_worksheets"] is None
+    with database.get_db() as db:
+        assert flows._build_job(db, saved["id"])["downloads"]["excel_worksheets"] is None
+
+
+def test_excel_worksheet_api_errors_identify_the_setting():
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError) as error:
+        _flow(1, 1, excel_worksheets={"mode": "append", "names": ["North", "North"]})
+    assert error.value.errors()[0]["loc"] == ("excel_worksheets",)
+
+
+def test_worker_cannot_ignore_a_saved_worksheet_selection(flow_db):
+    from app import flow_excel
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    choice = {"mode": "single", "names": ["North"]}
+    saved = flows.create_flow(_flow(site["id"], report["id"], excel_worksheets=choice), _request())
+    queued = flows.queue_run(saved["id"], _request())
+    worker = flows.WorkerRegister(worker_id="worksheet-worker", display_name="Worksheet worker",
+                                  capabilities={"shared_flow_artifacts": True})
+    flows.register_worker(worker)
+    assert flows.claim_run(worker.worker_id)["run"] is None
+    worker.capabilities[flow_excel.CAPABILITY] = True
+    flows.register_worker(worker)
+    claimed = flows.claim_run(worker.worker_id)["run"]
+    assert claimed["id"] == queued["id"]
+    assert claimed["job"]["downloads"]["excel_worksheets"] == choice

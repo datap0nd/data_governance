@@ -395,7 +395,7 @@ def test_trim_takes_the_declared_first_row_as_header_and_numbers_repeats(tmp_pat
     assert lines[1:] == ["MENA,5,6", "EU,7,8"]
 
 
-def test_trim_skips_an_extra_sheet_with_a_blank_first_row(tmp_path):
+def test_trim_loads_only_the_explicitly_named_sheet(tmp_path):
     from openpyxl import Workbook
 
     workbook = Workbook()
@@ -412,6 +412,7 @@ def test_trim_skips_an_extra_sheet_with_a_blank_first_row(tmp_path):
     output = tmp_path / "trimmed.csv"
     flow_worker._normalize_xlsx(
         source, output, requested_weeks=[], excel_trim="first_row_and_column",
+        excel_worksheets={"mode": "single", "names": [sheet.title]},
     )
 
     lines = output.read_text(encoding="utf-8-sig").splitlines()
