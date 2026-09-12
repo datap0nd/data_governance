@@ -3,8 +3,8 @@
 - Plan: [test-plan.md](test-plan.md)
 - Change/PR: agent guidance rewrite, `tools/check.py`, SessionStart bootstrap,
   archive of stale root documents
-- Evidence cutoff (UTC): 2026-09-12 06:39
-- Tested code revision: `55bae3d` (`Modernize agent guidance and add a
+- Evidence cutoff (UTC): 2026-09-12 06:40
+- Tested code revision: `b67c6dc` (`Modernize agent guidance and add a
   cross-platform verifier`). The report file itself is committed afterwards and
   changes no tested behavior.
 - Environment: Linux agent container (no PowerShell), checkout-owned `.venv` on
@@ -18,15 +18,15 @@
 
 | Check/case IDs | Command or procedure | Revision/environment | Result/counts/duration | Evidence |
 | --- | --- | --- | --- | --- |
-| T-01 | `python tools/check.py setup` | `37169ef`, Linux, no pre-existing `.venv` | PASS — created `.venv` on Python 3.13.12, installed the 37 locked distributions, wrote `.venv/.metronome-ci-lock.sha256` | `.test-runs/20260912T063205523Z-2063-83d034d5/result.json` |
-| T-02 | `python tools/check.py preflight` | `55bae3d`, Linux | PASS — Python 3.13.12, lock fingerprint matched, `pip check` clean, required modules importable; 0.316 s | `.test-runs/20260912T063822478Z-2473-7083e0bc/result.json` |
-| T-03, T-04, T-05, T-06, T-07 | `python tools/check.py verify --test tests/test_check_command.py --test tests/test_ci_merge_gate.py --syntax tools/check.py --syntax tools/ci/merge_gate.py` | `55bae3d`, Linux | PASS — 17 tests, 0 failures, 0 errors, 2 skipped (the two PowerShell execution tests, Windows-only), 0.851 s | `.test-runs/20260912T063815836Z-2444-bb90a8a1/result.json` |
-| T-07 | `python tools/check.py verify --test tests/test_ci_merge_gate.py --reuse` run twice | `55bae3d`, Linux | PASS — first run executed 7 tests; the repeat reported `Reused unchanged successful local evidence.` with `reused_from` pointing at the first result | `.test-runs/20260912T063833764Z-2496-b7a11e3b/result.json` |
-| T-08 | `CLAUDE_CODE_REMOTE=true CLAUDE_PROJECT_DIR=... .claude/hooks/session-start.sh`, then again with `.venv/.metronome-ci-lock.sha256` removed | `55bae3d`, Linux | PASS — first run printed "`.venv` already matches requirements-ci.lock" and exited 0 without installing; second run re-ran setup and restored the marker | Shell transcript below |
-| T-09 | `python -c "import yaml; yaml.safe_load(open('.github/workflows/tests.yml'))"` and `git diff --check` | `55bae3d`, Linux | PASS — workflow parses with jobs `scope, python, frontend, postgres, merge-ready`; no whitespace errors | Command output |
-| T-09b | Replayed the workflow's `case` classification over this PR's changed files | `55bae3d`, Linux | PASS — `application=true` from `tools/check.py`, `tests/test_check_command.py` and `.github/workflows/tests.yml`; the archive moves and `.claude/` files classify as documentation scope | Command output |
-| T-10 | Relative-link check over the 12 touched or newly linked markdown files | `55bae3d`, Linux | PASS — 166 relative links resolve; the only failures before this file existed were the three pointers to this report | Script output |
-| T-11 | `python tools/check.py verify --test tests/test_unattended_update_scripts.py --test tests/test_flows.py::test_setup_stops_headed_worker_before_replacing_runtime_code --test ...downloads_update_before_stopping_running_services --test ...waits_for_headless_worker_to_stop_before_replacing_code --test ...fails_closed_when_python_dependencies_cannot_install` | `55bae3d`, Linux | PASS — 12 tests, 0 failures, 1 skipped (Windows scheduled updater), 1.443 s; confirms the root-level installer files the suite reads were not disturbed by the archive moves | `.test-runs/20260912T063820983Z-2463-15ce637f/result.json` |
+| T-01 | `python tools/check.py setup` | `b67c6dc`, Linux, `.venv` deleted first | PASS — created `.venv` on Python 3.13.12, installed the 37 locked distributions, wrote `.venv/.metronome-ci-lock.sha256` | `.test-runs/20260912T064000532Z-2607-b09b4abe/result.json` |
+| T-02 | `python tools/check.py preflight` | `b67c6dc`, Linux | PASS — Python 3.13.12, lock fingerprint matched, `pip check` clean, required modules importable; 0.316 s | `.test-runs/20260912T063942296Z-2557-401c4075/result.json` |
+| T-03, T-04, T-05, T-06, T-07 | `python tools/check.py verify --test tests/test_check_command.py --test tests/test_ci_merge_gate.py --syntax tools/check.py --syntax tools/ci/merge_gate.py` | `b67c6dc`, Linux | PASS — 17 tests, 0 failures, 0 errors, 2 skipped (the two PowerShell execution tests, Windows-only), 0.877 s | `.test-runs/20260912T063942662Z-2562-e6b9d206/result.json` |
+| T-07 | `python tools/check.py verify --test tests/test_ci_merge_gate.py --reuse` run twice | `b67c6dc`, Linux | PASS — first run executed 7 tests; the repeat reported `Reused unchanged successful local evidence.` with `reused_from` pointing at the first result | `.test-runs/20260912T063945624Z-2595-c57086cc/result.json` |
+| T-08 | `CLAUDE_CODE_REMOTE=true CLAUDE_PROJECT_DIR=... .claude/hooks/session-start.sh`, then again with `.venv/.metronome-ci-lock.sha256` removed | `b67c6dc`, Linux | PASS — first run printed "`.venv` already matches requirements-ci.lock" and exited 0 without installing; second run re-ran setup and restored the marker | Shell transcript below |
+| T-09 | `python -c "import yaml; yaml.safe_load(open('.github/workflows/tests.yml'))"` and `git diff --check` | `b67c6dc`, Linux | PASS — workflow parses with jobs `scope, python, frontend, postgres, merge-ready`; no whitespace errors | Command output |
+| T-09b | Replayed the workflow's `case` classification over this PR's changed files | `b67c6dc`, Linux | PASS — `application=true` from `tools/check.py`, `tests/test_check_command.py` and `.github/workflows/tests.yml`; the archive moves and `.claude/` files classify as documentation scope | Command output |
+| T-10 | Relative-link check over the 12 touched or newly linked markdown files | `b67c6dc`, Linux | PASS — 166 relative links resolve; the only failures before this file existed were the three pointers to this report | Script output |
+| T-11 | `python tools/check.py verify --test tests/test_unattended_update_scripts.py --test tests/test_flows.py::test_setup_stops_headed_worker_before_replacing_runtime_code --test ...downloads_update_before_stopping_running_services --test ...waits_for_headless_worker_to_stop_before_replacing_code --test ...fails_closed_when_python_dependencies_cannot_install` | `b67c6dc`, Linux | PASS — 12 tests, 0 failures, 1 skipped (Windows scheduled updater), 1.298 s; confirms the root-level installer files the suite reads were not disturbed by the archive moves | `.test-runs/20260912T063943589Z-2578-c5b91346/result.json` |
 
 T-08 transcript (paths shortened):
 
@@ -37,7 +37,7 @@ $ mv .venv/.metronome-ci-lock.sha256 /tmp/marker.bak
 $ CLAUDE_CODE_REMOTE=true ./.claude/hooks/session-start.sh
 Metronome: creating or refreshing the checkout-owned .venv.
 ... Requirement already satisfied: ... (37 locked distributions)
-Result: .test-runs/20260912T063353485Z-2205-ddee09d2/result.json
+Result: .test-runs/20260912T064012624Z-2673-66f05e55/result.json
 ```
 
 The verifier also removed each run's external Flow root
