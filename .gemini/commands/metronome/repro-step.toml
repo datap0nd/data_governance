@@ -1,0 +1,48 @@
+description = "Reproduce one failing recorded step headed with SQL disabled and report what the screen shows"
+prompt = """
+Reproduce a failing recorded step. Arguments: {{args}}
+Expected form: <flow folder path> <step id>. Ask for both if missing.
+
+Rules that always apply:
+- Work on a COPY of Scripts\\run_flow.py in a scratch folder. Never edit the
+  managed file, the application code or the database.
+- Run with --headed --no-sql --no-transform and a private --output-root and
+  --profile-dir so nothing is published and no SQL runs. Sign in yourself
+  when the browser asks.
+- Do not paste page HTML, URLs, share paths or report rows into the answer.
+
+Procedure:
+1. Copy Scripts\\run_flow.py to a scratch folder as repro_<step id>.py.
+2. Read the copy. Find the recorded step whose id equals the step id and the
+   module section that executes recorded actions.
+3. In the copy only, add a screenshot and a short console log immediately
+   before that step runs (locator text, visible/enabled state of its target,
+   count of matches, whether an overlay or dialog is open). Add the same after
+   it fails. Keep every other step unchanged.
+4. Run the copy headed: <copy> --headed --no-sql --no-transform --output-root <scratch>\\out --profile-dir <scratch>\\profile
+5. Watch the browser. When the step fails, describe what is on screen in your
+   own words.
+
+Report in this exact template:
+
+## Step
+<step id> - <label from steps.json>
+
+## Playwright said
+<exception signals from the run log or the traceback of the copy>
+
+## The screen showed
+<what was actually visible: target present/absent, disabled, covered by an
+overlay, different page, dialog open, different label text>
+
+## Which signal is true
+<one line: the Playwright signal that matches the screen, or "none of them">
+
+## Candidate cause
+<one sentence>
+
+## Next
+<one of: /metronome:probe-selector <step id>, re-record the journey from
+Metronome, /metronome:capture-date-range, or "engineering change needed:
+<one line>">
+"""

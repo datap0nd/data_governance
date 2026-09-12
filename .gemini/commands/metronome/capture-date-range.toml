@@ -1,0 +1,55 @@
+description = "Inspect a live week/date picker and draft the select_range contract for a recorded step"
+prompt = """
+Draft a semantic week-range contract for a recorded step. Arguments: {{args}}
+Expected form: <flow folder path> <step id of the recorded week-cell click>.
+
+Metronome's definition version 3 replays a range step by re-reading eligible
+cells after every scroll or repaint, selecting only unselected cells from a
+fixed ISO start week through the newest enabled week, and verifying a
+complete, duplicate-free range before the download. The contract lives under
+the step's Advanced > "This is a range step" and validates these fields:
+
+- unit: "week"
+- start: fixed ISO week such as "2026-W20"
+- end: "latest_selectable"
+- cell_selector: CSS or text pattern that matches exactly one cell per week
+- selected_state: one of auto, checked, aria-<attribute>, class:<name>
+- navigation: scroll | none | controls (with next/prev selectors for controls)
+- select_all_selector: optional
+- the container locator that holds the cells
+
+Procedure:
+1. Open the report headed through a scratch copy of Scripts\\run_flow.py with
+   --headed --no-sql --no-transform and stop before the range step.
+2. Inspect the picker: how a cell is labelled (week number, date, both), which
+   attribute or class marks a selected cell, whether disabled future weeks
+   carry an attribute, and how the picker moves (scrolls inside a container,
+   pages with next/previous controls, or shows everything at once).
+3. Verify that cell_selector matches one element per visible week and that
+   selected_state changes when you click one cell. Undo the click.
+4. Confirm which cell corresponds to the fixed start week and that the
+   containing element box stays the same after a scroll or page change.
+
+Report:
+
+## Observed picker
+<labelling, selected marker, disabled marker, movement>
+
+## Proposed contract
+```json
+{ "unit": "week", "start": "<ISO week>", "end": "latest_selectable",
+  "cell_selector": "<selector>", "selected_state": "<value>",
+  "navigation": "<scroll|none|controls>", "select_all_selector": null }
+```
+
+## Container
+<locator chain the step should target, as accepted by the recording model>
+
+## Checks performed
+<matches per week, state change observed, stability after movement>
+
+## Not verified
+<anything not observed live>
+
+Do not include URLs, page HTML or report values.
+"""

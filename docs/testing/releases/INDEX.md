@@ -6,6 +6,7 @@ in [the testing workflow](../README.md); this file is the complete history.
 | Release | What to test | Results |
 | --- | --- | --- |
 | 2026-09-12: agent guidance refresh and cross-platform verifier | [Test plan](2026-09-12-agent-guidance-refresh/test-plan.md) | [Test report](2026-09-12-agent-guidance-refresh/test-report.md) |
+| 2026-09-12: Gemini field-agent workflow and diagnosis bundle tool | [Test plan](2026-09-12-gemini-field-agent/test-plan.md) | [Test report](2026-09-12-gemini-field-agent/test-report.md) |
 | 2026-09-11: progress-based download and render waits; recorded-flow gate wording | [Test plan](2026-09-11-progress-based-download-waits/test-plan.md) | [Test report](2026-09-11-progress-based-download-waits/test-report.md) |
 | 2026-09-11: optional recording tests | [Test plan](2026-09-11-optional-recording-tests/test-plan.md) | [Test report](2026-09-11-optional-recording-tests/test-report.md) |
 | 2026-09-11: share copy settle wait and Outlook task command | [Test plan](2026-09-11-share-copy-settle-outlook-task-command/test-plan.md) | [Test report](2026-09-11-share-copy-settle-outlook-task-command/test-report.md) |

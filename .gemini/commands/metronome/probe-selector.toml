@@ -1,0 +1,47 @@
+description = "Find a stable replacement locator for a recorded step that Metronome's recording model accepts"
+prompt = """
+Probe replacement locators for a recorded step. Arguments: {{args}}
+Expected form: <flow folder path> <step id>. Ask for both if missing.
+
+Metronome only replays these locator methods, in a chain:
+locator, get_by_role, get_by_label, get_by_text, get_by_placeholder,
+get_by_title, get_by_alt_text, get_by_test_id, frame_locator, filter, nth.
+It rejects coordinates, force=True, positional or trial clicks, mouse
+gestures, evaluate() and any non-literal argument. The editor's "Repair
+target" control accepts a stable CSS selector, exact text or an accessible
+role plus name, and keeps the frame chain.
+
+Procedure:
+1. Read steps.json for the flow (build it with
+   .\\.venv\\Scripts\\python.exe tools\\diagnose_run.py --run-id <last failed run id>
+   if missing) and quote the current locator chain of the step.
+2. Open the report headed through a scratch copy of Scripts\\run_flow.py with
+   --headed --no-sql --no-transform, stopping just before the step (add a
+   long wait or a breakpoint in the copy only).
+3. In the open page, evaluate candidates from best to worst:
+   a. get_by_role(<role>, name=<exact visible name>, exact=True)
+   b. get_by_label / get_by_placeholder / get_by_test_id when present
+   c. get_by_text(<exact text>, exact=True) scoped by a stable container
+   d. a CSS id or data attribute that is not a generated number
+   For each candidate record: match count, visible count, enabled count, and
+   whether the id looks generated (gridrow_12, id ending in digits that change
+   between page loads are NOT stable).
+4. Reject any candidate with more than one match or an unstable id.
+
+Report:
+
+## Current locator
+<chain as recorded>
+
+## Candidates
+| Candidate | Matches | Visible | Enabled | Stable | Verdict |
+
+## Recommended Repair target
+<one value to paste into Review recording > step > Repair target, and the
+Target type to choose (Portal element or GSCM Favorite bookmark)>
+
+## Not verified
+<what could not be checked, for example the value after a page refresh>
+
+Do not include page HTML, URLs or report data.
+"""

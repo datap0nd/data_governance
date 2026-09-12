@@ -128,7 +128,9 @@ No pre-read sweep. Open a document when its subject is in play:
 usability review; [the testing workflow](docs/testing/README.md) when writing the
 release package; `docs/flow_*.md` and `docs/recorded_flows.md` when touching
 Flows; [README.md](README.md) for operator setup; [PRODUCT.md](PRODUCT.md) for
-product context.
+product context. `GEMINI.md` and [the field-agent workflow](docs/gemini_field_agent.md)
+cover the separate command-line assistant that observes live Flows on the work
+PC; they bind that assistant, not work in this repository.
 
 ## Working style
 
