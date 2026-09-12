@@ -1,0 +1,46 @@
+description = "Compare a run's local artifact with its network-share copy and measure settle time"
+prompt = """
+Verify a network-share copy for Flow run {{args}}.
+
+Context: after a download, Metronome streams the file to the share with
+flush and fsync, requires two identical full read passes of the source, then
+reads the target back with exponential backoff for up to 60 seconds and posts
+copy_verification_warning instead of failing a delivered copy. The historical
+failure text was "Downloaded Excel workbook was not copied completely to
+<share>". This playbook measures what the share really does.
+
+Procedure:
+1. Build the bundle:
+   !{.\\.venv\\Scripts\\python.exe tools\\diagnose_run.py --run-id {{args}} --output diagnosis}
+   Read diagnosis/run-{{args}}/bundle.json. Note artifacts (file names, sizes,
+   checksums, publish_status) and any file_transfer or
+   copy_verification_warning events with their timestamps.
+2. Ask the operator for the local artifact path and the share path for that
+   run if they are not already known. Do not write either path into the
+   answer; refer to them as "local" and "share".
+3. In PowerShell compute size and SHA-256 for local and share:
+   Get-FileHash -Algorithm SHA256 <path>; (Get-Item <path>).Length
+   Repeat the share read three times, 10 seconds apart, and note any change.
+4. If sizes differ, wait 60 seconds and repeat once. Record the time until
+   the share size matched the local size, or that it never matched.
+5. Check whether the share file's LastWriteTime is later than the run's
+   file_transfer event; report the difference in seconds.
+
+Report:
+
+## Artifact
+<file name, local size, share size, checksums equal yes/no>
+
+## Settle
+<seconds until the share matched, or "never within N seconds">
+
+## Run log
+<events cited by index and stage; whether Metronome's warning matched reality>
+
+## Conclusion
+<one of: copy complete and warning was timing only; copy incomplete;
+copy never arrived; cannot tell (missing fact)>
+
+## Suggested engineering change
+<one sentence, or "none">
+"""

@@ -1,0 +1,46 @@
+description = "After an app update, rerun a Flow with SQL disabled and record whether the failing stage now passes"
+prompt = """
+Retest a fix. Arguments: {{args}}
+Expected form: <flow folder path> <previous failed run id> <stage or step id
+that failed>. Ask for what is missing.
+
+Preconditions to confirm and state in the report:
+- The app was updated from main; note the version shown under System.
+- The Flow's Scripts\\run_flow.py header shows the current generator and
+  revision (Metronome regenerates it after an update and on save).
+
+Procedure:
+1. Run the managed script once with SQL disabled and no transformation:
+   <flow folder>\\Scripts\\run_flow.py --headed --no-sql --no-transform
+   Do not use --output-root: this run must exercise the saved destination
+   copy exactly as scheduled runs do, but without touching SQL.
+2. Watch the console echo of stages. Note the timestamp when the previously
+   failing stage or step starts and whether it completes.
+3. If it fails again, do not retry blindly. Capture the failing stage, the
+   exception signal and the screen state, then stop.
+4. If it succeeds, confirm the output file exists at the saved destination
+   with a non-zero size and, for CSV/Excel, a plausible row count from the
+   console output. Do not open or copy report rows into the report.
+5. Build a bundle for the new run id if it is visible in Run history:
+   .\\.venv\\Scripts\\python.exe tools\\diagnose_run.py --run-id <new id> --output diagnosis
+
+Report, to be pasted into the release test report as live evidence:
+
+## Retest
+- Date (UTC):
+- App version and script revision line:
+- Flow: <opaque label, not the share path>
+- Previous failed run: #<id>, stage/step: <name>
+- New run: #<id> or "standalone (no run id)"
+
+## Result
+<PASS: previously failing stage completed at <time>; or FAIL: <stage>,
+<signal>, <screen state>>
+
+## Output check
+<file present yes/no, size, row count from console>
+
+## Notes
+<anything different from the scheduled configuration, for example headed
+instead of headless>
+"""

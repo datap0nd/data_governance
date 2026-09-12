@@ -99,6 +99,8 @@ The server must expose native OpenAI-compatible `tool_calls` with the Qwen reaso
 
 See [the AI agent plan](docs/ai_agent_plan.md) for the implemented boundary and later evaluation-gated modes.
 
+For live Flow troubleshooting on the work PC with a command-line assistant, see [the field-agent workflow](docs/gemini_field_agent.md): `tools/diagnose_run.py` writes a redacted diagnosis bundle for one run, and the playbooks under `.gemini/commands/metronome/` reproduce, probe and retest without touching application code, SQL or private data.
+
 Pipeline Insights stores rebuildable 15-row PostgreSQL previews and validated
 two-paragraph, analyst-oriented connection explanations in `pipeline_insights.db`
 beside `governance.db`. Explanations describe the evidenced business purpose and
