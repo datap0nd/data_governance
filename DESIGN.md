@@ -71,11 +71,17 @@ indicates failure or destructive action. Every colored status also needs text.
 
 ## Usability review for changed journeys
 
+This is the canonical copy of the rule; [AGENTS.md](AGENTS.md) points here.
+
 Build a clickable local preview with fictional data using existing components,
-fonts and design tokens. Obtain owner feedback before implementing a changed
-journey. Approval applies to the demonstrated journey; material changes return
-for review. Small wording or spacing fixes require usability review but no
-separate approval pause.
+fonts and design tokens. Pause for owner feedback before implementing a
+**materially changed journey** — a new screen or step, a reordered or removed
+step, or a change to what the user must decide. Approval applies to the
+demonstrated journey, and a later material change returns for review.
+
+Backend-only work and wording, spacing or copy fixes continue without a pause:
+walk the changed controls and record the evidence below, but do not stop for
+approval.
 
 Walk every changed control, including failure and recovery. Check clear labels,
 visible feedback beside actions, preserved work, predictable navigation and a

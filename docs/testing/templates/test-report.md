@@ -11,13 +11,20 @@
 
 | Check/case IDs | Command or procedure | Revision/environment | Result/counts/duration | Evidence |
 | --- | --- | --- | --- | --- |
-| <ID> | <Actual command> | <SHA and environment> | <PASS/FAIL; counts, skips, warnings> | <CI run/job or protected reference> |
+| <ID> | <Actual command> | <SHA and environment> | <PASS/FAIL; counts, skips, warnings> | <CI run/job, `.test-runs/<id>/result.json` from either verifier, or protected reference> |
 
 ## Unperformed or blocked in-scope checks
 
 | IDs | Status | Reason | Next action |
 | --- | --- | --- | --- |
 | <ID> | NOT RUN | <Why an explicitly planned check was not performed> | <Required environment/action> |
+
+<This table is only for checks that are in scope and unfinished, such as
+final-head CI. Checks that were never in scope are omitted from the report.>
+
+## Usability evidence
+
+<Omit this section entirely when no user interface changed.>
 
 ## Findings, limitations and retests
 
