@@ -240,6 +240,10 @@ def test_flow_builder_frontend_contract():
     subprocess.run(["node", "tests/test_flow_builder_contract.mjs"], cwd=ROOT, check=True)
 
 
+def test_flow_save_frontend_contract():
+    subprocess.run(["node", "tests/test_flow_save_without_test.mjs"], cwd=ROOT, check=True)
+
+
 if __name__ == "__main__":
     # A local clickable fixture using the production assets; no connection to an app database.
     fixture, _state = fixture_server(port=8772)

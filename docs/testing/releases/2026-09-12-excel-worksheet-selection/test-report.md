@@ -54,3 +54,9 @@ These checks ran against `4c9c57dec767afd7fdf3b4ca7e5462d343dd8ab4` plus the unc
 The bounded UI review covered checkbox-off serialization, exact name/order preservation, all three source builders, old local-file selections, failed-save focus and preserved edits, run/Flow identity checks, responsive layout and prevention of SQL retry after worksheet failure. Actual fictional browser screenshots and observations are in [browser evidence](browser-evidence.md). No new implementation issue remained after the focused retests.
 
 Final-head CI remains pending at this addition's cutoff. Its exact tested SHA, run URL and result must be recorded in the PR before a head-pinned merge. No later CI outcome, main merge or deployment is implied by this committed report.
+
+## 2026-09-12 17:38 UTC — recording-save contract fixture
+
+The frontend job in [CI run 34708639569](https://github.com/datap0nd/data_governance/actions/runs/34708639569) on `38b9e8ba06f8a724c83c4b6ff8e898d2daa0163b` failed in `test_flow_save_without_test.mjs`. That isolated Node fixture extracted the submit handler without its newly called worksheet validator. The fixture now loads the actual validator with worksheet selection off; application behavior is unchanged. The Python job had not finished at this cutoff, so no result is claimed for it.
+
+`tools/check.ps1 -Mode Verify -TestPath tests/test_flow_excel_ui.py::test_flow_save_frontend_contract -SyntaxPath tests/test_flow_save_without_test.mjs,tests/test_flow_excel_ui.py` passed **1 test**, zero skips, 0.34s pytest time; syntax passed. Evidence: `20260912T173800349Z-36332-31489953` in `local-checks.json`, against head `38b9e8ba06f8a724c83c4b6ff8e898d2daa0163b` plus the fixture correction. Final-head CI remains pending and must be recorded in the PR before merge.
