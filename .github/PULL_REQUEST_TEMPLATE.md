@@ -22,6 +22,8 @@ See [the testing workflow](https://github.com/datap0nd/data_governance/blob/main
 
 ## Usability evidence
 
+Omit this section when no screen changed.
+
 - Clickable fake-data preview and owner feedback (or wording/spacing-only scope):
 - Changed-control walkthrough, including failure and recovery:
 - Browser evidence and tested revision:

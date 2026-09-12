@@ -72,10 +72,11 @@ indicates failure or destructive action. Every colored status also needs text.
 ## Usability review for changed journeys
 
 Build a clickable local preview with fictional data using existing components,
-fonts and design tokens. Obtain owner feedback before implementing a changed
-journey. Approval applies to the demonstrated journey; material changes return
-for review. Small wording or spacing fixes require usability review but no
-separate approval pause.
+fonts and design tokens. Obtain owner feedback on that preview before
+implementing a materially changed journey (new steps, new controls, a changed
+navigation path). Approval applies to the demonstrated journey; material
+changes return for review. Wording, spacing and backend-only changes need the
+walkthrough below but no approval pause.
 
 Walk every changed control, including failure and recovery. Check clear labels,
 visible feedback beside actions, preserved work, predictable navigation and a

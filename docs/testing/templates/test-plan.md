@@ -21,7 +21,8 @@ Live cases are omitted unless explicitly requested.>
 
 ## Automated checks
 
-<Exact commands, runtime/dependency setup and scope. Never describe planned
+<Exact commands (`tools/check.ps1` on Windows, `python tools/check.py`
+elsewhere), runtime/dependency setup and scope. Never describe planned
 execution as a completed result.>
 
 ## Acceptance and cleanup

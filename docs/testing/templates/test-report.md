@@ -11,7 +11,7 @@
 
 | Check/case IDs | Command or procedure | Revision/environment | Result/counts/duration | Evidence |
 | --- | --- | --- | --- | --- |
-| <ID> | <Actual command> | <SHA and environment> | <PASS/FAIL; counts, skips, warnings> | <CI run/job or protected reference> |
+| <ID> | <Actual command> | <SHA and environment> | <PASS/FAIL; counts, skips, warnings> | <CI run/job, verifier `result.json` summary or protected reference> |
 
 ## Unperformed or blocked in-scope checks
 

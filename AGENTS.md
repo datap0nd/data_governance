@@ -1,78 +1,129 @@
-# Repository delivery instructions
+# Working in this repository
 
-The owner tests the deployed app from GitHub `main`. Complete implementation
-requests through a tested PR merged to `main`; standing authorization covers
-that merge. Use the session's branch naming rules and start from current
-`origin/main`. Preserve unrelated work. Do not report a branch as deployed.
+Metronome is an internal FastAPI + vanilla JavaScript web application for BI
+operations: report and source monitoring, ownership, lineage, and scheduled
+"Flows" that download portal reports, transform them and publish to SQL. The
+owner tests only what is merged to GitHub `main`. This file is the one place
+where working rules live; the documents it points to hold the procedures.
 
-## Testing instructions and reports on every main merge
+## Done means
 
-Use `tools/check.ps1` as the only supported local verification entry point.
-Run `-Mode Setup` once to create the checkout-owned Python 3.13 `.venv`, then
-use `-Mode Verify` with explicit test-node/file selectors and applicable
-`-SyntaxPath` values. Run `-Mode Preflight` for an environment diagnosis.
-`-Full` is diagnostic-only and requires `-DiagnosticReason`. Do not borrow a
-sibling environment, a temporary environment or the coding-agent runtime.
+A code change is finished when all of the following are true:
 
-Open the PR as soon as the focused local evidence and initial release report
-are ready. Required final-head CI is represented by the always-present
-`Merge ready` check. Record its run URL and exact head SHA in the PR before a
-head-pinned merge. Distinguish implementation ready, local checks complete, CI
-complete and merged; do not call a merge deployed.
+1. It is merged to `main` at the head that CI tested, with the `Merge ready`
+   check green and its run URL and head SHA recorded in the PR.
+2. A release test plan and report exist under `docs/testing/releases/` and are
+   linked from the PR.
+3. The reply opens by naming one delivery state: implementation ready, local
+   checks complete, CI complete, or merged. A merge is a merge; the owner
+   deploys separately.
 
-For **every PR merged to main**, including documentation, maintenance and fixes:
+Continue until the change is merged. Standing owner authorization covers
+branching, opening the PR, and the head-pinned merge, so none of those steps
+waits for confirmation. If the merge cannot happen (failing checks, a conflict,
+a denied permission), say so in the first sentence of the reply. Questions,
+analysis and advice do not trigger this workflow.
 
-1. Create or update a release-specific **test plan and test report** under
-   `docs/testing/releases/`. Follow [the testing workflow](docs/testing/README.md)
-   and its templates. Add the package to the testing index.
-2. Write concrete instructions for the changed behavior: prerequisites, UI
-   actions or commands, expected results, negative/recovery cases, regression
-   coverage, evidence to collect and cleanup. Scale the checks to the change;
-   documentation-only changes need documentation checks, not invented app tests.
-3. Run one smallest non-overlapping affected test set locally, plus applicable
-   syntax checks. For application, dependency or test changes, required
-   final-head CI is the authoritative full Python regression. Documentation,
-   repository-policy, PR-template and workflow-only changes use the lightweight
-   CI scope gate. Do not duplicate CI locally or run both a focused set and a
-   superset containing the same cases unless diagnosing a failure. After a
-   rebase, rerun application tests only when application/test code changed or a
-   related conflict was resolved. Record actual commands, revision, environment,
-   results, skips/warnings and evidence links.
-   Reuse a prior local result only through `tools/check.ps1 -Reuse`, which
-   verifies the relevant source, test, dependency and selection fingerprint.
-   After a failure, rerun the failed case and only necessary integration
-   companions. Perform one bounded review of the actual diff and affected
-   failure/recovery paths; reopen it only after a new finding or code change.
-4. Work-PC, live portal, authentication and hardware testing is opt-in only.
-   Do not open, inspect, attempt, plan or report those checks unless the owner
-   explicitly requests them in the current task. When they are not requested,
-   omit them entirely rather than adding **NOT RUN** or **BLOCKED** placeholders.
-   Synthetic fixture/browser tests remain allowed and must be identified as
-   synthetic. Never invoke a Metronome/live-fix skill as part of testing unless
-   the owner explicitly requests that skill in the current task. Never prewrite
-   a passing result for a test that has not finished.
-5. Link the plan and report in the PR. Wait for required checks on the final head,
-   record the final CI run and tested SHA in the PR's testing section, then merge.
-   The PR preserves evidence produced after the committed report was written;
-   a report must clearly identify that cutoff rather than imply later results.
-6. Link the testing instructions and report in the delivery reply and state
-   whether main was merged. Mention only outstanding checks that were explicitly
-   in scope. Later results append dated, revision-specific evidence without
-   erasing earlier outcomes.
+## Precedence and authority
 
-Do not commit credentials, cookies, private portal URLs, raw report data or
-unsanitized traces/logs. Reference protected evidence by an opaque identifier.
+The owner's current task instruction takes precedence over this file, except
+for the invariants below, which change only when the owner edits this file.
+When a repository file makes you stop, skip a step or change approach, name the
+file and quote the line in your reply so the instruction can be fixed.
 
-## Usability review for changed journeys
+Approval is needed before changing branch protection, workflow secrets,
+production data, or any live system (work PC, portals, service accounts).
+Everything else in the checkout is yours to change. Scratch output belongs in
+the ignored `.test-runs/` directory or the session's scratch area.
 
-Build a clickable local preview with fictional data using existing components,
-fonts and design tokens. Obtain owner feedback before implementing a changed
-journey. Approval applies to the demonstrated journey; material changes return
-for review. Small wording or spacing fixes require usability review but no
-separate approval pause.
+## Invariants
 
-Walk every changed control, including failure and recovery. Check clear labels,
-visible feedback beside actions, preserved work, predictable navigation and a
-clear next action. Record actual browser evidence tied to the tested revision.
-Favor minimal screens and contextual questions over permanent configuration
-forms; never hide a required choice under Advanced.
+- PostgreSQL credentials configured for Metronome are read-only. Probes and
+  ownership scans use SELECT only; the code never issues writes or DDL.
+- Live checks against the work PC, portals, authentication or hardware are
+  opt-in: perform, plan or report them only when the owner asks for them in
+  the current task. Otherwise leave them out of plans, reports and replies
+  entirely. Never invoke a Metronome live-fix skill for testing unless the
+  owner names it in the task.
+- Never weaken, skip or quarantine an existing test to make a change pass.
+- Never commit credentials, cookies, private portal URLs, report data or raw
+  traces. Reference protected evidence by an opaque identifier.
+- Schedules use Dubai wall-clock time and monitoring timestamps stay UTC;
+  scheduled communication fails closed when its saved Power BI page, visual or
+  column disappears.
+
+## Codebase map and vocabulary
+
+- `app/main.py`, `app/routers/*.py`: FastAPI application and API routes.
+- `app/static/app.js` and `app/static/*.css`: the single-page UI, no build step.
+- `app/flow_*.py`: Flows, the largest subsystem. Recording and replay of the
+  ASAP and GSCM portals (`flow_recording*.py`, `flow_gscm*.py`), the worker
+  and its capacity (`flow_worker.py`, `flow_parallel*.py`), managed folders
+  and paths (`flow_paths.py`, `flow_layout.py`), SQL publication and view
+  refresh (`flow_sql.py`, `flow_view_refresh*.py`), and per-Flow portable
+  scripts (`flow_portable.py`, `flow_standalone.py`).
+- `app/scanner/`, `app/checks/`: Power BI report scanning and quality checks.
+- `app/ai/`: the bounded read-only Operations Investigator.
+- `tests/test_*.py` (pytest) and `tests/test_*.mjs` (node contract tests).
+- `tools/check.ps1` and `tools/check.py`: local verification; `tools/ci/`:
+  the CI merge gate; `setup.ps1`: the Windows installer and updater.
+
+Vocabulary: a **Flow** is a scheduled acquisition (portal download, Outlook
+attachment or local file) with optional transformation and SQL publication; a
+**Recording** is a captured browser session the worker replays; a
+**Pipeline** chains Flow runs and view refreshes; **ASAP** and **GSCM** are the
+two portals Flows automate; **NASCA** wraps protected Excel downloads that are
+opened through desktop Excel.
+
+## Read what the task needs
+
+- `DESIGN.md` before changing any screen; `PRODUCT.md` for product intent.
+- `docs/testing/README.md` when writing the release test plan and report.
+- `docs/flow_paths.md`, `docs/recorded_flows.md`, `docs/flow_standalone.md`
+  and the other `docs/flow_*.md` files when touching Flows.
+- `README.md` for operator setup, environment variables and services.
+- `docs/archive/` holds superseded plans and handoffs; nothing there is
+  current guidance.
+
+## Verification
+
+Use the checkout-owned Python 3.13 `.venv` built from `requirements-ci.lock`:
+`tools/check.ps1` on Windows, `python tools/check.py` elsewhere (the same
+modes, selectors and `result.json`). Both isolate the database, temporary
+files, browser profiles and the Flow root under a disposable per-run
+directory with no production access, so run focused tests, fix failures caused
+by the requested change, and rerun the affected cases without asking at each
+step.
+
+Run one smallest non-overlapping affected test set plus syntax checks for the
+files you changed, and let final-head CI supply the full regression. The
+reason is cost: the full Python suite takes about twelve minutes and a local
+full run duplicates the evidence CI already records. A local full suite is a
+diagnostic and needs a recorded reason. Reuse prior local evidence only
+through the verifier's reuse option, which checks the source fingerprint.
+
+Documentation, policy, PR-template and workflow-only changes take the
+lightweight CI scope gate; application, dependency and test changes take the
+full suites.
+
+## Release test package
+
+Every merge to `main` carries a plan and report under
+`docs/testing/releases/`, scaled to the change: a documentation change gets
+documentation checks. Record actual commands, revision, environment and
+results. Mark in-scope automated checks that have not finished (usually
+final-head CI) as pending or NOT RUN; that is correct and expected. Live
+checks are absent unless requested. Identify synthetic fixtures as synthetic.
+The procedure and templates are in `docs/testing/README.md`.
+
+## Changed screens
+
+Follow the usability review in `DESIGN.md`. Owner feedback on a clickable
+preview is required before implementing a materially changed journey; wording,
+spacing and backend-only changes proceed without a pause.
+
+## Replies
+
+Open with the delivery state and the PR link, then link the test plan and
+report. Use plain prose and describe outcomes; the diff is the record of the
+change. If a step was skipped or failed, say which and why.

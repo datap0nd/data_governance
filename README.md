@@ -1,4 +1,4 @@
-# Data Governance Panel
+# Metronome
 
 Configure Flow folders in **System > Paths**. See
 [Flow paths](docs/flow_paths.md) for staged enforcement and migration behavior.
@@ -13,17 +13,22 @@ A web-based panel that monitors your Power BI reports, tracks data sources, and 
 
 ### 1. Install Python
 
-Download Python 3.11+ from [python.org](https://www.python.org/downloads/). During install, check "Add Python to PATH".
+Download Python 3.13 from [python.org](https://www.python.org/downloads/). During install, check "Add Python to PATH". Production installs use `setup.ps1` (below), which manages its own runtime.
 
 ### 2. Set up the project
 
 Open a terminal (PowerShell or Command Prompt) in this folder:
 
 ```bash
-python -m venv venv
-venv\Scripts\activate
+python -m venv .venv
+.venv\Scripts\activate
 pip install -r requirements.txt
 ```
+
+For development and tests, build the checkout-owned environment with the
+verifier instead: `.\tools\check.ps1 -Mode Setup` on Windows or
+`python tools/check.py setup` elsewhere. See
+[testing instructions](docs/testing/README.md).
 
 ### 3. Configure TMDL path
 
@@ -325,11 +330,51 @@ fetch("/api/scanner/probe/debug").then(r=>r.json()).then(d=>console.log(d))
 
 This shows `csv_samples` (what the CSV has) and `postgresql_sources` (what's in the database) side-by-side so you can spot the mismatch.
 
-## Running Tests
+## Running tests
+
+Use the verifier with an explicit selection; it isolates the database,
+temporary files, browser profiles and Flow root under an ignored per-run
+directory:
+
+```powershell
+.\tools\check.ps1 -Mode Verify -TestPath tests/test_flows.py -SyntaxPath app/flow_worker.py
+```
 
 ```bash
-python tests/test_scanner.py
+python tools/check.py verify --test tests/test_flows.py --syntax app/flow_worker.py
 ```
+
+Final-head CI runs the full suites. See [testing instructions](docs/testing/README.md).
+
+## Services and environment variables
+
+`setup.ps1` installs two Windows services through the bundled `tools\nssm.exe`:
+`MXAnalytics` (the web application) and `MXFlowsWorker` (the headless Flows
+worker; pooled workers are named `MXFlowsWorker<N>`). Manage them from the
+code folder:
+
+```powershell
+.\tools\nssm.exe status MXAnalytics
+.\tools\nssm.exe restart MXAnalytics
+.\tools\nssm.exe restart MXFlowsWorker
+```
+
+Variables read by the application (all set by `setup.ps1` for service installs):
+
+| Variable | Purpose |
+| --- | --- |
+| `bio_path` (preferred), `DG_TMDL_ROOT`, `DG_REPORTS_PATH` | Folder holding the `.pbix` report originals or TMDL exports. |
+| `DG_DB_PATH` | Path of the app's own SQLite database. Never the production database. |
+| `DG_FLOWS_ROOT` | Fallback Flow root when **System > Paths** has none. |
+| `PGHOST`, `PGUSER`, `PGPASSWORD`, `PGDATABASE` | Read-only PostgreSQL probe connection. |
+| `DG_UPLOAD_PGHOST`, `DG_UPLOAD_PGPORT`, `DG_UPLOAD_PGDATABASE`, `DG_UPLOAD_PGUSER`, `DG_UPLOAD_PGPASSWORD` | Dedicated write credentials for optional Flow SQL handoffs. |
+| `DG_AI_API_URL`, `DG_AI_MODEL`, `DG_AI_MOCK` | Model endpoint; `endpoint_url.txt` one level above the code folder takes priority over `DG_AI_API_URL`. |
+| `DG_GITHUB_TOKEN` | Private-repository access for automatic updates. |
+
+The probe credentials are read-only by contract and by connection setting
+(`SET default_transaction_read_only = ON`). Application code never issues
+INSERT, UPDATE, DELETE or DDL through them; Flow SQL publication uses the
+separate upload credentials only.
 
 ## Expected Folder Structure for TMDL Exports
 
@@ -357,4 +402,4 @@ python tests/test_scanner.py
 - **Lineage Map**: Shows which sources feed which reports
 - **Alerts**: Flags stale sources and broken references
 
-See [plan.md](plan.md) for the full architecture and roadmap.
+The original architecture plan is archived at [docs/archive/plan.md](docs/archive/plan.md); it predates Flows and no longer describes the deployment.
