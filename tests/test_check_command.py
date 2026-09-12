@@ -137,14 +137,51 @@ def test_python_command_declares_isolated_paths_before_pytest_launch():
         'environment["DG_DB_PATH"] = str(run.root / "governance-test.db")',
         'environment["DG_TEST_RUN_ROOT"] = str(run.root)',
         'environment["DG_BROWSER_PROFILE_ROOT"] = str(profile_root)',
-        'environment["DG_FLOWS_ROOT"] = str(flows_root)',
         '"PLAYWRIGHT_BROWSERS_PATH"',
     ]
     definition = source.index("def isolated_environment")
     launch = source.index('"-m", "pytest"')
     assert all(definition < source.index(assignment) < launch for assignment in assignments)
-    assert "Refusing to clean unexpected Flow test root" in source
+
+
+def test_python_leaves_the_flows_root_to_each_test_like_ci():
+    # One DG_FLOWS_ROOT shared by a whole run makes two tests that create the
+    # same Flow name collide; CI leaves it unset so each test derives its own.
+    source = CHECK_PY.read_text(encoding="utf-8")
+    definition = source.index("def isolated_environment")
+    launch = source.index('"-m", "pytest"')
+    assert definition < source.index('environment.pop("DG_FLOWS_ROOT", None)') < launch
+    assert 'environment["DG_FLOWS_ROOT"] =' not in source
+    workflow = (ROOT / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
+    assert "DG_FLOWS_ROOT" not in workflow
+
+
+def test_python_keeps_the_temporary_root_outside_the_checkout():
+    # Those per-test Flow roots hang off pytest's tmp_path, and the application
+    # refuses a Flows root inside the code checkout.
+    source = CHECK_PY.read_text(encoding="utf-8")
+    assert 'temp_root = run.external_root / "tmp"' in source
+    assert "run.external_root = isolation_base() / run.run_id" in source
+    assert "Refusing to clean unexpected scratch root" in source
     assert "shutil.rmtree(resolved, ignore_errors=True)" in source
+
+
+def test_python_keeps_the_scratch_root_after_a_failing_run(tmp_path, monkeypatch, capsys):
+    import tools.check as check
+
+    scratch = tmp_path / "MetronomeTestRuns" / "run-1"
+    scratch.mkdir(parents=True)
+    monkeypatch.setattr(check, "RUNS_ROOT", tmp_path / ".test-runs")
+    monkeypatch.setattr(check, "isolation_base", lambda: tmp_path / "MetronomeTestRuns")
+    run = check.Run("verify", {"full_suite": False, "diagnostic_reason": None, "tests": [], "syntax": []})
+    run.external_root = scratch
+
+    run.save("failed", 1, "something failed")
+    assert scratch.exists()
+    assert "Kept scratch for diagnosis" in capsys.readouterr().out
+
+    run.save("passed", 0)
+    assert not scratch.exists()
 
 
 def test_python_setup_installs_only_the_locked_dependencies():

@@ -58,9 +58,11 @@ Each protects something a PR cannot undo:
 ## Verification
 
 `tools/check.py` (Linux, macOS, Windows) and `tools/check.ps1` (PowerShell)
-behave identically: explicit selectors, database, temp, browser-profile and Flow
-paths isolated under an ignored `.test-runs/<id>/`, and a machine-readable
-`result.json` to cite as evidence.
+take the same selectors and write the same machine-readable `result.json` under
+an ignored `.test-runs/<id>/` to cite as evidence. Both isolate the database,
+temporary, browser-profile and Flow paths per run; `check.py` follows CI in
+leaving `DG_FLOWS_ROOT` unset so each test derives its own Flow root, and puts
+pytest's temporary root outside the checkout, which the application requires.
 
 ```bash
 python tools/check.py setup       # once: checkout-owned Python 3.13 .venv

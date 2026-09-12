@@ -1,9 +1,10 @@
 """Local verification entry point for Metronome on Linux, macOS and Windows.
 
-This mirrors ``tools/check.ps1``: the same modes, the same isolation, the same
-``result.json`` schema and the same focused-selection rules. Agent sessions run
-on Linux where PowerShell is usually absent, so this module is the supported
-command there and keeps their evidence comparable with Windows runs.
+This mirrors ``tools/check.ps1``: the same modes, the same ``result.json``
+schema and the same focused-selection rules. Agent sessions run on Linux where
+PowerShell is usually absent, so this module is the supported command there and
+keeps their evidence comparable with Windows runs. Isolation follows CI rather
+than the PowerShell script in one place, noted on ``isolated_environment``.
 
     python tools/check.py setup
     python tools/check.py preflight
@@ -53,7 +54,7 @@ def venv_python(root: Path = REPO_ROOT) -> Path:
 
 
 def isolation_base() -> Path:
-    """Flow roots live outside the checkout, exactly as they do in production."""
+    """Scratch space outside the checkout, because a Flow root inside it is refused."""
 
     if os.name == "nt":
         home = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
@@ -82,7 +83,7 @@ class Run:
         self.root = RUNS_ROOT / self.run_id
         self.result_path = self.root / "result.json"
         self.started = _utc_now()
-        self.external_isolation_root: Path | None = None
+        self.external_root: Path | None = None
         self.result: "OrderedDict[str, object]" = OrderedDict(
             (
                 ("schema_version", SCHEMA_VERSION),
@@ -123,22 +124,25 @@ class Run:
         self.result["finished_utc"] = finished.isoformat()
         self.result["duration_seconds"] = round((finished - self.started).total_seconds(), 3)
         self.result["diagnostic"] = diagnostic
-        self._clean_external_isolation()
+        self._clean_external_root(status)
         self.result_path.write_text(
             json.dumps(self.result, indent=2) + "\n", encoding="utf-8"
         )
         print("Result: {0}".format(self.result_path))
 
-    def _clean_external_isolation(self) -> None:
-        root = self.external_isolation_root
+    def _clean_external_root(self, status: str) -> None:
+        """Remove the run's out-of-checkout scratch, but keep it after a failure."""
+
+        root = self.external_root
         if root is None or not root.exists():
+            return
+        if status != "passed":
+            print("Kept scratch for diagnosis: {0}".format(root))
             return
         allowed = isolation_base().resolve()
         resolved = root.resolve()
         if allowed not in resolved.parents:
-            raise CheckError(
-                "Refusing to clean unexpected Flow test root: {0}".format(resolved)
-            )
+            raise CheckError("Refusing to clean unexpected scratch root: {0}".format(resolved))
         shutil.rmtree(resolved, ignore_errors=True)
 
 
@@ -330,23 +334,28 @@ def check_syntax(interpreter: Path, targets: list[str]) -> None:
 
 
 def isolated_environment(run: Run) -> dict[str, str]:
-    """Point every writable path at this run before application imports happen."""
+    """Point every writable path at this run before application imports happen.
 
-    temp_root = run.root / "tmp"
+    `DG_FLOWS_ROOT` is deliberately left unset, exactly as CI leaves it: each
+    test derives its Flow root from its own database path, so one root shared
+    across a run would make two tests that create the same Flow name collide.
+    Those per-test roots have to sit outside the checkout — the application
+    refuses a Flows root inside it — so the temporary root lives beside the
+    run instead of inside `.test-runs/`, and is removed when the run passes.
+    """
+
+    temp_root = run.external_root / "tmp"  # type: ignore[union-attr]
     profile_root = run.root / "browser-profiles"
     temp_root.mkdir(parents=True, exist_ok=True)
     profile_root.mkdir(parents=True, exist_ok=True)
-    run.external_isolation_root = isolation_base() / run.run_id
-    flows_root = run.external_isolation_root / "flows"
-    flows_root.mkdir(parents=True, exist_ok=True)
     environment = dict(os.environ)
+    environment.pop("DG_FLOWS_ROOT", None)
     environment["TEMP"] = str(temp_root)
     environment["TMP"] = str(temp_root)
     environment["TMPDIR"] = str(temp_root)
     environment["DG_DB_PATH"] = str(run.root / "governance-test.db")
     environment["DG_TEST_RUN_ROOT"] = str(run.root)
     environment["DG_BROWSER_PROFILE_ROOT"] = str(profile_root)
-    environment["DG_FLOWS_ROOT"] = str(flows_root)
     environment.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(REPO_ROOT / ".playwright-browsers"))
     return environment
 
@@ -416,9 +425,11 @@ def do_verify(run: Run, arguments: argparse.Namespace) -> int:
             run.save("passed", 0, "Reused unchanged successful local evidence.")
             return 0
 
+    run.external_root = isolation_base() / run.run_id
     environment = isolated_environment(run)
     junit = run.root / "pytest.xml"
     run.result["artifacts"]["junit"] = str(junit)  # type: ignore[index]
+    run.result["artifacts"]["temp_root"] = environment["TEMP"]  # type: ignore[index]
     check_syntax(interpreter, list(arguments.syntax))
 
     command = [str(interpreter), "-m", "pytest", *tests, "-q", "-ra", "--durations=20",

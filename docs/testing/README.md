@@ -47,9 +47,10 @@ tests and work-PC instructions describe that release, not current execution.
 
 ## Local commands
 
-The verifier exists twice with identical behavior — `tools/check.py` for Linux,
-macOS and Windows, `tools/check.ps1` for Windows PowerShell. Either one is
-acceptable evidence; cite the `result.json` path it prints.
+The verifier exists twice — `tools/check.py` for Linux, macOS and Windows,
+`tools/check.ps1` for Windows PowerShell. They take the same selectors and write
+the same result schema, and either is acceptable evidence; cite the
+`result.json` path it prints.
 
 ```bash
 python tools/check.py setup
@@ -69,8 +70,11 @@ python tools/check.py verify \
 
 Setup builds `.venv` from Python 3.13 and installs the exact
 `requirements-ci.lock`. Every invocation writes a compact JSON result under a
-unique ignored `.test-runs/` directory, after pointing the database, temporary,
-browser-profile and Flow paths at that directory so nothing touches real state.
+unique ignored `.test-runs/` directory, after pointing the database,
+browser-profile and evidence paths there so nothing touches real state.
+`check.py` keeps pytest's temporary root in a per-run scratch directory outside
+the checkout — the application refuses a Flows root inside it — and removes that
+scratch when the run passes, keeping it for diagnosis when it fails.
 [AGENTS.md](../../AGENTS.md#verification) carries the selection rules (focused
 sets, `--full`/`-Full` diagnostics, `--reuse`/`-Reuse`).
 
