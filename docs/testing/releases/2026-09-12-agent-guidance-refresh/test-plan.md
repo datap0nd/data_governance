@@ -3,8 +3,9 @@
 - Change/PR: modernize the agent guidance (`AGENTS.md`, `CLAUDE.md`, testing
   docs, README), add `tools/check.py` as a supported Linux/macOS/Windows
   verifier, add a SessionStart bootstrap and archive stale root documents.
-- Code baseline: `37169ef` (`origin/main` at branch creation); no deployed app
-  or worker behavior changes in this release.
+- Code baseline: `37169ef` at branch creation, then `d96bf4e` after merging
+  `origin/main` (PR #118) into the branch; no deployed app or worker behavior
+  changes in this release.
 - Related report: [test-report.md](test-report.md)
 - Intended environments: Linux agent container, Python 3.13.12 in the
   checkout-owned `.venv`, plus required GitHub Actions CI. No live environment
@@ -13,9 +14,10 @@
 ## Prerequisites and test data
 
 No fixtures or credentials. `python tools/check.py setup` builds the
-checkout-owned `.venv` from `requirements-ci.lock`; every verify run isolates
-its database, temporary, browser-profile and Flow paths under
-`.test-runs/<run id>/` and a cache-scoped `MetronomeTestRuns/<run id>/`.
+checkout-owned `.venv` from `requirements-ci.lock`; every verify run keeps its
+database, browser-profile and evidence paths under `.test-runs/<run id>/` and
+its temporary root in a cache-scoped `MetronomeTestRuns/<run id>/` outside the
+checkout, which is where per-test Flow roots are allowed to live.
 
 ## Test cases
 
@@ -26,16 +28,19 @@ its database, temporary, browser-profile and Flow paths under
 | T-03 | `python tools/check.py verify --test tests/test_check_command.py --test tests/test_ci_merge_gate.py --syntax tools/check.py --syntax tools/ci/merge_gate.py` | Focused suite passes; `result.json` status `passed` with `test_summary` counts and a JUnit artifact | `result.json` run id, pytest summary |
 | T-04 | `python tools/check.py verify` with no selector | Exits 2 with "Verify requires explicit --test selectors" and writes a `failed` result | Covered by `tests/test_check_command.py` |
 | T-05 | `python tools/check.py verify --full` without a reason | Exits 2 with "A local full suite is diagnostic-only"; `selection.full_suite` is true | Covered by `tests/test_check_command.py` |
-| T-06 | Inspect `tools/check.py` source ordering | Every isolated path (`TEMP`, `TMP`, `TMPDIR`, `DG_DB_PATH`, `DG_TEST_RUN_ROOT`, `DG_BROWSER_PROFILE_ROOT`, `DG_FLOWS_ROOT`, `PLAYWRIGHT_BROWSERS_PATH`) is assigned before the pytest launch, and the Flow-root cleanup keeps its guard | Covered by `tests/test_check_command.py` |
+| T-06 | Inspect `tools/check.py` source ordering | Every isolated path (`TEMP`, `TMP`, `TMPDIR`, `DG_DB_PATH`, `DG_TEST_RUN_ROOT`, `DG_BROWSER_PROFILE_ROOT`, `PLAYWRIGHT_BROWSERS_PATH`) is assigned before the pytest launch, `DG_FLOWS_ROOT` is explicitly cleared, and the scratch cleanup keeps its guard | Covered by `tests/test_check_command.py` |
 | T-07 | `--reuse` matching on fingerprint and selection | A prior passing result is reused only when both its `source_fingerprint` and `selection` match | Covered by `tests/test_check_command.py` |
 | T-08 | `CLAUDE_CODE_REMOTE=true .claude/hooks/session-start.sh` with a current `.venv`, then with the lock marker removed | First run reports the environment already matches and exits 0 without installing; second run re-runs setup and restores the marker | Shell transcript in the report |
 | T-09 | `python -c "import yaml; yaml.safe_load(open('.github/workflows/tests.yml'))"` and `git diff --check` | Workflow parses; no whitespace errors in the diff | Command output |
 | T-10 | Relative-link check over `AGENTS.md`, `CLAUDE.md`, `README.md`, `DESIGN.md`, `PRODUCT.md`, `docs/testing/README.md`, `docs/testing/releases/INDEX.md`, `docs/archive/README.md`, `docs/production_hardening_plan.md` | Every relative link resolves to an existing path after the archive moves | Script output |
 | T-11 | `python tools/check.py verify --test tests/test_flows.py -k setup --syntax tools/check.ps1` is out of scope here; instead run the tests that read root-level installer files: `tests/test_unattended_update_scripts.py` and the `setup_ps1_clean.txt` cases in `tests/test_flows.py` | Pass, proving the archive moves did not disturb files the suite reads from the repository root | `result.json` run id |
+| T-12 | `python tools/check.py verify --test tests/test_diagnose_run.py` — the suite `origin/main` added while this PR was open, whose cases create two Flows with the same name | Pass, proving the verifier gives each test its own Flow root instead of one shared root per run, and that its temporary root sits where the application accepts it | `result.json` run id |
+| T-13 | Inspect the scratch directory after a passing and a failing run | A passing run removes the out-of-checkout scratch; a failing run keeps it and names it on stdout | Covered by `tests/test_check_command.py` |
 
 Negative and recovery paths covered: missing selector (T-04), unreasoned full
-suite (T-05), stale environment fingerprint (T-08 second half), and the refusal
-guard around external Flow-root cleanup (T-06).
+suite (T-05), stale environment fingerprint (T-08 second half), the refusal
+guard around scratch cleanup (T-06), and scratch retention after a failing run
+(T-13).
 
 ## Automated checks
 
@@ -53,5 +58,6 @@ Omitted: no user interface changed.
 Accepted when the focused local sets pass, the final-head `Merge ready` check is
 green with its run URL and SHA recorded in the PR, and the guidance files
 resolve their links. No cleanup is needed: `.test-runs/` and `.venv/` are
-ignored, and the per-run Flow root is removed by the verifier itself. Rollback
+ignored, and the per-run scratch directory is removed by the verifier itself
+after a passing run. Rollback
 is a revert of the PR; no data migration or deployed behavior is involved.
