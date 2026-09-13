@@ -1,5 +1,6 @@
 """Durable grouping and atomic manual batches with synthetic flows/workers."""
 import json
+import hashlib
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -16,6 +17,11 @@ from test_flows import flow_db, _seed_catalog, _mark_discovered, _flow, _request
 @pytest.fixture
 def grouped_flows(flow_db, monkeypatch):
     launches = []
+    # check.ps1 supplies one run root; each disposable database needs its own
+    # managed folders because flow IDs and names restart in every test.
+    with database.get_db() as db:
+        root = Path(flow_paths.get_flows_root(db)) / ('g-' + hashlib.sha256(str(flow_db).encode()).hexdigest()[:8])
+        db.execute("INSERT OR REPLACE INTO app_settings(key,value) VALUES ('flows_root',?)", (str(root),))
     monkeypatch.setattr(flows, 'launch_local_worker', lambda mode: launches.append(mode) or {'status': 'launched'})
     site, report = _seed_catalog()
     _mark_discovered(report['id'])
