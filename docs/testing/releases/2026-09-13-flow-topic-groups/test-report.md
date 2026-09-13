@@ -141,3 +141,10 @@ testing section must record the exact tested head SHA and passing **Merge ready*
 run URL. Those later results belong in the PR so the report's own commit does
 not keep moving the tested head. The PR merge record supplies the actual merge
 SHA. This report does not claim deployment verification.
+
+After the cutoff, automated PR review identified the missing entry in the
+complete release index. The release is now listed in both indexes, and the
+recent-releases table retains its five-entry limit. The two plan/report targets
+were inspected during this documentation correction. Application code and
+tests did not change; no application tests were repeated locally for this fix.
+The corrected head's CI result will be recorded in the PR as described above.

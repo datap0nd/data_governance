@@ -13,7 +13,6 @@ templates and the result vocabulary.
 | 2026-09-12: agent guidance refresh and cross-platform verifier | [Test plan](releases/2026-09-12-agent-guidance-refresh/test-plan.md) | [Test report](releases/2026-09-12-agent-guidance-refresh/test-report.md) |
 | 2026-09-12: Gemini field-agent workflow and diagnosis bundle tool | [Test plan](releases/2026-09-12-gemini-field-agent/test-plan.md) | [Test report](releases/2026-09-12-gemini-field-agent/test-report.md) |
 | 2026-09-11: progress-based download and render waits; recorded-flow gate wording | [Test plan](releases/2026-09-11-progress-based-download-waits/test-plan.md) | [Test report](releases/2026-09-11-progress-based-download-waits/test-report.md) |
-| 2026-09-11: optional recording tests | [Test plan](releases/2026-09-11-optional-recording-tests/test-plan.md) | [Test report](releases/2026-09-11-optional-recording-tests/test-report.md) |
 
 The complete history is in [the release index](releases/INDEX.md). Historical
 releases retain their original tests and results; their older date-batching
