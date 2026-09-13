@@ -1375,12 +1375,14 @@ def test_update_drain_middleware_blocks_new_work_but_not_worker_progress(
     client = TestClient(main.app)
 
     start = client.post("/api/flows/999/run")
+    grouped_start = client.post("/api/flows/groups/999/run", json={"flow_ids": [1, 2]})
     progress = client.post(
         "/api/flows/worker/test-worker/runs/999/progress",
         json={},
     )
 
     assert start.status_code == 503
+    assert grouped_start.status_code == 503
     assert start.headers["retry-after"] == "60"
     assert "finishing active work" in start.json()["detail"]
     # Progress/completion routes deliberately remain open so work already in

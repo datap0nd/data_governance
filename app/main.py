@@ -228,6 +228,7 @@ _DRAINED_WORK_START_PATHS = (
         r"pg-deps|pg-cron|pbi-usage-sync)$"
     ),
     re.compile(r"^/api/flows/\d+/run$"),
+    re.compile(r"^/api/flows/groups/\d+/run$"),
     re.compile(r"^/api/flows/runs/\d+/(?:retry-sql|resume)$"),
     re.compile(r"^/api/flows/(?:sites|reports)/\d+/scan$"),
     re.compile(r"^/api/flows/sql/catalog/refresh$"),

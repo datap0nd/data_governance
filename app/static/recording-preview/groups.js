@@ -60,7 +60,7 @@ function render() {
     workspace.innerHTML = _flowListHtml(data.flows, [{status: 'online'}, {status: 'online'}], catalog, data.runs);
     workspace.querySelectorAll('.flow-group-toggle').forEach(button => {
         const module = button.dataset.group;
-        const head = button.parentElement;
+        const head = button.closest('th');
         const wrapper = document.createElement('div'); wrapper.className = 'group-source-heading';
         head.replaceChildren(wrapper); wrapper.append(button);
         const create = document.createElement('button'); create.type = 'button'; create.className = 'btn-sm btn-outline';
