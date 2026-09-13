@@ -28,4 +28,3 @@
 
 .flow-grouped-table tr[hidden] { display: none; }
 @media (max-width: 700px) { .topic-dialog { padding: 16px; } }
-

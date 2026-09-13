@@ -129,6 +129,13 @@ JavaScript page errors.
 
 ## Outstanding in-scope work and merge evidence
 
+CI's initial scope gate at head `283a41440424f7cd8118bbb5fdd4f3b33fdc06cb`
+rejected one extra blank line at the end of `app/static/flow_groups.css`:
+[run 34753995930](https://github.com/datap0nd/data_governance/actions/runs/34753995930).
+The subsequent documentation head carried the same whitespace. The extra line
+was removed on 2026-09-13 after this finding. This changes no styling or
+application behavior, so the focused application cases were not repeated.
+
 Final-head CI is pending at the committed report cutoff. Before merging, the PR
 testing section must record the exact tested head SHA and passing **Merge ready**
 run URL. Those later results belong in the PR so the report's own commit does
