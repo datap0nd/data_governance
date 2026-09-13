@@ -8,6 +8,7 @@ templates and the result vocabulary.
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-09-13: Flow topic groups | [Test plan](releases/2026-09-13-flow-topic-groups/test-plan.md) | [Test report](releases/2026-09-13-flow-topic-groups/test-report.md) |
 | 2026-09-12: explicit Excel worksheet selection | [Test plan](releases/2026-09-12-excel-worksheet-selection/test-plan.md) | [Test report](releases/2026-09-12-excel-worksheet-selection/test-report.md) |
 | 2026-09-12: agent guidance refresh and cross-platform verifier | [Test plan](releases/2026-09-12-agent-guidance-refresh/test-plan.md) | [Test report](releases/2026-09-12-agent-guidance-refresh/test-report.md) |
 | 2026-09-12: Gemini field-agent workflow and diagnosis bundle tool | [Test plan](releases/2026-09-12-gemini-field-agent/test-plan.md) | [Test report](releases/2026-09-12-gemini-field-agent/test-report.md) |

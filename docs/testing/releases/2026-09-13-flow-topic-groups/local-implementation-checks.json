@@ -1,0 +1,144 @@
+[
+  {
+    "schema_version": 1,
+    "run_id": "20260913T110553273Z-40880-1207e0e9",
+    "mode": "verify",
+    "status": "failed",
+    "revision": "c8a5f6fcee70b091c00b32acb3a05df9c3ce90d6",
+    "source_fingerprint": "4dbc9e17fdd585509ac4fb438a4ac63028e45d73ae6df5888cbcfd9228a934bf",
+    "environment": {
+      "os": "Microsoft Windows 10.0.26200",
+      "powershell": "7.6.5",
+      "python": "3.13.15"
+    },
+    "selection": {
+      "full_suite": false,
+      "diagnostic_reason": "",
+      "tests": [
+        "tests/test_flow_topic_groups.py",
+        "tests/test_flow_topic_groups_browser.py",
+        "tests/test_auto_update.py::test_update_drain_middleware_blocks_new_work_but_not_worker_progress"
+      ],
+      "syntax": [
+        "app/database.py",
+        "app/main.py",
+        "app/routers/flows.py",
+        "app/routers/flow_groups.py",
+        "app/static/app.js",
+        "app/static/flow_groups.js",
+        "tests/test_flow_topic_groups.py",
+        "tests/test_flow_topic_groups_browser.py",
+        "tests/fixtures/flow-groups/harness.js"
+      ]
+    },
+    "started_utc": "2026-09-13T15:05:53.2813753+04:00",
+    "finished_utc": "2026-09-13T15:06:26.5799156+04:00",
+    "duration_seconds": 33.299,
+    "exit_code": 1,
+    "reused_from": null,
+    "artifacts": {
+      "junit": ".test-runs/20260913T110553273Z-40880-1207e0e9/pytest.xml"
+    },
+    "test_summary": {
+      "tests": 22,
+      "failures": 0,
+      "skipped": 0,
+      "errors": 18
+    },
+    "diagnostic": "Focused verification failed with exit code 1. Rerun the failed case and only its necessary integration companions."
+  },
+  {
+    "schema_version": 1,
+    "run_id": "20260913T110659339Z-36624-310ae630",
+    "mode": "verify",
+    "status": "failed",
+    "revision": "99bb570d2a60e78e919923371f487c9dcdc3a377",
+    "source_fingerprint": "9a46f6843119404890935d675ad19e40f31c72efd42f47c3adbb220af0b5ef97",
+    "environment": {
+      "os": "Microsoft Windows 10.0.26200",
+      "powershell": "7.6.5",
+      "python": "3.13.15"
+    },
+    "selection": {
+      "full_suite": false,
+      "diagnostic_reason": "",
+      "tests": [
+        "tests/test_flow_topic_groups.py::test_moves_are_unique_stale_edits_fail_and_empty_groups_disappear",
+        "tests/test_flow_topic_groups.py::test_group_validation_is_atomic_and_http_routes_are_reachable[changes0-422]",
+        "tests/test_flow_topic_groups.py::test_group_validation_is_atomic_and_http_routes_are_reachable[changes1-409]",
+        "tests/test_flow_topic_groups.py::test_group_validation_is_atomic_and_http_routes_are_reachable[changes2-422]",
+        "tests/test_flow_topic_groups.py::test_group_validation_is_atomic_and_http_routes_are_reachable[changes3-422]",
+        "tests/test_flow_topic_groups.py::test_group_validation_is_atomic_and_http_routes_are_reachable[changes4-409]",
+        "tests/test_flow_topic_groups.py::test_group_validation_is_atomic_and_http_routes_are_reachable[changes5-422]",
+        "tests/test_flow_topic_groups.py::test_group_validation_is_atomic_and_http_routes_are_reachable[changes6-422]",
+        "tests/test_flow_topic_groups.py::test_classification_change_and_flow_delete_detach_members",
+        "tests/test_flow_topic_groups.py::test_batch_queues_both_before_launch_and_workers_can_claim_concurrently",
+        "tests/test_flow_topic_groups.py::test_second_member_validation_failure_rolls_back_batch_and_audit",
+        "tests/test_flow_topic_groups.py::test_conflicting_shared_output_is_rejected_for_whole_group",
+        "tests/test_flow_topic_groups.py::test_duplicate_batch_submissions_and_active_member_never_duplicate_runs",
+        "tests/test_flow_topic_groups.py::test_stale_membership_does_not_run_unseen_members",
+        "tests/test_flow_topic_groups.py::test_worker_start_failure_keeps_durable_queue_for_start_now[False]",
+        "tests/test_flow_topic_groups.py::test_worker_start_failure_keeps_durable_queue_for_start_now[True]",
+        "tests/test_flow_topic_groups_browser.py::test_saved_groups_reload_move_sort_and_ungroup_through_real_api",
+        "tests/test_flow_topic_groups_browser.py::test_actual_group_queue_polling_completion_failure_and_individual_recovery"
+      ],
+      "syntax": [
+        "tests/test_flow_topic_groups.py"
+      ]
+    },
+    "started_utc": "2026-09-13T15:06:59.3451892+04:00",
+    "finished_utc": "2026-09-13T15:12:19.3695415+04:00",
+    "duration_seconds": 320.024,
+    "exit_code": 1,
+    "reused_from": null,
+    "artifacts": {
+      "junit": ".test-runs/20260913T110659339Z-36624-310ae630/pytest.xml"
+    },
+    "test_summary": {
+      "tests": 18,
+      "failures": 1,
+      "skipped": 0,
+      "errors": 0
+    },
+    "diagnostic": "Focused verification failed with exit code 1. Rerun the failed case and only its necessary integration companions."
+  },
+  {
+    "schema_version": 1,
+    "run_id": "20260913T111254894Z-33028-2d315711",
+    "mode": "verify",
+    "status": "passed",
+    "revision": "8c93eebb81f438008f1d75a406947740fef23cad",
+    "source_fingerprint": "18bca934297631adc75a9ac1a30c0d70dd7d749cbf44bf60b37bfc59d543286e",
+    "environment": {
+      "os": "Microsoft Windows 10.0.26200",
+      "powershell": "7.6.5",
+      "python": "3.13.15"
+    },
+    "selection": {
+      "full_suite": false,
+      "diagnostic_reason": "",
+      "tests": [
+        "tests/test_flow_topic_groups_browser.py"
+      ],
+      "syntax": [
+        "app/static/flow_groups.js",
+        "tests/test_flow_topic_groups_browser.py"
+      ]
+    },
+    "started_utc": "2026-09-13T15:12:54.9017574+04:00",
+    "finished_utc": "2026-09-13T15:13:41.1632197+04:00",
+    "duration_seconds": 46.261,
+    "exit_code": 0,
+    "reused_from": null,
+    "artifacts": {
+      "junit": ".test-runs/20260913T111254894Z-33028-2d315711/pytest.xml"
+    },
+    "test_summary": {
+      "tests": 2,
+      "failures": 0,
+      "skipped": 0,
+      "errors": 0
+    },
+    "diagnostic": ""
+  }
+]
