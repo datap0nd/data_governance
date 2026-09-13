@@ -148,3 +148,23 @@ recent-releases table retains its five-entry limit. The two plan/report targets
 were inspected during this documentation correction. Application code and
 tests did not change; no application tests were repeated locally for this fix.
 The corrected head's CI result will be recorded in the PR as described above.
+
+## Additional CI diagnosis and targeted recovery: 2026-09-13
+
+The superseded [CI run 34754053742](https://github.com/datap0nd/data_governance/actions/runs/34754053742)
+at `6939d376c066ab8fe0e6346cb7bd605e76a03b89` was cancelled after the index
+correction. Its partial Python log contained three failures and three teardown
+errors before cancellation, without a completed test summary. Inspection found
+that the existing worksheet UI's fictional HTTP server rejected the newly
+required `/api/flows/groups` read. It now returns an empty group list; its
+assertions and worksheet behavior were not changed.
+
+At `5ae61c5c065097fa1162e3a89de0bd2eb36238cf`, the exact I-11 command in the
+plan passed all three affected browser cases, with zero skips or warnings.
+Python syntax passed. Pytest took 9.13 s; the verifier took 11.047 s, finishing
+at 2026-09-13 11:31:25 UTC with the same checkout-owned Windows/Python/browser
+environment. Evidence: run `20260913T113114336Z-34784-f7cbbda1`,
+[sanitized result](local-worksheet-checks.json). This extends the original 22
+implementation passes with three existing worksheet regression cases. Only
+these affected cases were run locally; final-head CI remains pending until
+its result is recorded in the PR.

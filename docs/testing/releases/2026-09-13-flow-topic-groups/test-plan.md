@@ -94,6 +94,14 @@ $env:GROUP_EVIDENCE_DIR = Join-Path (Get-Location).Path 'docs/testing/releases/2
 | I-08 | Walk real UI/API creation with a failed save, retry, reload, duplicate-name editing, moving members, narrow viewport and ungrouping. | Work is preserved on error; reload proves persistence; all flows survive ungrouping. |
 | I-09 | Walk actual group Run, blocked response, retry, activity polling, finish runs while editing another group, then individual Run/Stop. | Feedback and execution rows update; unsaved name/selection remain; grouped members return to their correct rows. |
 | I-10 | Run existing source-group, sort and polling Node contracts through the Python verifier bridge; exercise the update-drain middleware. | Existing list contracts pass; new group runs respect the same maintenance barrier as individual runs. |
+| I-11 | In the existing fictional worksheet UI server, return an empty list from the new groups endpoint. Walk worksheet error recovery, saved choices and the Local/portal builders. | Ungrouped flows still open, edit, save and recover; worksheet selections and SQL targets remain unchanged. |
+
+The CI diagnosis identified this additional affected browser fixture. Its
+targeted regression command is:
+
+```powershell
+.\tools\check.ps1 -Mode Verify -TestPath tests/test_flow_excel_ui.py::test_excel_failure_recovery_and_saved_choices,tests/test_flow_excel_ui.py::test_excel_setting_in_each_builder_defaults_off -SyntaxPath tests/test_flow_excel_ui.py
+```
 
 Final-head **Merge ready** CI supplies full regression before the implementation
 PR can merge. Do not repeat the full suite locally.
