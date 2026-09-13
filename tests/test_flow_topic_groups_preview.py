@@ -32,8 +32,9 @@ def preview(tmp_path):
         page.on('request', lambda request: external.append(request.url) if not request.url.startswith(f'http://127.0.0.1:{server.server_port}/') else None)
         page.goto(f'http://127.0.0.1:{server.server_port}/static/recording-preview/groups.html')
         page.get_by_role('button', name='M Tracker group', exact=True).wait_for()
-        (evidence / 'browser.json').write_text(json.dumps({
-            'revision': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
+        revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
+        (evidence / f'browser-{revision[:7]}.json').write_text(json.dumps({
+            'revision': revision,
             'browser': browser.version, 'viewport': page.viewport_size, 'synthetic': True,
         }, indent=2), encoding='utf-8')
         try:

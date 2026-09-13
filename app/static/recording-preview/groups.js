@@ -117,6 +117,7 @@ function render() {
     _flowSizeExecutionPane();
 }
 function openEditor(module, topic = null) {
+    document.querySelectorAll('.flow-row-menu[open]').forEach(menu => menu.open = false);
     editor = {module, id: topic?.id, ids: new Set(topic?.ids || [])};
     $p('#topic-dialog-title').textContent = topic ? 'Edit group' : 'New group';
     $p('#topic-context').textContent = `${module} · Production flows. Choose the flows to keep together.`;
