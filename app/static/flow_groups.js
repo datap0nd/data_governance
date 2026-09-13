@@ -22,8 +22,9 @@ window.FlowGroups = (() => {
         return result;
     }
     function status(topic, activeCount, failed) {
-        const item = feedback.get(topic.id);
-        if (item && (!item.queued || activeCount)) return `<span class="${item.error ? 'flow-error' : ''}" role="status">${esc(item.message)}</span>`;
+        let item = feedback.get(topic.id);
+        if (item?.queued && !activeCount) {feedback.delete(topic.id); item = null;}
+        if (item && (!item.error || !activeCount)) return `<span class="${item.error ? 'flow-error' : ''}" role="status">${item.queued ? `${activeCount} of ${topic.flow_ids.length} active · ` : ''}${esc(item.message)}</span>`;
         if (activeCount) return `${activeCount} of ${topic.flow_ids.length} active`;
         if (failed) return `${failed} failed · Expand to review`;
         return 'Run together · Each flow keeps its settings';
@@ -73,7 +74,9 @@ window.FlowGroups = (() => {
                         const button = head.querySelector('[data-topic-run]');
                         button.disabled = !!count || pending.has(topic.id);
                         button.textContent = pending.has(topic.id) ? 'Queueing…' : count ? 'In progress' : 'Run group';
-                        head.querySelector('.topic-summary').innerHTML = status(topic, count, items.filter(row => row.flow.last_status === 'failed' && !row.activeRun).length);
+                        const summary = head.querySelector('.topic-summary');
+                        const html = status(topic, count, items.filter(row => row.flow.last_status === 'failed' && !row.activeRun).length);
+                        if (summary.innerHTML !== html) summary.innerHTML = html;
                     }
                 }
                 for (const row of items.filter(item => !item.activeRun)) {
