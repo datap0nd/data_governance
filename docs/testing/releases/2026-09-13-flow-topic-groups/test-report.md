@@ -1,7 +1,8 @@
 # Flow topic groups: test report
 
 - Latest delivery state: implementation ready; focused local checks complete; final-head CI pending.
-- Latest evidence cutoff: 2026-09-13 11:13:42 UTC.
+- Latest evidence cutoff: 2026-09-13 11:16:08 UTC (test runs completed by 11:13:42; subsequent image inspection included).
+- Change and final merge evidence: [PR #122](https://github.com/datap0nd/data_governance/pull/122).
 - Implementation revision: `8c93eebb81f438008f1d75a406947740fef23cad`.
 - Scope: persistent group organization and atomic group queueing, with the owner-approved UI.
 

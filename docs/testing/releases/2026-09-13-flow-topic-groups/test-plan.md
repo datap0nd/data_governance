@@ -1,6 +1,7 @@
 # Flow topic groups: test plan
 
 - Scope: persistent Flow topic groups and atomic manual group runs, following the owner-approved fictional preview.
+- Change: [PR #122](https://github.com/datap0nd/data_governance/pull/122).
 - Base: `origin/main` at `84a8ea9` (PR #121).
 - Preview: `app/static/recording-preview/groups.html`.
 - Related results: [test-report.md](test-report.md).
