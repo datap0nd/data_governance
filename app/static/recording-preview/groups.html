@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en" class="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Flow groups · Metronome preview</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="groups.css">
+</head>
+<body>
+  <aside class="groups-preview-bar" aria-label="Preview controls">
+    <span><strong>Fictional preview</strong> · Flow groups</span>
+    <span>Changes stay in this tab.</span>
+    <button type="button" class="btn-secondary" id="preview-reset">Reset preview</button>
+    <details><summary>Try recovery & scale</summary><div class="groups-preview-options">
+      <label><input type="checkbox" id="preview-save-failure"> Next save fails</label>
+      <label><input type="checkbox" id="preview-run-failure"> Next run is blocked</label>
+      <label><input type="checkbox" id="preview-one-worker"> One worker available</label>
+      <button type="button" class="btn-secondary" id="preview-scale">Use 200 flows</button>
+      <button type="button" class="btn-secondary" id="preview-complete">Finish active runs</button>
+    </div></details>
+  </aside>
+  <main class="groups-preview-main">
+    <div class="page-header flow-page-header"><div><h1>Flows</h1><p class="subtitle">Acquire data from files, Outlook, or website reports.</p></div><button type="button" class="btn-primary" id="preview-create-flow">Create flow</button></div>
+    <div class="flow-tabs" role="tablist" aria-label="Flow views">
+      <button type="button" role="tab" aria-selected="true" class="active" data-preview-view="Flows">Flows</button>
+      <button type="button" role="tab" aria-selected="false" data-preview-view="Catalog">Catalog</button>
+      <button type="button" role="tab" aria-selected="false" data-preview-view="Run history">Run history</button>
+      <button type="button" role="tab" aria-selected="false" data-preview-view="Settings">Settings</button>
+    </div>
+    <div id="groups-feedback" role="status" aria-live="polite"></div>
+    <div id="flow-workspace"></div>
+  </main>
+  <dialog id="topic-dialog" class="flow-recording-dialog topic-dialog" aria-labelledby="topic-dialog-title">
+    <form id="topic-form" novalidate>
+      <div class="flow-recording-header"><h2 id="topic-dialog-title">New group</h2><button class="btn-secondary" type="button" data-close-topic aria-label="Close group editor">×</button></div>
+      <p class="topic-context" id="topic-context"></p>
+      <label class="topic-field" for="topic-name">Group name<input id="topic-name" name="name" maxlength="80" autocomplete="off" placeholder="e.g. M Tracker" required></label>
+      <label class="topic-field" for="topic-search">Flows<input type="search" id="topic-search" placeholder="Find flows…" autocomplete="off"></label>
+      <div id="topic-choices" class="topic-choices"></div>
+      <p id="topic-selection" class="topic-context" aria-live="polite"></p>
+      <p id="topic-error" class="flow-error" role="alert"></p>
+      <div class="topic-dialog-actions"><button type="button" class="btn-secondary" data-close-topic>Cancel</button><button type="submit" class="btn-primary" id="topic-save">Create group</button></div>
+    </form>
+  </dialog>
+  <dialog id="existing-dialog" class="flow-recording-dialog topic-dialog" aria-labelledby="existing-title">
+    <div class="flow-recording-header"><h2 id="existing-title"></h2><button class="btn-secondary" type="button" id="existing-close">Back to flows</button></div>
+    <div id="existing-content"></div>
+  </dialog>
+  <script type="module" src="groups.js"></script>
+</body>
+</html>
