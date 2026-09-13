@@ -59,6 +59,8 @@ def _flow_server_identity() -> str:
     return postgres_server_identity(UPLOAD_PGHOST, UPLOAD_PGPORT)
 
 router = APIRouter(prefix="/api/flows", tags=["flows"])
+from app.routers import flow_groups
+router.include_router(flow_groups.router)
 
 CONTROL_TYPES = {"select", "multi_select", "text", "week"}
 DOWNLOAD_MODES = {"single", "one_per_period", "one_per_week"}
@@ -2054,6 +2056,9 @@ def update_site(site_id: int, body: SiteWrite, request: Request):
         )
         if not cursor.rowcount:
             raise HTTPException(404, "Website not found.")
+        if existing and existing['adapter'] != body.adapter:
+            for flow in db.execute('SELECT id FROM flows WHERE site_id=?', (site_id,)).fetchall():
+                flow_groups.detach_if_scope_changed(db, flow['id'])
         log_event(db, "flow_site", site_id, body.name, "updated", actor=get_actor(request))
         row = db.execute("SELECT * FROM flow_sites WHERE id = ?", (site_id,)).fetchone()
     result = dict(row)
@@ -3592,6 +3597,7 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
         reconcile_file_binding(db, flow_id)
         for source_id in {existing["sql_target_source_id"], sql_target_source_id} - {None}:
             reconcile_source(db, int(source_id))
+        flow_groups.detach_if_scope_changed(db, flow_id)
         log_event(db, "flow", flow_id, body.name, "updated", actor=get_actor(request))
         if existing["flow_folder"]:
             try:
@@ -3639,6 +3645,7 @@ def patch_flow(flow_id: int, body: FlowInlineWrite, request: Request):
             f"UPDATE flows SET {', '.join(key + '=?' for key in changes)}, updated_at=? WHERE id=?",
             (*changes.values(), _iso(_now()), flow_id),
         )
+        flow_groups.detach_if_scope_changed(db, flow_id)
         log_event(db, "flow", flow_id, flow["name"], "updated",
                   detail=json.dumps({key: {"before": flow[key], "after": value}
                                      for key, value in changes.items()}), actor=get_actor(request))
@@ -3846,6 +3853,31 @@ def delete_flow(flow_id: int, body: FlowDeleteWrite, request: Request):
     }
 
 
+def _queue_new_manual_run(db, flow_id: int, *, actor, trigger_type, now):
+    """Queue a fresh manual run inside the caller's write transaction."""
+    from app.routers.pipelines import (
+        assert_no_active_flow_publish_run, assert_flow_target_available,
+        assert_resource_unlocked, flow_target_resource_key_from_job,
+    )
+    assert_resource_unlocked(db, "flow", str(flow_id))
+    flow = db.execute("SELECT name,source_type FROM flows WHERE id=?", (flow_id,)).fetchone()
+    if not flow:
+        raise HTTPException(404, "Flow not found.")
+    job = _build_job(db, flow_id, force_reprocess=(flow["source_type"] or "portal") in {"outlook", "file"})
+    assert_flow_target_available(db, flow_target_resource_key_from_job(job))
+    assert_no_active_flow_publish_run(db, job)
+    _assert_refresh_plan_runnable(db, job)
+    cursor = db.execute(
+        """INSERT INTO flow_runs (flow_id, trigger_type, status, requested_by, job_json, created_at)
+           VALUES (?, ?, 'queued', ?, ?, ?)""",
+        (flow_id, trigger_type, actor, _json(job), now),
+    )
+    run_id = cursor.lastrowid
+    log_event(db, "flow", flow_id, flow["name"], "run_queued",
+              f"run_id={run_id}; trigger_type={trigger_type}", actor)
+    return run_id, job
+
+
 def queue_flow_run(
     flow_id: int,
     *,
@@ -3920,23 +3952,7 @@ def queue_flow_run(
                 f"run_id={run_id}", actor,
             )
         else:
-            job = _build_job(
-                db, flow_id,
-                force_reprocess=(flow["source_type"] or "portal") in {"outlook", "file"},
-            )
-            assert_flow_target_available(db, flow_target_resource_key_from_job(job))
-            assert_no_active_flow_publish_run(db, job)
-            _assert_refresh_plan_runnable(db, job)
-            cursor = db.execute(
-                """INSERT INTO flow_runs (flow_id, trigger_type, status, requested_by, job_json, created_at)
-                   VALUES (?, ?, 'queued', ?, ?, ?)""",
-                (flow_id, trigger_type, actor, _json(job), now),
-            )
-            run_id = cursor.lastrowid
-            log_event(
-                db, "flow", flow_id, flow["name"], "run_queued",
-                f"run_id={run_id}; trigger_type={trigger_type}", actor,
-            )
+            run_id, job = _queue_new_manual_run(db, flow_id, actor=actor, trigger_type=trigger_type, now=now)
     worker = launch_local_worker(job["execution"]["browser_mode"])
     if worker.get("status") == "error":
         with get_db() as db:

@@ -1,0 +1,30 @@
+.group-source-heading { display: flex; align-items: center; gap: 16px; padding-right: 16px; }
+.group-source-heading .flow-group-toggle { flex: 1; min-width: 0; }
+.group-source-heading > button { flex: none; }
+.flow-grouped-table .flow-name-cell, .flow-execution-table .flow-name-cell { padding-left: 30px; min-width: 190px; }
+.flow-grouped-table tr.topic-member .flow-name-cell { padding-left: 50px; }
+.flow-grouped-table tr.topic-heading td { vertical-align: middle; background: var(--surface); padding-top: 12px; padding-bottom: 12px; }
+.topic-toggle { border: 0; padding: 0; background: transparent; color: var(--text); font: inherit; font-weight: 650; cursor: pointer; position: relative; display: inline-flex; align-items: center; gap: 8px; text-align: left; }
+.topic-toggle .topic-arrow { position: absolute; left: -18px; font-size: .75rem; }
+.topic-toggle .flow-group-count { background: var(--surface-2); font-weight: 500; white-space: nowrap; }
+.topic-summary { color: var(--text-muted); font-size: .82rem; }
+.topic-summary .flow-error { color: var(--red); }
+.topic-dialog { width: min(520px, calc(100vw - 24px)); padding: 24px; }
+.topic-dialog h2 { font-size: 1.05rem; }
+.topic-field { display: grid; gap: 6px; font-size: .85rem; font-weight: 600; margin: 16px 0 8px; }
+.topic-field input { width: 100%; padding: 9px 12px; font-family: inherit; font-size: .85rem; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); }
+.topic-choices { border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); max-height: 260px; overflow-y: auto; margin-top: 12px; }
+.topic-choice { display: flex; align-items: center; gap: 10px; padding: 10px 4px; cursor: pointer; font-size: .88rem; }
+.topic-choice:hover { background: var(--surface-2); }
+.topic-choice > span { display: grid; }
+.topic-choice small { font-size: .78rem; color: var(--text-muted); }
+.topic-choice input { width: 16px; height: 16px; accent-color: var(--accent); flex: none; }
+.topic-context { font-size: .82rem; color: var(--text-muted); }
+.topic-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+#topic-error { font-size: .82rem; }
+#topic-error:empty { display: none; }
+.topic-dialog dl { display: grid; grid-template-columns: 90px 1fr; gap: 10px; margin: 16px 0; font-size: .85rem; }
+.topic-dialog dt { color: var(--text-muted); }
+
+.flow-grouped-table tr[hidden] { display: none; }
+@media (max-width: 700px) { .topic-dialog { padding: 16px; } }

@@ -10702,8 +10702,8 @@ function _flowListHtml(flows, workers, catalog, runs = []) {
             if (!items.length) return "";
             const active = items.filter(row => row.activeRun).length;
             const failed = items.filter(row => row.flow.last_status === "failed").length;
-            return `<tbody class="flow-group-heading"><tr><th colspan="9" scope="rowgroup"><button type="button" class="flow-group-toggle" id="flow-group-${group}" data-group="${group}" aria-expanded="${opened.has(group)}" aria-controls="flow-group-rows-${group}"><span aria-hidden="true">${opened.has(group) ? "▾" : "▸"}</span> ${group} <span class="flow-group-count">${items.length}</span><small class="flow-group-active" ${active ? "" : "hidden"}>${active} active runs</small><small class="flow-group-failed" ${failed ? "" : "hidden"}>${failed} failed</small></button></th></tr></tbody>
-            <tbody id="flow-group-rows-${group}" ${opened.has(group) ? "" : "hidden"}>${items.filter(row => !row.activeRun).map(_flowRowHtml).join("")}</tbody>`;
+            return `<tbody class="flow-group-heading"><tr><th colspan="9" scope="rowgroup"><div class="group-source-heading"><button type="button" class="flow-group-toggle" id="flow-group-${group}" data-group="${group}" aria-expanded="${opened.has(group)}" aria-controls="flow-group-rows-${group}"><span aria-hidden="true">${opened.has(group) ? "▾" : "▸"}</span> ${group} <span class="flow-group-count">${items.length}</span><small class="flow-group-active" ${active ? "" : "hidden"}>${active} active runs</small><small class="flow-group-failed" ${failed ? "" : "hidden"}>${failed} failed</small></button>${window.FlowGroups?.sourceAction(group) || ''}</div></th></tr></tbody>
+            <tbody id="flow-group-rows-${group}" ${opened.has(group) ? "" : "hidden"}>${window.FlowGroups ? window.FlowGroups.rowsHtml(group, items) : items.filter(row => !row.activeRun).map(_flowRowHtml).join("")}</tbody>`;
         }).join("")}</table></div>`;
 }
 
@@ -10729,6 +10729,7 @@ function _flowWatchExecutionPane() {
 }
 
 function _flowSyncExecutionRows(active) {
+    if (window.FlowGroups?.syncExecutionRows(active)) return;
     const target = document.getElementById("flow-execution-rows");
     if (!target) return;
     const state = window._flowsState;
@@ -11792,10 +11793,11 @@ function _flowRunsHtml(runs) {
 
 async function renderFlows() {
     const requestId = navigationRequestId;
-    const [catalog, flows, runs, workers, scans, estimates, sqlCatalog, people, remoteControl] = await Promise.all([
+    const [catalog, flows, runs, workers, scans, estimates, sqlCatalog, people, remoteControl, groups] = await Promise.all([
         api("/api/flows/catalog"), api("/api/flows"), api("/api/flows/runs"), api("/api/flows/workers"),
         api("/api/flows/scans"), api("/api/flows/estimates"), api("/api/flows/sql/catalog"), api("/api/people"),
         api("/api/system/remote-flow-control").catch(() => null),
+        api("/api/flows/groups"),
     ]);
     window._remoteFlowControlStatus = remoteControl;
     let scanEvents = [];
@@ -11804,7 +11806,7 @@ async function renderFlows() {
     }
     if (requestId !== navigationRequestId || currentPage !== "flows") return "";
     window._flowsState = {
-        catalog, flows, runs, workers, scans, estimates, sqlCatalog, people, scanEvents,
+        catalog, flows, runs, workers, scans, estimates, sqlCatalog, people, scanEvents, groups,
         openCatalogTopics: new Set(), view: "list", classification: "production",
     };
     return `
@@ -12555,6 +12557,7 @@ async function _flowSubmitBuilder(event) {
 
 function _bindFlowWorkspace() {
     const state = window._flowsState;
+    window.FlowGroups?.bind();
     _flowWatchExecutionPane();
     document.querySelectorAll(".flow-classification-tabs button").forEach(button => button.addEventListener("click", () => {
         state.classification = button.dataset.flowClassification;
@@ -12609,6 +12612,7 @@ function _bindFlowWorkspace() {
             const updated = await apiPatch(`/api/flows/${flow.id}`, {classification});
             Object.assign(flow, updated);
             toast(classification === 'draft' ? 'Flow moved to Draft flows.' : 'Flow moved to Production.');
+            if (window.FlowGroups) await window.FlowGroups.refresh();
             _flowShowView('list');
         } catch (error) {
             toast('Flow classification was not changed: ' + error.message);

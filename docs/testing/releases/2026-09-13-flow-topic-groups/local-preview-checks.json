@@ -1,0 +1,75 @@
+[
+  {
+    "schema_version": 1,
+    "run_id": "20260913T104836972Z-7860-a2cef39e",
+    "mode": "verify",
+    "status": "failed",
+    "revision": "3593be02778beef423e1a2a5d536c0010e0cba52",
+    "source_fingerprint": "80c088d5f701235dccba5faf3f8bce4a859c84a814a9310f7288514112566126",
+    "environment": {
+      "os": "Microsoft Windows 10.0.26200",
+      "powershell": "7.6.5",
+      "python": "3.13.15"
+    },
+    "selection": {
+      "full_suite": false,
+      "diagnostic_reason": "",
+      "tests": [
+        "tests/test_flow_topic_groups_preview.py"
+      ],
+      "syntax": [
+        "app/static/recording-preview/groups.js",
+        "tests/test_flow_topic_groups_preview.py"
+      ]
+    },
+    "started_utc": "2026-09-13T14:48:36.979466+04:00",
+    "finished_utc": "2026-09-13T14:49:19.8929124+04:00",
+    "duration_seconds": 42.913,
+    "exit_code": 1,
+    "reused_from": null,
+    "artifacts": {
+      "junit": ".test-runs/20260913T104836972Z-7860-a2cef39e/pytest.xml"
+    },
+    "test_summary": null,
+    "diagnostic": "Focused verification failed with exit code 1. Rerun the failed case and only its necessary integration companions."
+  },
+  {
+    "schema_version": 1,
+    "run_id": "20260913T104945988Z-44580-6a0c08e0",
+    "mode": "verify",
+    "status": "passed",
+    "revision": "55882c21a9523b467fe9db735d312950a0f2da15",
+    "source_fingerprint": "88c1cd68d2330d18e20c0fa9186914cdc0a7b555f75e7de22713d23178239671",
+    "environment": {
+      "os": "Microsoft Windows 10.0.26200",
+      "powershell": "7.6.5",
+      "python": "3.13.15"
+    },
+    "selection": {
+      "full_suite": false,
+      "diagnostic_reason": "",
+      "tests": [
+        "tests/test_flow_topic_groups_preview.py::test_create_edit_move_ungroup_and_save_failure"
+      ],
+      "syntax": [
+        "app/static/recording-preview/groups.js",
+        "tests/test_flow_topic_groups_preview.py"
+      ]
+    },
+    "started_utc": "2026-09-13T14:49:45.9954945+04:00",
+    "finished_utc": "2026-09-13T14:49:51.3606427+04:00",
+    "duration_seconds": 5.365,
+    "exit_code": 0,
+    "reused_from": null,
+    "artifacts": {
+      "junit": ".test-runs/20260913T104945988Z-44580-6a0c08e0/pytest.xml"
+    },
+    "test_summary": {
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "diagnostic": ""
+  }
+]

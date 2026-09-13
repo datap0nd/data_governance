@@ -542,6 +542,36 @@ CREATE TABLE IF NOT EXISTS flow_report_filters (
     UNIQUE(report_id, filter_key)
 );
 
+CREATE TABLE IF NOT EXISTS flow_groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    name_key TEXT NOT NULL,
+    module TEXT NOT NULL,
+    classification TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    UNIQUE(module, classification, name_key)
+);
+
+CREATE TABLE IF NOT EXISTS flow_group_members (
+    flow_id INTEGER PRIMARY KEY REFERENCES flows(id) ON DELETE CASCADE,
+    group_id INTEGER NOT NULL REFERENCES flow_groups(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_flow_group_members_group ON flow_group_members(group_id);
+
+CREATE TRIGGER IF NOT EXISTS flow_group_member_removed AFTER DELETE ON flow_group_members
+BEGIN
+    UPDATE flow_groups SET version=version+1 WHERE id=OLD.group_id;
+    DELETE FROM flow_groups WHERE id=OLD.group_id
+        AND NOT EXISTS (SELECT 1 FROM flow_group_members WHERE group_id=OLD.group_id);
+END;
+CREATE TRIGGER IF NOT EXISTS flow_group_member_moved AFTER UPDATE OF group_id ON flow_group_members
+WHEN OLD.group_id != NEW.group_id
+BEGIN
+    UPDATE flow_groups SET version=version+1 WHERE id IN (OLD.group_id,NEW.group_id);
+    DELETE FROM flow_groups WHERE id=OLD.group_id
+        AND NOT EXISTS (SELECT 1 FROM flow_group_members WHERE group_id=OLD.group_id);
+END;
+
 CREATE TABLE IF NOT EXISTS flows (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     name                TEXT UNIQUE NOT NULL,
