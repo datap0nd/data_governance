@@ -77,6 +77,7 @@ def fixture_server(source_type="outlook", port=0):
                     "asap_download_types": [],
                 },
                 "/api/flows": [state["flow"]], "/api/flows/runs": [],
+                "/api/flows/groups": [],
                 "/api/flows/workers": [], "/api/flows/scans": [],
                 "/api/flows/estimates": {}, "/api/people": [],
                 "/api/flows/activity": {"active_runs": [], "latest_runs": [], "workers": {"online": 0}},
