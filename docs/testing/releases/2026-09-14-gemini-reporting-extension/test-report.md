@@ -1,6 +1,7 @@
 # Gemini reporting extension: test report
 
 - Plan: [test-plan.md](test-plan.md).
+- Change: [PR #123](https://github.com/datap0nd/data_governance/pull/123).
 - Evidence cutoff: 2026-09-14 09:37 UTC, before final-head CI.
 - Tested implementation: `f4140b85a8560fddd7e3e2847d2a626d3fec9829`. Local Node
   checks ran on its worktree contents before that commit; preview date-revision
@@ -91,3 +92,18 @@ pending at this cutoff; agent browser testing is not owner approval.
 This report stops before CI and merge. The PR testing section must retain the
 final revision-specific results and owner feedback; its merge record supplies
 the actual merge SHA. No branch or merge is described as deployed.
+
+### 2026-09-14 09:39 UTC evidence update
+
+[CI run 34828939658](https://github.com/datap0nd/data_governance/actions/runs/34828939658)
+on `07ea26d00e836ac8be483297990357bd68ec6202` passed frontend/extension tests and
+both PostgreSQL 14/18 integration jobs. Python remained in progress at this
+cutoff. These results do not stand in for final-head CI after this update.
+
+The installer now rejects Gemini versions below the documented 0.59.0 minimum
+before installing dependencies or linking the extension. On 2026-09-14,
+`pwsh -NoProfile -File .test-runs/check-installer.ps1` passed syntax validation
+and two negative cases: mock version `0.58.0` and malformed version output both
+stopped before npm or linking could run. No existing Gemini configuration was
+used by this isolated fake-command fixture. This installer delta accompanies
+this documentation update; core MCP code remains `f4140b8`.

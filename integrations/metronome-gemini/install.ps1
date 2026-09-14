@@ -6,6 +6,12 @@ $geminiCommand = Get-Command gemini.cmd -ErrorAction SilentlyContinue
 if (-not $geminiCommand) { $geminiCommand = Get-Command gemini -ErrorAction Stop }
 $nodeMajor = [int]((& node --version).TrimStart('v').Split('.')[0])
 if ($nodeMajor -lt 22) { throw 'Node.js 22 or newer is required.' }
+$geminiVersionOutput = & $geminiCommand.Source --version
+if ($LASTEXITCODE -ne 0) { throw 'Gemini CLI could not report its version.' }
+$geminiVersionMatch = [regex]::Match(($geminiVersionOutput -join "`n"), '(?m)^\s*(\d+\.\d+\.\d+)(?:[-+][^\s]+)?\s*$')
+if (-not $geminiVersionMatch.Success -or [version]$geminiVersionMatch.Groups[1].Value -lt [version]'0.59.0') {
+    throw 'Gemini CLI 0.59.0 or newer is required for this extension. Update Gemini CLI, then rerun the installer.'
+}
 Push-Location $PSScriptRoot
 try {
     & npm.cmd ci --ignore-scripts

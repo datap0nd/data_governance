@@ -5,6 +5,7 @@
 - Baseline: `afb42a2d8be8d414d8dee5300967759003433027` (current main when started).
 - Implementation revision: `f4140b85a8560fddd7e3e2847d2a626d3fec9829`.
 - Results: [test-report.md](test-report.md).
+- Change: [PR #123](https://github.com/datap0nd/data_governance/pull/123).
 - Environments: Windows ARM64/Node 24 locally; Node 22, Python 3.13 and disposable
   PostgreSQL 14/18 in CI. Browser checks use a fictional localhost preview.
 
