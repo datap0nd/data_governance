@@ -8,6 +8,7 @@ templates and the result vocabulary.
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-09-14: Gemini simple setup and database-wide reads | [Test plan](releases/2026-09-14-gemini-simple-setup/test-plan.md) | [Test report](releases/2026-09-14-gemini-simple-setup/test-report.md) |
 | 2026-09-14: Gemini reporting extension | [Test plan](releases/2026-09-14-gemini-reporting-extension/test-plan.md) | [Test report](releases/2026-09-14-gemini-reporting-extension/test-report.md) |
 | 2026-09-13: Flow topic groups | [Test plan](releases/2026-09-13-flow-topic-groups/test-plan.md) | [Test report](releases/2026-09-13-flow-topic-groups/test-report.md) |
 | 2026-09-12: explicit Excel worksheet selection | [Test plan](releases/2026-09-12-excel-worksheet-selection/test-plan.md) | [Test report](releases/2026-09-12-excel-worksheet-selection/test-report.md) |

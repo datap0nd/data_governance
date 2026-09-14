@@ -5,17 +5,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { MetronomeClient, scrub } from './client.mjs';
 import { ReadonlySql } from './sql.mjs';
 import { Proposals } from './proposals.mjs';
+import { accessSettings, setting, sqlSettings } from './settings.mjs';
 
 const id = z.number().int().positive();
-const setting = name => {
-  const value = process.env[name]?.trim();
-  return value && !value.startsWith('${') ? value : undefined;
-};
-export function createServer({ client = new MetronomeClient({
-  baseUrl: setting('METRONOME_BASE_URL'),
-  flowIds: setting('METRONOME_FLOW_IDS') || '*', siteIds: setting('METRONOME_SITE_IDS') || '*',
-}), sql = new ReadonlySql({ dsn: setting('METRONOME_READONLY_DSN') || '', relations: setting('METRONOME_SQL_RELATIONS') || '' }) } = {}) {
-  const server = new McpServer({ name: 'metronome', version: '0.1.0' });
+export function createServer({ client = new MetronomeClient(accessSettings()), sql = new ReadonlySql(sqlSettings()) } = {}) {
+  const server = new McpServer({ name: 'metronome', version: '0.1.1' });
   const proposals = new Proposals(client, setting('METRONOME_PROPOSAL_DIR'));
   function tool(name, description, inputSchema, action, readOnly = true) {
     server.registerTool(name, { description, inputSchema,
@@ -28,7 +22,7 @@ export function createServer({ client = new MetronomeClient({
   tool('capabilities', 'Check this integration, configured scope and installed analysis library. Does not connect to SQL or browse portals.', {}, () => ({
     recommended_model: 'gemini-3.5-flash', compatible_model: 'gemini-3.1-pro-preview',
     metronome_url: client.baseUrl, scope: { flow_ids: client.flowIds ? [...client.flowIds] : '*', site_ids: client.siteIds ? [...client.siteIds] : '*' },
-    sql_configured: sql.configured(), sql_relations: [...sql.relations],
+    sql_configured: sql.configured(), sql_scope: 'All databases, tables and views readable by the dedicated account on the configured server. Each database is checked separately; no manual table list.',
     exceljs_module: fileURLToPath(new URL('node_modules/exceljs/excel.js', import.meta.url)),
     boundaries: ['Metronome application logic is unchanged.', 'No Excel reader, HTML generator or browser automation is implemented by this MCP.',
       'Gemini uses its own tools and the installed ExcelJS library for workbook and HTML work.',
@@ -42,11 +36,18 @@ export function createServer({ client = new MetronomeClient({
   tool('list_recordings', 'List recording revision IDs without browser state or entered values.', { flow_id: id }, a => client.recordings(a.flow_id));
   tool('list_runs', 'Read bounded run status history for an allowed flow.', { flow_id: id, limit: z.number().int().min(1).max(100).default(20) }, a => client.listRuns(a.flow_id, a.limit));
   tool('get_run', 'Read the status of one run after verifying access to its flow. Raw browser logs are not exposed.', { run_id: id }, a => client.getRun(a.run_id));
-  tool('get_sql_schema', 'Read column names and data types for configured SQL relations using the dedicated reader. Never uses Metronome upload credentials.', {}, () => sql.schema());
-  tool('query_readonly', 'Run one bounded SELECT using dedicated read-only credentials and configured schema.table grants. Use aggregates for completeness; row results can be truncated.', {
+  const database = z.string().min(1).max(63).optional().describe('Database on the configured SQL server. Omit to use the starting database; discover names with list_sql_databases.');
+  tool('list_sql_databases', 'Discover databases the reader can connect to. Each selected database must separately pass read-only privilege checks. If the starting database is unavailable, ask for one existing database name; never request passwords in chat.', { database }, a => sql.databases(a.database));
+  tool('get_sql_schema', 'Discover readable tables/views and their columns using the dedicated reader. No table list is required. Follow next_offset for additional pages; optional schema/table filters narrow discovery. Never uses upload credentials.', {
+    database,
+    schema_name: z.string().min(1).max(256).optional(), relation_name: z.string().min(1).max(256).optional(),
+    offset: z.number().int().min(0).max(1000000000).default(0), limit: z.number().int().min(1).max(2000).default(2000),
+  }, a => sql.schema(a));
+  tool('query_readonly', 'Run one bounded SELECT over any schema.table readable by the dedicated database account. Use aggregates for completeness; row results can be truncated. Writes and unsafe functions are blocked.', {
+    database,
     sql: z.string().min(1).max(20000), params: z.array(z.union([z.string(), z.number(), z.boolean(), z.null()])).max(100).default([]),
     limit: z.number().int().min(1).max(2000).default(1000),
-  }, a => sql.query(a.sql, a.params, a.limit));
+  }, a => sql.query(a.sql, a.params, a.limit, a.database));
   const definitionJson = z.string().min(2).max(40000).describe('JSON object with the exact flow definition shown to the user.');
   const proposalId = z.string().regex(/^[a-f0-9]{64}$/);
   const parseDefinition = value => {

@@ -23,15 +23,15 @@ GitHub `main`. From that checkout in PowerShell:
 .\integrations\metronome-gemini\install.ps1
 ```
 
-The installer installs the locked Node dependencies and links **only this
-extension** into Gemini. It does not edit Metronome's application, installer,
-services, database or your other Gemini settings. If your PowerShell policy
-does not permit the script, use the equivalent commands instead of changing it:
+The installer installs the locked Node dependencies and registers **only this
+extension** with Gemini. It updates existing copies and reuses existing links.
+It does not edit Metronome's application, installer, services or database.
 
-```powershell
-npm.cmd ci --ignore-scripts --prefix .\integrations\metronome-gemini
-gemini extensions link .\integrations\metronome-gemini
-```
+Setup uses the local Metronome service automatically and asks for SQL details
+one at a time: **server → read-only username → masked password**. The default
+SQL port is 5432; enter `server:port` only if yours differs. Leave the server
+blank to skip SQL. Gemini's usual extension trust prompt may appear on install.
+There is no connection string, Metronome URL or table list to fill in.
 
 Restart Gemini outside the application checkout:
 
@@ -58,38 +58,53 @@ The extension does not change your global model or model-provider settings.
 ## Configure access
 
 ```powershell
-gemini extensions config metronome-gemini
+.\integrations\metronome-gemini\install.ps1
 ```
 
-The extension declares these settings; Gemini stores the sensitive reader DSN
-in its system keychain. Do not paste passwords into the conversation or commit
-them to files. Restart Gemini after changing settings.
+Rerun setup to correct a field, then restart Gemini. Completed settings survive
+an interruption. Password input and storage use Gemini's native masked prompt
+and system keychain; do not paste passwords into the conversation. Usernames,
+passwords and database names do not need URL encoding.
 
-| Setting | Default and purpose |
-| --- | --- |
-| Metronome local URL | Blank uses `http://127.0.0.1:8000`. Loopback origins only. |
-| Flow scope | Blank or `*` allows your installation's flows. Comma-separated IDs restrict existing flows and disable creating new ones outside that list. |
-| Portal site scope | Blank or `*` allows all portal sites plus file/Outlook sources. Comma-separated site IDs restrict portal operations. |
-| Read-only PostgreSQL connection | Optional `postgresql://reader:password@host/database`. URL-encode special characters in credential components. Blank disables SQL analysis. Use your approved TLS parameters where required; certificate verification is never disabled by the extension. |
-| Readable SQL relations | Comma-separated `schema.table` names. Empty disables SQL analysis. Both the DSN and relations are required. |
+`/metronome` discovers the databases accessible to the reader on that server.
+Gemini selects the relevant database from the report context or asks when the
+choice is ambiguous. Tables and views are discovered from database permissions,
+including newly granted tables, without a manually maintained table list.
+Queries open one database at a time; comparisons across databases use separate
+reads. Discovery initially connects to `postgres`. If that database is missing
+or inaccessible, Gemini asks for one existing database name and retries with it.
+Each database must separately pass the read-only privilege checks.
 
-Environment variables with the names in `gemini-extension.json` may also be
-provided by the operator. The adapter never reads `PGPASSWORD`,
-`DG_UPLOAD_PG*`, Metronome's configuration files or stored browser state.
+Metronome's default address is `http://127.0.0.1:8000`, matching its installer
+and worker configuration. Existing local URL and flow/site restrictions are
+preserved in `%USERPROFILE%\.gemini\metronome\access.json`; passwords never go
+there. A new setup allows the installation's flows/sites. Operators can retain
+narrower access through that public file or explicit `METRONOME_BASE_URL`,
+`METRONOME_FLOW_IDS` and `METRONOME_SITE_IDS` environment variables. Only local
+origins are supported. A stopped Metronome service does not prevent finishing
+setup or analyzing supplied files.
 
-The reader supplies explicit identity, port and password settings, including an
-empty password when omitted; it does not inherit `.pgpass` or ambient database
-credentials. DSN parameters are limited to `sslmode` (`disable`, `require`,
-`verify-full`), `sslrootcert`, `sslcert` and `sslkey`. TLS certificate verification
-cannot be disabled through these parameters.
+Explicit `METRONOME_SQL_HOST`, `METRONOME_SQL_USER`, `METRONOME_SQL_PASSWORD`
+and optional `METRONOME_SQL_DATABASE` environment settings are also supported.
+The adapter never imports `PGPASSWORD`, `DG_UPLOAD_PG*`, `.pgpass`, Metronome's
+configuration files or browser state. Separate setup fields take precedence over
+an explicitly supplied legacy `METRONOME_READONLY_DSN`. Operators requiring TLS
+can continue to use that explicit DSN with `sslmode` (`disable`, `require`,
+`verify-full`), `sslrootcert`, `sslcert` and `sslkey`; omit the individual host
+setting in that case. Certificate verification cannot be disabled through these
+parameters. The three-field setup uses PostgreSQL's default port without TLS.
 
 The reader must have SELECT privileges and no effective write, object ownership,
 schema-creation or elevated role privileges. The tool rejects unsuitable accounts
 before analysis, even if the session could otherwise be put in read-only mode.
 Have the database owner provision the reader and grants; this extension does not
 alter roles. A PostgreSQL 14 database granting CREATE on `public` to PUBLIC may
-need that grant corrected by its owner before the reader passes. Only explicitly
-allowlisted relations can be queried; catalog inspection uses the same reader.
+need that grant corrected by its owner before the reader passes. All tables/views
+granted to that reader can be queried; catalog inspection uses the same reader.
+Database-wide read access does not permit writes, role changes, multiple SQL
+statements or unsafe functions. To cover future tables, the database owner must
+also provide the appropriate future-object grants; this extension never grants
+itself access.
 
 The browser connection is Microsoft's pinned
 [@playwright/mcp](https://github.com/microsoft/playwright-mcp), launched by Gemini
@@ -182,8 +197,8 @@ npm.cmd test --prefix .\integrations\metronome-gemini
 These tests use synthetic API/SQL fixtures and the real MCP transport. PostgreSQL
 privilege enforcement is also exercised against disposable databases in CI.
 They do not claim that a model has reproduced your actual business-trip reports.
-See the release [test plan](../../docs/testing/releases/2026-09-14-gemini-reporting-extension/test-plan.md)
-and [test report](../../docs/testing/releases/2026-09-14-gemini-reporting-extension/test-report.md).
+See the setup release [test plan](../../docs/testing/releases/2026-09-14-gemini-simple-setup/test-plan.md)
+and [test report](../../docs/testing/releases/2026-09-14-gemini-simple-setup/test-report.md).
 
 ## Update or remove
 

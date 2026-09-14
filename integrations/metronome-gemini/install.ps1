@@ -14,12 +14,16 @@ if (-not $geminiVersionMatch.Success -or [version]$geminiVersionMatch.Groups[1].
 }
 Push-Location $PSScriptRoot
 try {
-    & npm.cmd ci --ignore-scripts
-    if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed; no Gemini settings were changed.' }
-    # Link only this extension. Preserve the user's models, other MCPs and skills.
-    & $geminiCommand.Source extensions link $PSScriptRoot
-    if ($LASTEXITCODE -ne 0) { throw 'Gemini could not link the extension. Check its displayed error.' }
-    Write-Host 'Installed. Restart Gemini in your reporting folder with: gemini --model gemini-3.5-flash'
-    Write-Host 'Use /metronome or /html_replicate "C:\Reports\Your Folder".'
-    Write-Host 'Optional reader settings: gemini extensions config metronome-gemini'
+    . (Join-Path $PSScriptRoot 'setup-functions.ps1')
+    Invoke-MetronomeGeminiSetup -ExtensionRoot $PSScriptRoot -UserRoot $env:USERPROFILE -RunNpm {
+        & npm.cmd ci --ignore-scripts | Out-Host
+        return $LASTEXITCODE
+    } -RunGemini {
+        param([string[]]$Arguments)
+        & $geminiCommand.Source @Arguments | Out-Host
+        return $LASTEXITCODE
+    } -CheckService {
+        param($Address)
+        Invoke-RestMethod -Uri $Address -TimeoutSec 5 -MaximumRedirection 0
+    }
 } finally { Pop-Location }
