@@ -1,0 +1,18 @@
+# Keep writes reviewable in Gemini. User/admin policy can override extension
+# policy; this is not an application-wide authorization boundary.
+[[rule]]
+mcpName = "metronome"
+toolName = "apply_flow_proposal"
+decision = "ask_user"
+priority = 900
+
+[[rule]]
+mcpName = "metronome"
+toolName = "run_flow"
+decision = "ask_user"
+priority = 900
+
+[[rule]]
+mcpName = "report-browser"
+decision = "ask_user"
+priority = 100

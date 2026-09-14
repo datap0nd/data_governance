@@ -1,5 +1,9 @@
 # Metronome
 
+For Gemini CLI, install the external [reporting extension](integrations/metronome-gemini/README.md)
+to use `/metronome` and `/html_replicate "<report folder>"`. It leaves the application
+logic unchanged and keeps generated reports in your reporting folder.
+
 Configure Flow folders in **System > Paths**. See
 [Flow paths](docs/flow_paths.md) for staged enforcement and migration behavior.
 New builder flows receive stable folders with Downloads and Scripts automatically.

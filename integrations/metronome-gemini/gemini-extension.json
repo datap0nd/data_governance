@@ -1,0 +1,32 @@
+{
+  "name": "metronome-gemini",
+  "version": "0.1.0",
+  "description": "Use /metronome and /html_replicate to investigate reporting folders and work with existing Metronome flows.",
+  "contextFileName": "GEMINI.md",
+  "mcpServers": {
+    "metronome": {
+      "command": "node",
+      "args": ["${extensionPath}/server.mjs"],
+      "cwd": "${extensionPath}",
+      "env": {
+        "METRONOME_BASE_URL": "${METRONOME_BASE_URL}",
+        "METRONOME_READONLY_DSN": "${METRONOME_READONLY_DSN}",
+        "METRONOME_SQL_RELATIONS": "${METRONOME_SQL_RELATIONS}",
+        "METRONOME_FLOW_IDS": "${METRONOME_FLOW_IDS}",
+        "METRONOME_SITE_IDS": "${METRONOME_SITE_IDS}"
+      }
+    },
+    "report-browser": {
+      "command": "node",
+      "args": ["${extensionPath}/node_modules/@playwright/mcp/cli.js", "--browser", "msedge", "--isolated"],
+      "includeTools": ["browser_close", "browser_resize", "browser_handle_dialog", "browser_find", "browser_fill_form", "browser_press_key", "browser_type", "browser_navigate", "browser_navigate_back", "browser_take_screenshot", "browser_snapshot", "browser_click", "browser_drag", "browser_hover", "browser_select_option", "browser_tabs", "browser_wait_for"]
+    }
+  },
+  "settings": [
+    { "name": "Metronome local URL", "description": "Local Metronome origin, usually http://127.0.0.1:8000. Leave blank for that default.", "envVar": "METRONOME_BASE_URL" },
+    { "name": "Read-only PostgreSQL connection", "description": "Optional postgresql://reader:password@host/database DSN. Leave blank to disable SQL analysis. Never use an upload account.", "envVar": "METRONOME_READONLY_DSN", "sensitive": true },
+    { "name": "Readable SQL relations", "description": "Optional comma-separated schema.table names. SQL analysis is disabled until this and the reader connection are configured.", "envVar": "METRONOME_SQL_RELATIONS" },
+    { "name": "Flow scope", "description": "Comma-separated existing Flow IDs, or * for all flows on your installation. Blank means *.", "envVar": "METRONOME_FLOW_IDS" },
+    { "name": "Portal site scope", "description": "Comma-separated site IDs, or * for all sites plus local-file and Outlook sources. Blank means *.", "envVar": "METRONOME_SITE_IDS" }
+  ]
+}
