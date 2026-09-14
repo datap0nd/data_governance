@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -64,6 +65,34 @@ def test_full_suite_requires_a_recorded_diagnostic_reason():
     result = result_from(completed.stdout)
     assert result["selection"]["full_suite"] is True
     assert result["selection"]["diagnostic_reason"] == ""
+
+
+@windows_only
+@pytest.mark.parametrize("arguments, expected", [
+    (("-Mode", "Verify"), "Verify requires explicit -TestPath selectors"),
+    (("-Mode", "Verify", "-Full"), "A local full suite is diagnostic-only"),
+    (("-Mode", "Verify", "-TestPath", "tests/test_example.py"), "Verification Python was not found"),
+    (("-Mode", "Preflight"), "Verification Python was not found"),
+])
+def test_powershell_validation_without_a_checkout_environment(tmp_path, arguments, expected):
+    # Disposable script fixture only: never creates or borrows a Python environment.
+    checkout = tmp_path / "checkout"
+    (checkout / "tools").mkdir(parents=True)
+    shutil.copy2(CHECK_PS1, checkout / "tools/check.ps1")
+    subprocess.run(["git", "init", str(checkout)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(checkout), "-c", "user.name=Fixture", "-c",
+                    "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "fixture"],
+                   check=True, capture_output=True)
+    completed = subprocess.run(
+        ["pwsh", "-NoProfile", "-File", str(checkout / "tools/check.ps1"), *arguments],
+        cwd=checkout, text=True, capture_output=True, timeout=30, check=False,
+    )
+    assert completed.returncode != 0
+    assert expected in completed.stderr
+    result = result_from(completed.stdout)
+    assert result["status"] == "failed"
+    assert result["exit_code"] == 2
+    assert not (checkout / ".venv").exists()
 
 
 def test_command_declares_isolated_paths_before_pytest_launch():
