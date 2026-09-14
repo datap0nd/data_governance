@@ -31,14 +31,22 @@ API action until the connection is restored.
 
 ## SQL analysis
 
-Use only `query_readonly` for database analysis. It requires a dedicated reader
-and configured `schema.table` allowlist. Never use Metronome's upload credentials,
+Use only `query_readonly` for database analysis. It requires a dedicated reader;
+all tables and views granted to that account are available without registration.
+Never use Metronome's upload credentials,
 its SQL catalog refresh endpoint, a worker endpoint, or an alternate shell
 connection when the reader rejects access. A blocked privilege check means the
 account must be corrected by its owner; do not change grants yourself.
 
-Use `get_sql_schema` to discover the database name and column names/types within that allowlist before
-guessing SQL identifiers. It uses the same reader and privilege checks.
+Start with `list_sql_databases`, then `get_sql_schema` with the selected database.
+Follow `next_offset` until null; schema and table filters can narrow large catalogs.
+Use discovered names/types before guessing identifiers. Each database is checked
+with the same reader credentials and read-only privilege checks. Keep database
+names in evidence and pass `database` on subsequent queries. Cross-database joins
+require separate reads and a local comparison; a PostgreSQL connection opens one
+database at a time. If the starting database cannot be opened, ask for one existing
+database name. Never request a password or connection string in chat; direct the
+user to the extension installer for credential setup.
 
 Qualified relations, safe aggregates, joins, subqueries and non-recursive read
 CTEs are supported. Use parameters for values. Use grouped counts, min/max dates,

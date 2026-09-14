@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MetronomeClient, scrub, definitionOf, digest } from '../client.mjs';
-import { ReadonlySql, validateReadQuery, PRIVILEGE_CHECK, readerConnection } from '../sql.mjs';
+import { ReadonlySql, validateReadQuery, PRIVILEGE_CHECK, readerConnection, individualConnection } from '../sql.mjs';
 import pg from 'pg';
 
 const fixture = { id: 42, name: '출장비', source_type: 'portal', site_id: 1, report_id: 15, enabled: false,
@@ -64,8 +64,7 @@ test('script, email and refresh execution cannot be smuggled through a flow defi
   }
   assert.equal(digest({ b: 2, a: 1 }), digest({ a: 1, b: 2 }));
 });
-const relations = new Set(['reporting.trips', 'reporting.subs']);
-test('SQL supports scoped Korean columns, aggregates, joins, subqueries and read CTEs', () => {
+test('SQL supports Korean columns, aggregates, joins and any qualified table without registration', () => {
   for (const sql of [
     'select "법인", count(*) from reporting.trips group by "법인"',
     'select t.sub, sum(t.amount::numeric) from reporting.trips t join reporting.subs s on t.sub=s.id group by t.sub',
@@ -73,16 +72,18 @@ test('SQL supports scoped Korean columns, aggregates, joins, subqueries and read
     "select date_trunc('month',trip_date), min(amount), max(amount) from reporting.trips group by date_trunc('month',trip_date)",
     'with a as (select * from reporting.trips) select count(*) from a',
     'select * from (select sub from reporting.trips) a',
-  ]) assert.doesNotThrow(() => validateReadQuery(sql, relations), sql);
+    'select * from newly_added.new_table',
+    'select * from "다른 스키마"."새 보고서"',
+  ]) assert.doesNotThrow(() => validateReadQuery(sql), sql);
 });
-test('SQL rejects mutation, multiple statements, unscoped objects and side-effect functions', () => {
+test('SQL rejects mutation, multiple statements, unqualified objects and side-effect functions', () => {
   for (const sql of ['delete from reporting.trips', 'select 1; drop table reporting.trips',
     'with a as (delete from reporting.trips returning *) select * from a', 'select * into temp a from reporting.trips',
-    'select * from reporting.trips for update', 'select * from secret.trips', 'select * from trips',
+    'select * from reporting.trips for update', 'select * from trips',
     "select set_config('transaction_read_only','off',false)", "select nextval('x')", "select pg_read_file('/etc/passwd')",
     'select public.count(*) from reporting.trips', 'select dblink_connect(\'x\')', 'select amount::public.evil from reporting.trips',
     'set role uploader', 'copy reporting.trips to program \'evil\'', 'select pg_sleep(500)']) {
-    assert.throws(() => validateReadQuery(sql, relations), undefined, sql);
+    assert.throws(() => validateReadQuery(sql), undefined, sql);
   }
 });
 function fakeDatabase({ elevated = false, writable = false, can_create = false, can_create_schema = false, rows = [{ n: '12' }] } = {}) {
@@ -128,7 +129,7 @@ test('actual pg configuration cannot inherit uploader credentials, ambient passw
 test('reader rejects effective write/ownership/elevated privileges before the analysis query', async () => {
   for (const key of ['elevated', 'writable', 'can_create', 'can_create_schema']) {
     const { Client, calls } = fakeDatabase({ [key]: true });
-    const reader = new ReadonlySql({ dsn: 'postgresql://reader@localhost/fixture', relations: 'reporting.trips', Client });
+    const reader = new ReadonlySql({ dsn: 'postgresql://reader@localhost/fixture', Client });
     await assert.rejects(reader.query('select * from reporting.trips'), /dedicated SELECT-only/);
     assert.ok(!calls.some(([sql]) => sql.startsWith('SELECT * FROM (')));
     assert.ok(calls.some(([sql]) => sql === 'ROLLBACK'));
@@ -136,7 +137,7 @@ test('reader rejects effective write/ownership/elevated privileges before the an
 });
 test('reader uses read-only transaction, fixed search path, parameters, bounds and rollback', async () => {
   const { Client, calls } = fakeDatabase({ rows: [{ n: '1' }, { n: '2' }] });
-  const reader = new ReadonlySql({ dsn: 'postgresql://reader@localhost/fixture', relations: 'reporting.trips', Client });
+  const reader = new ReadonlySql({ dsn: 'postgresql://reader@localhost/fixture', Client });
   const result = await reader.query('select * from reporting.trips where sub=$1', ['가상 A'], 1);
   assert.equal(result.truncated, true);
   assert.equal(result.returned_rows, 1);
@@ -145,6 +146,40 @@ test('reader uses read-only transaction, fixed search path, parameters, bounds a
   assert.deepEqual(calls.find(([sql]) => sql.startsWith('SELECT * FROM ('))[1], ['가상 A']);
   assert.equal(calls.at(-2)[0], 'ROLLBACK');
   assert.equal(calls.at(-1)[0], 'end');
+});
+test('separate setup fields preserve punctuation and select databases without changing server or account', async () => {
+  const password = ' ${literal}@:/?#%한글 ';
+  const config = individualConnection({ host: 'localhost:5433', user: 'reader@one', password, database: '여행/자료' });
+  assert.equal(config.user, 'reader@one'); assert.equal(config.port, 5433);
+  assert.equal(config.database, '여행/자료'); assert.equal(await config.password(), password);
+  const { Client, calls } = fakeDatabase();
+  const reader = new ReadonlySql({ host: 'localhost', user: 'reader', password, Client });
+  assert.equal(reader.configured(), true);
+  await reader.query('select * from new_schema.new_table', [], 10, 'second_database');
+  assert.equal(calls[0][1].database, 'second_database'); assert.equal(calls[0][1].host, 'localhost');
+  assert.equal(await calls[0][1].password(), password);
+  await assert.rejects(reader.query('select 1', [], 1, 'bad\0database'), /valid PostgreSQL database/);
+});
+test('catalog discovery supports bounded pages and optional filters without a table configuration', async () => {
+  const { Client, calls } = fakeDatabase({ rows: [{ n: '1' }, { n: '2' }] });
+  const reader = new ReadonlySql({ dsn: 'postgresql://reader@localhost/fixture', Client });
+  const page = await reader.schema({ schema_name: '보고', limit: 1, offset: 5 });
+  assert.equal(page.next_offset, 6); assert.equal(page.truncated, true);
+  assert.deepEqual(calls.find(([sql]) => sql.startsWith('SELECT * FROM ('))[1], ['보고', null, 5]);
+  await assert.rejects(reader.schema({ offset: -1 }), /Invalid catalog page/);
+});
+
+test('connection recovery identifies missing databases without exposing credentials', async () => {
+  for (const code of ['3D000', '42501', '28P01']) {
+    class Client {
+      async connect() { throw Object.assign(new Error('secret-password'), { code }); }
+      async query() { throw new Error('secret-password'); }
+      async end() { throw new Error('secret-password'); }
+    }
+    const reader = new ReadonlySql({ host: 'localhost', user: 'reader', Client });
+    await assert.rejects(reader.databases(), error => !error.message.includes('secret-password') &&
+      (code === '28P01' ? /Read-only SQL failed/.test(error.message) : /one existing database name/.test(error.message)));
+  }
 });
 test('credential-shaped response fields and URL authentication are scrubbed', () => {
   const result = scrub({ api_token: 's', value: { password: 's', storage_state: 's' }, url: 'https://u:pw@example.com/x?token=s' });

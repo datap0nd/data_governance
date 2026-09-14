@@ -1,6 +1,6 @@
 {
   "name": "metronome-gemini",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Use /metronome and /html_replicate to investigate reporting folders and work with existing Metronome flows.",
   "contextFileName": "GEMINI.md",
   "mcpServers": {
@@ -9,11 +9,9 @@
       "args": ["${extensionPath}/server.mjs"],
       "cwd": "${extensionPath}",
       "env": {
-        "METRONOME_BASE_URL": "${METRONOME_BASE_URL}",
-        "METRONOME_READONLY_DSN": "${METRONOME_READONLY_DSN}",
-        "METRONOME_SQL_RELATIONS": "${METRONOME_SQL_RELATIONS}",
-        "METRONOME_FLOW_IDS": "${METRONOME_FLOW_IDS}",
-        "METRONOME_SITE_IDS": "${METRONOME_SITE_IDS}"
+        "METRONOME_SQL_HOST": "${METRONOME_SQL_HOST}",
+        "METRONOME_SQL_USER": "${METRONOME_SQL_USER}",
+        "METRONOME_SQL_PASSWORD": "${METRONOME_SQL_PASSWORD}"
       }
     },
     "report-browser": {
@@ -23,10 +21,8 @@
     }
   },
   "settings": [
-    { "name": "Metronome local URL", "description": "Local Metronome origin, usually http://127.0.0.1:8000. Leave blank for that default.", "envVar": "METRONOME_BASE_URL" },
-    { "name": "Read-only PostgreSQL connection", "description": "Optional postgresql://reader:password@host/database DSN. Leave blank to disable SQL analysis. Never use an upload account.", "envVar": "METRONOME_READONLY_DSN", "sensitive": true },
-    { "name": "Readable SQL relations", "description": "Optional comma-separated schema.table names. SQL analysis is disabled until this and the reader connection are configured.", "envVar": "METRONOME_SQL_RELATIONS" },
-    { "name": "Flow scope", "description": "Comma-separated existing Flow IDs, or * for all flows on your installation. Blank means *.", "envVar": "METRONOME_FLOW_IDS" },
-    { "name": "Portal site scope", "description": "Comma-separated site IDs, or * for all sites plus local-file and Outlook sources. Blank means *.", "envVar": "METRONOME_SITE_IDS" }
+    { "name": "SQL server", "description": "Server name or IP address. Port 5432 is automatic; use server:port only for a different port. Leave blank to skip SQL for now.", "envVar": "METRONOME_SQL_HOST" },
+    { "name": "Read-only SQL username", "description": "The account used to read your databases. Never use the upload account.", "envVar": "METRONOME_SQL_USER" },
+    { "name": "Read-only SQL password", "description": "Password for that read-only account. Input is masked and saved in Gemini's system keychain.", "envVar": "METRONOME_SQL_PASSWORD", "sensitive": true }
   ]
 }
