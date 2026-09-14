@@ -8,6 +8,7 @@ templates and the result vocabulary.
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-09-14: isolated CI shards and Windows verifier gate | [Test plan](releases/2026-09-14-ci-shards-windows/test-plan.md) | [Test report](releases/2026-09-14-ci-shards-windows/test-report.md) |
 | 2026-09-14: Gemini simple setup and database-wide reads | [Test plan](releases/2026-09-14-gemini-simple-setup/test-plan.md) | [Test report](releases/2026-09-14-gemini-simple-setup/test-report.md) |
 | 2026-09-14: Gemini reporting extension | [Test plan](releases/2026-09-14-gemini-reporting-extension/test-plan.md) | [Test report](releases/2026-09-14-gemini-reporting-extension/test-report.md) |
 | 2026-09-13: Flow topic groups | [Test plan](releases/2026-09-13-flow-topic-groups/test-plan.md) | [Test report](releases/2026-09-13-flow-topic-groups/test-report.md) |
@@ -43,6 +44,9 @@ tests and work-PC instructions describe that release, not current execution.
    section** with its run URL, head SHA and result before merging — that avoids
    changing the commit just to document its own CI. Any code change invalidates
    older final-head evidence.
+   Batch ready corrections before pushing: each push cancels the previous PR
+   run. Keep post-commit CI results in the PR body instead of pushing a report
+   update that restarts its own checks. Necessary code fixes still get fresh CI.
 5. Merge after the final required checks pass. The PR records the actual merge
    SHA; do not predict a squash SHA. In the delivery reply link the plan and
    report and state the merge status.
@@ -89,6 +93,22 @@ omitted job only when change classification explicitly excluded that job, and
 rejects failed, cancelled, missing or unexpectedly skipped selected work. The PR
 must contain current `main`, and its testing section must record the final run
 URL and tested head SHA before a head-pinned merge.
+
+Application PRs run the full Ubuntu Python collection in two isolated runner
+jobs, plus a small Windows verifier contract job. Pushes to main retain the
+full Windows regression, also in two runners; scheduled/manual runs retain both
+platforms. Within each runner tests remain sequential, and all tests in a file
+stay together. Assignment balances collected test counts, not measured duration.
+Every shard publishes its collection, selection, completed tests, exit status
+and workflow revision. `Merge ready` audits their union for exact coverage per
+platform and rejects missing, overlapping, unfinished or stale evidence.
+Existing platform skips remain visible; assignment to the other shard is
+deselection, and is verified by the coverage audit rather than counted as a skip.
+
+When measuring performance, compare workflow creation to `Merge ready`
+completion, and record shard/job durations separately from summed runner time.
+Use existing JUnit artifacts for file timings. Do not claim a speedup from test
+count balance alone: setup overhead, runner availability and file duration vary.
 
 Report delivery as four distinct states: implementation ready, local checks
 complete, CI complete and merged. A merge is not a deployment.
