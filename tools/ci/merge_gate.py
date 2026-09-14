@@ -23,9 +23,12 @@ def validate_needs(needs: Mapping[str, object]) -> list[str]:
     outputs = scope.get("outputs")
     if not isinstance(outputs, Mapping):
         raise GateError("change scope outputs are missing")
+    if str(outputs.get("windows")).lower() not in {"true", "false"}:
+        raise GateError("Windows contract scope is missing or invalid")
 
     selected = {
         "python": _enabled(outputs.get("application")),
+        "windows": _enabled(outputs.get("windows")),
         "frontend": _enabled(outputs.get("application")),
         "postgres": _enabled(outputs.get("postgres")),
     }

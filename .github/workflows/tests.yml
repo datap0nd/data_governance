@@ -19,6 +19,7 @@ jobs:
     outputs:
       application: ${{ steps.classify.outputs.application }}
       postgres: ${{ steps.classify.outputs.postgres }}
+      windows: ${{ steps.classify.outputs.windows }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -51,17 +52,23 @@ jobs:
           fi
           echo "application=$application" >> "$GITHUB_OUTPUT"
           echo "postgres=$postgres" >> "$GITHUB_OUTPUT"
+          windows=false
+          if [[ "${{ github.event_name }}" == "pull_request" && "$application" == "true" ]]; then
+            windows=true
+          fi
+          echo "windows=$windows" >> "$GITHUB_OUTPUT"
           echo "Application regression required: $application"
           echo "PostgreSQL integration required: $postgres"
 
   python:
-    name: Python (${{ matrix.os }})
+    name: Python (${{ matrix.os }}, shard ${{ matrix.shard }})
     needs: scope
     if: needs.scope.outputs.application == 'true'
     strategy:
       fail-fast: false
       matrix:
         os: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || github.event_name == 'push' && '["windows-latest"]' || '["ubuntu-latest","windows-latest"]') }}
+        shard: [0, 1]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -80,12 +87,41 @@ jobs:
           DG_DB_PATH: ${{ runner.temp }}/metronome-${{ matrix.os }}/governance.db
           DG_TEST_RUN_ROOT: ${{ runner.temp }}/metronome-${{ matrix.os }}
           DG_BROWSER_PROFILE_ROOT: ${{ runner.temp }}/metronome-${{ matrix.os }}/browser-profiles
-        run: python -m pytest tests -q --durations=20 --junitxml=test-results.xml
+        run: >-
+          python -m pytest tests -q --durations=20 --junitxml=test-results.xml
+          -p tools.ci.pytest_shard --ci-shard-index=${{ matrix.shard }}
+          --ci-shard-count=2 --ci-shard-manifest=shard-manifest.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: python-${{ matrix.os }}-results
-          path: test-results.xml
+          name: python-${{ matrix.os }}-${{ matrix.shard }}-results
+          path: |
+            test-results.xml
+            shard-manifest.json
+          retention-days: 14
+
+  windows:
+    name: Windows verifier contracts
+    needs: scope
+    if: needs.scope.outputs.windows == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-ci.lock
+      - name: Install locked test dependencies
+        run: pip install -r requirements-ci.lock
+      - name: Check Windows verifier contracts before merge
+        run: python -m pytest tests/test_check_command.py -q --junitxml=windows-contracts.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-verifier-results
+          path: windows-contracts.xml
           retention-days: 14
 
   frontend:
@@ -161,7 +197,7 @@ jobs:
   merge-ready:
     name: Merge ready
     if: always()
-    needs: [scope, python, frontend, postgres]
+    needs: [scope, python, windows, frontend, postgres]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -170,3 +206,15 @@ jobs:
         env:
           CI_NEEDS_JSON: ${{ toJSON(needs) }}
         run: python tools/ci/merge_gate.py --needs-json "$CI_NEEDS_JSON"
+      - name: Download every Python shard manifest
+        if: needs.scope.outputs.application == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: python-*-results
+          path: .ci-results
+      - name: Require complete and non-overlapping Python coverage
+        if: needs.scope.outputs.application == 'true'
+        run: >-
+          python tools/ci/shard_audit.py --root .ci-results --count 2
+          --platforms ${{ github.event_name == 'pull_request' && 'linux' || github.event_name == 'push' && 'win32' || 'linux win32' }}
+          --revision ${{ github.sha }}
