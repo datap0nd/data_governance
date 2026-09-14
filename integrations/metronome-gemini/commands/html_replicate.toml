@@ -1,0 +1,11 @@
+description = "Understand a reference-report folder and reproduce it as interactive HTML."
+prompt = '''
+Activate the html-replicate skill. The user has supplied a folder and/or report
+instructions below. Treat a quoted Windows path as one literal path, never as
+a shell expression. Inspect the references, clarify uncertain business meaning,
+and reproduce the report with source evidence and interactive CSV-capable HTML.
+Activate metronome when you need its source catalog, SQL reader or flow tools;
+the user does not need to invoke /metronome separately.
+
+Folder and instructions: {{args}}
+'''

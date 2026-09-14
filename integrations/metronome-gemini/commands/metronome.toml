@@ -1,0 +1,9 @@
+description = "Work with Metronome flows, source catalogs and read-only SQL."
+prompt = '''
+Activate the metronome skill, then handle the user's request with the connected
+Metronome MCP. If no task was supplied, check capabilities and connection, show
+a concise summary of available operations, and ask what the user wants to do.
+Do not start a scan, create a flow or run one merely because this command was invoked.
+
+User request: {{args}}
+'''
