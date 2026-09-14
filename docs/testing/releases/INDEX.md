@@ -5,6 +5,7 @@ in [the testing workflow](../README.md); this file is the complete history.
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-09-14: Gemini reporting extension | [Test plan](2026-09-14-gemini-reporting-extension/test-plan.md) | [Test report](2026-09-14-gemini-reporting-extension/test-report.md) |
 | 2026-09-13: Flow topic groups | [Test plan](2026-09-13-flow-topic-groups/test-plan.md) | [Test report](2026-09-13-flow-topic-groups/test-report.md) |
 | 2026-09-12: explicit Excel worksheet selection | [Test plan](2026-09-12-excel-worksheet-selection/test-plan.md) | [Test report](2026-09-12-excel-worksheet-selection/test-report.md) |
 | 2026-09-12: agent guidance refresh and cross-platform verifier | [Test plan](2026-09-12-agent-guidance-refresh/test-plan.md) | [Test report](2026-09-12-agent-guidance-refresh/test-report.md) |
