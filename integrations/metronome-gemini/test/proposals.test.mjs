@@ -7,7 +7,7 @@ import { MetronomeClient } from '../client.mjs';
 import { Proposals } from '../proposals.mjs';
 
 const definition = { name: '출장비', source_type: 'portal', site_id: 1, report_id: 15,
-  enabled: false, schedule_type: 'manual', sql_handoff_enabled: true, sql_schema: 'reporting', sql_table: 'trips', sql_mode: 'append' };
+  enabled: false, schedule_type: 'manual', sql_handoff_enabled: true, sql_database: 'fictional_reporting', sql_schema: 'reporting', sql_table: 'trips', sql_mode: 'append' };
 async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), 'metronome-proposals-'));
   t.after(() => rm(directory, { recursive: true, force: true }));

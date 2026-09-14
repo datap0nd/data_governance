@@ -37,7 +37,7 @@ its SQL catalog refresh endpoint, a worker endpoint, or an alternate shell
 connection when the reader rejects access. A blocked privilege check means the
 account must be corrected by its owner; do not change grants yourself.
 
-Use `get_sql_schema` to discover column names/types within that allowlist before
+Use `get_sql_schema` to discover the database name and column names/types within that allowlist before
 guessing SQL identifiers. It uses the same reader and privilege checks.
 
 Qualified relations, safe aggregates, joins, subqueries and non-recursive read
@@ -58,6 +58,13 @@ subsidiary/period selections, worksheet(s), SQL target, load mode, enabled state
 and schedule. Explain whether the SQL loader can create a missing target and
 whether the chosen load mode replaces existing data. Start new flows disabled
 and manual unless the user explicitly requests activation or scheduling.
+
+The existing API also requires a current Metronome SQL catalog: append targets
+must already be cataloged; creating a new table uses replace mode within a
+cataloged schema. The dedicated reader's database/schema/table names help map
+the target, but do not update Metronome's cached catalog. If that catalog is
+missing or stale, explain the API rejection and ask the owner to resolve it in
+Metronome. Never work around it with the upload-backed catalog refresh endpoint.
 
 Use the proposal and run tools when available. Preserve their proposal IDs and
 fingerprints in the reporting workspace. The user's Gemini tool confirmation is

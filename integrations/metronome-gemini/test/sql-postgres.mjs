@@ -34,6 +34,7 @@ test('PostgreSQL enforces reader separation and complete Korean source aggregate
       { 법인: '가상 B', rows: '1', first_date: '2026-09-02', last_date: '2026-09-02', amount: null },
     ]);
     const columns = await reader.schema();
+    assert.ok(columns.rows.every(r => r.database_name === 'metronome_test_ownership'));
     assert.deepEqual(columns.rows.map(r => r.column_name), ['법인', 'trip_date', 'amount']);
     await assert.rejects(reader.query(`UPDATE ${schema}.trips SET amount=0`), /Only SELECT/);
     await assert.rejects(reader.query('select * from pg_catalog.pg_authid'), /allowlist/);

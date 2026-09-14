@@ -94,7 +94,8 @@ export class ReadonlySql {
   }
   configured() { return Boolean(this.dsn && this.relations.size); }
   async schema() {
-    return this.execute(`SELECT n.nspname AS schema_name, c.relname AS relation_name,
+    return this.execute(`SELECT pg_catalog.current_database() AS database_name,
+      n.nspname AS schema_name, c.relname AS relation_name,
       a.attname AS column_name, pg_catalog.format_type(a.atttypid,a.atttypmod) AS data_type,
       a.attnotnull AS not_null FROM pg_catalog.pg_class c
       JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace

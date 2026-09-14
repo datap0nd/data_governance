@@ -107,3 +107,19 @@ and two negative cases: mock version `0.58.0` and malformed version output both
 stopped before npm or linking could run. No existing Gemini configuration was
 used by this isolated fake-command fixture. This installer delta accompanies
 this documentation update; core MCP code remains `f4140b8`.
+
+### SQL target metadata follow-up, 2026-09-14
+
+Contract inspection confirmed that FlowWrite requires an explicit SQL database,
+schema and table, plus an existing Metronome catalog entry (schema for a new
+replace target; table for append). The skill now explains that prerequisite and
+its permitted recovery. The reader's scoped column catalog includes its database
+name, without exposing its connection string. The PostgreSQL fixture asserts
+that metadata; its result awaits the next CI head.
+
+The synthetic proposal fixture and preview now name `fictional_reporting` as the
+database. `node --test test/proposals.test.mjs` passed all 7 cases (169 ms);
+`node --check sql.mjs` and `node --check test/sql-postgres.mjs` passed. CUA tab 2
+was reloaded; Booking dates showed the database/schema/table and manual/disabled
+state together. These uncommitted follow-up contents are committed with this
+report update; the final PR head identifies them exactly.
