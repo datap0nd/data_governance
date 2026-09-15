@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "run_id": "20260915T151539639Z-29976-4af87b72",
+  "mode": "verify",
+  "status": "passed",
+  "revision": "34d4139ed57490add66345450ebbae82007dd51b",
+  "source_fingerprint": "60e2730d9487e603ec1fe8f26419966bf9e47143173c4af9d31252e25522b341",
+  "environment": {
+    "os": "nt win32",
+    "runner": "python 3.13.15 tools/check.py",
+    "python": "3.13.7"
+  },
+  "selection": {
+    "full_suite": false,
+    "diagnostic_reason": null,
+    "tests": [
+      "tests/test_scanner_observability.py::test_postgres_dependency_scan_reports_each_database_phase"
+    ],
+    "syntax": []
+  },
+  "started_utc": "2026-09-15T15:15:39.639528+00:00",
+  "finished_utc": "2026-09-15T15:15:50.083633+00:00",
+  "duration_seconds": 10.444,
+  "exit_code": 0,
+  "reused_from": null,
+  "test_summary": {
+    "tests": 1,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  }
+}

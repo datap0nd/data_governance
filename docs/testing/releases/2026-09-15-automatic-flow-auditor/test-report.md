@@ -69,6 +69,24 @@ evidence screenshot is an intentional escaping test.
 - Synthetic model responses prove strict tool/schema/evidence validation, not real-model business accuracy. Unsupported formats, missing retained files, unsafe or mismatched SQL identities, append/concurrent targets, insufficient history and model outages remain explicit gaps.
 - Application tool restrictions do not prove OS/network isolation of the separately deployed model server. The page and administrator guide state that remaining deployment responsibility.
 
+## Post-cutoff retest evidence
+
+At 2026-09-15 15:10 UTC, [final-head CI attempt 34985497104](https://github.com/datap0nd/data_governance/actions/runs/34985497104)
+on `7fe56223454ed3a2a492781fa3687dc6889d0933` exposed one latent test-order
+dependency in `test_postgres_dependency_scan_reports_each_database_phase`:
+the test used the CI-wide SQLite path without creating its directory/database.
+Shard 1 reported 1 failed, 1,078 passed, 37 skipped and 1,117 deselected;
+PostgreSQL 14/18, Windows contracts and frontend checks passed in that attempt.
+This attempt is retained as a failure and is not merge evidence.
+
+The test now initializes and cleans up its own disposable database, matching the
+neighboring scanner-observability tests. The exact failing selector passed on
+committed revision `34d4139ed57490add66345450ebbae82007dd51b`:
+1 passed, zero failures/errors/skips, 3.73 seconds pytest / 10.44 seconds verifier.
+The [focused retest record](evidence/scanner-fixture-retest.json) preserves the
+selection and source fingerprint. No application code changed in this
+correction. Required CI must pass again on the later final head.
+
 ## Merge evidence
 
 Pending. Final CI completes after this report's committed evidence cutoff. The
