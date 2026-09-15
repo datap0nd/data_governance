@@ -27,8 +27,8 @@ def test_manifest_is_separate_sanitized_and_reader_recounts(audit_db, monkeypatc
     data = open(cfg.manifest_path, "rb").read()
     for secret in [b"secret-must-not-leak", b"secret-report", b"business selection", b"private-output"]:
         assert secret not in data
-    approved = {"manifest_db": cfg.manifest_path, "artifact_roots": [str(audit_db.root)], "datasets": [
-        {"id": "sales", "flow_id": audit_db.flow, "columns": [{"name": "region", "csv_header": "Region"}, {"name": "units", "csv_header": "Units", "kind": "number"}]}]}
+    approved = {"manifest_db": cfg.manifest_path, "datasets": [
+        {"id": "sales", "flow_id": audit_db.flow, "artifact_paths": [str(path)], "columns": []}]}
     monkeypatch.setattr(service, "load_policy", lambda: policy.Policy.model_validate_json(json.dumps(approved)))
     monkeypatch.setenv("METRONOME_AUDIT_READER_TOKEN", "r" * 40)
     monkeypatch.setenv("METRONOME_AUDIT_CATEGORY_KEY", "s" * 40)
@@ -53,7 +53,7 @@ def test_main_database_cannot_be_used_as_manifest(audit_db):
     cfg = replace(config.settings(), manifest_path=database.DB_PATH)
     with database.get_db() as db:
         before = db.execute("SELECT COUNT(*) FROM flows").fetchone()[0]
-    with pytest.raises(ValueError, match="unrelated database"):
+    with pytest.raises(ValueError, match="exchange paths|invalid"):
         manifest.publish(cfg)
     with database.get_db() as db:
         assert db.execute("SELECT COUNT(*) FROM flows").fetchone()[0] == before
@@ -68,3 +68,16 @@ def test_completed_windows_keep_filters_and_reject_partial_periods():
     assert scope("2026-W30") == scope("2026-W31")
     assert scope("2026-W30") != scope("2026-W38")  # Still in progress on Sept 15.
     assert scope("2026-W30") != scope("2026-W30", selections={"region": "changed"})
+
+
+def test_new_flow_is_discovered_without_resetting_dataset_identity(audit_db):
+    first_rows, first_datasets, first_ids = manifest.discover()
+    assert first_ids == [audit_db.flow]
+    with database.get_db() as db:
+        site = db.execute("SELECT site_id FROM flows WHERE id=?", (audit_db.flow,)).fetchone()[0]
+        report = db.execute("SELECT report_id FROM flows WHERE id=?", (audit_db.flow,)).fetchone()[0]
+        second = db.execute("""INSERT INTO flows(name,site_id,report_id,target_folder,filename_template)
+            VALUES('New automatic flow',?,?,'fixture','new.csv')""", (site, report)).lastrowid
+    _, second_datasets, second_ids = manifest.discover()
+    assert second_ids == [audit_db.flow, second]
+    assert first_datasets[0].model_dump() == second_datasets[0].model_dump()

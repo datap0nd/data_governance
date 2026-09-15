@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
+from tempfile import TemporaryDirectory
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,12 @@ CHECK_PY = ROOT / "tools" / "check.py"
 windows_only = pytest.mark.skipif(
     os.name != "nt", reason="the PowerShell command uses a Windows checkout-owned .venv"
 )
+
+
+@pytest.fixture
+def stable_tmp_path():
+    with TemporaryDirectory(prefix="metronome-windows-contract-") as folder:
+        yield Path(folder).resolve(strict=True)
 
 
 def run_powershell_check(*arguments: str) -> subprocess.CompletedProcess[str]:
@@ -256,3 +263,26 @@ def test_python_summarizes_junit_counts(tmp_path):
     )
     assert summarize_junit(junit) == {"tests": 4, "failures": 1, "errors": 0, "skipped": 2}
     assert summarize_junit(tmp_path / "missing.xml") is None
+
+
+@windows_only
+def test_windows_acl_fixture_denies_reader_style_write_and_recovers(stable_tmp_path):
+    """Exercise a real Windows deny ACL, not an installer command mock."""
+    protected = stable_tmp_path / "host-private"
+    protected.mkdir()
+    secret = protected / "host.json"
+    secret.write_text('{"fixture":true}', encoding="utf-8")
+    everyone = "*S-1-1-0"
+    try:
+        applied = subprocess.run(["icacls.exe", str(secret), "/deny",
+                                  f"{everyone}:W", "/Q"],
+                                 text=True, capture_output=True, check=False)
+        assert applied.returncode == 0, applied.stderr
+        with pytest.raises(PermissionError):
+            secret.write_text("reader attempted mutation", encoding="utf-8")
+        with pytest.raises(PermissionError):
+            secret.read_text(encoding="utf-8")
+    finally:
+        subprocess.run(["icacls.exe", str(secret), "/remove:d", everyone, "/Q"],
+                       text=True, capture_output=True, check=False)
+    assert secret.read_text(encoding="utf-8") == '{"fixture":true}'

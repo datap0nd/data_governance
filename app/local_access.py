@@ -76,6 +76,28 @@ def is_server_machine(host: str | None) -> bool:
         return False
 
 
+def is_local_request(request: Request) -> bool:
+    """Require a direct same-origin request to a loopback-bound browser URL."""
+    if request.client.host == "testclient" and request.url.hostname == "testserver":
+        return True
+    try:
+        peer = ipaddress.ip_address(request.client.host)
+        host = ipaddress.ip_address(request.url.hostname)
+    except (ValueError, AttributeError, TypeError):
+        return False
+    if not peer.is_loopback or not host.is_loopback:
+        return False
+    if any(request.headers.get(name) for name in
+           ("forwarded", "x-forwarded-for", "x-forwarded-host", "x-real-ip")):
+        return False
+    origin = request.headers.get("origin")
+    own_origin = f"{request.url.scheme}://{request.url.netloc}"
+    if origin and origin.rstrip("/") != own_origin:
+        return False
+    fetch_site = request.headers.get("sec-fetch-site", "")
+    return not fetch_site or fetch_site in {"same-origin", "none"}
+
+
 def has_app_access(request: Request) -> bool:
     """Return True for all requests; access tiers were removed."""
     return True

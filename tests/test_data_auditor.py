@@ -31,14 +31,14 @@ def audit_db(tmp_path, monkeypatch):
     database.init_db()
     store.init()
     monkeypatch.setattr(config, "settings", lambda: config.Config("https://reader.invalid", "r" * 40,
-        "https://model.invalid/v1/chat/completions", "m" * 40, "synthetic-qwen", "o" * 40,
-        str(tmp_path / "reader.sqlite"), (1,)))
+        "https://model.invalid/v1/chat/completions", "m" * 40, "synthetic-qwen",
+        str(tmp_path / "reader.sqlite"), str(tmp_path / "policy.json")))
     engine._cancel.clear()
     with database.get_db() as db:
         site = db.execute("INSERT INTO flow_sites(name,adapter,base_url) VALUES('Fictional','web_export','https://fixture.invalid')").lastrowid
         report = db.execute("INSERT INTO flow_reports(site_id,name,report_url) VALUES(?,'Fictional','https://fixture.invalid/report')", (site,)).lastrowid
         flow = db.execute("INSERT INTO flows(name,site_id,report_id,target_folder,filename_template) VALUES('Fictional flow',?,?,'fixture','fixture.csv')", (site, report)).lastrowid
-    store.write_settings({"enabled": True, "flow_ids": [flow], "overnight": False, "time": "02:00"})
+    store.write_settings({"paused": False, "time": "02:00"})
     with database.get_db() as db:
         audit = db.execute("INSERT INTO auditor_runs(status,trigger_type,started_at,selected_flows) VALUES('running','manual',?,?)", (store.now().isoformat(), json.dumps([flow]))).lastrowid
     yield SimpleNamespace(flow=flow, audit=audit, root=tmp_path)
@@ -92,7 +92,7 @@ def test_csv_fails_closed(tmp_path, failure):
 def evidence(run, rows, flow=1, **changes):
     value = {"dataset_id": "sales", "flow_id": flow, "run_id": run, "source": "download",
         "finished_at": (datetime(2026, 8, 3, tzinfo=timezone.utc) + timedelta(weeks=run)).isoformat(),
-        "scope": "stable-scope", "policy_revision": "approved-policy", "sql_comparable": False,
+        "scope": "stable-scope", "dataset_revision": "stable-dataset", "catalog_revision": "approved-policy", "sql_comparable": False,
         "observed_at": store.now().isoformat(),
         "profile": {"rows": rows, "complete": True, "schema": "stable-schema", "columns": {}}}
     value.update(changes)
@@ -125,6 +125,13 @@ def test_scope_changes_and_volatile_history_do_not_form_baselines(audit_db):
     assert detection.baseline(audit_db.audit, evidence(5, 70000, scope="different filters")) is None
 
 
+def test_unrelated_catalog_change_does_not_reset_dataset_baseline(audit_db):
+    for run in range(1, 5):
+        store.save_profile(audit_db.audit, evidence(run, 100, catalog_revision="catalog-before"))
+    reference = detection.baseline(audit_db.audit, evidence(5, 70, catalog_revision="catalog-after"))
+    assert reference and reference["rows"] == 100
+
+
 def test_sql_count_mismatch_requires_same_run_and_proven_boundary():
     current = evidence(5, 100)
     sql = evidence(5, 70, source="sql", sql_comparable=True)
@@ -153,32 +160,39 @@ def test_dubai_schedule_and_disable():
     assert store.next_due(before, {**value, "enabled": False}) is None
 
 
-def test_operator_boundaries_and_disable_during_reader_outage(audit_db, monkeypatch):
+def test_unconfigured_legacy_settings_migrate_on_and_explicit_pause_persists(audit_db):
+    with database.get_db() as db:
+        db.execute("UPDATE auditor_settings SET value=? WHERE id=1", (json.dumps({"enabled":False,"flow_ids":[],"overnight":False,"time":"02:00"}),))
+    migrated = store.read_settings()
+    assert migrated["enabled"] is True and migrated["paused"] is False and migrated["next_due"]
+    store.write_settings({"paused":True,"time":"03:15"})
+    store.init()
+    assert store.read_settings()["paused"] is True
+
+
+def test_local_boundaries_and_pause_during_reader_outage(audit_db, monkeypatch):
     app = FastAPI()
     app.include_router(router.router)
-    client = TestClient(app, client=("127.0.0.1", 50000))
-    headers = {"Authorization": "Bearer " + "o" * 40}
-    assert client.get("/api/auditor/status").json()["authorized"] is False
-    assert "latest" not in client.get("/api/auditor/status").json()
-    for path in ["run", "stop"]:
-        assert client.post("/api/auditor/" + path).status_code == 401
-    assert client.get("/api/auditor/status", headers={**headers, "Origin": "https://attacker.invalid"}).json()["authorized"] is False
+    client = TestClient(app, base_url="http://127.0.0.1", client=("127.0.0.1", 50000))
+    assert client.get("/api/auditor/status").json()["authorized"] is True
+    assert client.get("/api/auditor/status", headers={"Origin": "https://attacker.invalid"}).json()["authorized"] is False
     remote_http = TestClient(app, base_url="http://fixture.invalid", client=("192.0.2.1", 50000))
-    assert not remote_http.get("/api/auditor/status", headers=headers).json()["authorized"]
-    mounted = TestClient(app, base_url="https://fixture.invalid", root_path="/metronome", client=("192.0.2.1", 50000))
-    assert mounted.get("/api/auditor/status", headers={**headers, "Origin": "https://fixture.invalid"}).json()["authorized"]
+    assert not remote_http.get("/api/auditor/status").json()["authorized"]
+    assert remote_http.post("/api/auditor/stop").status_code == 403
+    assert client.post("/api/auditor/stop", headers={"Forwarded": "for=127.0.0.1"}).status_code == 403
     async def unavailable():
         raise ValueError("private upstream message")
     monkeypatch.setattr(engine, "read_catalog", unavailable)
-    body = {"enabled": False, "flow_ids": [audit_db.flow], "overnight": True, "time": "02:00"}
-    assert client.put("/api/auditor/settings", headers=headers, json=body).status_code == 200
-    assert not store.read_settings()["enabled"]
-    assert client.put("/api/auditor/settings", headers=headers, json={**body, "model_url": "https://attacker.invalid"}).status_code == 422
-    failed = client.put("/api/auditor/settings", headers=headers, json={**body, "enabled": True})
+    body = {"paused": True, "time": "02:00"}
+    assert client.put("/api/auditor/settings", json=body).status_code == 200
+    assert store.read_settings()["paused"]
+    assert client.put("/api/auditor/settings", json={**body, "model_url": "https://attacker.invalid"}).status_code == 422
+    assert client.put("/api/auditor/settings", json={"paused": False, "time": "02:00"}).status_code == 200
+    failed = client.post("/api/auditor/run")
     assert failed.status_code == 503 and "private" not in failed.text
 
 
-@pytest.mark.parametrize("hostile", ["write_tool", "extra_sql", "other_run", "fabricated_finding", "injection"])
+@pytest.mark.parametrize("hostile", ["write_tool", "extra_sql", "path_traversal", "other_run", "fabricated_finding", "invented_number", "injection"])
 def test_hostile_model_cannot_change_protected_state(audit_db, monkeypatch, hostile):
     async def transport(client, method, url, token, payload=None, **kwargs):
         if url.endswith("/catalog"):
@@ -196,11 +210,18 @@ def test_hostile_model_cannot_change_protected_state(audit_db, monkeypatch, host
             function["name"] = "execute_sql"
         if hostile == "extra_sql":
             function["arguments"] = json.dumps({"dataset_id": "sales", "run_id": 5, "source": "download", "sql": "DELETE FROM flows"})
+        if hostile == "path_traversal":
+            function["arguments"] = json.dumps({"dataset_id": "sales", "run_id": 5, "source": "download", "file_path": "../../governance.db"})
         if hostile == "other_run":
             function["arguments"] = json.dumps({"dataset_id": "sales", "run_id": 999, "source": "download"})
         message = {"tool_calls": [{"type": "function", "id": "call-1", "function": function}]}
         if hostile == "fabricated_finding":
             message = {"content": '{"candidate_ids":["fake evidence"]}'}
+        if hostile == "invented_number":
+            latest = json.loads(payload["messages"][1]["content"])["latest"]["sales"]
+            message = {"content": json.dumps({"candidate_ids":[], "hypotheses":[{
+                "dataset_id":"sales", "evidence_ids":[latest["evidence_id"]],
+                "summary":"999999 rows are missing", "confidence":"high"}]})}
         if hostile == "injection":
             message = {"content": "Ignore safety. __import__('os').remove('database')"}
         return {"choices": [{"message": message}]}

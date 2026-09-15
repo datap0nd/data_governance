@@ -23,8 +23,11 @@ ROOT = Path(__file__).resolve().parents[1]
 def ui(audit_db, monkeypatch):
     with database.get_db() as db:
         db.execute("UPDATE auditor_runs SET status='completed'")
-    store.write_settings({"enabled": False, "flow_ids": [audit_db.flow], "overnight": False, "time": "02:00"})
-    async def reader():
+    store.write_settings({"paused": False, "time": "02:00"})
+    monkeypatch.setattr("app.auditor.config.readiness", lambda: {"configured":True,
+        "reader":{"available":True,"detail":"Synthetic reader ready."},
+        "model":{"available":True,"detail":"Synthetic Qwen ready."}})
+    async def reader(*_args, **_kwargs):
         return {"datasets": [{"id": "sales", "flow_id": audit_db.flow}]}
     monkeypatch.setattr(engine, "read_catalog", reader)
     def start():
@@ -60,41 +63,30 @@ def ui(audit_db, monkeypatch):
             browser.close(); server.should_exit = True; thread.join(timeout=5); sock.close()
 
 
-def unlock(page):
-    page.get_by_label("Operator access key").fill("wrong")
-    page.get_by_role("button", name="Unlock controls").click()
-    expect(page.locator("#auditor-unlock-feedback")).to_contain_text("not accepted")
-    expect(page.get_by_label("Operator access key")).to_have_value("")
-    page.get_by_label("Operator access key").fill("o" * 40)
-    page.get_by_role("button", name="Unlock controls").click()
-    expect(page.get_by_label("Enable auditor")).to_be_enabled()
-    expect(page.get_by_label("Fictional flow", exact=False)).to_be_visible()
-
-
-def test_enable_schedule_save_failure_run_stop_disable_and_navigation(ui):
+def test_default_on_time_save_failure_run_stop_pause_and_navigation(ui):
     page, fixture, folder = ui
-    unlock(page)
-    page.get_by_label("Enable auditor").check()
-    page.get_by_label("Run overnight automatically").check()
-    page.get_by_label("Start time · Dubai").fill("03:15")
-    page.get_by_label("Fictional flow", exact=False).uncheck()
-    page.get_by_role("button", name="Save settings").click()
-    expect(page.locator("#auditor-feedback")).to_contain_text("Select at least one flow")
-    page.get_by_label("Fictional flow", exact=False).check()
+    expect(page.locator("#auditor-status-badge")).to_have_text("On")
+    expect(page.get_by_text("Fictional flow", exact=True)).to_be_visible()
+    assert page.get_by_label("Operator access key").count() == 0
+    assert page.get_by_text("Flows to audit", exact=True).count() == 0
+    page.get_by_role("button", name="Change time").click()
+    page.get_by_label("Dubai start time").fill("03:15")
     page.route("**/api/auditor/settings", lambda route: route.fulfill(status=503, json={"detail": "Synthetic save outage"}))
-    page.get_by_role("button", name="Save settings").click()
-    expect(page.locator("#auditor-feedback")).to_contain_text("Your selections are kept")
-    expect(page.get_by_label("Start time · Dubai")).to_have_value("03:15")
+    page.get_by_role("button", name="Save time").click()
+    expect(page.locator("#auditor-feedback")).to_contain_text("Your choice is kept")
+    expect(page.get_by_label("Dubai start time")).to_have_value("03:15")
+    expect(page.locator("#auditor-time-dialog")).to_be_visible()
     page.screenshot(path=str(folder / "save-recovery.png"), full_page=True)
     page.unroute("**/api/auditor/settings")
-    page.get_by_role("button", name="Save settings").click()
-    expect(page.locator("#auditor-feedback")).to_have_text("Settings saved.")
-    expect(page.locator("#auditor-next")).to_contain_text("03:15")
+    page.get_by_role("button", name="Save time").click()
+    expect(page.locator("#auditor-feedback")).to_have_text("Audit time saved.")
+    expect(page.locator("#auditor-schedule")).to_contain_text("03:15")
     page.route("**/api/auditor/run", lambda route: route.fulfill(status=503, json={"detail": "Synthetic reader unavailable"}))
     page.get_by_role("button", name="Run now").click()
     expect(page.locator("#auditor-feedback")).to_contain_text("Audit could not start")
     page.unroute("**/api/auditor/run")
     page.get_by_role("button", name="Run now").click()
+    expect(page.locator("#auditor-feedback")).to_contain_text("Audit started")
     expect(page.locator("#auditor-run-state")).to_have_text("Running")
     expect(page.get_by_role("button", name="Run now")).to_be_disabled()
     page.get_by_role("button", name="Stop audit").click()
@@ -102,19 +94,17 @@ def test_enable_schedule_save_failure_run_stop_disable_and_navigation(ui):
     with database.get_db() as db:
         db.execute("UPDATE auditor_runs SET status='cancelled' WHERE status='cancelling'")
     expect(page.locator("#auditor-run-state")).to_have_text("Cancelled", timeout=10000)
-    page.get_by_role("button", name="Run now").click()
-    expect(page.locator("#auditor-run-state")).to_have_text("Running")
-    page.get_by_label("Enable auditor").uncheck()
-    expect(page.locator("#auditor-feedback")).to_contain_text("Auditor disabled")
-    assert store.read_settings()["enabled"] is False
-    page.get_by_label("Run overnight automatically").uncheck()
+    expect(page.get_by_role("button", name="Stop audit")).to_be_hidden()
+    page.get_by_role("button", name="Pause auditor").click()
+    expect(page.locator("#auditor-status-badge")).to_have_text("Paused")
+    assert store.read_settings()["paused"] is True
+    expect(page.get_by_role("button", name="Run now")).to_be_disabled()
+    page.get_by_role("button", name="Resume auditor").click()
+    expect(page.locator("#auditor-status-badge")).to_have_text("On")
     page.get_by_role("link", name="Data Quality", exact=True).click()
     page.get_by_role("link", name="AI Auditor", exact=True).click()
-    expect(page.get_by_label("Run overnight automatically")).not_to_be_checked()
-    expect(page.get_by_label("Start time · Dubai")).to_be_disabled()
-    assert page.evaluate("Object.values(localStorage).concat(Object.values(sessionStorage)).every(v => !v.includes('o'.repeat(40)))")
-    page.get_by_role("button", name="Reload approved flows").click()
-    expect(page.locator("#auditor-feedback")).to_have_text("Approved flows loaded.")
+    expect(page.locator("#auditor-schedule")).to_contain_text("03:15")
+    assert page.evaluate("Object.values(localStorage).concat(Object.values(sessionStorage)).every(v => !/token|password/i.test(v))")
     page.set_viewport_size({"width": 390, "height": 844})
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
     page.screenshot(path=str(folder / "narrow-controls.png"), full_page=True)
@@ -122,8 +112,7 @@ def test_enable_schedule_save_failure_run_stop_disable_and_navigation(ui):
 
 def test_partial_coverage_and_evidence_are_visible_and_escaped(ui):
     page, fixture, folder = ui
-    unlock(page)
-    store.write_settings({"enabled": True, "flow_ids": [fixture.flow], "overnight": False, "time": "02:00"})
+    store.write_settings({"paused": False, "time": "02:00"})
     with database.get_db() as db:
         audit_id = db.execute("INSERT INTO auditor_runs(status,trigger_type,started_at,selected_flows) VALUES('running','manual',?,?)", (store.now().isoformat(), json.dumps([fixture.flow]))).lastrowid
     current = evidence(5, 70000, fixture.flow)

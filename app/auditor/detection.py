@@ -28,7 +28,8 @@ def local_day(evidence):
 
 
 def baseline_key(evidence):
-    return fingerprint([evidence["dataset_id"], evidence["policy_revision"], evidence["scope"], evidence["profile"]["schema"], weekday(evidence)])
+    return fingerprint([evidence["dataset_id"], evidence.get("dataset_revision", evidence.get("policy_revision")),
+                        evidence["scope"], evidence["profile"]["schema"], weekday(evidence)])
 
 
 def baseline(audit_id, current):
@@ -66,7 +67,8 @@ def baseline(audit_id, current):
 def finding(current, kind, detail, references, dimension=""):
     # Stable across reruns. Repeated unhealthy data cannot establish normality
     # or close an alert. Acknowledgement/resolution remains a human operation.
-    return {"fingerprint": fingerprint([current["dataset_id"], current["policy_revision"], current["scope"], kind, dimension]),
+    revision = current.get("dataset_revision", current.get("policy_revision"))
+    return {"fingerprint": fingerprint([current["dataset_id"], revision, current["scope"], kind, dimension]),
         "flow_id": current["flow_id"], "dataset_id": current["dataset_id"], "kind": kind,
         "message": f"Data auditor · {current['dataset_id']} · {detail} Cause unconfirmed.",
         "evidence": {"current": current, "references": references}}
