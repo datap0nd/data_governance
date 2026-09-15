@@ -72,6 +72,14 @@ def test_pending_snapshot_atomic_apply_and_active_evidence(flow_db,monkeypatch):
         assert db.execute('SELECT status FROM flow_recording_revisions WHERE id=?',(revision,)).fetchone()[0]=='validated'
     applied=client.put(base,json=pending);assert applied.status_code==200,applied.text
     with database.get_db() as db:
+        # Renaming now moves the destination. Evidence captured before that
+        # move remains historical until a test uses the new saved folder.
+        assert flows._build_job(db,fid)['recording']['tested'] is False
+    revalidated=client.post(f'{base}/recordings/revisions/{revision}/validate',json={'settings':pending}).json()
+    complete(revalidated['scan_id'])
+    revision=revalidated['revision_id'];pending['recording_revision_id']=revision
+    assert client.put(base,json=pending).status_code==200
+    with database.get_db() as db:
         assert flows._build_job(db,fid)['recording']['tested'] is True
     # Evidence from the previous hash format remains runnable after upgrading.
     with database.get_db() as db:

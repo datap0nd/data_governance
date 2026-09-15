@@ -8,6 +8,7 @@ templates and the result vocabulary.
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-09-15: flow-name folders and save-time Python refresh | [Test plan](releases/2026-09-15-flow-folder-names/test-plan.md) | [Test report](releases/2026-09-15-flow-folder-names/test-report.md) |
 | 2026-09-14: isolated CI shards and Windows verifier gate | [Test plan](releases/2026-09-14-ci-shards-windows/test-plan.md) | [Test report](releases/2026-09-14-ci-shards-windows/test-report.md) |
 | 2026-09-14: Gemini simple setup and database-wide reads | [Test plan](releases/2026-09-14-gemini-simple-setup/test-plan.md) | [Test report](releases/2026-09-14-gemini-simple-setup/test-report.md) |
 | 2026-09-14: Gemini reporting extension | [Test plan](releases/2026-09-14-gemini-reporting-extension/test-plan.md) | [Test report](releases/2026-09-14-gemini-reporting-extension/test-report.md) |

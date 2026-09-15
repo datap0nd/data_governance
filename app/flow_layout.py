@@ -20,7 +20,7 @@ def flow_folder_slug(name: str, flow_id: int) -> str:
     name = re.sub(r"\s+", " ", name).strip().rstrip(". ")[:72].rstrip(". ") or "Flow"
     if re.fullmatch(r"(?i)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])", name.split(".")[0]):
         name = "Flow " + name
-    return f"{name} (id {flow_id})"
+    return name
 
 
 def _regular(path: Path):
@@ -90,6 +90,8 @@ def create_flow_folder(root: str, adapter: str, name: str, flow_id: int) -> Path
     source.mkdir(parents=True, exist_ok=True)
     folder = source / flow_folder_slug(name, flow_id)
     flow_paths.assert_inside(str(folder), root, label="Flow folder")
+    if any(child.name.casefold() == folder.name.casefold() for child in source.iterdir()):
+        raise FileExistsError("A folder with this name already exists. Choose a different flow name and save again.")
     folder.mkdir()  # Exclusive: never attach to an existing user's directory.
     now = datetime.now(timezone.utc).isoformat()
     try:

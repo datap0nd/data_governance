@@ -14,6 +14,8 @@ from app.scanner.tmdl_parser import ParsedTable
 def _fresh_database(monkeypatch):
     temp_dir = tempfile.TemporaryDirectory()
     monkeypatch.setattr(database, "DB_PATH", f"{temp_dir.name}/modular-scanner.db")
+    from app import settings
+    monkeypatch.setattr(settings, "DB_PATH", database.DB_PATH)
     database.init_db()
     return temp_dir
 

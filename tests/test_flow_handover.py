@@ -60,7 +60,7 @@ def test_owner_schedule_and_shared_changes_refresh_without_export(flow_db, tmp_p
     assert manifest(saved)['handover']['launcher_hash'] != original
     body = flows.FlowWrite(name='Renamed daily source', source_type='file',
                           local_file_path=str(tmp_path / 'daily.csv'), schedule_type='daily', schedule_time='10:30')
-    flows.update_flow(saved['id'], body, _request())
+    saved = flows.update_flow(saved['id'], body, _request())
     flows.set_flow_enabled(saved['id'], flows.FlowEnabledWrite(enabled=True), _request())
     assert manifest(saved)['configuration']['schedule'] == {
         'type': 'daily', 'time': '10:30', 'days': [], 'day': None, 'enabled': True, 'timezone': 'Asia/Dubai'}

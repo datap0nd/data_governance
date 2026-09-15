@@ -19,6 +19,8 @@ def test_new_flow_without_target_creates_owned_layout(flow_db, tmp_path, source)
             local_file_path=str(tmp_path / "input.csv"), outlook_subject_contains="Report")
     saved = flows.create_flow(body, _request())
     folder = Path(saved["flow_folder"])
+    assert folder.name == flow_layout.flow_folder_slug(saved['name'], saved['id'])
+    assert f'(id {saved["id"]})' not in folder.name
     assert saved["folder_state"] == "managed"
     assert (folder / "Downloads").is_dir() and (folder / "Scripts").is_dir()
     assert flow_layout.read_manifest(folder, saved["id"])["flow_name"] == saved["name"]
@@ -31,18 +33,20 @@ def test_new_flow_without_target_creates_owned_layout(flow_db, tmp_path, source)
         assert job["downloads"]["target_folder"].startswith("metronome-private://")
 
 
-def test_managed_rename_preserves_folder_and_delete_preserves_files(flow_db):
+def test_managed_rename_moves_folder_and_delete_preserves_files(flow_db):
     site, report = _seed_catalog()
     saved = flows.create_flow(_flow(site["id"], report["id"], target_folder=None, enabled=False), _request())
     original = Path(saved["flow_folder"])
     (original / "Downloads" / "user.csv").write_text("preserve")
     edited = flows.update_flow(saved["id"], _flow(site["id"], report["id"], name="Renamed", enabled=False, target_folder="C:\\ignored"), _request())
-    assert edited["flow_folder"] == saved["flow_folder"]
-    assert edited["target_folder"] == str(original / "Downloads")
-    assert flow_layout.read_manifest(original, saved["id"])["flow_name"] == "Renamed"
+    renamed = original.with_name('Renamed')
+    assert edited["flow_folder"] == str(renamed)
+    assert not original.exists()
+    assert edited["target_folder"] == str(renamed / "Downloads")
+    assert flow_layout.read_manifest(renamed, saved["id"])["flow_name"] == "Renamed"
     flows.delete_flow(saved["id"], flows.FlowDeleteWrite(confirmation="Renamed"), _request())
-    assert (original / "Downloads" / "user.csv").read_text() == "preserve"
-    assert flow_layout.read_manifest(original, saved["id"])["deleted_at"]
+    assert (renamed / "Downloads" / "user.csv").read_text() == "preserve"
+    assert flow_layout.read_manifest(renamed, saved["id"])["deleted_at"]
 
 
 def test_adoption_keeps_historic_target_and_is_idempotent(flow_db, tmp_path):
@@ -86,7 +90,7 @@ def test_creation_failure_rolls_back_database_and_only_empty_owned_files(flow_db
 
 def test_layout_refuses_foreign_marker_and_cleanup_preserves_user_content(tmp_path):
     folder = flow_layout.create_flow_folder(str(tmp_path / "root"), "web_export", "CON.py", 1)
-    assert folder.name == "Flow CON.py (id 1)"
+    assert folder.name == "Flow CON.py"
     assert "/" not in flow_layout.flow_folder_slug("bad/name", 2)
     with pytest.raises(ValueError, match="another flow"):
         flow_layout.read_manifest(folder, 2)
