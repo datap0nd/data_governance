@@ -78,7 +78,9 @@ export class Proposals {
       ? { name, source_type: 'portal', site_id: comparison.ref.source.site_id, execution_method: 'recorded', enabled: false, schedule_type: 'manual', sql_handoff_enabled: false }
       : definitionOf(await this.client.getFlow(flowId));
     this.client.checkDefinition(definition);
-    await this.evidence.require(evidenceId, definition);
+    // Closing/discarding an already-scoped recorder must remain available even
+    // if the reference changes while the window is open. Neither action loads SQL.
+    if (!['finish', 'cancel'].includes(action)) await this.evidence.require(evidenceId, definition);
     return this.prepare({ kind: `recording_${action}`, origin: this.client.baseUrl, flow_id: flowId, definition,
       previous_fingerprint: action === 'draft' ? null : digest(definition), evidence_id: evidenceId,
       report_url: comparison.ref.source.report_url, scan_id: scanId, request_id: requestId });
@@ -118,7 +120,7 @@ export class Proposals {
         if (digest(current) !== proposal.previous_fingerprint) throw new Error('The flow changed after review. Prepare and review a new proposal.');
       }
       this.client.checkDefinition(proposal.definition);
-      await this.evidence.require(proposal.evidence_id, proposal.definition);
+      if (!['recording_finish', 'recording_cancel'].includes(kind)) await this.evidence.require(proposal.evidence_id, proposal.definition);
       if (proposal.recording_fingerprint && await this.client.recordingProof(proposal.flow_id, proposal.definition.recording_revision_id) !== proposal.recording_fingerprint) throw new Error('Recording changed after review. Prepare a new proposal.');
       // Persist before dispatch. A crash or lost response can never be retried as a fresh request.
       record.state = 'sending';

@@ -144,3 +144,14 @@ The check runs again before applying proposals. Only the affected journey
 rerun; client/evidence syntax passed. These edits will receive fresh final-head
 CI. The prior CI run passed frontend, Windows contracts and PostgreSQL 14/18,
 but it is not evidence for this subsequent head and was superseded before merge.
+
+
+### Recorder recovery follow-up (2026-09-15)
+
+Final review of `d65f354e4209b3253a1f20b6d51df55c712d90d6` found that a reference
+changing during capture could block finishing/cancelling the existing recorder.
+Those two scoped, user-confirmed recovery actions now remain available; saves,
+new captures and runs still revalidate evidence. The real-browser synthetic
+journey passed again with a reference changed while the recorder was open and
+restored before authoring. Proposal syntax passed. Final-head CI is required
+for this change; earlier runs do not substitute for that evidence.

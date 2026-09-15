@@ -131,8 +131,10 @@ test('real browser download → evidence-gated recorder/API run → actual outpu
   await call('apply_recording_proposal', { proposal_id: start.proposal_id, confirmation_json: start.confirmation_json }); assert.equal(starts, 1);
   const list = await call('list_recordings', { flow_id: 42 }); assert.equal(list.sessions[0].stage, 'recording');
   await assert.rejects(api.recordingAction(42, 'finish', 99), /session is outside/);
+  await writeFile(reference, csv + '가상 C,2026-09-03,50\r\n');
   const finish = await call('propose_recording', { action: 'finish', flow_id: 42, scan_id: 6, evidence_id: eid, request_id: 'finish-1' });
   await call('apply_recording_proposal', { proposal_id: finish.proposal_id, confirmation_json: finish.confirmation_json });
+  await writeFile(reference, csv);
   const proposal = await call('propose_flow', { flow_id: 42, evidence_id: eid, definition_json: JSON.stringify({ ...base, recording_revision_id: 8, sql_handoff_enabled: true, sql_database: 'fixture', sql_schema: 'reporting', sql_table: 'trips', sql_mode: 'replace' }) });
   await call('apply_flow_proposal', { proposal_id: proposal.proposal_id, confirmation_json: JSON.stringify({ ...proposal.definition, sql_table: 'evil' }) }, /does not match/);
   await writeFile(reference, csv + '가상 C,2026-09-03,50\r\n');
