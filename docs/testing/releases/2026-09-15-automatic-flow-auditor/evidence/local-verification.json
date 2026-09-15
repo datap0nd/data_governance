@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "run_id": "20260915T145353386Z-4040-b2ade3c1",
+  "mode": "verify",
+  "status": "passed",
+  "revision": "e232430b5b31d171ba54d4b605c7570985fb1775",
+  "source_fingerprint": "f41e63dd4cfa05223d7361b57764e4aae0aa198c304d89a11902b356e60c1d0c",
+  "environment": {
+    "os": "nt win32",
+    "runner": "python 3.13.15 tools/check.py",
+    "python": "3.13.7"
+  },
+  "selection": {
+    "full_suite": false,
+    "diagnostic_reason": null,
+    "tests": [
+      "tests/test_data_auditor.py",
+      "tests/test_auditor_manifest.py",
+      "tests/test_auditor_lifecycle.py",
+      "tests/test_auditor_managed.py",
+      "tests/test_auditor_browser.py",
+      "tests/test_ai_settings.py"
+    ],
+    "syntax": [
+      "app/main.py",
+      "app/ai/router.py",
+      "app/local_access.py",
+      "app/auditor/config.py",
+      "app/auditor/manifest.py",
+      "app/auditor/store.py",
+      "app/auditor/detection.py",
+      "app/auditor/engine.py",
+      "app/auditor/router.py",
+      "auditor_reader/policy.py",
+      "auditor_reader/profiles.py",
+      "auditor_reader/postgres.py",
+      "auditor_reader/service.py",
+      "auditor_reader/__main__.py",
+      "tools/provision_auditor.py",
+      "app/static/data_auditor.js"
+    ]
+  },
+  "started_utc": "2026-09-15T14:53:53.386415+00:00",
+  "finished_utc": "2026-09-15T14:56:02.813921+00:00",
+  "duration_seconds": 129.428,
+  "exit_code": 0,
+  "reused_from": null,
+  "test_summary": {
+    "tests": 68,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  }
+}
