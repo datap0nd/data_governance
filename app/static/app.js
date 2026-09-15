@@ -5037,6 +5037,7 @@ async function renderDataQuality() {
         <div class="page-header">
             <h1>Data Quality</h1>
             <span class="subtitle">Scheduled read-only checks against governed sources</span>
+            <a class="btn-outline" href="#dataauditor">AI Auditor</a>
             <button class="btn-outline" id="btn-dq-new">+ New Check</button>
             <button class="btn-new-task" id="btn-dq-run-all">Run all checks</button>
         </div>
@@ -13245,6 +13246,7 @@ const pages = {
     create: renderCreate,
     users: renderUsers,
     dataquality: renderDataQuality,
+    dataauditor: () => window.DataAuditor.render(),
     email: renderEmail,
     recurrences: renderRecurrences,
     export: renderExport,
@@ -13266,6 +13268,7 @@ let currentPage = "dashboard";
 let navigationRequestId = 0;
 
 async function navigate(page) {
+    window.DataAuditor?.dispose();
     _flowStopActivityMonitor();
     clearTimeout(window._flowCatalogMonitorTimer);
     const requestId = ++navigationRequestId;
@@ -13388,6 +13391,7 @@ async function navigate(page) {
         if (page === "users") bindUsersPage();
         if (page === "changelog") bindChangelogPage();
         if (page === "dataquality") bindDataQualityPage();
+        if (page === "dataauditor") window.DataAuditor.bind();
         if (page === "email") bindEmailPage();
         if (page === "recurrences") bindRecurrencesPage();
         if (page === "export") bindExportPage();

@@ -1,0 +1,4 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Auditor synthetic fixture</title><link rel="stylesheet" href="/static/style.css"><link rel="stylesheet" href="/static/data_auditor.css"><style>main{padding:24px;max-width:1200px;margin:auto}</style></head><body><main id="app"></main><script src="/static/data_auditor.js"></script><script>
+async function route(){DataAuditor.dispose();if(location.hash==='#dataquality'){document.getElementById('app').innerHTML='<h1>Data Quality</h1><a href="#dataauditor">AI Auditor</a>';return;}document.getElementById('app').innerHTML=await DataAuditor.render();await DataAuditor.bind();}
+window.addEventListener('hashchange',route);route();
+</script></body></html>

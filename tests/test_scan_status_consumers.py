@@ -1,7 +1,9 @@
 import tempfile
+import uuid
+from pathlib import Path
 
 from app import database
-from app import main
+from app import main, settings
 from app.routers import scanner
 from app.scanner import jobs, pg_cron, pg_deps
 
@@ -9,6 +11,7 @@ from app.scanner import jobs, pg_cron, pg_deps
 def _fresh_database(monkeypatch):
     temp_dir = tempfile.TemporaryDirectory()
     monkeypatch.setattr(database, "DB_PATH", f"{temp_dir.name}/scanner-consumers.db")
+    monkeypatch.setattr(settings, "DB_PATH", database.DB_PATH)
     database.init_db()
     return temp_dir
 
@@ -142,6 +145,10 @@ def test_manual_scan_redacts_unexpected_error(monkeypatch):
 
 
 def test_direct_postgres_component_endpoints_redact_errors(monkeypatch):
+    # The fixture must isolate notification settings too, even when no other
+    # test happened to create the process-default database directory first.
+    unavailable = Path(tempfile.gettempdir()) / f"missing-settings-{uuid.uuid4().hex}" / "settings.db"
+    monkeypatch.setattr(settings, "DB_PATH", str(unavailable))
     temp_dir = _fresh_database(monkeypatch)
     try:
         monkeypatch.setattr(

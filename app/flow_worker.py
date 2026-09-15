@@ -5841,6 +5841,11 @@ def _run_transformations(artifacts: list[dict], config: dict) -> list[dict]:
     for index, artifact in enumerate(artifacts, start=1):
         input_path = Path(artifact["file_path"])
         output_path = _safe_output_path(results_folder, input_path.name)
+        # Optional audit provenance must never gate the existing transformation.
+        try:
+            script_checksum = _read_size_and_checksum(script_path)["checksum"]
+        except OSError:
+            script_checksum = None
         environment = os.environ.copy()
         environment.update({
             "METRONOME_FLOW_INPUT": str(input_path),
@@ -5865,6 +5870,11 @@ def _run_transformations(artifacts: list[dict], config: dict) -> list[dict]:
             )
         normalization = _normalize_csv(output_path)
         metadata = {**_csv_metadata(output_path), **normalization}
+        try:
+            if _read_size_and_checksum(script_path)["checksum"] != script_checksum:
+                script_checksum = None
+        except OSError:
+            script_checksum = None
         transformed.append({
             **artifact,
             "file_path": str(output_path), "filename": output_path.name,
@@ -5875,6 +5885,7 @@ def _run_transformations(artifacts: list[dict], config: dict) -> list[dict]:
             "published_file_size": None,
             "published_checksum": None,
             "script_path": str(script_path), "script_index": index,
+            "script_checksum": script_checksum,
             "script_stdout": stdout[-4000:], "script_stderr": stderr[-4000:],
             **metadata,
         })

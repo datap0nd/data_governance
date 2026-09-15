@@ -161,7 +161,8 @@ def test_range_uses_native_select_all_but_still_verifies_each_cell():
     assert result["selected_weeks"] == 2
 
 
-def test_range_reacquires_virtualized_cells_after_each_scroll():
+@pytest.mark.parametrize("deferred_repaint", [False, True])
+def test_range_reacquires_virtualized_cells_after_each_scroll(deferred_repaint):
     markup = '''<div id="weeks" aria-label="Weekly periods 2026" style="height:80px;overflow:auto;position:relative">
       <div class="viewport" style="position:sticky;top:0;height:40px;background:white;z-index:1"></div><div style="height:320px"></div>
     </div><script>
@@ -170,6 +171,8 @@ def test_range_reacquires_virtualized_cells_after_each_scroll():
       function render(){const index=Math.min(pages.length-1,Math.floor(box.scrollTop/64));document.querySelector('.viewport').innerHTML=pages[index].map(w=>`<button class="week" aria-label="${w}" aria-pressed="false" ${w==='2026-W38'?'disabled':''} onclick="this.setAttribute('aria-pressed','true')">${w}</button>`).join('')}
       box.onscroll=render;render();
     </script>'''
+    if deferred_repaint:
+        markup = markup.replace("box.onscroll=render", "box.onscroll=()=>requestAnimationFrame(render)")
     with _page(markup) as page:
         result = _select_week_range(page.locator("#weeks"), _range_step(), lambda *_args: None)
     assert result["end_week"] == "2026-W37"

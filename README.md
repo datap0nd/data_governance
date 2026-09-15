@@ -443,6 +443,7 @@ separate `DG_UPLOAD_PG*` credentials and their own configured target.
 - **Report Inventory**: Lists all reports with their upstream sources
 - **Lineage Map**: Shows which sources feed which reports
 - **Alerts**: Flags stale sources and broken references
+- **AI data auditor**: Optional on-demand or overnight inspection for silent download/insertion inconsistencies, with restricted reads and evidence-backed alerts. Requires separate administrator setup; see [configuration and security boundaries](docs/data_auditor.md).
 
 See [PRODUCT.md](PRODUCT.md) for the product context and
 [docs/production_hardening_plan.md](docs/production_hardening_plan.md) for the

@@ -5,6 +5,7 @@ in [the testing workflow](../README.md); this file is the complete history.
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-09-15: read-only data auditor | [Test plan](2026-09-15-read-only-data-auditor/test-plan.md) | [Test report](2026-09-15-read-only-data-auditor/test-report.md) |
 | 2026-09-15: Gemini evidence-first flow authoring | [Test plan](2026-09-15-gemini-evidence-first/test-plan.md) | [Test report](2026-09-15-gemini-evidence-first/test-report.md) |
 | 2026-09-14: isolated CI shards and Windows verifier gate | [Test plan](2026-09-14-ci-shards-windows/test-plan.md) | [Test report](2026-09-14-ci-shards-windows/test-report.md) |
 | 2026-09-14: Gemini simple setup and database-wide reads | [Test plan](2026-09-14-gemini-simple-setup/test-plan.md) | [Test report](2026-09-14-gemini-simple-setup/test-report.md) |
