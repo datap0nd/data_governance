@@ -23,9 +23,10 @@ def relocated(value, old: Path, new: Path):
     if isinstance(value, str):
         normalized = value.replace('\\', '/')
         prefix = str(old).replace('\\', '/').rstrip('/')
-        if normalized.casefold() == prefix.casefold():
+        compare = str.casefold if os.name == 'nt' else str
+        if compare(normalized) == compare(prefix):
             return str(new)
-        if normalized.casefold().startswith(prefix.casefold() + '/'):
+        if compare(normalized).startswith(compare(prefix) + '/'):
             return str(new.joinpath(*normalized[len(prefix) + 1:].split('/')))
     return value
 
@@ -53,7 +54,12 @@ def recover(folder: Path, flow_id: int, root: str):
     flow_paths.assert_inside(str(folder), root, label='Flow folder')
     flow_layout._regular(folder.parent)
     flow_layout._regular(folder)
-    candidates = [folder] if folder.exists() else list(folder.parent.iterdir())
+    if folder.exists():
+        # pathlib equality is case-insensitive on Windows. Read the actual entry
+        # spelling so an interrupted case-only rename can be rolled back too.
+        candidates = [next((p for p in folder.parent.iterdir() if p == folder), folder)]
+    else:
+        candidates = list(folder.parent.iterdir())
     for candidate in candidates:
         try:
             manifest = flow_layout.read_manifest(candidate, flow_id)
@@ -62,7 +68,7 @@ def recover(folder: Path, flow_id: int, root: str):
         pending = manifest.get('folder_rename') or {}
         if pending.get('from') != str(folder) and pending.get('to') != str(folder):
             continue
-        if candidate != folder:
+        if str(candidate) != str(folder):
             if pending.get('from') != str(folder) or pending.get('to') != str(candidate):
                 continue
             flow_paths.assert_inside(str(candidate), root, label='Renamed flow folder')
@@ -96,6 +102,9 @@ def _update_paths(db, flow_id: int, old: Path, new: Path):
                 if changed != parsed:
                     changes[column] = json.dumps(changed) if column.endswith('_json') else changed
             if changes:
+                if table == 'flow_runs' and 'run_folder' in changes:
+                    from app.routers.flows import _folder_key
+                    changes['folder_key'] = _folder_key(changes['run_folder'])
                 db.execute(f"UPDATE {table} SET " + ','.join(f'{key}=?' for key in changes) + ' WHERE id=?',
                            (*changes.values(), row['id']))
     db.execute('UPDATE flows SET folder_slug=? WHERE id=?', (new.name, flow_id))
@@ -130,6 +139,10 @@ class FolderSave:
         for child in old.parent.iterdir():
             if child.name.casefold() == new.name.casefold() and child.name != old.name:
                 raise FileExistsError('A folder with this name already exists. Choose a different flow name and save again.')
+        downloads = old / 'Downloads'
+        flow_layout._regular(downloads)
+        if any(downloads.glob('.metronome-publish-*')):
+            raise ValueError('Recover the interrupted output publication by running the Flow again before renaming its folder.')
         # Save the intent in the owned directory before moving it. A process
         # interruption leaves enough evidence to restore the database's path.
         flow_layout.write_manifest(old, {**manifest, 'folder_rename': {'from': str(old), 'to': str(new)}})

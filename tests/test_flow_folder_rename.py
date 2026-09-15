@@ -124,6 +124,28 @@ def test_interrupted_move_is_recovered_before_next_save(flow_db, tmp_path):
     assert updated['standalone']['state'] == 'current'
 
 
+def test_interrupted_case_only_move_restores_database_spelling(flow_db, tmp_path):
+    saved, _ = local_job(tmp_path)
+    saved = update(saved, name='Original')
+    old = Path(saved['flow_folder']); new = old.with_name('ORIGINAL')
+    flow_layout.update_manifest(old, saved['id'], folder_rename={'from':str(old), 'to':str(new)})
+    old.rename(new)
+    updated = update(saved)
+    assert Path(updated['flow_folder']).name == 'Original'
+    assert 'Original' in [p.name for p in old.parent.iterdir()]
+    assert 'ORIGINAL' not in [p.name for p in old.parent.iterdir()]
+
+
+def test_pending_publication_prevents_moving_recovery_journal(flow_db, tmp_path):
+    saved, _ = local_job(tmp_path)
+    folder = Path(saved['flow_folder'])
+    journal = folder / 'Downloads' / '.metronome-publish-fixture.json'
+    journal.write_text('fictional interrupted publication')
+    with pytest.raises(HTTPException, match='interrupted output publication'):
+        update(saved, name='Later')
+    assert journal.read_text() == 'fictional interrupted publication'
+
+
 def test_move_cannot_replace_even_an_empty_concurrent_destination(tmp_path):
     old = tmp_path / 'old'; new = tmp_path / 'new'
     old.mkdir(); new.mkdir()
@@ -201,8 +223,14 @@ def test_generated_python_refreshes_before_save_returns_and_executes_new_setting
     assert json.loads(result.stdout)['status'] == 'succeeded'
 
 
-def test_in_place_transform_edit_refreshes_generated_python_on_unchanged_save(flow_db, tmp_path):
-    saved, _ = local_job(tmp_path)
+@pytest.mark.parametrize('method', ['catalog', 'recorded'])
+def test_in_place_transform_edit_refreshes_generated_python_on_unchanged_save(flow_db, tmp_path, method):
+    if method == 'recorded':
+        saved, _ = draft_job()
+        revision = recordings.save_revision(saved['id'], recordings.RevisionWrite(definition=definition()))
+        saved = update(saved, recording_revision_id=revision['revision_id'])
+    else:
+        saved, _ = local_job(tmp_path)
     source = tmp_path / 'transform.py'; source.write_text('print("first transform")')
     saved = update(saved, transform_enabled=True, transform_script_path=str(source))
     script = Path(saved['standalone']['launcher']); before = script.read_bytes()
@@ -210,7 +238,12 @@ def test_in_place_transform_edit_refreshes_generated_python_on_unchanged_save(fl
     updated = update(saved)
     assert updated['standalone']['state'] == 'current'
     assert script.read_bytes() != before
-    assert 'second transform' in script.read_text(encoding='utf-8')
+    import hashlib
+    assert frozen(updated)['handover']['transformation_sha256'] == hashlib.sha256(b'print("second transform")').hexdigest()
+    if method == 'recorded':
+        assert frozen(updated)['recording']['transformation_source'] == 'print("second transform")'
+    else:
+        assert Path(frozen(updated)['transformation']['script_path']).read_text() == 'print("second transform")'
 
 
 def test_recording_save_refreshes_active_script_without_running_recording(flow_db):
