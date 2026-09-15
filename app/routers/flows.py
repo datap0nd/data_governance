@@ -3482,7 +3482,10 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
             raise HTTPException(409, "A flow's source category cannot be changed after creation.")
         _resolve_flow_source(db, body)
         try:
-            managed = flow_paths.managed_destination(db, _flow_out(db, flow_id, include_private_storage=True), adopt=True)
+            current_flow = _flow_out(db, flow_id, include_private_storage=True)
+            if not current_flow.get('flow_folder'):
+                current_flow['name'] = body.name
+            managed = flow_paths.managed_destination(db, current_flow, adopt=True)
         except (OSError, ValueError) as exc:
             raise HTTPException(409, f'Could not prepare the flow folder: {exc}') from exc
         existing = {**dict(existing), 'flow_folder': managed['flow_folder'], 'target_folder': managed['target_folder']}

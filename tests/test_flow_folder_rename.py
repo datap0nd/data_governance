@@ -52,6 +52,18 @@ def test_legacy_id_folder_migrates_on_unchanged_save(flow_db, tmp_path):
     assert frozen(updated)['paths']['flow_folder'] == str(folder)
 
 
+def test_unmanaged_legacy_save_allocates_new_name_despite_old_name_collision(flow_db, tmp_path):
+    saved, _ = local_job(tmp_path)
+    occupied = Path(saved['flow_folder']).with_name('Legacy name')
+    occupied.mkdir(); (occupied / 'user.csv').write_text('preserve')
+    with database.get_db() as db:
+        db.execute('UPDATE flows SET name=?,flow_folder=NULL WHERE id=?', ('Legacy name', saved['id']))
+    updated = update(saved, name='Available legacy name')
+    assert Path(updated['flow_folder']).name == 'Available legacy name'
+    assert (occupied / 'user.csv').read_text() == 'preserve'
+    assert updated['standalone']['state'] == 'current'
+
+
 @pytest.mark.parametrize('occupied', ['Weekly orders', 'weekly orders', 'Weekly orders?'])
 def test_collision_preserves_files_and_saved_name_and_retry_works(flow_db, tmp_path, occupied):
     saved, _ = local_job(tmp_path)
