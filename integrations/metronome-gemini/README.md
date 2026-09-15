@@ -153,7 +153,8 @@ remains the agent's responsibility. Unresolved differences block authoring.
 
 Only explicitly **recorded** portal definitions are accepted. New routes can
 use `propose_recording` / `apply_recording_proposal` to create a disabled draft
-without detected-controls discovery. Saved revisions stay in Metronome; no
+without detected-controls discovery. Its report URL must belong to an origin
+registered for that website. Saved revisions stay in Metronome; no
 model-authored selectors, recorder definitions or privileged scripts are exposed.
 
 `propose_flow` and `propose_run` require the comparison evidence ID. The adapter

@@ -131,3 +131,16 @@ Rebased onto `043e55ca43cd69a4879485434bfa02e09c5e626f` before opening the PR.
 The sole conflict was the testing README's release table; both releases were
 preserved. No extension or test code changed in the rebase, so the affected
 local tests were not duplicated. Final-head CI tests the integrated revision.
+
+
+### Source-origin review follow-up (2026-09-15, 07:41 UTC cutoff)
+
+Review of committed head `463fd6c5aaaef16f1ac6759595d392bdf451cf55` added a
+source-origin check: portal references and recording drafts must use an origin
+registered in the selected website's base URL or existing reports. This prevents
+a new draft from pairing an allowed site ID with an unrelated destination.
+The check runs again before applying proposals. Only the affected journey
+(**1 passed**, 10.61 s) and catalog-projection case (**1 passed**, 0.21 s) were
+rerun; client/evidence syntax passed. These edits will receive fresh final-head
+CI. The prior CI run passed frontend, Windows contracts and PostgreSQL 14/18,
+but it is not evidence for this subsequent head and was superseded before merge.

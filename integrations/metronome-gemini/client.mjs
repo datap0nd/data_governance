@@ -28,6 +28,7 @@ export function stable(value) {
 export const digest = value => createHash('sha256').update(JSON.stringify(stable(value))).digest('hex');
 export const definitionOf = value => Object.fromEntries(FLOW_FIELDS.filter(key => Object.hasOwn(value, key)).map(key => [key, value[key]]));
 const pick = (value, fields) => Object.fromEntries(fields.filter(k => Object.hasOwn(value, k)).map(k => [k, value[k]]));
+const httpOrigin = value => { try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) ? url.origin : null; } catch { return null; } };
 export const recordingFingerprint = definition => digest(Object.fromEntries(Object.entries(definition || {}).filter(([k]) => !['identity', 'identity_candidates', 'readiness'].includes(k))));
 
 export class ApiError extends Error {
@@ -98,12 +99,18 @@ export class MetronomeClient {
   async catalog() {
     const result = await this.request('/api/flows/catalog');
     return scrub({
-      sites: (result.sites || []).filter(s => this.siteAllowed(s.id)).map(s => pick(s, ['id', 'name', 'adapter', 'enabled', 'supports_discovery', 'credentials_configured'])),
+      sites: (result.sites || []).filter(s => this.siteAllowed(s.id)).map(s => ({ ...pick(s, ['id', 'name', 'adapter', 'enabled', 'supports_discovery', 'credentials_configured']),
+        source_origins: [...new Set([httpOrigin(s.base_url), ...(result.reports || []).filter(r => r.site_id === s.id).map(r => httpOrigin(r.report_url))].filter(Boolean))] })),
       reports: (result.reports || []).filter(r => this.siteAllowed(r.site_id)).map(r => ({
         ...pick(r, ['id', 'site_id', 'name', 'report_url', 'enabled', 'stale']),
         filters: (r.filters || []).map(f => pick(f, ['id', 'filter_key', 'label', 'control_type', 'required', 'options', 'enabled', 'stale'])),
       })),
     });
+  }
+  async checkPortalSource(siteId, reportUrl) {
+    const url = new URL(reportUrl);
+    const site = (await this.catalog()).sites.find(s => s.id === siteId);
+    if (url.username || url.password || !site?.source_origins.includes(url.origin)) throw new Error('Report URL is outside this configured website. Use an observed route on its registered source origin.');
   }
   async listFlows() {
     const flows = await this.request('/api/flows');
@@ -171,6 +178,7 @@ export class MetronomeClient {
   async draftRecording(definition, reportUrl) {
     this.checkDefinition(definition);
     if (this.flowIds) throw new Error('Creating a recording draft requires * Flow scope.');
+    await this.checkPortalSource(definition.site_id, reportUrl);
     return this.request('/api/flows/recordings/draft', { method: 'POST', body: { name: definition.name, site_id: definition.site_id, report_url: reportUrl } });
   }
   async flowSchema() {

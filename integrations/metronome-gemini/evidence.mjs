@@ -33,6 +33,7 @@ export class Evidence {
       if (!Number.isSafeInteger(source.site_id) || !this.client.siteAllowed(source.site_id)) throw new Error('Source is outside site scope.');
       const url = new URL(source.report_url);
       if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('Use the observed portal report URL without credentials.');
+      await this.client.checkPortalSource(source.site_id, url.href);
       source = { ...source, report_url: url.href, origin: url.origin };
     }
     const captured = await snapshot(reference, this.sql);
@@ -66,6 +67,7 @@ export class Evidence {
     if (e.ref.origin !== this.client.baseUrl || e.comparison.verdict !== 'EXACT_MATCH') throw new Error('An exact independent comparison for this installation is required before flow authoring.');
     const source = e.ref.source;
     if ((definition.source_type || 'portal') !== source.type || source.type === 'portal' && definition.site_id !== source.site_id) throw new Error('Flow source differs from the compared source.');
+    if (source.type === 'portal') await this.client.checkPortalSource(source.site_id, source.report_url);
     if (source.type === 'portal' && definition.report_id) {
       const catalog = await this.client.catalog();
       const report = catalog.reports.find(r => r.id === definition.report_id && r.site_id === source.site_id);

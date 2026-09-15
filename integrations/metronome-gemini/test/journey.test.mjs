@@ -74,6 +74,7 @@ test('real browser download → evidence-gated recorder/API run → actual outpu
     assert.ok(!result.isError, result.content[0].text); return JSON.parse(result.content[0].text);
   };
   const base = { name: '출장비', source_type: 'portal', site_id: 1, report_id: 15, execution_method: 'recorded' };
+  await call('begin_reference', { reference: { kind: 'file', path: reference }, source: { type: 'portal', site_id: 1, report_url: 'https://unrelated.invalid/report' }, output_table: {} }, /outside this configured website/);
   await call('propose_flow', { definition_json: JSON.stringify(base) }, /evidence_id|validation/i);
   const ref = await call('begin_reference', { reference: { kind: 'file', path: reference }, source: { type: 'portal', site_id: 1, report_url: sourceUrl }, output_table: {} });
   const missingSubsidiary = join(directory, 'expected-three.csv');
