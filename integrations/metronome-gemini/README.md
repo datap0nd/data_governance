@@ -1,6 +1,6 @@
 # Metronome for Gemini CLI
 
-Open Gemini in your reporting folder and use:
+Open Gemini and use:
 
 ```text
 /metronome
@@ -26,6 +26,12 @@ GitHub `main`. From that checkout in PowerShell:
 The installer installs the locked Node dependencies and registers **only this
 extension** with Gemini. It updates existing copies and reuses existing links.
 It does not edit Metronome's application, installer, services or database.
+If an interrupted install left a recognized extension folder without install
+metadata, setup moves it to a private backup, reinstalls and preserves its
+settings. A failed reinstall restores that folder. Backups are kept under
+`%USERPROFILE%\.gemini\metronome\install-backups` (or Gemini's configured
+`GEMINI_CLI_HOME`). Unknown contents or a different registered source are
+preserved and reported; do not delete the extension folder to force installation.
 
 Setup uses the local Metronome service automatically and asks for SQL details
 one at a time: **server → read-only username → masked password**. The default
@@ -38,6 +44,28 @@ Restart Gemini outside the application checkout:
 ```powershell
 gemini --model gemini-3.5-flash
 ```
+
+## One folder for generated work
+
+Both commands call `prepare_workspace` before generating files. It creates
+`%USERPROFILE%\Metronome Gemini Work` automatically, with no new setup question:
+
+| Folder | Contents | Cleanup |
+| --- | --- | --- |
+| `scratch` | Temporary Python/JS scripts, intermediate files, logs, local packages, virtual environments and caches | Close Gemini, then remove unwanted contents. The next request recreates missing folders. |
+| `reports` | Finished HTML/CSV, reusable generation code, source mappings, questions and flow/run/evidence references | Keep reports you need; remove old report folders when no longer needed. |
+
+Input folders remain originals. Even if Gemini starts in Metronome, instructions
+require absolute output paths and the scratch working directory for every shell
+call. An unavailable or blocked work folder stops file generation. The MCP only
+creates these fixed directories; it does not provide arbitrary writes or delete
+anything. Guidance for Gemini's unrestricted file/shell tools is not an OS
+sandbox. Existing scattered files are not moved or deleted automatically.
+
+The extension's durable evidence/download receipts and proposal/run receipts
+remain in their existing `.gemini` stores. Do not include them in routine scratch
+cleanup: removing them loses verification and duplicate-run protection. Gemini's
+own account/session storage and Metronome's managed flow outputs are unchanged.
 
 Use `/extensions list`, `/skills` and `/mcp` to verify discovery, then
 `/metronome` to check the local API. The default Metronome address is

@@ -15,7 +15,8 @@ if (-not $geminiVersionMatch.Success -or [version]$geminiVersionMatch.Groups[1].
 Push-Location $PSScriptRoot
 try {
     . (Join-Path $PSScriptRoot 'setup-functions.ps1')
-    Invoke-MetronomeGeminiSetup -ExtensionRoot $PSScriptRoot -UserRoot $env:USERPROFILE -RunNpm {
+    $geminiUserRoot = if ($env:GEMINI_CLI_HOME) { $env:GEMINI_CLI_HOME } else { $env:USERPROFILE }
+    Invoke-MetronomeGeminiSetup -ExtensionRoot $PSScriptRoot -UserRoot $geminiUserRoot -RunNpm {
         & npm.cmd ci --ignore-scripts | Out-Host
         return $LASTEXITCODE
     } -RunGemini {

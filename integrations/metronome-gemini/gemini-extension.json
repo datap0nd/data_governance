@@ -1,6 +1,6 @@
 {
   "name": "metronome-gemini",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Use /metronome and /html_replicate to investigate reporting folders and work with existing Metronome flows.",
   "contextFileName": "GEMINI.md",
   "mcpServers": {

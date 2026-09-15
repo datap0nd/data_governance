@@ -7,10 +7,11 @@ import { ReadonlySql } from './sql.mjs';
 import { Proposals } from './proposals.mjs';
 import { Evidence } from './evidence.mjs';
 import { accessSettings, setting, sqlSettings } from './settings.mjs';
+import { Workspace } from './workspace.mjs';
 
 const id = z.number().int().positive();
-export function createServer({ client = new MetronomeClient(accessSettings()), sql = new ReadonlySql(sqlSettings()) } = {}) {
-  const server = new McpServer({ name: 'metronome', version: '0.2.0' });
+export function createServer({ client = new MetronomeClient(accessSettings()), sql = new ReadonlySql(sqlSettings()), workspace = new Workspace() } = {}) {
+  const server = new McpServer({ name: 'metronome', version: '0.2.1' });
   const evidence = new Evidence(client, sql);
   const proposals = new Proposals(client, setting('METRONOME_PROPOSAL_DIR'), evidence);
   function tool(name, description, inputSchema, action, readOnly = true) {
@@ -26,11 +27,13 @@ export function createServer({ client = new MetronomeClient(accessSettings()), s
     metronome_url: client.baseUrl, scope: { flow_ids: client.flowIds ? [...client.flowIds] : '*', site_ids: client.siteIds ? [...client.siteIds] : '*' },
     sql_configured: sql.configured(), sql_scope: 'All databases, tables and views readable by the dedicated account on the configured server. Each database is checked separately; no manual table list.',
     exceljs_module: fileURLToPath(new URL('node_modules/exceljs/excel.js', import.meta.url)),
+    workspace: workspace.paths(),
     workflow: 'Trusted reference → independent download → exact comparison → reviewed Playwright recorded flow → actual succeeded run → verify_run outputs and SQL.',
     boundaries: ['Metronome application logic is unchanged.', 'ExcelJS compares evidence tables; Gemini owns workbook analysis and HTML generation. Microsoft Playwright MCP supplies independent browsing with actual download receipts.',
       'Gemini uses its own tools and the installed ExcelJS library for workbook and HTML work.',
       'SQL analysis uses only a dedicated reader. Direct API calls, shell access and native Metronome schedules are outside MCP enforcement.'],
   }));
+  tool('prepare_workspace', 'Create/reuse the dedicated Gemini work folders before any file generation. No path arguments, source modifications, cleanup or Metronome operations. Use the returned absolute paths even when Gemini started in the app checkout.', {}, () => workspace.prepare(), false);
   tool('get_version', 'Read the running Metronome version and connection availability.', {}, () => client.version());
   tool('list_catalog', 'Read existing allowed portal sites, reports and filter choices. Local file and Outlook are also supported Flow source types.', {}, () => client.catalog());
   tool('list_flows', 'Find existing flows to reuse before proposing a new one.', {}, () => client.listFlows());

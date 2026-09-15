@@ -26,6 +26,17 @@ if that fails, pause for assistance. Do not mark a run successful yourself.
 Report only IDs, actual status, evidence, differences and the next blocker.
 These reporting rules do not authorize diagnostic experiments or local fixes.
 
+For reporting/flow tasks, call the extension's `prepare_workspace` before
+creating files, even when started in this checkout. Put every generated script,
+intermediate file, environment and cache in its `working_directory`
+(`%USERPROFILE%\Metronome Gemini Work\scratch` by default). Finished HTML, CSV,
+reusable code and mappings belong in its `reports_directory`. Use absolute
+output paths and an explicit working directory on every shell invocation.
+Never scatter `.py`, `.js`, logs or exports in Metronome or source folders.
+If the workspace tool is unavailable, pause generation; do not improvise a
+checkout output directory. Existing files must not be moved/deleted as an
+automatic cleanup. The owner can close Gemini and clean scratch periodically.
+
 You are the **field agent** for Metronome, an internal FastAPI + SQLite +
 Playwright application whose Flows sign in to corporate portals (ASAP, GSCM),
 download reports, copy them to network shares, transform them and load them

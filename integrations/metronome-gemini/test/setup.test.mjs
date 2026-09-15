@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, writeFile, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,7 +10,7 @@ import { accessSettings, sqlSettings } from '../settings.mjs';
 test('setup asks three separate fields and preserves registration/scopes through recovery', () => {
   const output = execFileSync('pwsh', ['-NoProfile', '-File', fileURLToPath(new URL('setup-fixture.ps1', import.meta.url)),
     '-ExtensionRoot', fileURLToPath(new URL('../', import.meta.url))], { encoding: 'utf8' });
-  assert.match(output, /PASS: 9 isolated setup journeys/);
+  assert.match(output, /PASS: 16 isolated setup journeys/);
 });
 
 test('setup field definitions mask only the password and remove manual URI/table configuration', async () => {
@@ -38,4 +38,20 @@ test('individual credentials override legacy DSN without trimming the password',
     Object.assign(process.env, values);
     assert.deepEqual(sqlSettings(), { host: 'fixture-server', user: 'reader', password: '${literal} password ', database: 'postgres' });
   } finally { for (const [k, v] of Object.entries(before)) if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+});
+
+test('custom Gemini home reads the same saved access restrictions as the installer', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'gemini-home-'));
+  const keys = ['GEMINI_CLI_HOME', 'METRONOME_BASE_URL', 'METRONOME_FLOW_IDS', 'METRONOME_SITE_IDS'];
+  const previous = Object.fromEntries(keys.map(k => [k, process.env[k]]));
+  t.after(async () => {
+    for (const [k, v] of Object.entries(previous)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    await rm(dir, { recursive: true, force: true });
+  });
+  for (const key of keys) delete process.env[key];
+  process.env.GEMINI_CLI_HOME = dir;
+  const saved = join(dir, '.gemini', 'metronome');
+  await mkdir(saved, { recursive: true });
+  await writeFile(join(saved, 'access.json'), JSON.stringify({ METRONOME_FLOW_IDS: '42', METRONOME_SITE_IDS: '1' }));
+  assert.deepEqual(accessSettings(), { baseUrl: undefined, flowIds: '42', siteIds: '1' });
 });

@@ -54,7 +54,7 @@ export async function createBrowserServer({ directory = evidenceDirectory(), lau
   const inner = new Client({ name: 'metronome-browser-receipts', version: '1' });
   const [a, b] = InMemoryTransport.createLinkedPair();
   await official.connect(a); await inner.connect(b);
-  const server = new Server({ name: 'report-browser', version: '0.2.0' }, { capabilities: { tools: {} } });
+  const server = new Server({ name: 'report-browser', version: '0.2.1' }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: (await inner.listTools()).tools.filter(t => BROWSER_TOOLS.includes(t.name)) }));
   server.setRequestHandler(CallToolRequestSchema, async request => {
     if (!BROWSER_TOOLS.includes(request.params.name)) throw new Error('Browser tool is not exposed.');
