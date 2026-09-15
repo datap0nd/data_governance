@@ -47,6 +47,13 @@ in the runner because Windows rejects following them; the report records the exa
 wrapper. Application symlink checks are not disabled. Final-head CI uses ordinary
 pytest and provides Linux regression and Windows verifier contracts.
 
+## CI regression companions
+
+If reproducing the CI findings, additionally run the five exact selectors listed
+in the report's 06:51 UTC section. They verify isolated settings storage, synthetic
+notification dispatch, recording evidence after a destination move and synthetic
+pipeline/view-refresh planning. No real notification is sent or database refreshed.
+
 ## Acceptance and cleanup
 
 Accept after the affected checks and final-head required CI pass. Owner approved

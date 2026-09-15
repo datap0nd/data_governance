@@ -104,6 +104,40 @@ results retain their original revisions. The prior PR CI was still running on
 `7bdac239`; it is superseded by the final push and is not final-head evidence.
 Final-head CI results after this appended cutoff belong in the PR testing section.
 
+## 2026-09-15 06:51 UTC: full CI findings and focused recovery
+
+[CI run 34937508854](https://github.com/datap0nd/data_governance/actions/runs/34937508854)
+on head `6904e1932fdfec61e2c56c2f099756b145b191c6` completed with **5 failed,
+2,142 passed, 26 skipped and 14 warnings** across the two Python shards. Shard 0
+passed 1,074 cases in 769.19 s; shard 1 passed 1,068 and failed five in 635.76 s.
+Frontend and Windows verifier checks passed (Windows: 17 passed in 5.39 s).
+The merge gate correctly failed. No merge was attempted.
+
+Four failures were missing settings-database fixture isolation in scanner and
+view-refresh tests. The Flow fixture and scanner helper now point both
+`database.DB_PATH` and `settings.DB_PATH` at their synthetic database. The fifth
+was a recording test assuming its tested destination stayed unchanged on rename.
+It now verifies that evidence is historical after the folder move, then performs
+a synthetic validation at the saved destination before asserting current evidence.
+No production recording gate was introduced: Save still works without testing.
+
+At `07483af1`, all five previously failing cases passed locally in **56.54 s**,
+with no skips/warnings. The three changed test files passed `ast.parse`. The same
+local wrapper selected the five nodes listed below, using temporary/evidence
+suffix `ci-recovery` (JUnit ID `flow-name-ci-recovery`):
+
+```text
+tests/test_modular_scanner.py::test_notification_recipients_normalize_and_disable
+tests/test_modular_scanner.py::test_stalled_notification_is_queued_once_and_reconciled
+tests/test_recording_journey.py::test_pending_snapshot_atomic_apply_and_active_evidence
+tests/test_view_refresh.py::test_pipeline_plan_includes_flow_views_once_and_child_runs_defer
+tests/test_view_refresh.py::test_active_flow_view_refresh_blocks_pipeline_preview
+```
+
+Scanner dispatches, recording completion and database refresh operations in these
+checks are synthetic substitutes. The original failure evidence remains above.
+The full regression on the next final head is pending at this appended cutoff.
+
 ## Merge evidence
 
 Final CI is pending. Before merge the PR testing section will record the final head,
