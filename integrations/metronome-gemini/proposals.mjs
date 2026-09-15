@@ -3,11 +3,13 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { definitionOf, digest, scrub } from './client.mjs';
+import { Evidence } from './evidence.mjs';
 
 export class Proposals {
-  constructor(client, directory = join(homedir(), '.gemini', 'metronome-proposals')) {
+  constructor(client, directory = join(homedir(), '.gemini', 'metronome-proposals'), evidence = new Evidence(client)) {
     this.client = client;
     this.directory = directory;
+    this.evidence = evidence;
   }
   path(id) {
     if (!/^[a-f0-9]{64}$/.test(id)) throw new Error('Invalid proposal ID.');
@@ -45,7 +47,7 @@ export class Proposals {
     try { return await action(); }
     finally { await handle.close(); await unlink(lock); }
   }
-  async prepareFlow(definition, flowId = null) {
+  async prepareFlow(definition, flowId = null, evidenceId) {
     if (flowId === null && this.client.flowIds) throw new Error('Creating a flow requires * Flow scope; a new ID is not in an existing-ID allowlist.');
     this.client.checkDefinition(definition);
     const previous = flowId === null ? null : definitionOf(await this.client.getFlow(flowId));
@@ -53,15 +55,35 @@ export class Proposals {
       enabled: false, schedule_type: 'manual', sql_handoff_enabled: false, ...definition,
     };
     this.client.checkDefinition(effective);
+    await this.evidence.require(evidenceId, effective);
+    const recording_fingerprint = effective.recording_revision_id
+      ? await this.client.recordingProof(flowId, effective.recording_revision_id) : null;
     const proposal = { kind: 'save_flow', origin: this.client.baseUrl, flow_id: flowId,
-      previous_fingerprint: previous ? digest(previous) : null, definition: effective };
+      previous_fingerprint: previous ? digest(previous) : null, definition: effective, evidence_id: evidenceId, recording_fingerprint };
     return this.prepare(proposal);
   }
-  async prepareRun(flowId, requestId) {
+  async prepareRun(flowId, requestId, evidenceId) {
     const current = definitionOf(await this.client.getFlow(flowId));
     this.client.checkDefinition(current);
+    await this.evidence.require(evidenceId, current);
+    const recording_fingerprint = (current.source_type || 'portal') === 'portal'
+      ? await this.client.recordingProof(flowId, current.recording_revision_id) : null;
     return this.prepare({ kind: 'run_flow', origin: this.client.baseUrl, flow_id: flowId,
-      request_id: requestId, previous_fingerprint: digest(current), definition: current });
+      request_id: requestId, previous_fingerprint: digest(current), definition: current, evidence_id: evidenceId, recording_fingerprint });
+  }
+  async prepareRecording(action, evidenceId, { flowId = null, scanId = null, requestId, name } = {}) {
+    if (!['draft', 'start', 'finish', 'cancel'].includes(action)) throw new Error('Unsupported recording operation.');
+    const comparison = await this.evidence.read(evidenceId, 'comparison');
+    const definition = action === 'draft'
+      ? { name, source_type: 'portal', site_id: comparison.ref.source.site_id, execution_method: 'recorded', enabled: false, schedule_type: 'manual', sql_handoff_enabled: false }
+      : definitionOf(await this.client.getFlow(flowId));
+    this.client.checkDefinition(definition);
+    // Closing/discarding an already-scoped recorder must remain available even
+    // if the reference changes while the window is open. Neither action loads SQL.
+    if (!['finish', 'cancel'].includes(action)) await this.evidence.require(evidenceId, definition);
+    return this.prepare({ kind: `recording_${action}`, origin: this.client.baseUrl, flow_id: flowId, definition,
+      previous_fingerprint: action === 'draft' ? null : digest(definition), evidence_id: evidenceId,
+      report_url: comparison.ref.source.report_url, scan_id: scanId, request_id: requestId });
   }
   async prepare(proposal) {
     const id = digest(proposal);
@@ -80,6 +102,8 @@ export class Proposals {
     return { proposal_id: record.id, state: record.state, operation: record.proposal.kind,
       flow_id: record.proposal.flow_id, definition: scrub(record.proposal.definition),
       confirmation_json: JSON.stringify(record.proposal.definition),
+      evidence_id: record.proposal.evidence_id, recording_fingerprint: record.proposal.recording_fingerprint,
+      report_url: record.proposal.report_url, scan_id: record.proposal.scan_id,
       ...(record.receipt ? { receipt: record.receipt } : {}),
       note: 'Show this complete definition to the user. Applying requires Gemini’s interactive tool confirmation. A native Metronome schedule can run independently after activation.' };
   }
@@ -96,14 +120,18 @@ export class Proposals {
         if (digest(current) !== proposal.previous_fingerprint) throw new Error('The flow changed after review. Prepare and review a new proposal.');
       }
       this.client.checkDefinition(proposal.definition);
+      if (!['recording_finish', 'recording_cancel'].includes(kind)) await this.evidence.require(proposal.evidence_id, proposal.definition);
+      if (proposal.recording_fingerprint && await this.client.recordingProof(proposal.flow_id, proposal.definition.recording_revision_id) !== proposal.recording_fingerprint) throw new Error('Recording changed after review. Prepare a new proposal.');
       // Persist before dispatch. A crash or lost response can never be retried as a fresh request.
       record.state = 'sending';
       await this.persist(record);
       try {
         const result = kind === 'save_flow'
           ? await this.client.saveFlow(proposal.definition, proposal.flow_id)
-          : await this.client.runFlow(proposal.flow_id);
-        record.receipt = { id: result.id, flow_id: kind === 'save_flow' ? result.id : proposal.flow_id,
+          : kind === 'run_flow' ? await this.client.runFlow(proposal.flow_id)
+          : kind === 'recording_draft' ? await this.client.draftRecording(proposal.definition, proposal.report_url)
+          : await this.client.recordingAction(proposal.flow_id, kind.replace('recording_', ''), proposal.scan_id);
+        record.receipt = { id: result.id, flow_id: ['save_flow', 'recording_draft'].includes(kind) ? result.id : proposal.flow_id,
           operation: kind, status: result.status || 'saved', completed_at: new Date().toISOString() };
         record.state = 'completed';
         await this.persist(record);

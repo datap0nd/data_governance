@@ -1,12 +1,14 @@
 {
   "name": "metronome-gemini",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Use /metronome and /html_replicate to investigate reporting folders and work with existing Metronome flows.",
   "contextFileName": "GEMINI.md",
   "mcpServers": {
     "metronome": {
       "command": "node",
-      "args": ["${extensionPath}/server.mjs"],
+      "args": [
+        "${extensionPath}/server.mjs"
+      ],
       "cwd": "${extensionPath}",
       "env": {
         "METRONOME_SQL_HOST": "${METRONOME_SQL_HOST}",
@@ -16,13 +18,46 @@
     },
     "report-browser": {
       "command": "node",
-      "args": ["${extensionPath}/node_modules/@playwright/mcp/cli.js", "--browser", "msedge", "--isolated"],
-      "includeTools": ["browser_close", "browser_resize", "browser_handle_dialog", "browser_find", "browser_fill_form", "browser_press_key", "browser_type", "browser_navigate", "browser_navigate_back", "browser_take_screenshot", "browser_snapshot", "browser_click", "browser_drag", "browser_hover", "browser_select_option", "browser_tabs", "browser_wait_for"]
+      "args": [
+        "${extensionPath}/browser.mjs"
+      ],
+      "includeTools": [
+        "browser_close",
+        "browser_resize",
+        "browser_handle_dialog",
+        "browser_find",
+        "browser_fill_form",
+        "browser_press_key",
+        "browser_type",
+        "browser_navigate",
+        "browser_navigate_back",
+        "browser_take_screenshot",
+        "browser_snapshot",
+        "browser_click",
+        "browser_drag",
+        "browser_hover",
+        "browser_select_option",
+        "browser_tabs",
+        "browser_wait_for"
+      ]
     }
   },
   "settings": [
-    { "name": "SQL server", "description": "Server name or IP address. Port 5432 is automatic; use server:port only for a different port. Leave blank to skip SQL for now.", "envVar": "METRONOME_SQL_HOST" },
-    { "name": "Read-only SQL username", "description": "The account used to read your databases. Never use the upload account.", "envVar": "METRONOME_SQL_USER" },
-    { "name": "Read-only SQL password", "description": "Password for that read-only account. Input is masked and saved in Gemini's system keychain.", "envVar": "METRONOME_SQL_PASSWORD", "sensitive": true }
+    {
+      "name": "SQL server",
+      "description": "Server name or IP address. Port 5432 is automatic; use server:port only for a different port. Leave blank to skip SQL for now.",
+      "envVar": "METRONOME_SQL_HOST"
+    },
+    {
+      "name": "Read-only SQL username",
+      "description": "The account used to read your databases. Never use the upload account.",
+      "envVar": "METRONOME_SQL_USER"
+    },
+    {
+      "name": "Read-only SQL password",
+      "description": "Password for that read-only account. Input is masked and saved in Gemini's system keychain.",
+      "envVar": "METRONOME_SQL_PASSWORD",
+      "sensitive": true
+    }
   ]
 }

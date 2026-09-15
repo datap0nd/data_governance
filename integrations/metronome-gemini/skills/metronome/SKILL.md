@@ -11,23 +11,65 @@ missing, give the installation instructions in the extension README. If the
 local app is unavailable, continue work on supplied files and preserve the next
 API action until the connection is restored.
 
-## Discover before creating
+## Mandatory sequence for each flow
 
-- Search `list_catalog` and `list_flows` for the topic and likely business terms,
-  including the Korean headings. Existing reports expose filter keys and choices.
-  Reuse a suitable flow or recording before proposing duplicates for every sub.
-- `get_flow` provides the current definition; `list_recordings` provides revision
-  IDs without private browser state. Creating a new browser recording still uses
-  Metronome's existing recording journey. Independent manual portal checking uses
-  a separately connected browser tool, not a flow replay labelled as independent.
-- `get_flow_schema` is the running API contract. Build definitions from it:
-  portal flows use catalog site/report IDs; `file` uses an absolute source path
-  and explicit worksheet choices; `outlook` uses the existing Inbox subject and
-  attachment behavior. Do not promise arbitrary mailbox search that is absent
-  from the connected tools. Ask the user to identify a source only after checking
-  the supplied folder and available catalogs.
-- A saved flow can affect files, SQL and schedules. A request to investigate data
-  is not permission to run an existing production flow as an experiment.
+1. Treat the owner's sample files/tables as the correct reference. Inspect their
+   real headings, separate tables, subsidiaries, periods, grain, units, blanks
+   and formulas using standard workbook tools. Ask only the question blocking
+   progress (for example booking date versus travel date). Preserve originals.
+2. Call `begin_reference` with the exact trusted table and intended source.
+   XLSX needs a sheet and range: `A1:C*` includes all remaining rows in those
+   columns; an explicit end row is only that declared table, never a whole-file
+   completeness claim. Include every business column. Use separate cases for
+   separate inputs/tables. Formula caches are not freshness evidence: request
+   a verified values-only copy if the reference contains formulas.
+3. Independently navigate ASAP/GSCM using `report-browser`, select the real
+   subsidiary/date options and download the actual export. This is a manual
+   source exploration, before any Metronome replay. Use the returned completed
+   `download_id` with `compare_download`. If still downloading, use a later
+   browser snapshot; interrupted downloads must be retried. A supplied file or
+   existing flow output cannot be labelled an independent portal download.
+   For file/Outlook sources, independently obtain the source attachment/file
+   using authorized tools and supply `source_file`; identify that provenance
+   honestly. There is no bundled Outlook exploration client.
+4. Resolve DATA_DIFFERENCES before authoring. Inspect the private evidence file
+   for actual missing/extra rows and counts; never attribute them to refresh
+   without evidence or replace the trusted reference on your own. Sampling,
+   count-only matches and guessed mappings do not unlock proposals.
+5. Search `list_flows`, `list_catalog` and `list_recordings` for reuse. Catalog
+   reads discover routes, not a reason to use detected controls. Read
+   `get_flow_schema`. For a new portal route without a catalog report, use
+   `propose_recording(action=draft)` then `apply_recording_proposal`: it creates
+   a disabled recorded draft through the existing API without a detection scan.
+6. Use `propose_recording(action=start)` and its reviewed apply tool to open
+   Metronome's real Playwright recorder. Operate that window using available
+   computer-control tools. If unable, preserve the draft/session and pause for
+   owner assistance. Never substitute the isolated report-browser window,
+   detected controls, invented selectors or hand-written recording definitions.
+   Finish through the recording API and poll `list_recordings` for the saved
+   revision. Cancellation is scoped to that session. Reuse suitable existing
+   recorded revisions through their actual flow, without inventing IDs.
+7. `propose_flow` binds the comparison evidence ID, current definition and saved
+   recording revision. Portal flows require `execution_method: "recorded"`.
+   Select `recording_revision_id` from that flow's API results. Review sources,
+   full selections, output, SQL database/schema/table, load behavior and schedule
+   with the owner before applying. Start disabled/manual. Do not use partial
+   defaults to turn SQL loading or scheduling on without review.
+8. `propose_run` → reviewed `run_flow` → poll `get_run` to terminal status →
+   `verify_run` using the run proposal ID. The tool reads API-listed artifacts
+   and, when SQL is enabled, the exact reviewed target with the dedicated reader.
+   All output tables are compared, including duplicate multiplicity and blanks.
+   Fixed output ranges can hide newly appended rows: use an open-ended row range
+   for a flat export. Never narrow the comparison to make a mismatch disappear.
+9. Finish only with real `succeeded` execution and `verify_run` evidence. Report
+   `SUCCESSFUL` only on exact data reconciliation within the declared scope.
+   Otherwise report `DATA DIFFERENCES` or `INCOMPLETE`, with exact missing/extra
+   counts and evidence. A newer extract may be valid but is not a 100% match.
+
+All Metronome reads/writes use this MCP API. Never access governance.db,
+SQLite backups/journals, ORM helpers, worker endpoints or application scripts;
+never repair Run history or set statuses manually. No shell/API fallback after
+an MCP denial. Missing capabilities require a concise blocker and next action.
 
 ## SQL analysis
 
@@ -98,3 +140,11 @@ policy handles interactive write confirmation. The unchanged Metronome API has
 no revision-conditional writes or agent-specific authorization. Direct API/UI
 changes, native scheduled runs and unrestricted shell access are outside this
 integration's enforcement. Do not describe it as an application-wide guarantee.
+
+## Response format
+
+Use one compact row per requested flow: name | flow/run IDs | actual execution
+status | exact match or missing/extra counts | evidence reference. Add only
+blocking questions or necessary differences. Do not finish at “flow created”,
+“queued” or “should work”. Keep cases and proposal IDs for all requested flows
+until every input has a successful run and an honest reconciliation result.

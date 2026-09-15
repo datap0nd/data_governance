@@ -5,3 +5,4 @@ import '../integrations/metronome-gemini/test/transport.test.mjs';
 import '../integrations/metronome-gemini/test/workbook.test.mjs';
 import '../integrations/metronome-gemini/test/setup.test.mjs';
 import '../integrations/metronome-gemini/test/journey.test.mjs';
+import '../integrations/metronome-gemini/test/verification.test.mjs';
