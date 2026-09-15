@@ -38,7 +38,7 @@ jobs:
                 *) application=true ;;
               esac
               case "$path" in
-                app/flow_sql.py|requirements-ci.*|tests/test_sql_ownership_postgres.py|integrations/metronome-gemini/*|tests/test_gemini_extension.mjs|.github/workflows/tests.yml)
+                app/flow_sql.py|auditor_reader/*|app/auditor/*|tests/test_auditor_postgres.py|requirements-ci.*|tests/test_sql_ownership_postgres.py|integrations/metronome-gemini/*|tests/test_gemini_extension.mjs|.github/workflows/tests.yml)
                   postgres=true ;;
               esac
             done < <(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}")
@@ -186,7 +186,7 @@ jobs:
       - name: Test SQL ownership on disposable PostgreSQL
         env:
           METRONOME_TEST_POSTGRES_DSN: postgresql+psycopg2://postgres@127.0.0.1:5432/metronome_test_ownership
-        run: python -m pytest tests/test_sql_ownership_postgres.py -q -ra
+        run: python -m pytest tests/test_sql_ownership_postgres.py tests/test_auditor_postgres.py -q -ra
       - uses: actions/setup-node@v4
         with:
           node-version: '22'

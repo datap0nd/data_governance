@@ -44,6 +44,8 @@ from app.scanner.lifecycle import (
 )
 from app.scanner.pbi_auth import resolve_proxy
 from app.ai.router import router as ai_router
+from app.auditor.router import router as auditor_router
+from app.auditor import engine as auditor_engine, store as auditor_store
 
 # Show scanner logs in the console
 logging.basicConfig(level=logging.INFO, format="%(name)s | %(message)s")
@@ -617,6 +619,9 @@ def _scheduled_remote_flow_control():
 def _configure_scheduler_jobs() -> dict:
     _scheduler.add_job(_scheduled_backup, "cron", hour=6, minute=0, id="daily_backup", replace_existing=True)
     refresh_time = _configure_overall_refresh_job()
+    _scheduler.add_job(auditor_engine.tick, "interval", seconds=30,
+                       id="data_auditor_tick", replace_existing=True,
+                       max_instances=1, coalesce=True)
     configure_pipeline_insights_job()
     _scheduler.add_job(
         _scheduled_email_dispatch,
@@ -778,6 +783,7 @@ def _run_optional_startup_step(name: str, function, *, default=None):
 async def lifespan(app):
     logging.getLogger(__name__).info("Database path: %s", DB_PATH)
     init_db()
+    auditor_store.recover()
     import asyncio
     from app.flow_handover import after_commit as refresh_flow_files
     await asyncio.to_thread(refresh_flow_files, DB_PATH)
@@ -920,6 +926,7 @@ async def lifespan(app):
     scanner.shutdown_scanner_executor()
     from app.ai.operations_agent import shutdown_executor as shutdown_ai_executor
     shutdown_ai_executor()
+    auditor_engine.shutdown()
     pipelines.shutdown_pipeline_executor()
 
 
@@ -938,6 +945,7 @@ app.include_router(alerts.router)
 app.include_router(actions.router)
 app.include_router(query_history.router)
 app.include_router(ai_router)
+app.include_router(auditor_router)
 app.include_router(changelog.router)
 app.include_router(schedules.router)
 app.include_router(create.router)
