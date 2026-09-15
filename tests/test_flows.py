@@ -17,6 +17,8 @@ from app.routers import flows, pipelines
 def flow_db(tmp_path, monkeypatch):
     db_path = tmp_path / "flows.db"
     monkeypatch.setattr(database, "DB_PATH", str(db_path))
+    from app import settings
+    monkeypatch.setattr(settings, "DB_PATH", str(db_path))
     database.init_db()
     with database.get_db() as db:
         db.execute("INSERT OR REPLACE INTO app_settings(key,value) VALUES ('flows_browser_channel','msedge')")
