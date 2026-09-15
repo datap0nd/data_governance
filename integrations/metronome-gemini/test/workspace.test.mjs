@@ -18,7 +18,9 @@ test('MCP prepares fixed work paths; cleaning scratch preserves reports and sour
   const { home, workspace } = await fixture(t);
   const source = join(home, 'fictional-source.csv');
   await writeFile(source, '법인,금액\n한국,7\n');
-  const server = createServer({ workspace });
+  const server = createServer({ workspace,
+    client: { baseUrl: 'http://127.0.0.1:1', flowIds: new Set([42]), siteIds: new Set([1]) },
+    sql: { configured: () => false } });
   const client = new Client({ name: 'workspace-fixture', version: '1' });
   const [a, b] = InMemoryTransport.createLinkedPair();
   await server.connect(a); await client.connect(b);
