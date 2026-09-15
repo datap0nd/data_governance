@@ -7,6 +7,9 @@
   `7629b556e79117c29cc6de05060ac660c993b983`. Local tests ran on the corresponding
   uncommitted files, then those exact implementations were committed. The custom
   home case was added and run separately afterward; existing cases were unchanged.
+- Later fixture revision: `fc8c758aa7e3213b2d91c0878bb5e1a62876da13` injects
+  fictional connection objects into W1 instead of relying on default settings;
+  application/extension behavior is unchanged. Only that affected case was rerun.
 - Environment: Windows ARM64, Node v24.19.0, PowerShell 7.6.5; Codex in-app
   browser, fictional localhost preview only.
 - Finding: focused automated checks passed; generated work has explicit fixed
@@ -18,6 +21,7 @@
 | --- | --- | --- |
 | I1-I5 | `node --test integrations/metronome-gemini/test/setup.test.mjs` before adding I6 | 4 tests passed; includes 16 isolated PowerShell journeys, 1.97s; no skips/warnings. |
 | W1-W3 | `node --test integrations/metronome-gemini/test/workspace.test.mjs` | 3 tests passed, 0.92s; no skips/warnings. Actual SDK calls and temporary filesystem operations. |
+| W1 retest | `node --test --test-name-pattern="MCP prepares fixed work paths" integrations/metronome-gemini/test/workspace.test.mjs` on fc8c758 | 1 test passed, 0.66s; no skips/warnings. Explicit fictional connection objects avoid consulting local access settings. |
 | I6 | `node --test --test-name-pattern="custom Gemini home" integrations/metronome-gemini/test/setup.test.mjs` | 1 test passed, 0.13s; no skips/warnings. Existing cases were not repeated. |
 | Syntax | `node --check` on workspace.mjs, server.mjs, settings.mjs and browser.mjs | Passed, no output/errors. |
 | Syntax | PowerShell `Parser::ParseFile` on install.ps1, setup-functions.ps1 and test/setup-fixture.ps1 | Passed, zero parse errors. |
