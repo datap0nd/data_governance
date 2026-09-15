@@ -187,9 +187,12 @@ tool-call format; see the [Qwen model card](https://huggingface.co/Qwen/Qwen3.8-
   16 MiB retained evidence in a run, eight model turns and four calls per turn.
   Model output is bounded to 4,096 tokens per turn and 512 KiB per response.
 - Manual audits have a 15-minute wall budget; overnight audits have two hours.
-  Reader operations have a 120-second ceiling; the entire SQL transaction has
-  a 30-second ceiling and a one-second lock wait. A cancelled host request also
+  Reader operations have a 120-second cancellation deadline; SQL profiling has
+  a 30-second deadline and a one-second lock wait. A cancelled host request also
   cancels the reader query; late results cannot save profiles or findings.
+  Cancellation is cooperative: stalled operating-system file I/O may outlast
+  its deadline. The reader keeps its single-inspection lock until that I/O ends.
+  Apply service-level memory/CPU limits and use reliable read-only mounts.
 - Read queries still consume I/O and may briefly delay writers. Use an isolated
   reporting database/replica for expensive datasets. Without a replay watermark,
   replica results cannot prove insertion completeness for a specific run.

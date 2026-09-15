@@ -1,0 +1,383 @@
+[
+  {
+    "run_id": "20260915T071551716Z-27652-19d0cbc1",
+    "mode": "setup",
+    "status": "failed",
+    "revision": "b39c8193a8e378f3c211f8137297c18568b684f2",
+    "source_fingerprint": null,
+    "environment": {
+      "os": "nt win32",
+      "runner": "python 3.13.15 tools/check.py",
+      "python": null
+    },
+    "selection": {
+      "full_suite": false,
+      "diagnostic_reason": null,
+      "tests": [],
+      "syntax": []
+    },
+    "started_utc": "2026-09-15T07:15:51.716935+00:00",
+    "finished_utc": "2026-09-15T07:15:58.145010+00:00",
+    "duration_seconds": 6.428,
+    "exit_code": 2,
+    "test_summary": null,
+    "command": "python tools/check.py setup"
+  },
+  {
+    "run_id": "20260915T071957894Z-17332-0d2563c1",
+    "mode": "setup",
+    "status": "passed",
+    "revision": "b39c8193a8e378f3c211f8137297c18568b684f2",
+    "source_fingerprint": null,
+    "environment": {
+      "os": "nt win32",
+      "runner": "python 3.13.15 tools/check.py",
+      "python": "3.13.7"
+    },
+    "selection": {
+      "full_suite": false,
+      "diagnostic_reason": null,
+      "tests": [],
+      "syntax": []
+    },
+    "started_utc": "2026-09-15T07:19:57.894516+00:00",
+    "finished_utc": "2026-09-15T07:20:35.839339+00:00",
+    "duration_seconds": 37.945,
+    "exit_code": 0,
+    "test_summary": null,
+    "command": "python tools/check.py setup --python .test-runs/python-bootstrap/x64/tools/python.exe"
+  },
+  {
+    "run_id": "20260915T072947969Z-7756-24445b36",
+    "mode": "verify",
+    "status": "failed",
+    "revision": "b39c8193a8e378f3c211f8137297c18568b684f2",
+    "source_fingerprint": "94fc0c8c60778b15628ad55bb906e0cba2e465bd262d1d081d076f039d16193c",
+    "environment": {
+      "os": "nt win32",
+      "runner": "python 3.13.15 tools/check.py",
+      "python": "3.13.7"
+    },
+    "selection": {
+      "full_suite": false,
+      "diagnostic_reason": null,
+      "tests": [
+        "tests/test_data_auditor.py"
+      ],
+      "syntax": [
+        "app/auditor",
+        "auditor_reader",
+        "app/main.py"
+      ]
+    },
+    "started_utc": "2026-09-15T07:29:47.969554+00:00",
+    "finished_utc": "2026-09-15T07:29:49.175519+00:00",
+    "duration_seconds": 1.206,
+    "exit_code": 2,
+    "test_summary": null,
+    "command": "python tools/check.py verify --test tests/test_data_auditor.py --syntax app/auditor --syntax auditor_reader --syntax app/main.py"
+  },
+  {
+    "run_id": "20260915T072957868Z-20012-a3e0b810",
+    "mode": "verify",
+    "status": "failed",
+    "revision": "b39c8193a8e378f3c211f8137297c18568b684f2",
+    "source_fingerprint": "6a01aae31925a062d793a1459ddb6136d25e70777ff981501e8b43db7a313439",
+    "environment": {
+      "os": "nt win32",
+      "runner": "python 3.13.15 tools/check.py",
+      "python": "3.13.7"
+    },
+    "selection": {
+      "full_suite": false,
+      "diagnostic_reason": null,
+      "tests": [
+        "tests/test_data_auditor.py"
+      ],
+      "syntax": [
+        "app/auditor/config.py",
+        "app/auditor/store.py",
+        "app/auditor/detection.py",
+        "app/auditor/engine.py",
+        "app/auditor/router.py",
+        "auditor_reader/policy.py",
+        "auditor_reader/profiles.py",
+        "auditor_reader/postgres.py",
+        "auditor_reader/service.py",
+        "app/main.py"
+      ]
+    },
+    "started_utc": "2026-09-15T07:29:57.868536+00:00",
+    "finished_utc": "2026-09-15T07:30:04.083800+00:00",
+    "duration_seconds": 6.215,
+    "exit_code": 2,
+    "test_summary": {
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    "command": "python tools/check.py verify --test tests/test_data_auditor.py --syntax app/auditor/config.py --syntax app/auditor/store.py --syntax app/auditor/detection.py --syntax app/auditor/engine.py --syntax app/auditor/router.py --syntax auditor_reader/policy.py --syntax auditor_reader/profiles.py --syntax auditor_reader/postgres.py --syntax auditor_reader/service.py --syntax app/main.py"
+  },
+  {
+    "run_id": "20260915T073019309Z-26996-68df2e23",
+    "mode": "verify",
+    "status": "failed",
+    "revision": "b39c8193a8e378f3c211f8137297c18568b684f2",
+    "source_fingerprint": "44b63679826e3db792c52869778b305588a75aed79890eeffdfc07ca51090dbc",
+    "environment": {
+      "os": "nt win32",
+      "runner": "python 3.13.15 tools/check.py",
+      "python": "3.13.7"
+    },
+    "selection": {
+      "full_suite": false,
+      "diagnostic_reason": null,
+      "tests": [
+        "tests/test_data_auditor.py"
+      ],
+      "syntax": [
+        "app/auditor/engine.py",
+        "auditor_reader/service.py",
+        "auditor_reader/postgres.py",
+        "auditor_reader/policy.py"
+      ]
+    },
+    "started_utc": "2026-09-15T07:30:19.309088+00:00",
+    "finished_utc": "2026-09-15T07:30:27.237408+00:00",
+    "duration_seconds": 7.928,
+    "exit_code": 1,
+    "test_summary": {
+      "tests": 21,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "command": "python tools/check.py verify --test tests/test_data_auditor.py --syntax app/auditor/engine.py --syntax auditor_reader/service.py --syntax auditor_reader/postgres.py --syntax auditor_reader/policy.py"
+  },
+  {
+    "run_id": "20260915T073136282Z-22188-d04526f5",
+    "mode": "verify",
+    "status": "failed",
+    "revision": "b39c8193a8e378f3c211f8137297c18568b684f2",
+    "source_fingerprint": "455192abb8b16bc0b6fd0c726867ced1dae85ad84e1b732358c7a3683601c131",
+    "environment": {
+      "os": "nt win32",
+      "runner": "python 3.13.15 tools/check.py",
+      "python": "3.13.7"
+    },
+    "selection": {
+      "full_suite": false,
+      "diagnostic_reason": null,
+      "tests": [
+        "tests/test_data_auditor.py"
+      ],
+      "syntax": [
+        "auditor_reader/profiles.py",
+        "auditor_reader/postgres.py",
+        "auditor_reader/service.py",
+        "app/auditor/detection.py",
+        "app/auditor/engine.py"
+      ]
+    },
+    "started_utc": "2026-09-15T07:31:36.282127+00:00",
+    "finished_utc": "2026-09-15T07:31:44.685853+00:00",
+    "duration_seconds": 8.404,
+    "exit_code": 1,
+    "test_summary": {
+      "tests": 21,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    },
+    "command": "python tools/check.py verify --test tests/test_data_auditor.py --syntax auditor_reader/profiles.py --syntax auditor_reader/postgres.py --syntax auditor_reader/service.py --syntax app/auditor/detection.py --syntax app/auditor/engine.py"
+  },
+  {
+    "run_id": "20260915T073217677Z-21928-214b7ccb",
+    "mode": "verify",
+    "status": "passed",
+    "revision": "b39c8193a8e378f3c211f8137297c18568b684f2",
+    "source_fingerprint": "c4b183c980d4ebde40b32153f00e9decb63e7983233188153688e36b7f2ed7fe",
+    "environment": {
+      "os": "nt win32",
+      "runner": "python 3.13.15 tools/check.py",
+      "python": "3.13.7"
+    },
+    "selection": {
+      "full_suite": false,
+      "diagnostic_reason": null,
+      "tests": [
+        "tests/test_data_auditor.py::test_csv_recounts_complete_bytes_and_never_returns_raw_values",
+        "tests/test_data_auditor.py::test_csv_fails_closed"
+      ],
+      "syntax": [
+        "auditor_reader/profiles.py",
+        "auditor_reader/policy.py",
+        "auditor_reader/service.py",
+        "auditor_reader/postgres.py"
+      ]
+    },
+    "started_utc": "2026-09-15T07:32:17.677588+00:00",
+    "finished_utc": "2026-09-15T07:32:19.698487+00:00",
+    "duration_seconds": 2.021,
+    "exit_code": 0,
+    "test_summary": {
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "command": "python tools/check.py verify --test tests/test_data_auditor.py::test_csv_recounts_complete_bytes_and_never_returns_raw_values --test tests/test_data_auditor.py::test_csv_fails_closed --syntax auditor_reader/profiles.py --syntax auditor_reader/policy.py --syntax auditor_reader/service.py --syntax auditor_reader/postgres.py"
+  },
+  {
+    "run_id": "20260915T073911803Z-24824-cf027343",
+    "mode": "verify",
+    "status": "passed",
+    "revision": "b39c8193a8e378f3c211f8137297c18568b684f2",
+    "source_fingerprint": "1ffa67b2db1705aad163ac181fed8c9532c054e7f83a416c8816f6143998421a",
+    "environment": {
+      "os": "nt win32",
+      "runner": "python 3.13.15 tools/check.py",
+      "python": "3.13.7"
+    },
+    "selection": {
+      "full_suite": false,
+      "diagnostic_reason": null,
+      "tests": [
+        "tests/test_auditor_manifest.py",
+        "tests/test_data_auditor.py::test_hostile_model_cannot_change_protected_state",
+        "tests/test_data_auditor.py::test_operator_boundaries_and_disable_during_reader_outage"
+      ],
+      "syntax": [
+        "app/auditor/manifest.py",
+        "app/auditor/router.py",
+        "app/auditor/config.py",
+        "app/auditor/engine.py",
+        "auditor_reader/service.py",
+        "app/flow_worker.py"
+      ]
+    },
+    "started_utc": "2026-09-15T07:39:11.803370+00:00",
+    "finished_utc": "2026-09-15T07:39:20.903062+00:00",
+    "duration_seconds": 9.1,
+    "exit_code": 0,
+    "test_summary": {
+      "tests": 9,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "command": "python tools/check.py verify --test tests/test_auditor_manifest.py --test tests/test_data_auditor.py::test_hostile_model_cannot_change_protected_state --test tests/test_data_auditor.py::test_operator_boundaries_and_disable_during_reader_outage --syntax app/auditor/manifest.py --syntax app/auditor/router.py --syntax app/auditor/config.py --syntax app/auditor/engine.py --syntax auditor_reader/service.py --syntax app/flow_worker.py"
+  },
+  {
+    "run_id": "20260915T075007297Z-16604-7f6a40ef",
+    "mode": "verify",
+    "status": "passed",
+    "revision": "b39c8193a8e378f3c211f8137297c18568b684f2",
+    "source_fingerprint": "a3de9ba7a36833e53263713a2ab9e55316202a4a9a3cd2541bab2f18e3088535",
+    "environment": {
+      "os": "nt win32",
+      "runner": "python 3.13.15 tools/check.py",
+      "python": "3.13.7"
+    },
+    "selection": {
+      "full_suite": false,
+      "diagnostic_reason": null,
+      "tests": [
+        "tests/test_auditor_browser.py"
+      ],
+      "syntax": [
+        "app/static/data_auditor.js",
+        "app/static/app.js"
+      ]
+    },
+    "started_utc": "2026-09-15T07:50:07.297240+00:00",
+    "finished_utc": "2026-09-15T07:50:42.052989+00:00",
+    "duration_seconds": 34.756,
+    "exit_code": 0,
+    "test_summary": {
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "command": "python tools/check.py verify --test tests/test_auditor_browser.py --syntax app/static/data_auditor.js --syntax app/static/app.js"
+  },
+  {
+    "run_id": "20260915T075303414Z-23412-2980d938",
+    "mode": "verify",
+    "status": "passed",
+    "revision": "b39c8193a8e378f3c211f8137297c18568b684f2",
+    "source_fingerprint": "1660e23ece005b4e5ed67fb624836a27789bfa43f4f9e60cf23d874553aa8ef3",
+    "environment": {
+      "os": "nt win32",
+      "runner": "python 3.13.15 tools/check.py",
+      "python": "3.13.7"
+    },
+    "selection": {
+      "full_suite": false,
+      "diagnostic_reason": null,
+      "tests": [
+        "tests/test_auditor_lifecycle.py",
+        "tests/test_auditor_browser.py::test_partial_coverage_and_evidence_are_visible_and_escaped",
+        "tests/test_data_auditor.py::test_30_percent_drop_is_pinned_deduplicated_and_not_auto_resolved",
+        "tests/test_data_auditor.py::test_scope_changes_and_volatile_history_do_not_form_baselines",
+        "tests/test_data_auditor.py::test_sql_count_mismatch_requires_same_run_and_proven_boundary"
+      ],
+      "syntax": [
+        "app/static/data_auditor.js",
+        "app/auditor/engine.py",
+        "app/auditor/store.py",
+        "app/auditor/detection.py",
+        "auditor_reader/postgres.py",
+        "auditor_reader/__main__.py",
+        "app/flow_worker.py"
+      ]
+    },
+    "started_utc": "2026-09-15T07:53:03.414342+00:00",
+    "finished_utc": "2026-09-15T07:53:16.818447+00:00",
+    "duration_seconds": 13.404,
+    "exit_code": 0,
+    "test_summary": {
+      "tests": 11,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "command": "python tools/check.py verify --test tests/test_auditor_lifecycle.py --test tests/test_auditor_browser.py::test_partial_coverage_and_evidence_are_visible_and_escaped --test tests/test_data_auditor.py::test_30_percent_drop_is_pinned_deduplicated_and_not_auto_resolved --test tests/test_data_auditor.py::test_scope_changes_and_volatile_history_do_not_form_baselines --test tests/test_data_auditor.py::test_sql_count_mismatch_requires_same_run_and_proven_boundary --syntax app/static/data_auditor.js --syntax app/auditor/engine.py --syntax app/auditor/store.py --syntax app/auditor/detection.py --syntax auditor_reader/postgres.py --syntax auditor_reader/__main__.py --syntax app/flow_worker.py"
+  },
+  {
+    "run_id": "20260915T075852014Z-23676-4fb3d702",
+    "mode": "verify",
+    "status": "passed",
+    "revision": "b39c8193a8e378f3c211f8137297c18568b684f2",
+    "source_fingerprint": "09956cc39790ab903d7d28fee7f65c564f6a336dbf5a702e47d520f9441902e5",
+    "environment": {
+      "os": "nt win32",
+      "runner": "python 3.13.15 tools/check.py",
+      "python": "3.13.7"
+    },
+    "selection": {
+      "full_suite": false,
+      "diagnostic_reason": null,
+      "tests": [
+        "tests/test_data_auditor.py::test_operator_boundaries_and_disable_during_reader_outage"
+      ],
+      "syntax": [
+        "app/auditor/router.py",
+        "app/main.py"
+      ]
+    },
+    "started_utc": "2026-09-15T07:58:52.014953+00:00",
+    "finished_utc": "2026-09-15T07:58:55.423236+00:00",
+    "duration_seconds": 3.408,
+    "exit_code": 0,
+    "test_summary": {
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "command": "python tools/check.py verify --test tests/test_data_auditor.py::test_operator_boundaries_and_disable_during_reader_outage --syntax app/auditor/router.py --syntax app/main.py"
+  }
+]
