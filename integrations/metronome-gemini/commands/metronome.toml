@@ -4,6 +4,9 @@ Activate the metronome skill, then handle the user's request with the connected
 Metronome MCP. If no task was supplied, check capabilities and connection, show
 a concise summary of available operations, and ask what the user wants to do.
 Do not start a scan, create a flow or run one merely because this command was invoked.
+Before generating any files, call prepare_workspace. Put all temporary code and
+files in its working_directory and finished work in reports_directory. Use
+explicit shell working directories and absolute output paths, never the app checkout.
 
 User request: {{args}}
 '''

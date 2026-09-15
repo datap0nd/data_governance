@@ -12,15 +12,20 @@ source/flow operations when needed; activate `metronome` for those operations.
 
 ## Understand the references
 
-Inventory the specified folder using the CLI's file tools. Preserve originals;
-write outputs in a clearly named subfolder such as `replicated-report`. If no
+Call `prepare_workspace` before generating any files. Inventory the specified
+source folder using the CLI's file tools. Preserve originals; create a named
+report folder under the returned `reports_directory`, and put all temporary
+scripts, intermediate files, environments and caches in `working_directory`.
+Set explicit working directories and absolute output paths for every tool call;
+never create generated work in the Metronome checkout or source folder. If no
 folder was supplied, ask for it. Treat file paths as literal values when invoking
 tools, including spaces, Korean characters and shell metacharacters.
 
 Use an available spreadsheet tool or a standard library to inspect Excel. The
 Metronome MCP's `capabilities` result locates the installed ExcelJS library for
 Node.js when no spreadsheet connector exists. You may write task-specific code
-in the output folder as needed; no fixed extraction script or custom workbook
+in `working_directory` as needed; retain reusable report code with the finished
+report in `reports_directory`. No fixed extraction script or custom workbook
 tool is required. ExcelJS reads .xlsx; for legacy .xls, encrypted or protected
 files, use an appropriate installed tool or request an accessible copy. Do not
 pretend a CSV conversion preserved layout or formulas.

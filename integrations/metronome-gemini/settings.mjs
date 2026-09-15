@@ -7,7 +7,7 @@ export const setting = name => {
   return value && value !== '${' + name + '}' ? value : undefined;
 };
 
-export function accessSettings(path = join(homedir(), '.gemini', 'metronome', 'access.json')) {
+export function accessSettings(path = join(setting('GEMINI_CLI_HOME') || homedir(), '.gemini', 'metronome', 'access.json')) {
   try {
     const saved = JSON.parse(readFileSync(path, 'utf8').replace(/^\uFEFF/, ''));
     return { baseUrl: setting('METRONOME_BASE_URL') || saved.METRONOME_BASE_URL,

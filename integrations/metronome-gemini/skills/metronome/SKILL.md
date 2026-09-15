@@ -11,6 +11,14 @@ missing, give the installation instructions in the extension README. If the
 local app is unavailable, continue work on supplied files and preserve the next
 API action until the connection is restored.
 
+Before creating any files, call `prepare_workspace`. Use its absolute
+`working_directory` for every temporary script, intermediate file, package
+environment and cache; use `reports_directory` for finished reports and reusable
+source maps/code. Set the working directory on each shell call and absolute
+paths on file writes. Starting Gemini inside Metronome does not authorize
+writing generated work there. If workspace preparation fails, pause file
+generation; preserve the blocker and existing work.
+
 ## Mandatory sequence for each flow
 
 1. Treat the owner's sample files/tables as the correct reference. Inspect their
