@@ -439,7 +439,9 @@ def test_full_scan_job_preserves_cancelled_pbi_as_stopped(monkeypatch):
         temp_dir.cleanup()
 
 
-def test_postgres_dependency_scan_reports_each_database_phase(monkeypatch):
+def test_postgres_dependency_scan_reports_each_database_phase(monkeypatch, request):
+    temp_dir = _fresh_database(monkeypatch)
+    request.addfinalizer(temp_dir.cleanup)
     calls = []
     catalog = pg_deps._DatabaseCatalog(
         dependency_rows=(), definitions={}, definition_error=None
