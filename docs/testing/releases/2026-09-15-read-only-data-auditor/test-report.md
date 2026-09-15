@@ -128,3 +128,23 @@ python tools/check.py verify --test tests/test_recording_ranges.py::test_range_r
 Fresh final-head CI is required for this application/test correction. Its
 results and the later first-run shard result belong in the PR testing section;
 this appendix preserves what was known at its stated cutoff.
+
+## 2026-09-15 08:34 UTC: scanner fixture isolation correction
+
+The [second CI run](https://github.com/datap0nd/data_governance/actions/runs/34946257591)
+tested head `62266df0e123245805885dda6dcb83e6ea523ffd` after integration with
+main `1cf0f05d…`. The calendar correction and Python shard 0 passed. Shard 1
+reported **1 failed, 1,102 passed, 7 skipped, 1,111 deselected**, 12 existing
+deprecation warnings and 610.54 seconds: the existing scanner redaction test
+opened notification settings outside its temporary database. All non-Python
+gates passed again. The overall run correctly failed its merge gate.
+
+`tests/test_scan_status_consumers.py` now isolates both database consumers in
+its helper. Its redaction case deliberately supplies an unavailable default
+settings path before creating the fixture, proving it does not depend on a
+previous test creating that directory. No application behavior or assertion was
+weakened. R03 passed locally: **7 passed, zero skips/warnings, 3.60 seconds**,
+head `62266df0…` plus this uncommitted test-only correction. The command is in
+the plan and [local-verification.json](evidence/local-verification.json); run
+`20260915T083320996Z-21012-9967f376` records its source fingerprint. Final-head
+CI remains required and is recorded in the PR after this appendix cutoff.

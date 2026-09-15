@@ -48,6 +48,7 @@ its own manifests, profiles, history and validated alerts.
 | U02 | `tests/test_auditor_browser.py::test_partial_coverage_and_evidence_are_visible_and_escaped`: show partial coverage, open evidence containing script-like text, return. | Gaps are visible; evidence is text, never executable markup; enable state matches saved settings; dialog and back navigation work. Capture evidence screenshot and browser/source metadata. |
 | R01 | Required final-head CI. | Complete non-overlapping Python shard union, frontend contracts/syntax, Windows verifier contracts, PG14/18 and `Merge ready` all pass. Record run URL and final SHA in PR. |
 | R02 | Synthetic `tests/test_recording_ranges.py` virtualized scrolling (immediate/deferred repaint), ordinary range with a disabled future week, duplicate/missing-week rejection and portable contract. | Scroll handlers and a rendered frame finish before week identities are read; all six expected weeks selected, future week skipped, invalid ranges still rejected. Existing user controls are unchanged. |
+| R03 | `python tools/check.py verify --test tests/test_scan_status_consumers.py --syntax tests/test_scan_status_consumers.py`; the redaction case starts with an unavailable process-default settings path. | Scanner consumers use the same isolated database for job state and notification settings; all redaction/lifecycle assertions pass without relying on earlier tests to create a different database. |
 
 ## Commands
 
