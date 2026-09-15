@@ -44,6 +44,11 @@ def snapshot(db, flow_id):
     # Recipient addresses stay in the database: shared-folder handover files
     # describe execution settings, and scripts never email.
     settings = {key: flow.get(key) for key in flows.FlowWrite.model_fields if key in flow and key != 'email_delivery'}
+    transformation_hash = None
+    if flow.get('transform_enabled'):
+        transformation = Path(flow['transform_script_path'])
+        flow_layout._regular(transformation)
+        transformation_hash = hashlib.sha256(transformation.read_bytes()).hexdigest()
     revisions = []
     for row in db.execute('''SELECT id,status,definition_json,created_at FROM flow_recording_revisions
             WHERE flow_id=? AND (id=? OR id=(SELECT MAX(id) FROM flow_recording_revisions WHERE flow_id=?))
@@ -55,6 +60,7 @@ def snapshot(db, flow_id):
         'schema_version': 1, 'source_of_truth': 'Metronome database',
         'flow_id': flow_id, 'name': flow['name'], 'settings': settings,
         'classification': flow.get('classification') or 'production',
+        'transformation_sha256': transformation_hash,
         'owner': {'id': flow.get('owner_person_id'), 'name': flow.get('owner_name'), 'email': flow.get('owner_email')},
         'created_by': flow.get('created_by'), 'created_at': flow.get('created_at'),
         'schedule': {'type': flow['schedule_type'], 'time': flow['schedule_time'],

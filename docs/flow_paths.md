@@ -20,8 +20,12 @@ No user files are moved or deleted by changing these settings.
 ## Managed flow folders
 
 New flows created in the builder receive a source folder containing a sanitized
-flow name and stable ID, with Downloads, Scripts and an ownership manifest.
-Display-name edits keep that path stable. Deleting a paused flow preserves all
+flow name only, with Downloads, Scripts and an ownership manifest. The internal
+flow ID remains in metadata for ownership checks; it is never appended to the
+folder name. Saving a renamed flow moves its existing folder and contents, then
+updates managed output, transformation and historical file references. Existing
+ID-suffixed folders switch to name-only on their next successful Save, including
+a save with no name change. Python and JSON are refreshed before Save returns. Deleting a paused flow preserves all
 files and marks its manifest deleted. Folder creation refuses existing foreign
 folders and compensates failures only when its new directories are still empty.
 
@@ -48,3 +52,23 @@ identities are preserved; no artifacts are migrated. Resume copies validated
 historical Direct artifacts into the new bundle before publishing. Workers
 advertise concrete shared roots from queued jobs; older workers cannot claim
 new shared-store jobs. All workers must be upgraded before enabling those jobs.
+
+### Name collisions and rename recovery
+
+The existing filename cleanup still applies: unsupported filename characters are
+removed, whitespace is normalized, names are limited to 72 characters, and Windows
+reserved names receive a `Flow ` prefix. Names that resolve to an occupied folder
+(including case-only collisions with a different folder) are rejected. Choose a
+different flow name; Metronome never adds the ID or overwrites the occupied folder.
+
+Rename waits for active/queued runs and recording sessions. A standalone process
+holding the Flow execution lock also prevents Save. If the move or database commit
+fails, the old folder and saved settings are restored and the form keeps the edits
+for retry. An interrupted move is reconciled from its ownership marker on the next
+Save. Folder access must be available. No directories are merged or deleted.
+
+If another Flow uses a file inside the folder, update that dependency before
+renaming. External consumers (for example a Power BI file connection, an operator's
+shortcut or a manually configured Task Scheduler action) must use the new path;
+Metronome cannot rewrite configuration in those external applications. Archived
+Python versions preserve their original configuration and remain historical copies.
