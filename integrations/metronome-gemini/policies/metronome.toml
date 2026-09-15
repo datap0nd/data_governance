@@ -13,6 +13,12 @@ decision = "ask_user"
 priority = 900
 
 [[rule]]
+mcpName = "metronome"
+toolName = "apply_recording_proposal"
+decision = "ask_user"
+priority = 900
+
+[[rule]]
 mcpName = "report-browser"
 decision = "ask_user"
 priority = 100

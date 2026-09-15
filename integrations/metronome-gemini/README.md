@@ -108,7 +108,8 @@ itself access.
 
 The browser connection is Microsoft's pinned
 [@playwright/mcp](https://github.com/microsoft/playwright-mcp), launched by Gemini
-with an isolated Edge profile. It does not connect to a worker's browser or
+with an isolated Edge profile. A thin adapter records completed download
+receipts and restricts the exposed tools; browser interactions remain Microsoft MCP operations. It does not connect to a worker's browser or
 reuse its cookies. Sign in yourself when the new browser session requires it.
 Only ordinary navigation, interaction, screenshots and snapshots are exposed;
 network dumps, file uploads and arbitrary JavaScript evaluation are omitted.
@@ -121,8 +122,8 @@ interaction policy is not a database or portal-side read-only guarantee.
 - A stdio MCP using the official SDK, an explicit existing-API adapter, read-only
   SQL queries, and a local proposal/receipt store.
 - Microsoft's browser MCP and the standard ExcelJS library. Gemini can use
-  ExcelJS for .xlsx analysis through its normal tools; there is no custom Excel
-  reader or prescribed extraction script. ExcelJS does not recalculate formulas
+  ExcelJS for .xlsx analysis through its normal tools. There is no user-run
+  extraction script; the MCP internally uses ExcelJS for fixed evidence comparisons. ExcelJS does not recalculate formulas
   and does not read legacy .xls or decrypt protected workbooks.
 
 The Metronome tools list catalogs/flows/recording revisions, inspect definitions
@@ -136,14 +137,64 @@ Outlook means Metronome's existing Inbox attachment source. There is no new
 Outlook client or general email search service. Gemini can start with attachments
 already supplied in the folder, create an existing-API Outlook flow, or explain
 which additional access is needed. New portal recordings use Metronome's existing
-recording UI; independent portal browsing can help discover the required report.
+recording API to start/finish/cancel the native Playwright recorder. Gemini
+controls that window with its available computer-control tools and pauses for
+owner assistance if control fails. The isolated report-browser session is used
+for the independent download, not as a replacement recorder.
+
+## Mandatory reference-to-result workflow
+
+For each requested flow, Gemini captures the correct supplied reference table,
+independently navigates the source and downloads its data, and compares it before
+proposing any Metronome changes. Portal comparisons require a real completed
+`report-browser` download receipt captured after the reference. File/Outlook
+comparisons accept independently supplied files; their acquisition provenance
+remains the agent's responsibility. Unresolved differences block authoring.
+
+Only explicitly **recorded** portal definitions are accepted. New routes can
+use `propose_recording` / `apply_recording_proposal` to create a disabled draft
+without detected-controls discovery. Saved revisions stay in Metronome; no
+model-authored selectors, recorder definitions or privileged scripts are exposed.
+
+`propose_flow` and `propose_run` require the comparison evidence ID. The adapter
+checks it again before dispatch and binds saved recording content to the review.
+`verify_run` follows the actual submitted run receipt, requires `succeeded`, and
+reads API-listed final outputs and the reviewed SQL target. It verifies the
+reader endpoint matches the run's SQL endpoint. It never edits run history.
+
+A result is `SUCCESSFUL` only when the declared tables match exactly, including
+columns, scalar values, duplicate multiplicity and blanks. Row order is ignored.
+`DATA_DIFFERENCES` reports missing/extra rows without assuming refresh; full
+row differences stay in a private evidence file. Counts alone cannot pass.
+
+Verification is bounded: 50,000 combined rows, 256 columns, 20 MiB per file/value
+set, and the existing SQL 4 MiB/30-second limits. A limit breach remains incomplete.
+XLSX uses explicit sheet/table ranges; `A1:C*` includes appended rows in those
+columns. Multiple tables need separate declared scopes. Never claim whole-file
+completeness from a narrowed range. Formula references need verified values-only
+copies. No rounding, date reinterpretation, filtering or blank normalization is
+silently applied to make values match. SQL scans cover all rows visible to the
+reader, including its row-level security, at verification time; they are not a
+frozen snapshot of the load transaction. Target column inference/schema drift
+and native schedules remain the unchanged application's behavior.
+
+Private source copies, snapshots and comparisons live in
+`%USERPROFILE%\.gemini\metronome-evidence`. They contain business data and must
+stay out of Git and shared diagnosis bundles. Keep the evidence IDs, scopes and
+proposal/run IDs in the reporting workspace. These files are not protected from
+Gemini's unrestricted shell under the same Windows identity.
+
+If an independent download is interrupted, do not use its partial file. The
+pinned upstream browser MCP can disconnect on a failed transfer. Restart its
+connection using Gemini's MCP controls and retry the download; completed evidence
+and proposals remain on disk. No browser restart retries a Metronome mutation.
 
 ## Review, execution and recovery
 
 Gemini prepares a flow, shows its complete effective definition and calls
 `apply_flow_proposal` with that same definition in `confirmation_json`. Its native
 tool confirmation is the approval interaction; the extension policy requires
-`ask_user` for saves and runs. The model is not given an `approve` tool. A flow
+`ask_user` for saves, recorder actions and runs. The model is not given an `approve` tool. A flow
 proposal is not an execution: new flows default to disabled/manual, and SQL table
 creation happens through Metronome's normal loader only when the flow runs.
 Inspect load mode and destination before confirming a run, including whether a
@@ -197,8 +248,8 @@ npm.cmd test --prefix .\integrations\metronome-gemini
 These tests use synthetic API/SQL fixtures and the real MCP transport. PostgreSQL
 privilege enforcement is also exercised against disposable databases in CI.
 They do not claim that a model has reproduced your actual business-trip reports.
-See the setup release [test plan](../../docs/testing/releases/2026-09-14-gemini-simple-setup/test-plan.md)
-and [test report](../../docs/testing/releases/2026-09-14-gemini-simple-setup/test-report.md).
+See the workflow release [test plan](../../docs/testing/releases/2026-09-15-gemini-evidence-first/test-plan.md)
+and [test report](../../docs/testing/releases/2026-09-15-gemini-evidence-first/test-report.md).
 
 ## Update or remove
 

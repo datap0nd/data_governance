@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import pg from 'pg';
 import { ReadonlySql } from '../sql.mjs';
+import { snapshot, compare } from '../verification.mjs';
 
 test('PostgreSQL enforces reader separation and complete Korean source aggregates', async () => {
   const url = process.env.METRONOME_TEST_PG_URL;
@@ -44,6 +45,12 @@ test('PostgreSQL enforces reader separation and complete Korean source aggregate
     await admin.query(`CREATE TABLE ${schema}.private_table (secret text)`);
     await admin.query(`GRANT SELECT ON ${schema}.later_table,${schema}.trip_view TO ${readerName}`);
     assert.deepEqual((await reader.query(`SELECT * FROM ${schema}.later_table`)).rows, [{ label: '추가' }]);
+    const actual = await snapshot({ kind: 'sql', database: 'metronome_test_ownership', schema, table: 'later_table' }, reader);
+    assert.equal(compare({ columns: ['label'], rows: [['추가']], row_count: 1, complete: true }, actual).verdict, 'EXACT_MATCH');
+    await assert.rejects(snapshot({ kind: 'sql', database: 'metronome_test_ownership', schema, table: 'private_table' }, reader), /Read-only SQL failed/);
+    await admin.query(`CREATE TABLE ${schema}.large_table AS SELECT i FROM generate_series(1,50001) AS i`);
+    await admin.query(`GRANT SELECT ON ${schema}.large_table TO ${readerName}`);
+    await assert.rejects(snapshot({ kind: 'sql', database: 'metronome_test_ownership', schema, table: 'large_table' }, reader), /bounded full-table/);
     assert.equal((await reader.query(`SELECT count(*) FROM ${schema}.trip_view`)).rows[0].count, '3');
     await assert.rejects(reader.query(`SELECT * FROM ${schema}.private_table`), /Read-only SQL failed/);
     const discovered = await reader.schema({ schema_name: schema });
@@ -60,6 +67,7 @@ test('PostgreSQL enforces reader separation and complete Korean source aggregate
     const writerUrl = new URL(url); writerUrl.username = writerName;
     const writer = new ReadonlySql({ dsn: writerUrl.href });
     await assert.rejects(writer.query(`SELECT * FROM ${schema}.trips`), /dedicated SELECT-only/);
+    await assert.rejects(snapshot({ kind: 'sql', database: 'metronome_test_ownership', schema, table: 'trips' }, writer), /dedicated SELECT-only/);
     assert.equal((await admin.query(`SELECT count(*) FROM ${schema}.trips`)).rows[0].count, '3');
     await admin.query(`CREATE DATABASE ${secondDatabase}`);
     const secondUrl = new URL(url); secondUrl.pathname = '/' + secondDatabase;

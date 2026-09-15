@@ -100,6 +100,13 @@ export class ReadonlySql {
     this.Client = Client;
   }
   configured() { return Boolean(this.dsn || this.fields.host && this.fields.user); }
+  serverIdentity() {
+    if (!this.configured()) throw new Error('Read-only SQL is not configured.');
+    const config = this.dsn && !this.fields.host ? readerConnection(this.dsn) : individualConnection(this.fields);
+    let host = config.host.replace(/^\[|\]$/g, '').replace(/\.$/, '').toLowerCase();
+    if (host.includes(':')) host = `[${host}]`;
+    return Number(config.port) === 5432 ? host : `${host}:${config.port}`;
+  }
   async databases(database) {
     return this.execute(`SELECT datname AS database_name FROM pg_catalog.pg_database
       WHERE datallowconn AND NOT datistemplate
@@ -130,6 +137,11 @@ export class ReadonlySql {
     if (!Array.isArray(params) || params.length > 100 || params.some(p => p !== null && !['string', 'number', 'boolean'].includes(typeof p))) throw new Error('SQL parameters must be scalar values.');
     const used = validateReadQuery(sql);
     return this.execute(sql, params, limit, used, database);
+  }
+  async snapshot(statement, database) {
+    // Called only by structured full-table verification, never arbitrary MCP SQL.
+    const used = validateReadQuery(statement);
+    return this.execute(statement, [], 50000, used, database);
   }
   async execute(sql, params, limit, used, database) {
     if (!this.configured()) throw new Error('Read-only SQL is not configured. Rerun extension setup to enter the SQL server and read-only account; upload credentials are never used.');

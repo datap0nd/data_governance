@@ -28,6 +28,7 @@ export function stable(value) {
 export const digest = value => createHash('sha256').update(JSON.stringify(stable(value))).digest('hex');
 export const definitionOf = value => Object.fromEntries(FLOW_FIELDS.filter(key => Object.hasOwn(value, key)).map(key => [key, value[key]]));
 const pick = (value, fields) => Object.fromEntries(fields.filter(k => Object.hasOwn(value, k)).map(k => [k, value[k]]));
+export const recordingFingerprint = definition => digest(Object.fromEntries(Object.entries(definition || {}).filter(([k]) => !['identity', 'identity_candidates', 'readiness'].includes(k))));
 
 export class ApiError extends Error {
   constructor(message, status = 0) { super(message); this.status = status; }
@@ -130,6 +131,13 @@ export class MetronomeClient {
     await this.getFlow(run.flow_id);
     // Raw jobs, events and errors can contain browser state or entered values.
     return scrub({ ...pick(run, ['id', 'flow_id', 'status', 'trigger_type', 'started_at', 'finished_at', 'created_at', 'rows_inserted', 'row_count']),
+      ...(run.job?.recording ? { recording_revision_id: run.job.recording.revision,
+        recording_fingerprint: recordingFingerprint(run.job.recording.definition) } : {}),
+      ...(run.job?.sql_handoff ? { sql_target: pick(run.job.sql_handoff, ['enabled', 'server', 'database', 'schema', 'table', 'mode']) } : {}),
+      ...(run.artifacts?.length ? { outputs: run.artifacts.filter(a => a.status !== 'source_snapshot').map(a => ({
+        status: a.status, file_path: a.published_file_path || a.deliverable_file_path || a.file_path,
+        checksum: a.published_checksum || a.deliverable_checksum || a.checksum,
+      })) } : {}),
       files: (run.files || []).map(f => pick(f, ['period_key', 'file_path', 'filename', 'file_size', 'checksum', 'row_count', 'status'])) });
   }
   async recordings(flowId) {
@@ -137,7 +145,33 @@ export class MetronomeClient {
     const result = await this.request(`/api/flows/${flowId}/recordings`);
     return { flow_id: flowId, revisions: (result.revisions || []).map(r => pick(r,
       ['id', 'flow_id', 'created_at', 'status', 'validation_status'])),
-      note: 'Recording definitions and session state stay in Metronome. Select a revision ID; use the existing recording UI to record new portal steps.' };
+      sessions: (result.sessions || []).map(s => ({ ...pick(s, ['scan_id', 'flow_id', 'operation', 'revision_id', 'status', 'finish_requested', 'cancel_requested']),
+        stage: (() => { try { return JSON.parse(s.progress_json || '{}').stage || null; } catch { return null; } })() })),
+      note: 'Control the native Playwright recorder with your available computer-control tool. If unavailable, pause for assistance. Never substitute detected controls or invented steps.' };
+  }
+  async recordingProof(flowId, revisionId) {
+    await this.getFlow(flowId);
+    const result = await this.request(`/api/flows/${flowId}/recordings`);
+    const revision = (result.revisions || []).find(r => r.id === revisionId && r.flow_id === flowId);
+    if (!revision?.definition?.steps?.length) throw new Error('Select an existing, nonempty Playwright recording revision belonging to this flow.');
+    return recordingFingerprint(revision.definition);
+  }
+  async recordingAction(flowId, action, scanId) {
+    const f = await this.getFlow(flowId);
+    this.checkDefinition(definitionOf(f));
+    if ((f.source_type || 'portal') !== 'portal') throw new Error('Only portal flows have a Playwright recorder.');
+    if (!['start', 'finish', 'cancel'].includes(action)) throw new Error('Unsupported recorder action.');
+    if (action !== 'start') {
+      const list = await this.recordings(flowId);
+      if (!Number.isSafeInteger(scanId) || !list.sessions.some(s => s.scan_id === scanId && s.flow_id === flowId && s.operation === 'record')) throw new Error('Recording session is outside this flow.');
+    }
+    const result = await this.request(`/api/flows/${flowId}/recordings/${action === 'start' ? action : `${scanId}/${action}`}`, { method: 'POST' });
+    return { id: result.scan_id, scan_id: result.scan_id, status: result.status || (action === 'start' ? 'queued' : action === 'finish' ? 'finishing' : 'cancelling') };
+  }
+  async draftRecording(definition, reportUrl) {
+    this.checkDefinition(definition);
+    if (this.flowIds) throw new Error('Creating a recording draft requires * Flow scope.');
+    return this.request('/api/flows/recordings/draft', { method: 'POST', body: { name: definition.name, site_id: definition.site_id, report_url: reportUrl } });
   }
   async flowSchema() {
     const api = await this.request('/openapi.json');
@@ -168,6 +202,7 @@ export class MetronomeClient {
     const source = value.source_type || 'portal';
     if (!['portal', 'outlook', 'file'].includes(source)) throw new Error('Unsupported source type.');
     if (source === 'portal' && (!Number.isSafeInteger(value.site_id) || !this.siteAllowed(value.site_id))) throw new Error('Select an allowed portal site from the catalog.');
+    if (source === 'portal' && value.execution_method !== 'recorded') throw new Error('Portal flows must explicitly use execution_method recorded. Detected controls/catalog mode is not allowed.');
     if (this.siteIds && source !== 'portal') throw new Error('File and Outlook sources require unrestricted site scope in this version.');
     return value;
   }
@@ -179,6 +214,7 @@ export class MetronomeClient {
   async runFlow(flowId) {
     const f = await this.getFlow(flowId);
     this.checkDefinition(definitionOf(f));
+    if ((f.source_type || 'portal') === 'portal') await this.recordingProof(flowId, f.recording_revision_id);
     return this.request(`/api/flows/${flowId}/run`, { method: 'POST' });
   }
 }

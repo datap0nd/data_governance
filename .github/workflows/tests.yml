@@ -139,6 +139,9 @@ jobs:
           cache-dependency-path: integrations/metronome-gemini/package-lock.json
       - name: Install isolated Gemini extension dependencies
         run: npm ci --ignore-scripts --prefix integrations/metronome-gemini
+      - name: Install browser for synthetic Gemini download fixture
+        working-directory: integrations/metronome-gemini
+        run: npx playwright install --with-deps chromium
       - name: Run frontend contracts
         shell: bash
         run: |

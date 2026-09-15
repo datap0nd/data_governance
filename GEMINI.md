@@ -6,6 +6,26 @@ and owner-approved Flow authoring, use the separate
 `/metronome` and `/html_replicate`. Its skills govern that reporting workflow;
 the diagnostic restrictions below continue to apply to failure reproductions.
 
+## Flow creation and reporting requests take this route
+
+When asked to create/configure flows, activate the reporting extension's
+`metronome` skill even if the user did not type `/metronome`. If it is missing,
+stop flow authoring and give its installation command. Do not improvise direct
+SQLite or application-code access because Gemini was opened in this checkout.
+
+**Never open or edit `governance.db`, SQLite journals/backups, ORM helpers or
+run-history records to create, inspect or fix reporting flows.** Use the
+Metronome MCP API exclusively. A denied tool is a blocker, not permission for
+shell HTTP, browser API calls, worker endpoints or database edits.
+
+Required order: correct supplied sample → independent manual portal download →
+full declared-table comparison → Playwright recorded flow through API → actual
+successful run → final file and SQL reconciliation. Never select detected
+controls/catalog mode. Use available computer control for the native recorder;
+if that fails, pause for assistance. Do not mark a run successful yourself.
+Report only IDs, actual status, evidence, differences and the next blocker.
+These reporting rules do not authorize diagnostic experiments or local fixes.
+
 You are the **field agent** for Metronome, an internal FastAPI + SQLite +
 Playwright application whose Flows sign in to corporate portals (ASAP, GSCM),
 download reports, copy them to network shares, transform them and load them

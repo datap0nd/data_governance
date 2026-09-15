@@ -4,7 +4,7 @@ import { MetronomeClient, scrub, definitionOf, digest } from '../client.mjs';
 import { ReadonlySql, validateReadQuery, PRIVILEGE_CHECK, readerConnection, individualConnection } from '../sql.mjs';
 import pg from 'pg';
 
-const fixture = { id: 42, name: '출장비', source_type: 'portal', site_id: 1, report_id: 15, enabled: false,
+const fixture = { id: 42, name: '출장비', source_type: 'portal', execution_method: 'recorded', site_id: 1, report_id: 15, enabled: false,
   selections: { subsidiary: '가상 A' }, sql_handoff_enabled: false, schedule_type: 'manual' };
 function clientFor(routes, options = {}) {
   const requests = [];
@@ -103,7 +103,14 @@ function fakeDatabase({ elevated = false, writable = false, can_create = false, 
 test('SQL is opt-in and never falls back to PostgreSQL/upload environment credentials', async () => {
   const { Client, calls } = fakeDatabase();
   await assert.rejects(new ReadonlySql({ Client }).query('select 1'), /not configured/);
+  await assert.rejects(new ReadonlySql({ Client }).snapshot('select * from reporting.trips', 'fixture'), /not configured/);
   assert.equal(calls.length, 0);
+});
+
+test('verification binds the exact configured reader server and port', () => {
+  assert.equal(new ReadonlySql({ host: 'Example.COM.:5433', user: 'reader' }).serverIdentity(), 'example.com:5433');
+  assert.equal(new ReadonlySql({ host: 'Example.COM', user: 'reader' }).serverIdentity(), 'example.com');
+  assert.equal(new ReadonlySql({ dsn: 'postgresql://reader@[::1]:5433/fixture' }).serverIdentity(), '[::1]:5433');
 });
 test('actual pg configuration cannot inherit uploader credentials, ambient password, port or insecure TLS', async () => {
   const ambient = { PGUSER: 'uploader', PGPASSWORD: 'must-not-use', PGHOST: 'other-host', PGDATABASE: 'other-db',

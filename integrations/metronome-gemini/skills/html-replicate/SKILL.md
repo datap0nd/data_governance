@@ -85,3 +85,10 @@ Return the HTML path and important remaining questions. Retain the source map,
 validation notes, relevant flow/run IDs and generation code beside the output
 so future updates and answers use the same definitions. Follow-up questions use
 the mapped data and state when a fresh download/query is needed.
+
+
+Flow acquisition must follow the metronome skill's mandatory independent-download,
+recorded-flow and final-verification sequence. Show DATA DIFFERENCES/INCOMPLETE
+visibly in the report; never promote a successful execution to a verified match.
+Keep the actual verification evidence IDs and declared table scopes beside the
+source map. No Metronome HTML feature or recurring generator is added.

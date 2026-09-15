@@ -42,6 +42,7 @@ test('extension entry points and browser allowlist resolve to packaged files', a
     assert.ok((await readFile(new URL(entry, base), 'utf8')).length > 0);
   }
   const browser = manifest.mcpServers['report-browser'];
-  assert.ok(browser.args.includes('--isolated'));
+  assert.deepEqual(browser.args, ['${extensionPath}/browser.mjs']);
+  assert.match(await readFile(new URL('browser.mjs', base), 'utf8'), /browser.newContext/);
   assert.ok(!browser.includeTools.some(t => /evaluate|run_code|upload|network/.test(t)));
 });
