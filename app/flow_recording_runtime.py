@@ -240,6 +240,29 @@ def _range_click_week(container, selector: str, selected_state: str, week: tuple
     raise RuntimeError(f'The range box did not confirm {_week_name(week)} selection after repainting.')
 
 
+def _range_scroll(container, *, reset=False):
+    # scrollTop changes synchronously; scroll handlers and virtual-list repaints
+    # do not. Reacquiring cells before that frame can click the old page or have
+    # an otherwise valid selection discarded by the queued repaint.
+    return container.evaluate('''async (el, options) => {
+        const before = el.scrollTop;
+        el.scrollTop = options.reset ? 0
+            : Math.min(el.scrollHeight, before + Math.max(1, el.clientHeight * .8));
+        if (el.scrollTop !== before) {
+            const view = el.ownerDocument.defaultView;
+            await new Promise((resolve, reject) => {
+                const timer = view.setTimeout(() => reject(new Error(
+                    'The range box did not repaint after scrolling.')), options.timeout);
+                view.requestAnimationFrame(() => view.requestAnimationFrame(() => {
+                    view.clearTimeout(timer);
+                    resolve();
+                }));
+            });
+        }
+        return {before, after:el.scrollTop};
+    }''', {'reset': reset, 'timeout': _RANGE_REPAINT_TIMEOUT_SECONDS * 1000})
+
+
 def _select_week_range(container, step, update) -> dict:
     """Select an exact, expanding ISO-week range inside one recorded box."""
     contract = step['range']
@@ -250,7 +273,7 @@ def _select_week_range(container, step, update) -> dict:
     navigation = contract.get('navigation', {'kind': 'scroll'}).get('kind', 'scroll')
     container.wait_for(state='visible', timeout=120_000)
     if navigation == 'scroll':
-        container.evaluate('el => { el.scrollTop = 0; }')
+        _range_scroll(container, reset=True)
     elif navigation == 'controls':
         previous_selector = contract['navigation']['previous_selector']
         for _movement in range(100):
@@ -326,11 +349,7 @@ def _select_week_range(container, step, update) -> dict:
             continue
         if navigation != 'scroll' or position['height'] <= position['client']:
             break
-        moved = container.evaluate('''el => {
-            const before = el.scrollTop;
-            el.scrollTop = Math.min(el.scrollHeight, before + Math.max(1, el.clientHeight * .8));
-            return {before, after:el.scrollTop};
-        }''')
+        moved = _range_scroll(container)
         if moved['after'] == moved['before']:
             break
         movements += 1

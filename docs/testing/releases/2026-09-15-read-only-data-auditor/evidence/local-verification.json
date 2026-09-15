@@ -379,5 +379,73 @@
       "skipped": 0
     },
     "command": "python tools/check.py verify --test tests/test_data_auditor.py::test_operator_boundaries_and_disable_during_reader_outage --syntax app/auditor/router.py --syntax app/main.py"
+  },
+  {
+    "run_id": "20260915T081332704Z-2480-a264958c",
+    "mode": "verify",
+    "status": "failed",
+    "revision": "2beb06c4b238453bb5e9c537c36312acafa33d85",
+    "source_fingerprint": "73d7ce8953f0ddb4841171473f4cecaa260f12412e80ebbb246117ce649f4763",
+    "environment": {
+      "os": "nt win32",
+      "runner": "python 3.13.15 tools/check.py",
+      "python": "3.13.7"
+    },
+    "selection": {
+      "full_suite": false,
+      "diagnostic_reason": null,
+      "tests": [
+        "tests/test_recording_ranges.py::test_range_reacquires_virtualized_cells_after_each_scroll"
+      ],
+      "syntax": []
+    },
+    "started_utc": "2026-09-15T08:13:32.704443+00:00",
+    "finished_utc": "2026-09-15T08:13:37.984228+00:00",
+    "duration_seconds": 5.28,
+    "exit_code": 1,
+    "test_summary": {
+      "tests": 1,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    },
+    "command": "python tools/check.py verify --test tests/test_recording_ranges.py::test_range_reacquires_virtualized_cells_after_each_scroll"
+  },
+  {
+    "run_id": "20260915T081524295Z-27272-5a006df7",
+    "mode": "verify",
+    "status": "passed",
+    "revision": "2beb06c4b238453bb5e9c537c36312acafa33d85",
+    "source_fingerprint": "38cc1e8f2890062d30dae9e260dcbb1d878a5df88b5ed86b10159119688b8c9f",
+    "environment": {
+      "os": "nt win32",
+      "runner": "python 3.13.15 tools/check.py",
+      "python": "3.13.7"
+    },
+    "selection": {
+      "full_suite": false,
+      "diagnostic_reason": null,
+      "tests": [
+        "tests/test_recording_ranges.py::test_range_reacquires_virtualized_cells_after_each_scroll",
+        "tests/test_recording_ranges.py::test_range_selects_new_week_and_skips_disabled_future_week",
+        "tests/test_recording_ranges.py::test_range_fails_closed_for_duplicate_or_missing_weeks",
+        "tests/test_recording_ranges.py::test_version_three_range_contract_and_legacy_readers"
+      ],
+      "syntax": [
+        "app/flow_recording_runtime.py",
+        "tests/test_recording_ranges.py"
+      ]
+    },
+    "started_utc": "2026-09-15T08:15:24.295774+00:00",
+    "finished_utc": "2026-09-15T08:15:42.929824+00:00",
+    "duration_seconds": 18.634,
+    "exit_code": 0,
+    "test_summary": {
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "command": "python tools/check.py verify --test tests/test_recording_ranges.py::test_range_reacquires_virtualized_cells_after_each_scroll --test tests/test_recording_ranges.py::test_range_selects_new_week_and_skips_disabled_future_week --test tests/test_recording_ranges.py::test_range_fails_closed_for_duplicate_or_missing_weeks --test tests/test_recording_ranges.py::test_version_three_range_contract_and_legacy_readers --syntax app/flow_recording_runtime.py --syntax tests/test_recording_ranges.py"
   }
 ]

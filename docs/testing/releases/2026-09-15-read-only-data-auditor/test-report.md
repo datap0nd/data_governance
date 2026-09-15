@@ -88,3 +88,43 @@ evidence screenshot is an intentional escaping test and rendered as plain text.
 Pending at this committed cutoff. The PR for branch
 `codex/read-only-data-auditor` carries this package and records the final CI run,
 tested head and merge result. No deployed-app claim is made by this report.
+
+## 2026-09-15 08:16 UTC: CI regression correction
+
+The [first CI run](https://github.com/datap0nd/data_governance/actions/runs/34944790601)
+tested head `2beb06c4b238453bb5e9c537c36312acafa33d85`. PostgreSQL 14/18,
+frontend contracts/syntax and Windows verifier contracts passed. All 14 new
+auditor PostgreSQL cases executed on both versions. The combined PG14 suite
+reported 26 passed and one existing PostgreSQL-16-only membership case skipped;
+PG18 reported 27 passed. The existing Gemini reader case passed on each.
+
+Python shard 0 failed an existing synthetic virtual-calendar case:
+`test_range_reacquires_virtualized_cells_after_each_scroll`. It reported
+**1 failed, 1,105 passed, 4 skipped, 1,110 deselected** in 519.75 seconds, with
+the two existing deprecation warnings. A queued scroll repaint could run after
+the next identity snapshot/click and discard the selection. The auditor browser
+tests passed in that same shard. At this appendix cutoff, shard 1 was still
+running; no result is presumed for it.
+
+The range runtime now waits for scroll handlers and the next rendered frame
+before taking another snapshot, with the existing bounded repaint timeout.
+Selection assertions were retained, and the existing virtual-list test gained
+a deferred-repaint variant. This corrects a race in unchanged controls; it does
+not change the demonstrated auditor journey.
+
+Local diagnostic attempt `20260915T081332704Z-2480-a264958c` failed because this
+checkout did not yet have Playwright's bundled Chromium; it did not reproduce
+the application assertion locally. After installing Chromium/headless shell
+151.0.7922.34 with `PLAYWRIGHT_BROWSERS_PATH` set to this checkout's ignored
+`.playwright-browsers`, R02 passed: **6 passed, zero skips/warnings, 16.85 seconds**
+on `2beb06c4…` plus the uncommitted correction. Evidence:
+`20260915T081524295Z-27272-5a006df7`, included in
+[local-verification.json](evidence/local-verification.json).
+
+```text
+python tools/check.py verify --test tests/test_recording_ranges.py::test_range_reacquires_virtualized_cells_after_each_scroll --test tests/test_recording_ranges.py::test_range_selects_new_week_and_skips_disabled_future_week --test tests/test_recording_ranges.py::test_range_fails_closed_for_duplicate_or_missing_weeks --test tests/test_recording_ranges.py::test_version_three_range_contract_and_legacy_readers --syntax app/flow_recording_runtime.py --syntax tests/test_recording_ranges.py
+```
+
+Fresh final-head CI is required for this application/test correction. Its
+results and the later first-run shard result belong in the PR testing section;
+this appendix preserves what was known at its stated cutoff.
