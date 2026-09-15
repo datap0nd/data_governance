@@ -7,9 +7,11 @@ function Run-Case([string]$Name, [string]$Type = '', [switch]$SkipSql, [switch]$
     [switch]$Fresh, [switch]$FailInstall, [switch]$Unknown, [switch]$Foreign, [switch]$CopiedWithoutMetadata, [switch]$TrailingSlash, [switch]$Malformed) {
     $userDir = Join-Path $scratch $Name
     $registration = Join-Path $userDir '.gemini/extensions/metronome-gemini'
-    New-Item -ItemType Directory -Force -Path $registration | Out-Null
     $fixtureSettingsFile = Join-Path $registration '.env'
-    [IO.File]::WriteAllText($fixtureSettingsFile, "METRONOME_FLOW_IDS=42`nMETRONOME_SITE_IDS=1`n")
+    if (-not $Fresh) {
+        New-Item -ItemType Directory -Force -Path $registration | Out-Null
+        [IO.File]::WriteAllText($fixtureSettingsFile, "METRONOME_FLOW_IDS=42`nMETRONOME_SITE_IDS=1`n")
+    }
     if ($Type) {
         $source = if ($Foreign) { Join-Path $scratch 'other-source' } elseif ($TrailingSlash) { $ExtensionRoot.TrimEnd('\','/') + [IO.Path]::DirectorySeparatorChar } else { $ExtensionRoot }
         @{ type = $Type; source = $source } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $registration '.gemini-extension-install.json')
@@ -17,11 +19,6 @@ function Run-Case([string]$Name, [string]$Type = '', [switch]$SkipSql, [switch]$
     if ($Unknown) { Set-Content -LiteralPath (Join-Path $registration 'owner-file.txt') -Value 'fictional preserved data' }
     if ($CopiedWithoutMetadata) { @{ name = 'metronome-gemini'; version = '0.2.0' } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $registration 'gemini-extension.json') }
     if ($Malformed) { Set-Content -LiteralPath (Join-Path $registration '.gemini-extension-install.json') -Value '{bad' }
-    if ($Fresh) {
-        # Empty fixture files only; this case starts with no registration at all.
-        Remove-Item -LiteralPath $fixtureSettingsFile
-        Remove-Item -LiteralPath $registration
-    }
     $calls = [Collections.Generic.List[string]]::new()
     $gemini = {
         param([string[]]$Arguments)

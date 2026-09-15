@@ -87,7 +87,7 @@ function Invoke-MetronomeGeminiSetup {
         try {
             if ((& $RunGemini -Arguments @('extensions','install',$ExtensionRoot,'--skip-settings')) -ne 0) { throw 'Gemini could not install the extension. Rerun setup after resolving the error above.' }
             if ($backup -and (Test-Path -LiteralPath (Join-Path $backup '.env'))) {
-                Copy-Item -LiteralPath (Join-Path $backup '.env') -Destination $oldEnv
+                Copy-Item -LiteralPath (Join-Path $backup '.env') -Destination $oldEnv -Force
             }
         } catch {
             if ($backup) {
