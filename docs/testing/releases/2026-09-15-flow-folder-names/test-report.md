@@ -82,6 +82,28 @@ Recording tests inspect the newly selected generated definition without executin
 it. Browser review also included a visual layout check after the corrected code
 commit. No production UI controls were added; the scenario selector is preview-only.
 
+## 2026-09-15 06:33 UTC: legacy adoption follow-up
+
+Review found that an unmanaged legacy Flow could keep attempting allocation at its
+old name after the user supplied a new name. Save now allocates using the pending
+name, allowing recovery from an old-name collision without touching that folder.
+
+At `61741f47`, the new collision case plus the existing legacy-save/history and
+adoption-idempotence companions passed: **3 passed in 12.94 s**, no skips/warnings.
+Both changed Python files passed `ast.parse`. The same runner wrapper above used
+these selectors and evidence ID `flow-name-legacy-final`:
+
+```text
+tests/test_flow_folder_rename.py::test_unmanaged_legacy_save_allocates_new_name_despite_old_name_collision
+tests/test_managed_flow_editor.py::test_saving_legacy_flow_manages_future_output_and_preserves_history
+tests/test_flow_layout.py::test_adoption_keeps_historic_target_and_is_idempotent
+```
+
+Only the affected legacy companions were repeated for this correction. Earlier
+results retain their original revisions. The prior PR CI was still running on
+`7bdac239`; it is superseded by the final push and is not final-head evidence.
+Final-head CI results after this appended cutoff belong in the PR testing section.
+
 ## Merge evidence
 
 Final CI is pending. Before merge the PR testing section will record the final head,
