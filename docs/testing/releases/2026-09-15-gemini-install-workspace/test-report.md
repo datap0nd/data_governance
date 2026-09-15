@@ -69,3 +69,19 @@ they are not an OS containment guarantee.
 Required final-head CI is pending at this committed cutoff. Before merging,
 record the final head SHA, run URL, check outcomes and any failure/retest in the
 PR Testing section. The PR's merge record supplies the merged revision.
+
+## CI finding and correction (2026-09-15)
+
+[Initial CI](https://github.com/datap0nd/data_governance/actions/runs/34970494426)
+on `a59d379d4d29982b335430b2b3a9bb75fd5bf47f` found one failing setup fixture
+(extension set: 39 passed, 1 failed). PowerShell on Linux refused to remove the
+hidden `.env` that the fresh-install fixture had just created. Revision
+`71e8ef10f0f4a33efcea94869ba52213e38d41bf` makes that case start empty, retaining
+all assertions and scenarios; recovery also explicitly copies hidden settings
+with `-Force`. The affected setup test passed locally again: 16 journeys,
+1 Node test, 1.64s, zero skips/warnings, using
+`node --test --test-name-pattern="setup asks three separate fields" integrations/metronome-gemini/test/setup.test.mjs`.
+
+Windows contracts and both PostgreSQL jobs passed in the initial run. Its Python
+jobs were cancelled when superseded, and its merge gate correctly rejected it.
+Later final-head CI, not this superseded run, is required for merge.
