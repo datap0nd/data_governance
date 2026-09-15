@@ -1,8 +1,17 @@
+"""Private managed configuration for the automatic Flow auditor.
+
+The reader credential is deliberately stored outside SQLite and is never part
+of an HTTP projection. The model connection is the already configured local
+AI provider; each audit snapshots it before work starts.
+"""
 from dataclasses import dataclass
-from functools import lru_cache
-import os
 import json
+import os
+from pathlib import Path
 from urllib.parse import urlsplit
+
+from app import database
+from app.ai.runtime_config import load_runtime_settings
 
 
 def endpoint(value, suffix=""):
@@ -21,36 +30,68 @@ class Config:
     model_url: str
     model_token: str
     model: str
-    operator_token: str
     manifest_path: str
-    flow_ids: tuple[int, ...]
+    policy_path: str = ""
 
 
-@lru_cache(maxsize=1)
-def settings():
-    # Deliberately independent of editable AI settings and uploader variables.
-    reader_token = os.environ.get("METRONOME_AUDIT_READER_TOKEN", "")
-    operator_token = os.environ.get("METRONOME_AUDIT_OPERATOR_TOKEN", "")
-    model_token = os.environ.get("METRONOME_AUDIT_MODEL_TOKEN", "")
-    if min(len(reader_token), len(operator_token)) < 32 or reader_token == operator_token or model_token in {reader_token, operator_token}:
-        raise ValueError("Distinct auditor access keys must be configured.")
-    try:
-        flows = json.loads(os.environ.get("METRONOME_AUDIT_FLOW_IDS", "[]"))
-    except ValueError:
-        raise ValueError("Approved auditor flows are not configured.") from None
+def host_config_path() -> Path:
+    configured = os.environ.get("DG_AUDITOR_HOST_CONFIG", "").strip()
+    if configured:
+        return Path(configured)
+    return Path(database.DB_PATH).resolve().parent / "auditor" / "host" / "host.json"
+
+
+def _managed_reader():
+    path = host_config_path()
+    if path.is_file():
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if value.get("version") != 1:
+            raise ValueError("The managed auditor configuration needs an update.")
+        return value
+    # Compatibility for the first manually provisioned release. Current
+    # validation still applies and selected-Flow/operator variables are ignored.
+    token = os.environ.get("METRONOME_AUDIT_READER_TOKEN", "")
     manifest_path = os.environ.get("METRONOME_AUDIT_MANIFEST_PATH", "")
-    if not manifest_path or not isinstance(flows, list) or not 1 <= len(flows) <= 100 or any(type(i) is not int or i <= 0 for i in flows):
-        raise ValueError("The separate audit manifest and approved flows must be configured.")
-    return Config(
-        endpoint(os.environ.get("METRONOME_AUDIT_READER_URL", "")), reader_token,
-        endpoint(os.environ.get("METRONOME_AUDIT_MODEL_URL", "")), model_token,
-        os.environ.get("METRONOME_AUDIT_MODEL", "Qwen/Qwen3.8-27B"), operator_token,
-        manifest_path, tuple(sorted(set(flows))))
+    policy_path = os.environ.get("METRONOME_AUDIT_READER_POLICY", "")
+    reader_url = os.environ.get("METRONOME_AUDIT_READER_URL", "")
+    if reader_url and manifest_path and policy_path and len(token) >= 32:
+        return {"version": 1, "reader_url": reader_url,
+                "reader_token": token, "manifest_path": manifest_path,
+                "policy_path": policy_path}
+    raise ValueError("The managed restricted reader is not installed.")
+
+
+def settings():
+    reader = _managed_reader()
+    reader_token = str(reader.get("reader_token") or "")
+    manifest_path = Path(str(reader.get("manifest_path") or ""))
+    policy_path = Path(str(reader.get("policy_path") or ""))
+    if len(reader_token) < 32 or not manifest_path.is_absolute() or not policy_path.is_absolute():
+        raise ValueError("The managed restricted reader configuration is invalid.")
+    ai = load_runtime_settings()
+    model_url = endpoint(ai.endpoint) if ai.qwen_enabled and ai.endpoint and ai.model else ""
+    return Config(endpoint(str(reader.get("reader_url") or "")), reader_token,
+                  model_url, ai.api_key if model_url else "", ai.model if model_url else "",
+                  str(manifest_path), str(policy_path))
 
 
 def readiness():
+    reader = {"available": False, "detail": "The managed restricted reader is not installed."}
+    model = {"available": False, "detail": "Configure Local AI in System → AI."}
     try:
-        settings()
-        return {"configured": True, "detail": "Auditor connections are configured. Access is verified when a run starts."}
-    except ValueError:
-        return {"configured": False, "detail": "An administrator must configure the restricted reader, model endpoint, and operator access key."}
+        value = _managed_reader()
+        endpoint(str(value.get("reader_url") or ""))
+        if len(str(value.get("reader_token") or "")) < 32:
+            raise ValueError()
+        reader = {"available": True, "detail": "Managed reader configured; access is verified during each audit."}
+    except Exception:
+        pass
+    try:
+        ai = load_runtime_settings()
+        if ai.qwen_enabled and ai.endpoint and ai.model:
+            endpoint(ai.endpoint)
+            model = {"available": True, "detail": f"Local AI ready: {ai.model}."}
+    except Exception:
+        pass
+    return {"configured": reader["available"],
+            "reader": reader, "model": model}

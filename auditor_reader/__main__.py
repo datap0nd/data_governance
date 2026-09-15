@@ -1,10 +1,10 @@
 """Print a reviewed table fingerprint using the dedicated reader identity."""
 import argparse
 import json
-import os
 
 from .policy import InspectionError, load_policy
 from .postgres import profile_sql
+from .service import reader_config
 
 
 def main():
@@ -13,7 +13,7 @@ def main():
     args = parser.parse_args()
     try:
         dataset = load_policy().dataset(args.dataset_id)
-        result = profile_sql(dataset, os.environ.get("METRONOME_AUDIT_READER_DSN", ""), b"unused", lambda: False, discover=True)
+        result = profile_sql(dataset, str(reader_config().get("reader_dsn") or ""), b"unused", lambda: False, discover=True)
         print(json.dumps({"dataset_id": dataset.id, **result}))
         return 0
     except InspectionError as exc:

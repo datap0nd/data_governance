@@ -7,12 +7,13 @@ import hmac
 import io
 import os
 import stat
+import re
 from collections import Counter
 from datetime import date
 from decimal import Decimal, InvalidOperation, localcontext
 from pathlib import Path
 
-from .policy import InspectionError, digest
+from .policy import Column, InspectionError, digest
 
 
 def category(value: str, salt: bytes):
@@ -20,17 +21,80 @@ def category(value: str, salt: bytes):
     return hmac.new(salt, value.encode("utf-8"), hashlib.sha256).hexdigest()[:24]
 
 
-def _safe_path(path, roots):
+def _safe_path(path, dataset, policy):
     candidate = Path(os.path.abspath(path))
-    if not any(candidate.is_relative_to(Path(os.path.abspath(root))) for root in roots):
+    exact = {os.path.normcase(str(Path(os.path.abspath(item)))) for item in dataset.artifact_paths}
+    if exact:
+        if os.path.normcase(str(candidate)) not in exact:
+            raise InspectionError("artifact_not_registered")
+    elif not any(candidate.is_relative_to(Path(os.path.abspath(root))) for root in policy.artifact_roots):
         raise InspectionError("artifact_outside_approved_roots")
-    for part in (candidate, *candidate.parents):
-        info = part.lstat()
-        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
-            raise InspectionError("artifact_link_rejected")
+    try:
+        for part in (candidate, *candidate.parents):
+            info = part.lstat()
+            if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+                raise InspectionError("artifact_link_rejected")
+    except OSError:
+        raise InspectionError("artifact_missing_or_unreadable") from None
     if not candidate.is_file() or candidate.suffix.lower() != ".csv":
         raise InspectionError("normalized_csv_required")
     return candidate
+
+
+def _logical_name(header, used):
+    base = re.sub(r"[^a-z0-9]+", "_", header.casefold()).strip("_")
+    if not base or not base[0].isalpha():
+        base = "column_" + (base or "value")
+    base = base[:55]
+    value, number = base, 2
+    while value in used:
+        value = f"{base}_{number}"
+        number += 1
+    used.add(value)
+    return value
+
+
+def discover_columns(artifacts, dataset, policy, cancelled):
+    """Infer bounded scalar roles from a registered CSV header/sample."""
+    if not artifacts:
+        raise InspectionError("artifact_bundle_unverified")
+    path = _safe_path(artifacts[0].get("file_path", ""), dataset, policy)
+    with path.open("r", encoding="utf-8-sig", newline="") as stream:
+        reader = csv.reader(stream, strict=True)
+        header = next(reader, None)
+        if (not header or len(header) != len(set(header)) or len(header) > 24
+                or any(not value or len(value) > 128 for value in header)):
+            raise InspectionError("artifact_header_unverified")
+        samples = [[] for _ in header]
+        for row_number, row in enumerate(reader):
+            if cancelled():
+                raise InspectionError("cancelled")
+            if len(row) != len(header):
+                raise InspectionError("artifact_ragged_rows")
+            for index, value in enumerate(row):
+                if value:
+                    samples[index].append(value)
+            if row_number >= 999:
+                break
+    used = set()
+    columns = []
+    for heading, values in zip(header, samples):
+        kind = "text"
+        if values:
+            try:
+                parsed = [Decimal(value) for value in values if len(value) <= 64]
+                if len(parsed) == len(values) and all(value.is_finite() for value in parsed):
+                    kind = "number"
+            except (InvalidOperation, ValueError, OverflowError):
+                try:
+                    if all(date.fromisoformat(value) for value in values):
+                        kind = "date"
+                except ValueError:
+                    pass
+        sql_name = heading.upper() if dataset.sql_uppercase else heading
+        columns.append(Column(name=_logical_name(heading, used), csv_header=heading,
+                              sql_name=sql_name, kind=kind))
+    return tuple(columns)
 
 
 def _handle_path(handle):
@@ -91,10 +155,11 @@ def profile_csv(artifacts, dataset, policy, salt, cancelled):
         checksum = artifact.get("checksum", "")
         if not isinstance(checksum, str) or len(checksum) != 64:
             raise InspectionError("artifact_checksum_missing")
-        path = _safe_path(artifact.get("file_path", ""), policy.artifact_roots)
+        path = _safe_path(artifact.get("file_path", ""), dataset, policy)
         with path.open("rb") as raw:
             actual = _handle_path(raw)
-            _safe_path(actual, policy.artifact_roots)
+            if Path(os.path.abspath(actual)) != path:
+                raise InspectionError("artifact_handle_unverified")
             if str(actual) in seen_files:
                 raise InspectionError("duplicate_artifact_manifest_entry")
             seen_files.add(str(actual))

@@ -5,6 +5,7 @@ in [the testing workflow](../README.md); this file is the complete history.
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-09-15: automatic Flow auditor | [Test plan](2026-09-15-automatic-flow-auditor/test-plan.md) | [Test report](2026-09-15-automatic-flow-auditor/test-report.md) |
 | 2026-09-15: Gemini install recovery and work folders | [Test plan](2026-09-15-gemini-install-workspace/test-plan.md) | [Test report](2026-09-15-gemini-install-workspace/test-report.md) |
 | 2026-09-15: read-only data auditor | [Test plan](2026-09-15-read-only-data-auditor/test-plan.md) | [Test report](2026-09-15-read-only-data-auditor/test-report.md) |
 | 2026-09-15: Gemini evidence-first flow authoring | [Test plan](2026-09-15-gemini-evidence-first/test-plan.md) | [Test report](2026-09-15-gemini-evidence-first/test-report.md) |

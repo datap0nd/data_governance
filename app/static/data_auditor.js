@@ -1,164 +1,71 @@
-/* Operator controls. The access key stays in this closure for this tab only. */
 window.DataAuditor = (() => {
-    let accessKey = "", state = {}, flows = [], draft = null, dirty = false;
-    let timer = null, disposed = true, saving = false;
+    let state = {}, flows = [], timer = null, disposed = true, busy = false;
     const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"}[c]));
-    const element = id => document.getElementById(`auditor-${id}`);
+    const el = id => document.getElementById(`auditor-${id}`);
     const count = value => Number(value || 0).toLocaleString("en-US");
     const active = () => ["queued", "running", "cancelling"].includes(state.latest?.status);
     const labels = {queued:"Starting", running:"Running", cancelling:"Stopping", cancelled:"Cancelled", interrupted:"Interrupted by restart", completed:"Completed", completed_with_gaps:"Completed with gaps", unavailable:"Unavailable"};
-    const reasons = {
-        selected_flow_not_approved:"A selected flow is no longer approved.", no_completed_runs:"No completed run is available.",
-        download_unverified:"The complete download could not be verified.", sql_unverified:"SQL inspection is unavailable or its safety checks did not pass.",
-        sql_batch_boundary_unverified:"SQL could not be matched safely to this completed run.",
-        four_comparable_baseline_days_required:"A stable baseline of four comparable days is not available.",
-        time_budget_exhausted:"The time budget ended before all data was checked.", inspection_unavailable:"Inspection was unavailable. Restore reader access and run again."
-    };
-    async function request(path, method = "GET", body) {
-        const response = await fetch(`/api/auditor${path}`, {method, cache:"no-store", credentials:"same-origin",
-            headers:{...(accessKey ? {Authorization:`Bearer ${accessKey}`} : {}), ...(body ? {"Content-Type":"application/json"} : {})},
-            ...(body ? {body:JSON.stringify(body)} : {})});
+    const reasons = {flow_scope_unavailable:"Flow scope could not be published safely.", no_completed_runs:"No completed output is available yet.", supported_output_missing:"No retained normalized CSV is registered for this run.", normalized_csv_required:"This output format is not supported.", artifact_missing_or_unreadable:"The registered output is missing or unreadable.", artifact_not_registered:"The file is outside the exact registered output scope.", download_unverified:"The completed output could not be verified.", sql_unverified:"SQL access is unavailable or did not pass its read-only and identity checks.", sql_batch_boundary_unverified:"SQL could not be matched to an exclusive same-run replace boundary.", building_baseline:"Building baseline: four comparable Dubai reporting days are required.", work_budget_pending:"Pending for a later audit because this run reached its bounded work budget.", time_budget_exhausted:"The time budget ended before all outputs were checked.", inspection_unavailable:"Inspection was unavailable. Restore the indicated connection and run again."};
+    async function request(path, method="GET", body) {
+        const response = await fetch(`/api/auditor${path}`, {method, cache:"no-store", credentials:"same-origin", headers:{...(body ? {"Content-Type":"application/json"} : {})}, ...(body ? {body:JSON.stringify(body)} : {})});
         const result = await response.json();
-        if (!response.ok) throw new Error(typeof result.detail === "string" ? result.detail : "Check your selections and try again.");
+        if (!response.ok) throw new Error(typeof result.detail === "string" ? result.detail : "Try again.");
         return result;
     }
-    function feedback(message) { if (element("feedback")) element("feedback").textContent = message; }
-    function selected() {
-        return {enabled:element("enabled").checked, flow_ids:[...document.querySelectorAll(".auditor-flow:checked")].map(el => Number(el.value)),
-            overnight:element("overnight").checked, time:element("time").value || "02:00"};
+    function feedback(message, kind="") { if (el("feedback")) { el("feedback").textContent = message; el("feedback").dataset.kind = kind; } }
+    function availability() {
+        const reader = state.reader || {}, model = state.model || {};
+        el("reader-state").textContent = reader.available ? "Available" : "Needs attention";
+        el("reader-state").className = `badge ${reader.available ? "badge-green" : "badge-orange"}`;
+        el("reader-detail").textContent = reader.detail || "Reader state unavailable.";
+        el("model-state").textContent = model.available ? "Available" : "Needs attention";
+        el("model-state").className = `badge ${model.available ? "badge-green" : "badge-orange"}`;
+        el("model-detail").textContent = model.detail || "Local AI state unavailable.";
     }
-    function changed() { draft = selected(); dirty = true; paint(); }
+    function coverageRows() { const latest = state.latest?.coverage?.flows || []; const byFlow = new Map(latest.map(item => [item.flow_id, item])); return flows.map(flow => ({flow, audit:byFlow.get(flow.id)})); }
     function paint() {
-        if (!element("status")) return;
-        const enabled = state.settings?.enabled;
-        element("status").textContent = dirty ? "Your changes are not saved." : enabled ? `Auditor enabled for ${state.settings.flow_ids.length} flows.` : "Auditor is off. Choose your flows, then enable it.";
-        element("run").disabled = !state.authorized || !enabled || dirty || saving || active();
-        element("save").disabled = !state.authorized || saving;
-        document.querySelectorAll("#auditor-enabled, #auditor-overnight, .auditor-flow").forEach(input => input.disabled = !state.authorized || saving);
-        element("stop").disabled = !active() || state.latest?.status === "cancelling";
-        element("time").disabled = !state.authorized || saving || !element("overnight").checked;
-        element("next").textContent = state.settings?.next_due ? `Next automatic run: ${new Intl.DateTimeFormat("en-GB", {timeZone:"Asia/Dubai", dateStyle:"medium", timeStyle:"short"}).format(new Date(state.settings.next_due))} Dubai time.` : "Automatic runs are off. Run now works independently.";
-        element("run-state").textContent = labels[state.latest?.status] || "No audit yet";
+        if (!el("status-badge")) return;
+        const paused = Boolean(state.settings?.paused);
+        el("status-badge").textContent = paused ? "Paused" : "On"; el("status-badge").className = `badge ${paused ? "badge-orange" : "badge-green"}`;
+        el("status-copy").textContent = paused ? "Automatic and manual audits are paused. Existing evidence is preserved." : "Every registered Flow joins automatically. New Flows join the next audit.";
+        el("schedule").textContent = `Every night at ${state.settings?.time || "02:00"} Dubai time`;
+        el("next").textContent = state.settings?.next_due ? `Next audit ${new Intl.DateTimeFormat("en-GB", {timeZone:"Asia/Dubai", dateStyle:"medium", timeStyle:"short"}).format(new Date(state.settings.next_due))} Dubai time.` : "No audit is scheduled while paused.";
+        el("pause").textContent = paused ? "Resume auditor" : "Pause auditor"; el("pause").disabled = busy || !state.authorized;
+        el("change-time").disabled = busy || !state.authorized; el("run").disabled = busy || paused || !state.authorized || !state.configured || active();
+        el("stop").hidden = !active(); el("stop").disabled = busy || state.latest?.status === "cancelling";
+        el("run-state").textContent = labels[state.latest?.status] || "Waiting for first audit";
         const coverage = state.latest?.coverage || {}, gaps = coverage.unverified || [];
-        element("coverage").textContent = state.latest ? `${count(coverage.checked)} datasets checked · ${count(coverage.findings)} possible inconsistencies${gaps.length ? ` · ${count(gaps.length)} checks unverified` : ""}` : "Coverage appears here after an audit starts.";
+        el("coverage-summary").textContent = state.latest ? `${count(coverage.checked)} outputs checked · ${count(coverage.findings)} possible inconsistencies · ${count(gaps.length)} coverage gaps` : "Coverage will appear after the first audit.";
+        const flowRows = coverageRows();
+        el("coverage-body").innerHTML = flowRows.length ? flowRows.map(({flow,audit}) => { const status = audit?.status === "checked" ? "Checked" : audit?.status === "pending" ? "Pending" : audit ? "Unverified" : "Waiting"; const detail = audit?.reason ? (reasons[audit.reason] || "This output remains unverified.") : audit?.status === "checked" ? "Latest supported output inspected." : "Included automatically in the next audit."; return `<tr><td><strong>${esc(flow.name)}</strong>${flow.group_name ? `<small>${esc(flow.group_name)}</small>` : ""}</td><td><span class="auditor-state auditor-state-${status.toLowerCase()}">${status}</span></td><td>${esc(detail)}</td></tr>`; }).join("") : '<tr><td colspan="3">No registered Flows yet.</td></tr>';
         const gapText = [...new Set(gaps.map(gap => `${gap.dataset_id ? `${gap.dataset_id}: ` : ""}${reasons[gap.reason] || "This check remains unverified."}`))];
         if (state.latest?.reason && reasons[state.latest.reason]) gapText.push(reasons[state.latest.reason]);
-        if (coverage.model && !["completed", "pending"].includes(coverage.model)) gapText.push("Qwen's review did not complete. Findings shown here are supported by computed checks.");
-        if (["cancelled", "interrupted"].includes(state.latest?.status)) gapText.push("Unchecked data remains unverified. Run now starts a new audit.");
-        element("gaps").innerHTML = gapText.length ? `<ul>${gapText.map(text => `<li>${esc(text)}</li>`).join("")}</ul>` : "";
-        element("findings").innerHTML = (state.findings || []).length ? `<div class="auditor-table-wrap"><table><thead><tr><th>Finding</th><th>Dataset</th><th></th></tr></thead><tbody>${state.findings.map(item => `<tr><td>${esc(item.message)}</td><td>${esc(item.dataset_id)}</td><td><button class="btn-outline auditor-evidence" data-id="${Number(item.id)}">View evidence</button></td></tr>`).join("")}</tbody></table></div><p class="auditor-muted">Findings also appear in Alerts. Unchanged findings stay in one alert.</p>` : "";
-        element("findings").querySelectorAll(".auditor-evidence").forEach(button => button.onclick = () => showEvidence(Number(button.dataset.id), button));
+        if (coverage.model && !["completed", "pending"].includes(coverage.model)) gapText.push("Local AI review did not complete. Computed metric findings remain available.");
+        if (["cancelled", "interrupted"].includes(state.latest?.status)) gapText.push("Unchecked outputs remain visible. Run now starts a fresh audit.");
+        const hypotheses = coverage.model_assessment || [];
+        el("gaps").innerHTML = `${gapText.length ? `<h3>Coverage notes</h3><ul>${gapText.map(text => `<li>${esc(text)}</li>`).join("")}</ul>` : ""}${hypotheses.length ? `<h3>Unconfirmed Local AI hypotheses</h3><ul>${hypotheses.map(item => `<li><strong>${esc(item.dataset_id)}</strong> · ${esc(item.summary)} <span class="auditor-muted">${esc(item.confidence)} confidence · evidence ${item.evidence_ids.map(esc).join(", ")}</span></li>`).join("")}</ul>` : ""}`;
+        el("findings").innerHTML = (state.findings || []).length ? `<div class="auditor-table-wrap"><table><thead><tr><th>Finding</th><th>Output</th><th></th></tr></thead><tbody>${state.findings.map(item => `<tr><td>${esc(item.message)}</td><td>${esc(item.dataset_id)}</td><td><button class="btn-outline auditor-evidence" data-id="${Number(item.id)}">View evidence</button></td></tr>`).join("")}</tbody></table></div><p class="auditor-muted">Evidence-backed findings also appear in Alerts. Repeated findings stay in one alert.</p>` : '<p class="auditor-muted">No evidence-backed inconsistencies have been recorded.</p>';
+        el("findings").querySelectorAll(".auditor-evidence").forEach(button => button.onclick = () => showEvidence(Number(button.dataset.id), button)); availability();
     }
-    function fillChoices() {
-        if (!element("flows")) return;
-        const value = draft || state.settings || {enabled:false, flow_ids:[], overnight:false, time:"02:00"};
-        const available = new Set(flows.map(flow => flow.id));
-        const missing = value.flow_ids.filter(id => !available.has(id)).map(id => ({id, name:`Unavailable flow #${id}`, group_name:"Remove this selection before enabling"}));
-        element("flows").innerHTML = [...flows, ...missing].map(flow => `<label><input class="auditor-flow" type="checkbox" value="${Number(flow.id)}"${value.flow_ids.includes(flow.id) ? " checked" : ""}>${esc(flow.name)}${flow.group_name ? ` <span class="auditor-muted">· ${esc(flow.group_name)}</span>` : ""}</label>`).join("") || '<p class="auditor-muted">No approved flows are available. Ask an administrator to approve the datasets to audit.</p>';
-        element("enabled").checked = value.enabled;
-        element("overnight").checked = value.overnight;
-        element("time").value = value.time;
-        element("flows").querySelectorAll("input").forEach(input => input.onchange = changed);
-    }
-    async function loadFlows() {
-        const result = await request("/catalog");
-        if (disposed) return;
-        flows = result.flows;
-        fillChoices();
-        element("access-status").textContent = "Restricted reader is available. SQL permissions and data completeness are checked during each audit.";
-        paint();
-    }
-    async function refresh() {
-        try {
-            const result = await request("/status");
-            if (disposed) return;
-            state = result;
-            if (!dirty) fillChoices();
-            if (!state.authorized) {
-                accessKey = "";
-                element("access").hidden = false;
-                element("controls").disabled = true;
-                feedback("Operator access is required to continue.");
-            }
-            paint();
-        } catch (error) { feedback(`Could not refresh audit status. ${error.message}`); }
-    }
-    async function save() {
-        if (saving) return;
-        const value = selected();
-        if (value.enabled && !value.flow_ids.length) { feedback("Select at least one flow. Your other settings are kept."); return; }
-        if (value.overnight && !element("time").value) { feedback("Choose a Dubai start time."); return; }
-        saving = true; paint(); feedback("Saving settings…");
-        try {
-            state.settings = await request("/settings", "PUT", value);
-            dirty = false; draft = null; feedback("Settings saved.");
-        } catch (error) { feedback(`Settings were not saved. Your selections are kept. ${error.message}`); }
-        finally { saving = false; paint(); }
-    }
-    async function disable() {
-        const value = selected(); draft = value; dirty = true;
-        saving = true; paint(); feedback("Disabling auditing and cancelling outstanding work…");
-        try {
-            state.settings = await request("/settings", "PUT", {...state.settings, enabled:false, next_due:undefined});
-            if (state.latest && active()) state.latest.status = "cancelling";
-            // Preserve any other unsaved selections while stopping immediately.
-            dirty = JSON.stringify({...state.settings, next_due:undefined}) !== JSON.stringify(value);
-            if (!dirty) draft = null;
-            feedback("Auditor disabled. Outstanding work is being cancelled.");
-        } catch (error) { feedback(`Auditor could not be disabled and may still be running. Retry Save settings or Stop audit. ${error.message}`); }
-        finally { saving = false; paint(); }
-    }
+    async function refresh() { try { state = await request("/status"); if (disposed) return; if (!state.authorized) feedback("Open Metronome on this computer to use auditor controls and evidence.", "error"); paint(); } catch (error) { feedback(`Could not refresh auditor status. ${error.message}`, "error"); } }
+    async function loadFlows() { const result = await request("/catalog"); if (!disposed) { flows = result.flows || []; paint(); } }
+    async function saveSettings(value, success) { busy = true; paint(); try { state.settings = await request("/settings", "PUT", value); feedback(success, "success"); return true; } catch (error) { feedback(`Change was not saved. Your choice is kept. ${error.message}`, "error"); return false; } finally { busy = false; paint(); } }
     async function showEvidence(id, button) {
         button.disabled = true;
-        try {
-            const result = await request(`/findings/${id}`);
-            if (disposed) return;
-            const observations = [result.evidence.current, ...(result.evidence.references || [])];
-            element("evidence-body").innerHTML = `<h2>Finding evidence</h2><p>${esc(result.message)}</p><p class="auditor-muted">Computed observations from approved data. Cause unconfirmed.</p><div class="auditor-table-wrap"><table><thead><tr><th>Run</th><th>Source</th><th>Rows</th></tr></thead><tbody>${observations.map(item => `<tr><td>#${Number(item.run_id)}</td><td>${esc(item.source)}</td><td>${count(item.profile?.rows)}</td></tr>`).join("")}</tbody></table></div>${observations.map(item => `<h3>Run #${Number(item.run_id)} · ${esc(item.source)}</h3><div class="auditor-table-wrap"><table><thead><tr><th>Column</th><th>Empty</th><th>Distinct</th><th>Total</th><th>Date / value range</th></tr></thead><tbody>${Object.entries(item.profile?.columns || {}).map(([name, metric]) => `<tr><td>${esc(name)}</td><td>${count(metric.nulls)}</td><td>${metric.distinct == null ? "Unverified" : count(metric.distinct)}</td><td>${esc(metric.sum ?? "—")}</td><td>${esc(metric.min ?? "—")} – ${esc(metric.max ?? "—")}</td></tr>`).join("")}</tbody></table></div>`).join("")}`;
-            element("evidence").showModal();
-        } catch (error) { feedback(`Could not load evidence. ${error.message}`); }
-        finally { button.disabled = false; }
+        try { const result = await request(`/findings/${id}`); if (disposed) return; const observations = [result.evidence.current, ...(result.evidence.references || [])]; el("evidence-body").innerHTML = `<h2>Finding evidence</h2><p>${esc(result.message)}</p><p class="auditor-muted">Computed observations from registered Flow outputs. Cause unconfirmed.</p><div class="auditor-table-wrap"><table><thead><tr><th>Run</th><th>Source</th><th>Rows</th></tr></thead><tbody>${observations.map(item => `<tr><td>#${Number(item.run_id)}</td><td>${esc(item.source)}</td><td>${count(item.profile?.rows)}</td></tr>`).join("")}</tbody></table></div>${observations.map(item => `<h3>Run #${Number(item.run_id)} · ${esc(item.source)}</h3><div class="auditor-table-wrap"><table><thead><tr><th>Column</th><th>Empty</th><th>Distinct</th><th>Total</th><th>Range</th></tr></thead><tbody>${Object.entries(item.profile?.columns || {}).map(([name,metric]) => `<tr><td>${esc(name)}</td><td>${count(metric.nulls)}</td><td>${metric.distinct == null ? "Unverified" : count(metric.distinct)}</td><td>${esc(metric.sum ?? "—")}</td><td>${esc(metric.min ?? "—")} – ${esc(metric.max ?? "—")}</td></tr>`).join("")}</tbody></table></div>`).join("")}`; el("evidence").showModal(); } catch (error) { feedback(`Could not load evidence. ${error.message}`, "error"); } finally { button.disabled = false; }
     }
     async function render() {
         state = await request("/status");
-        return `<div id="data-auditor"><a href="#dataquality">Data Quality</a><header class="auditor-row auditor-between"><div><h1>AI Auditor</h1><p class="auditor-muted">Find possible inconsistencies in completed downloads and SQL data.</p></div><span class="badge">Read-only inspection</span></header>
-        <section id="auditor-access" class="auditor-section"${state.authorized ? " hidden" : ""}><h2>Operator access</h2><p>${esc(state.detail)}</p><form id="auditor-unlock-form" class="auditor-row"><label>Operator access key <input id="auditor-key" type="password" autocomplete="off" required></label><button class="btn-outline" type="submit"${state.configured ? "" : " disabled"}>Unlock controls</button></form><p id="auditor-unlock-feedback" role="status"></p></section>
-        <fieldset id="auditor-controls"${state.authorized ? "" : " disabled"}><section class="auditor-section"><div class="auditor-row auditor-between"><div><h2>Auditing</h2><p class="auditor-muted">Qwen inspects approved data. Metronome records findings in Alerts.</p></div><label><input id="auditor-enabled" type="checkbox">Enable auditor</label></div><p id="auditor-status" class="auditor-feedback" role="status"></p><div class="auditor-fields"><div><h2>Flows to audit</h2><div id="auditor-flows" class="auditor-choices"></div><button id="auditor-retry" class="btn-outline">Reload approved flows</button></div><div><label><input id="auditor-overnight" type="checkbox">Run overnight automatically</label><label class="auditor-time">Start time · Dubai <input id="auditor-time" type="time" value="02:00"></label><p id="auditor-next" class="auditor-muted"></p></div></div><div class="auditor-row auditor-actions"><button id="auditor-save" class="btn-outline">Save settings</button><button id="auditor-run" class="btn-new-task">Run now</button><button id="auditor-stop" class="btn-outline">Stop audit</button></div></section></fieldset>
-        <p id="auditor-feedback" class="auditor-feedback" role="status" aria-live="polite"></p><section class="auditor-section"><div class="auditor-row auditor-between"><h2>Latest audit</h2><span id="auditor-run-state" class="badge">No audit yet</span></div><p id="auditor-coverage" class="auditor-feedback"></p><div id="auditor-gaps" class="auditor-gaps"></div><div id="auditor-findings"></div></section><section class="auditor-section"><h2>Read-only access</h2><p class="auditor-muted">Approved datasets · Restricted query service · Qwen cannot modify files, databases, flows or settings.</p><p id="auditor-access-status" class="auditor-feedback">${esc(state.detail)}</p></section>
-        <dialog id="auditor-evidence"><div id="auditor-evidence-body"></div><button id="auditor-close" class="btn-outline">Back to auditor</button></dialog></div>`;
+        return `<div id="data-auditor"><a href="#dataquality">Data Quality</a><header class="auditor-hero"><div><p class="auditor-eyebrow">AUTOMATIC FLOW AUDITOR</p><h1>AI Auditor</h1><p class="auditor-muted">Checks every registered Flow's completed outputs for possible inconsistencies.</p></div><span id="auditor-status-badge" class="badge">On</span></header><section class="auditor-section auditor-primary"><div class="auditor-row auditor-between"><div><h2 id="auditor-schedule">Every night at 02:00 Dubai time</h2><p id="auditor-next" class="auditor-muted"></p><p id="auditor-status-copy"></p></div><div class="auditor-actions"><button id="auditor-change-time" class="btn-outline">Change time</button><button id="auditor-pause" class="btn-outline">Pause auditor</button><button id="auditor-run" class="btn-new-task">Run now</button><button id="auditor-stop" class="btn-outline" hidden>Stop audit</button></div></div></section><p id="auditor-feedback" class="auditor-feedback" role="status" aria-live="polite"></p><section class="auditor-section"><div class="auditor-row auditor-between"><div><h2>Latest audit</h2><p id="auditor-coverage-summary" class="auditor-muted"></p></div><span id="auditor-run-state" class="badge">Waiting for first audit</span></div><div class="auditor-table-wrap"><table class="auditor-coverage"><thead><tr><th>Flow</th><th>Status</th><th>Coverage</th></tr></thead><tbody id="auditor-coverage-body"></tbody></table></div><div id="auditor-gaps" class="auditor-gaps"></div></section><section class="auditor-section"><h2>Connections</h2><div class="auditor-connection-grid"><article><div class="auditor-row auditor-between"><h3>Restricted reader</h3><span id="auditor-reader-state" class="badge"></span></div><p id="auditor-reader-detail" class="auditor-muted"></p></article><article><div class="auditor-row auditor-between"><h3>Local AI review</h3><span id="auditor-model-state" class="badge"></span></div><p id="auditor-model-detail" class="auditor-muted"></p></article></div><p class="auditor-boundary">Metronome computes measurements and stores Alerts. Local AI receives sanitized Flow context and aggregates only; it has no write, delete, execute, repair, or settings tools. Model-server OS and network isolation must be provided by its deployment.</p></section><section class="auditor-section"><h2>Possible inconsistencies</h2><div id="auditor-findings"></div></section><dialog id="auditor-time-dialog"><form method="dialog"><h2>Change overnight audit time</h2><label>Dubai start time<input id="auditor-time" type="time" value="${esc(state.settings?.time || "02:00")}" required></label><p class="auditor-muted">The new time applies to the next overnight audit.</p><div class="auditor-actions"><button id="auditor-time-cancel" class="btn-outline" value="cancel">Cancel</button><button id="auditor-time-save" class="btn-new-task" value="save">Save time</button></div></form></dialog><dialog id="auditor-evidence"><div id="auditor-evidence-body"></div><button id="auditor-close" class="btn-outline">Back to auditor</button></dialog></div>`;
     }
     async function bind() {
-        disposed = false; clearInterval(timer); fillChoices(); paint();
-        element("unlock-form").onsubmit = async event => {
-            event.preventDefault(); const button = event.currentTarget.querySelector("button"); button.disabled = true;
-            accessKey = element("key").value; element("key").value = "";
-            try {
-                state = await request("/status");
-                if (!state.authorized) { accessKey = ""; throw new Error("The key was not accepted. Remote access requires HTTPS."); }
-                element("access").hidden = true; element("controls").disabled = false; await loadFlows();
-                feedback("Controls unlocked for this tab.");
-            } catch (error) { element("unlock-feedback").textContent = error.message; feedback(error.message); }
-            finally { button.disabled = false; paint(); }
-        };
-        element("enabled").onchange = () => element("enabled").checked ? changed() : disable();
-        element("overnight").onchange = changed; element("time").oninput = changed; element("time").onchange = changed;
-        element("save").onclick = save;
-        element("retry").onclick = async () => { try { await loadFlows(); feedback("Approved flows loaded."); } catch (error) { feedback(error.message); } };
-        element("run").onclick = async () => {
-            saving = true; paint(); feedback("Starting audit…");
-            try { await request("/run", "POST"); feedback("Audit started. You can stop it at any time."); await refresh(); }
-            catch (error) { feedback(`Audit could not start. ${error.message}`); }
-            finally { saving = false; paint(); }
-        };
-        element("stop").onclick = async () => {
-            element("stop").disabled = true;
-            try { await request("/stop", "POST"); if (state.latest) state.latest.status = "cancelling"; feedback("Stopping audit. Outstanding reads are being cancelled."); }
-            catch (error) { feedback(`Stop did not complete. Try again. ${error.message}`); }
-            finally { paint(); }
-        };
-        element("close").onclick = () => element("evidence").close();
-        if (state.authorized) { try { await loadFlows(); } catch (error) { feedback(error.message); } }
-        timer = setInterval(refresh, 5000);
+        disposed = false; clearInterval(timer); paint(); if (state.authorized) { try { await loadFlows(); } catch (error) { feedback(error.message, "error"); } }
+        el("run").onclick = async () => { busy = true; paint(); feedback("Starting audit…"); try { await request("/run", "POST"); feedback("Audit started. You can stop it at any time.", "success"); await refresh(); } catch (error) { feedback(`Audit could not start. ${error.message}`, "error"); } finally { busy = false; paint(); } };
+        el("stop").onclick = async () => { busy = true; paint(); try { await request("/stop", "POST"); if (state.latest) state.latest.status = "cancelling"; feedback("Stopping audit. Late reader or model responses will be ignored."); } catch (error) { feedback(`Stop did not complete. ${error.message}`, "error"); } finally { busy = false; paint(); } };
+        el("pause").onclick = async () => { const paused = !state.settings.paused; if (await saveSettings({paused, time:state.settings.time}, paused ? "Auditor paused. Existing evidence and schedule time are preserved." : "Auditor resumed. Overnight checks are scheduled again.")) await refresh(); };
+        el("change-time").onclick = () => { el("time").value = state.settings.time; el("time-dialog").showModal(); };
+        el("time-dialog").addEventListener("close", async () => { if (el("time-dialog").returnValue !== "save") return; const value = el("time").value; const saved = await saveSettings({paused:state.settings.paused, time:value}, "Audit time saved."); if (!saved) { el("time").value = value; el("time-dialog").showModal(); } });
+        el("close").onclick = () => el("evidence").close(); timer = setInterval(refresh, 5000);
     }
     function dispose() { disposed = true; clearInterval(timer); timer = null; }
     return {render, bind, dispose};

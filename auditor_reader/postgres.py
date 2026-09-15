@@ -77,7 +77,7 @@ def definition(cursor, dataset):
         if row[2] != "r" or any(row[3:6]) or row[6] != "heap" or row[7] or not row[13] or row[14] not in SAFE_TYPES or row[15]:
             raise InspectionError("sql_target_definition_unsafe")
     by_name = {row[8]: row for row in rows}
-    if any(c.name not in by_name for c in dataset.columns):
+    if any((c.sql_name or c.name) not in by_name for c in dataset.columns):
         raise InspectionError("approved_column_missing")
     cursor.execute(INDEXES, (rows[0][0],))
     indexes = cursor.fetchall()
@@ -151,11 +151,11 @@ def profile_sql(dataset, dsn, salt, cancelled, *, discover=False):
             raise InspectionError("sql_target_changed")
         if discover:
             return {"fingerprint": fingerprint}
-        if not dataset.fingerprint or fingerprint != dataset.fingerprint:
+        if dataset.fingerprint and fingerprint != dataset.fingerprint:
             raise InspectionError("sql_definition_not_approved")
         expressions = [sql.SQL("pg_catalog.count(*)")]
         for column in dataset.columns:
-            col = sql.Identifier(column.name)
+            col = sql.Identifier(column.sql_name or column.name)
             # Cast only catalog-approved built-in scalar types.
             value = sql.SQL("NULLIF({}::pg_catalog.text, '')").format(col)
             expressions.extend([
@@ -171,7 +171,7 @@ def profile_sql(dataset, dsn, salt, cancelled, *, discover=False):
         for index, column in enumerate(dataset.columns):
             if cancelled():
                 raise InspectionError("cancelled")
-            col = sql.Identifier(column.name)
+            col = sql.Identifier(column.sql_name or column.name)
             value = sql.SQL("NULLIF({}::pg_catalog.text, '')").format(col)
             item = {"kind": column.kind, "nulls": int(counts[1 + index * 2]), "distinct": int(counts[2 + index * 2]),
                     "invalid": 0, "sum": None, "min": None, "max": None}
@@ -185,7 +185,7 @@ def profile_sql(dataset, dsn, salt, cancelled, *, discover=False):
                 item.update(invalid=int(invalid), sum=str(total or 0) if not invalid else None,
                             min=str(minimum) if minimum is not None else None,
                             max=str(maximum) if maximum is not None else None)
-            elif column.kind == "date" and columns[column.name][14] == "date":
+            elif column.kind == "date" and columns[column.sql_name or column.name][14] == "date":
                 cursor.execute(sql.SQL("SELECT pg_catalog.min({}), pg_catalog.max({}) FROM ONLY {}").format(col, col, target))
                 minimum, maximum = cursor.fetchone()
                 item.update(min=str(minimum) if minimum is not None else None,

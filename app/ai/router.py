@@ -28,6 +28,7 @@ from app.ai.runtime_config import (
     save_runtime_settings,
 )
 from app.database import get_db
+from app.local_access import is_local_request
 from app.routers.eventlog import get_actor, log_event
 
 logger = logging.getLogger(__name__)
@@ -95,6 +96,8 @@ def get_ai_settings():
 @router.put("/settings")
 def update_ai_settings(body: AISettingsUpdate, request: Request):
     """Atomically save live settings. A blank/omitted key keeps the current key."""
+    if not is_local_request(request):
+        raise HTTPException(403, "AI connection settings can be changed only on this Metronome computer.")
     try:
         with get_db() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -127,6 +130,13 @@ def update_ai_settings(body: AISettingsUpdate, request: Request):
             )
     except ValueError as exc:
         raise HTTPException(422, sanitize_ai_error(exc)) from exc
+    if updated.qwen_enabled:
+        # A local, same-origin settings write is the explicit trust event for
+        # future automatic audits. No credential is persisted in auditor state.
+        from types import SimpleNamespace
+        from app.auditor import store as auditor_store
+        auditor_store.init()
+        auditor_store.trust_model(SimpleNamespace(model_url=updated.endpoint, model=updated.model))
     return updated.public_dict()
 
 

@@ -7,7 +7,10 @@ from zoneinfo import ZoneInfo
 
 from app.database import get_db
 
-DEFAULTS = {"enabled": False, "flow_ids": [], "overnight": False, "time": "02:00", "next_due": None}
+SETTINGS_VERSION = 2
+DEFAULTS = {"version": SETTINGS_VERSION, "enabled": True, "paused": False,
+            "time": "02:00", "next_due": None, "pending_cursor": 0,
+            "model_pin": None}
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS auditor_settings (
  id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL
@@ -45,10 +48,13 @@ def now():
 def init():
     with get_db() as db:
         db.executescript(SCHEMA)
+        value = read_settings(db)
+        db.execute("INSERT INTO auditor_settings(id,value) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value",
+                   (json.dumps(value),))
 
 
 def next_due(clock, value):
-    if not value["enabled"] or not value["overnight"]:
+    if not value.get("enabled", True) or value.get("paused", False):
         return None
     hour, minute = map(int, value["time"].split(":"))
     local = clock.astimezone(ZoneInfo("Asia/Dubai"))
@@ -63,22 +69,43 @@ def read_settings(db=None):
         with get_db() as conn:
             return read_settings(conn)
     row = db.execute("SELECT value FROM auditor_settings WHERE id=1").fetchone()
-    return {**DEFAULTS, **(json.loads(row[0]) if row else {})}
+    raw = json.loads(row[0]) if row else {}
+    if raw.get("version") == SETTINGS_VERSION:
+        value = {**DEFAULTS, **raw, "enabled": True}
+    elif raw:
+        # Legacy defaults were off with no selected Flows. That unconfigured
+        # state migrates to automatic-on. An identifiable user disable/pause
+        # (a configured scope or schedule later switched off) remains paused.
+        identifiable_disable = (not raw.get("enabled", False)
+                                and bool(raw.get("flow_ids") or raw.get("overnight")))
+        value = {**DEFAULTS, "paused": identifiable_disable,
+                 "time": raw.get("time", "02:00")}
+    else:
+        value = dict(DEFAULTS)
+    if value.get("next_due") is None and not value["paused"]:
+        value["next_due"] = next_due(now(), value)
+    return value
 
 
 def write_settings(value):
     with get_db() as db:
         db.execute("BEGIN IMMEDIATE")
-        value = {**value, "next_due": next_due(now(), value)}
+        current = read_settings(db)
+        # Accept the old enabled shape only as an upgrade compatibility shim.
+        if "enabled" in value and "paused" not in value:
+            value = {**value, "paused": not bool(value["enabled"])}
+        allowed = {key: value[key] for key in ("paused", "time", "pending_cursor", "model_pin") if key in value}
+        value = {**current, **allowed, "version": SETTINGS_VERSION, "enabled": True}
+        value["next_due"] = next_due(now(), value)
         db.execute("INSERT INTO auditor_settings(id,value) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value", (json.dumps(value),))
-        if not value["enabled"]:
-            db.execute("UPDATE auditor_runs SET status='cancelling',reason='disabled' WHERE status IN ('queued','running')")
+        if value["paused"]:
+            db.execute("UPDATE auditor_runs SET status='cancelling',reason='paused' WHERE status IN ('queued','running')")
     return value
 
 
 def active(db, audit_id):
     row = db.execute("SELECT status FROM auditor_runs WHERE id=?", (audit_id,)).fetchone()
-    return row and row[0] in {"queued", "running"} and read_settings(db)["enabled"]
+    return row and row[0] in {"queued", "running"} and not read_settings(db)["paused"]
 
 
 def recover():
@@ -99,13 +126,14 @@ def projection():
 
 
 def save_profile(audit_id, evidence):
-    key = f"{evidence['policy_revision']}:{evidence['dataset_id']}:{evidence['run_id']}:{evidence['source']}"
+    revision = evidence.get("dataset_revision") or evidence.get("policy_revision")
+    key = f"{revision}:{evidence['dataset_id']}:{evidence['run_id']}:{evidence['source']}"
     with get_db() as db:
         db.execute("BEGIN IMMEDIATE")
         if not active(db, audit_id):
             return False
         db.execute("INSERT INTO auditor_profiles VALUES(?,?,?,?,?,?,?) ON CONFLICT(key) DO UPDATE SET payload=excluded.payload,observed_at=excluded.observed_at",
-                   (key, evidence["dataset_id"], evidence["run_id"], evidence["source"], evidence["policy_revision"], json.dumps(evidence), evidence["observed_at"]))
+                   (key, evidence["dataset_id"], evidence["run_id"], evidence["source"], revision, json.dumps(evidence), evidence["observed_at"]))
     return True
 
 
@@ -137,9 +165,46 @@ def coverage_alert(audit_id, flow_ids):
     with get_db() as db:
         db.execute("BEGIN IMMEDIATE")
         row = db.execute("SELECT status FROM auditor_runs WHERE id=?", (audit_id,)).fetchone()
-        if not row or row[0] not in {"unavailable", "completed_with_gaps"} or not read_settings(db)["enabled"]:
+        if (not row or row[0] not in {"unavailable", "completed_with_gaps"}
+                or read_settings(db)["paused"]):
             return
         if db.execute("SELECT 1 FROM actions WHERE fingerprint=?", (identity,)).fetchone():
             return
         db.execute("INSERT INTO alerts(severity,message,created_at) VALUES('warning',?,?)", (message, timestamp))
         db.execute("INSERT INTO actions(type,status,notes,fingerprint,created_at,updated_at) VALUES('data_quality','open',?,?,?,?)", (message, identity, timestamp, timestamp))
+
+
+def set_pending_cursor(value):
+    current = read_settings()
+    return write_settings({**current, "pending_cursor": max(0, int(value))})
+
+
+def pin_model(cfg):
+    """Pin a non-secret provider identity; credentials never enter SQLite."""
+    if not cfg.model_url:
+        return None
+    from urllib.parse import urlsplit
+    identity = {"origin": f"{urlsplit(cfg.model_url).scheme}://{urlsplit(cfg.model_url).netloc}",
+                "endpoint": cfg.model_url, "model": cfg.model}
+    with get_db() as db:
+        db.execute("BEGIN IMMEDIATE")
+        current = read_settings(db)
+        existing = current.get("model_pin")
+        if existing and existing != identity:
+            raise ValueError("The Local AI destination changed and has not been trusted from this computer.")
+        if not existing:
+            current["model_pin"] = identity
+            db.execute("INSERT INTO auditor_settings(id,value) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value", (json.dumps(current),))
+    return identity
+
+
+def trust_model(cfg):
+    from urllib.parse import urlsplit
+    identity = {"origin": f"{urlsplit(cfg.model_url).scheme}://{urlsplit(cfg.model_url).netloc}",
+                "endpoint": cfg.model_url, "model": cfg.model}
+    with get_db() as db:
+        db.execute("BEGIN IMMEDIATE")
+        current = read_settings(db)
+        current["model_pin"] = identity
+        db.execute("INSERT INTO auditor_settings(id,value) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value", (json.dumps(current),))
+    return identity

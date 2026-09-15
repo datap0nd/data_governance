@@ -2,6 +2,7 @@
 import asyncio
 import hashlib
 import json
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -9,6 +10,7 @@ import pytest
 
 from app import database
 from app.auditor import detection, engine, store
+from app.auditor import config as auditor_config
 from test_data_auditor import audit_db, evidence, tmp_path
 
 
@@ -28,7 +30,10 @@ def test_complete_model_loop_records_verified_drop_and_keeps_flow_unchanged(audi
         candidates = json.loads(payload["messages"][1]["content"])["validated_candidates"]
         assert len(candidates) == 1
         assert payload["messages"][-1]["role"] == "tool"
-        return {"choices":[{"message":{"content":json.dumps({"candidate_ids":candidates})}}]}
+        evidence_id = json.loads(payload["messages"][-1]["content"])["evidence_id"]
+        return {"choices":[{"message":{"content":json.dumps({"candidate_ids":candidates,"hypotheses":[{
+            "dataset_id":"sales","evidence_ids":[evidence_id],
+            "summary":"Reporting pattern may have shifted.","confidence":"low"}]})}}]}
     monkeypatch.setattr(engine, "json_request", transport)
     with database.get_db() as db:
         before = tuple(db.execute("SELECT * FROM flows WHERE id=?", (audit_db.flow,)).fetchone())
@@ -36,13 +41,30 @@ def test_complete_model_loop_records_verified_drop_and_keeps_flow_unchanged(audi
     latest = store.projection()["latest"]
     assert latest["status"] == "completed"
     assert latest["coverage"]["model"] == "completed" and latest["coverage"]["findings"] == 1
+    assert latest["coverage"]["model_assessment"][0]["status"] == "unconfirmed"
     with database.get_db() as db:
         assert tuple(db.execute("SELECT * FROM flows WHERE id=?", (audit_db.flow,)).fetchone()) == before
         assert db.execute("SELECT COUNT(*) FROM alerts").fetchone()[0] == 1
         assert "-30.0%" in db.execute("SELECT message FROM alerts").fetchone()[0]
 
 
-def test_schedule_claim_is_once_only_and_manual_ignores_overnight_switch(audit_db, monkeypatch):
+def test_metric_checks_continue_when_local_ai_is_not_configured(audit_db, monkeypatch):
+    async def transport(client, method, url, token, payload=None, **kwargs):
+        if url.endswith("/catalog"):
+            return {"catalog_revision":"approved-policy", "datasets":[{"id":"sales",
+                "flow_id":audit_db.flow, "sql_enabled":False, "runs":[{"id":1}]}]}
+        if url.endswith("/inspect"):
+            return evidence(1, 100, audit_db.flow)
+        raise AssertionError("The model endpoint must not be called")
+    monkeypatch.setattr(engine, "json_request", transport)
+    cfg = replace(auditor_config.settings(), model_url="", model_token="", model="")
+    coverage = {"checked":0,"unverified":[],"findings":0,"model":"pending"}
+    asyncio.run(engine.audit(audit_db.audit, [audit_db.flow], coverage, cfg))
+    assert coverage["checked"] == 1
+    assert coverage["model"] == "unavailable_not_configured"
+
+
+def test_schedule_claim_is_once_only_and_manual_is_always_available(audit_db, monkeypatch):
     queued = []
     executor = SimpleNamespace(submit=lambda *args: queued.append(args) or SimpleNamespace(done=lambda: True))
     monkeypatch.setattr(engine, "_executor", executor)
@@ -50,7 +72,7 @@ def test_schedule_claim_is_once_only_and_manual_ignores_overnight_switch(audit_d
     with database.get_db() as db:
         db.execute("UPDATE auditor_runs SET status='completed'")
     clock = datetime(2026,9,14,22,0,tzinfo=timezone.utc)
-    value = {"enabled":True,"flow_ids":[audit_db.flow],"overnight":True,"time":"02:00","next_due":clock.isoformat()}
+    value = {**store.DEFAULTS,"paused":False,"time":"02:00","next_due":clock.isoformat()}
     with database.get_db() as db:
         db.execute("UPDATE auditor_settings SET value=? WHERE id=1", (json.dumps(value),))
     audit = engine.start("overnight", clock)
@@ -60,7 +82,7 @@ def test_schedule_claim_is_once_only_and_manual_ignores_overnight_switch(audit_d
         engine.start("manual", clock)
     with database.get_db() as db:
         db.execute("UPDATE auditor_runs SET status='completed' WHERE id=?", (audit,))
-    store.write_settings({**value, "overnight":False})
+    store.write_settings(value)
     assert engine.start("manual", clock) is not None
     assert len(queued) == 2
 
@@ -70,20 +92,20 @@ def test_long_outage_advances_without_queuing_a_backlog(audit_db, monkeypatch):
     clock = datetime(2026,9,15,10,0,tzinfo=timezone.utc)
     with database.get_db() as db:
         db.execute("UPDATE auditor_runs SET status='completed'")
-        value = {"enabled":True,"flow_ids":[audit_db.flow],"overnight":True,"time":"02:00","next_due":(clock-timedelta(hours=12)).isoformat()}
+        value = {**store.DEFAULTS,"paused":False,"time":"02:00","next_due":(clock-timedelta(hours=12)).isoformat()}
         db.execute("UPDATE auditor_settings SET value=? WHERE id=1", (json.dumps(value),))
     assert engine.start("overnight", clock) is None
     assert store.read_settings()["next_due"] == "2026-09-15T22:00:00+00:00"
 
 
-def test_coverage_notice_is_deduplicated_and_disable_blocks_late_notice(audit_db):
+def test_coverage_notice_is_deduplicated_and_pause_blocks_late_notice(audit_db):
     with database.get_db() as db:
         db.execute("UPDATE auditor_runs SET status='completed_with_gaps' WHERE id=?", (audit_db.audit,))
     store.coverage_alert(audit_db.audit, [audit_db.flow])
     store.coverage_alert(audit_db.audit, [audit_db.flow])
     with database.get_db() as db:
         assert db.execute("SELECT COUNT(*) FROM alerts").fetchone()[0] == 1
-    store.write_settings({"enabled":False,"flow_ids":[audit_db.flow],"overnight":False,"time":"02:00"})
+    store.write_settings({"paused":True,"time":"02:00"})
     store.coverage_alert(audit_db.audit, [audit_db.flow, 999])
     with database.get_db() as db:
         assert db.execute("SELECT COUNT(*) FROM alerts").fetchone()[0] == 1

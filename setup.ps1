@@ -67,6 +67,8 @@ function Invoke-WebRequestWithRetry {
 }
 
 $ServiceName = "MXAnalytics"
+$AuditorServiceName = "MetronomeAuditorReader"
+$AuditorPort = 8766
 $FlowServiceName = "MXFlowsWorker"
 $HeadedFlowTaskName = "Metronome_Flows_Headed"
 $AutoUpdateTaskName = "Metronome_Auto_Update"
@@ -314,6 +316,10 @@ if ($existingFlowService) {
         throw "Flows worker did not stop within 30 seconds. Update aborted before replacing code."
     }
 }
+$ExistingAuditorService = Get-Service -Name $AuditorServiceName -ErrorAction SilentlyContinue
+if ($ExistingAuditorService -and $ExistingAuditorService.Status -ne 'Stopped') {
+    & $NssmExe stop $AuditorServiceName 2>&1 | Out-Null
+}
 
 # Quiesce every installed extra slot, including slots above today's capacity.
 # This runs before replacing code, for manual and unattended updates alike.
@@ -477,6 +483,67 @@ Write-Host "  Shared Flows limit: $ConfiguredTotalWorkers active workers across 
 Write-Host "Starting service..." -ForegroundColor Yellow
 $NssmExe = "$CodeDir\tools\nssm.exe"
 
+# Provision the automatic auditor without user-managed keys or policy files.
+# The host and reader receive different private directories; the exchange is
+# written by Metronome and read by the virtual reader service account.
+$AuditorRoot = Join-Path $ProjectDir 'auditor'
+$AuditorHostConfig = Join-Path $AuditorRoot 'host\host.json'
+$AuditorReaderConfig = Join-Path $AuditorRoot 'reader\reader.json'
+$AuditorExchange = Join-Path $AuditorRoot 'exchange'
+$AuditorIdentity = "NT SERVICE\$AuditorServiceName"
+& $PyExe "$CodeDir\tools\provision_auditor.py" --root $AuditorRoot --reader-url "http://127.0.0.1:$AuditorPort" | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Could not provision the managed auditor configuration.' }
+if (-not (Test-Path $DbPath -PathType Leaf)) {
+    & $PyExe "$CodeDir\tools\apply_migrations.py" $DbPath | Out-Null
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $DbPath -PathType Leaf)) {
+        throw 'Could not initialize the application database before applying the reader deny ACL.'
+    }
+}
+
+if (-not $ExistingAuditorService) {
+    & $NssmExe install $AuditorServiceName $PyExe "-m uvicorn auditor_reader.service:app --host 127.0.0.1 --port $AuditorPort --no-access-log"
+}
+
+# Lock the reader out of the app database and host credential, while granting
+# read/execute only to code, its own config, the exchange, and the dedicated
+# Flow output root. The reader still validates exact registered file identities.
+& icacls.exe (Join-Path $AuditorRoot 'host') /inheritance:r /grant:r `
+    'SYSTEM:(OI)(CI)F' 'BUILTIN\Administrators:(OI)(CI)F' "$env:USERDOMAIN\$env:USERNAME`:(OI)(CI)F" `
+    /deny "${AuditorIdentity}:(OI)(CI)F" /T /Q | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Could not protect the auditor host credential.' }
+& icacls.exe (Join-Path $AuditorRoot 'reader') /inheritance:r /grant:r `
+    'SYSTEM:(OI)(CI)F' 'BUILTIN\Administrators:(OI)(CI)F' "${AuditorIdentity}:(OI)(CI)RX" /T /Q | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Could not protect the auditor reader configuration.' }
+& icacls.exe $AuditorExchange /inheritance:r /grant:r `
+    'SYSTEM:(OI)(CI)F' 'BUILTIN\Administrators:(OI)(CI)F' "$env:USERDOMAIN\$env:USERNAME`:(OI)(CI)M" `
+    "${AuditorIdentity}:(OI)(CI)RX" /T /Q | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Could not protect the auditor exchange.' }
+& icacls.exe $CodeDir /grant "${AuditorIdentity}:(OI)(CI)RX" /Q | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Could not grant the auditor reader access to its runtime.' }
+if (Test-Path $FlowsRoot -PathType Container) {
+    & icacls.exe $FlowsRoot /grant "${AuditorIdentity}:(OI)(CI)RX" /T /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host '  Auditor could not read the Flow output root; file outputs will remain visibly unverified.' -ForegroundColor Yellow
+    }
+}
+foreach ($AuditorDeniedDatabaseFile in @($DbPath, "$DbPath-shm", "$DbPath-wal")) {
+if (Test-Path $AuditorDeniedDatabaseFile -PathType Leaf) {
+    & icacls.exe $AuditorDeniedDatabaseFile /deny "${AuditorIdentity}:R" /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Could not deny the auditor reader access to the application database.' }
+}
+}
+
+& $NssmExe set $AuditorServiceName Application $PyExe
+& $NssmExe set $AuditorServiceName AppParameters "-m uvicorn auditor_reader.service:app --host 127.0.0.1 --port $AuditorPort --no-access-log"
+& $NssmExe set $AuditorServiceName AppDirectory $CodeDir
+& $NssmExe set $AuditorServiceName DisplayName 'Metronome - Restricted Flow Auditor Reader'
+& $NssmExe set $AuditorServiceName Description 'Read-only aggregate inspection for exact registered Flow outputs'
+& $NssmExe set $AuditorServiceName Start SERVICE_AUTO_START
+& $NssmExe set $AuditorServiceName ObjectName $AuditorIdentity
+& $NssmExe set $AuditorServiceName AppEnvironmentExtra "DG_AUDITOR_READER_CONFIG=$AuditorReaderConfig"
+& $NssmExe set $AuditorServiceName AppExit Default Restart
+& $NssmExe set $AuditorServiceName AppRestartDelay 10000
+
 if (-not $HadExistingService) {
     & $NssmExe install $ServiceName $PyExe "-m uvicorn app.main:app --host 0.0.0.0 --port $Port"
 }
@@ -496,6 +563,7 @@ if (-not $HadExistingService) {
     "DG_PBI_WORKSPACE=mx executive" `
     "DG_PBI_SYNC_WINDOWS_USER=$env:USERNAME" `
     "METRONOME_FLOW_PROFILE=$FlowProfile" `
+    "DG_AUDITOR_HOST_CONFIG=$AuditorHostConfig" `
     "DG_AI_MOCK=true"
 
 # Run services as the current user (needed for network share access). Normal
@@ -527,6 +595,11 @@ if ($SetServiceCredentials) {
 
 $LogDir = "$ProjectDir\logs"
 New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+& $NssmExe set $AuditorServiceName AppStdout "$LogDir\auditor_reader.log"
+& $NssmExe set $AuditorServiceName AppStderr "$LogDir\auditor_reader_error.log"
+& $NssmExe set $AuditorServiceName AppRotateFiles 1
+& $NssmExe set $AuditorServiceName AppRotateSeconds 86400
+& $NssmExe set $AuditorServiceName AppRotateBytes 10485760
 & $NssmExe set $ServiceName AppStdout "$LogDir\mx_analytics.log"
 & $NssmExe set $ServiceName AppStderr "$LogDir\mx_analytics_error.log"
 & $NssmExe set $ServiceName AppStdoutCreationDisposition 4
@@ -754,6 +827,7 @@ foreach ($FlowSlot in $FlowSlots | Where-Object { $_.Slot -gt 1 }) {
     }
 }
 
+& $NssmExe start $AuditorServiceName 2>&1 | Out-Null
 & $NssmExe start $ServiceName
 Start-Sleep -Seconds 3
 
