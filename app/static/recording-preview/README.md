@@ -7,7 +7,22 @@ between a display-only step name and the target used during playback, Undo,
 saved versions and immediate replacement recording. Serve `app` locally and
 open `/static/recording-preview/retarget.html`.
 
-The current preview is [templates-refresh.html](templates-refresh.html):
+The current preview is [python-scripts.html](python-scripts.html): the
+**Python scripts** source. It shows the source picker with the new card, the
+Python builder (ordered script rows with Add / Remove / Browse, the Output
+choice between a final CSV or Excel file and a SQL table with the shared SQL
+and materialized-view controls, owner, schedule and email), the Flows list
+with its **Python** group, and run history with a failed run whose error names
+the failing script and step. Production `app.js` renders every screen; only the
+API layer is fictional (`python-scripts.js`). The preview bar switches the save
+outcome (saved, or the validation error "Python scripts must be .py files."
+shown beside the form with every value preserved). Serve `app` as below and
+open `http://127.0.0.1:8769/static/recording-preview/python-scripts.html`.
+`tests/test_python_scripts_preview.py` walks every control at 1280×900 and
+390×844, saves screenshots when `PREVIEW_EVIDENCE_DIR` is set, and skips when
+neither the Chrome channel nor the bundled Chromium can launch.
+
+The previous preview is [templates-refresh.html](templates-refresh.html):
 reusable recordings (**Choose from template** in the recording editor and
 **Include its recording** when replicating a flow) and the **Refresh
 materialized views** step under SQL handoff, with run history and the

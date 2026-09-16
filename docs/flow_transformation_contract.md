@@ -5,6 +5,9 @@ before SQL insertion. The script runs once for each normalized CSV. ASAP HTML
 and Plain text exports are download-only and cannot enable transformation or
 SQL handoff. ASAP CSV supplies its normalized primary file, while its byte-exact
 `_raw.csv` sibling remains an original artifact and is never passed to a script.
+A Flow whose source is itself a chain of scripts uses the separate
+[Python-script Flow contract](python_script_flows.md) instead of this optional
+transformation step.
 
 ## Invocation
 

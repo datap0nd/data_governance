@@ -10664,6 +10664,7 @@ function _flowSourcePickerHtml(catalog) {
                 <button type="button" class="flow-source-card" id="flow-source-file">
                     <strong>From file</strong><span>Read one exact CSV or Excel path on the worker, keep private snapshots, and process it on a schedule.</span>
                 </button>
+                <button type="button" class="flow-source-card" id="flow-source-python"><strong>Python scripts</strong><span>Run one or more Python scripts in order on the worker, then keep the final CSV or Excel file or insert it into a SQL table.</span></button>
                 <button type="button" class="flow-source-card" id="flow-source-record"><strong>Record a portal flow</strong><span>Record a report in ASAP or GSCM, review its actions, then validate and schedule it.</span></button>
                 <button type="button" class="flow-source-card" id="flow-source-portal" ${portalReady ? "" : "disabled"}>
                     <strong>Website report</strong><span>${portalReady ? "Download a discovered ASAP report or GSCM bookmark." : "Add and scan a website before creating this category."}</span>
@@ -10759,7 +10760,7 @@ function _flowSyncExecutionRows(active) {
     _flowWatchExecutionPane();
 }
 
-function _flowGroups() { return ["ASAP", "GSCM", "Outlook", "Local", "Web"]; }
+function _flowGroups() { return ["ASAP", "GSCM", "Outlook", "Local", "Python", "Web"]; }
 
 function _flowOpenGroups() {
     if (window._flowOpenGroupMemory) return window._flowOpenGroupMemory;
@@ -10782,14 +10783,19 @@ function _flowEmailStatusText(email) {
 }
 
 function _flowRowModel(flow, runs = [], catalog = {}) {
-    const group = flow.source_type === "file" ? "Local" : flow.source_type === "outlook" ? "Outlook" : ({asap_portal: "ASAP", gscm_portal: "GSCM"}[flow.source_adapter] || "Web");
-    const source = group === "Local" ? flow.local_file_path : group === "Outlook" ? flow.outlook_subject_contains : (flow.category_path?.length ? flow.category_path.join(" › ") : flow.report_name || flow.site_name);
-    const type = ["Local", "Outlook"].includes(group) ? "CSV / Excel" : ((catalog.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase());
+    const group = flow.source_type === "file" ? "Local" : flow.source_type === "outlook" ? "Outlook" : flow.source_type === "python" ? "Python" : ({asap_portal: "ASAP", gscm_portal: "GSCM"}[flow.source_adapter] || "Web");
+    const scripts = _flowPythonScriptNames(flow);
+    const source = group === "Local" ? flow.local_file_path : group === "Outlook" ? flow.outlook_subject_contains : group === "Python" ? scripts.join(" → ") : (flow.category_path?.length ? flow.category_path.join(" › ") : flow.report_name || flow.site_name);
+    const type = group === "Python" ? `${scripts.length} script(s) → ${flow.sql_handoff_enabled ? "SQL" : String(flow.file_format || "csv").toUpperCase()}` : ["Local", "Outlook"].includes(group) ? "CSV / Excel" : ((catalog.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase());
     const destination = group === "Local" ? "Private snapshots" : flow.folder_relative ? `${flow.folder_relative} / Downloads` : flow.target_folder;
     const to = flow.sql_handoff_enabled ? [flow.sql_database, flow.sql_schema, flow.sql_table].filter(Boolean).join(".") : destination;
     const schedule = _flowScheduleLabel(flow);
     const activeRun = runs.find(run => run.flow_id === flow.id && ["queued", "claimed", "running"].includes(run.status));
-    return {flow, group, name: flow.name, source, owner: flow.owner_name, type, to, destination, browser: ["Local", "Outlook"].includes(group) ? null : flow.browser_mode, schedule, lastRun: flow.last_run_at, active: !!flow.enabled, activeRun};
+    return {flow, group, name: flow.name, source, owner: flow.owner_name, type, to, destination, browser: ["Local", "Outlook", "Python"].includes(group) ? null : flow.browser_mode, schedule, lastRun: flow.last_run_at, active: !!flow.enabled, activeRun};
+}
+
+function _flowPythonScriptNames(flow) {
+    return (Array.isArray(flow?.python_scripts) ? flow.python_scripts : []).map(path => String(path).split(/[\\/]/).pop() || String(path));
 }
 
 function _flowRowHtml(row) {
@@ -10800,8 +10806,8 @@ function _flowRowHtml(row) {
         <td><label class="flow-switch" title="${flow.schedule_type === "manual" ? "Choose a schedule to activate this flow" : "Activate or pause this flow"}"><input class="flow-enabled-switch" data-flow-focus="active-${flow.id}" type="checkbox" aria-label="Active: ${esc(flow.name)}" data-id="${flow.id}" ${flow.enabled ? "checked" : ""} ${flow.schedule_type === "manual" ? "disabled" : ""}><span aria-hidden="true"></span></label></td>
         <td><select class="flow-inline-edit" data-id="${flow.id}" data-field="owner_person_id" data-flow-focus="owner-${flow.id}" aria-label="Owner: ${esc(flow.name)}"><option value="">Unassigned</option>${(window._flowsState?.people || []).map(person => `<option value="${person.id}" ${person.id === flow.owner_person_id ? "selected" : ""}>${esc(person.name)}</option>`).join("")}</select></td>
         <td class="flow-path-cell">${esc(row.source || "—")}</td>
-        <td>${flow.source_type === "outlook" ? `CSV or Excel attachment<small>Original filename · default Inbox</small>` : flow.source_type === "file" ? `CSV or Excel file<small>${flow.local_file_worksheet ? `Worksheet: ${esc(flow.local_file_worksheet)} · ` : ""}Private snapshots · latest 3</small>` : `${esc(flow.download_mode === "one_per_period" || flow.download_mode === "one_per_week" ? `One ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} every ${flow.window_weeks || 1} week(s)` : `${flow.export_views?.length || 1} ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} export(s)`)}<small>${flow.period_strategy === "none" ? "No period prompt" : flow.period_strategy === "latest" ? "Start to latest available" : flow.period_strategy === "rolling" ? "Rolling window" : "Fixed start + end"}</small>`}<small>${flow.output_mode === "direct_replace" ? "Direct files · exact-name replacement" : "Run folders · newest 3"}</small><small>${esc(row.to || "")}${flow.sql_handoff_enabled ? ` · SQL ${esc(flow.sql_mode)}` : ""}${flow.email_delivery?.enabled ? ` · Email ${flow.email_delivery.recipients?.length || 0} recipient(s)` : ""}</small></td>
-        <td>${["outlook", "file"].includes(flow.source_type) ? "—" : `<select class="flow-inline-edit" data-id="${flow.id}" data-field="browser_mode" data-flow-focus="browser-${flow.id}" aria-label="Browser: ${esc(flow.name)}"><option value="headless" ${flow.browser_mode !== "headed" ? "selected" : ""}>Headless</option><option value="headed" ${flow.browser_mode === "headed" ? "selected" : ""}>Headed</option></select>`}</td>
+        <td>${flow.source_type === "python" ? `${_flowPythonScriptNames(flow).length} Python script(s)<small>${flow.sql_handoff_enabled ? "Final CSV → SQL" : `Final ${esc(String(flow.file_format || "csv").toUpperCase())} file`}</small>` : flow.source_type === "outlook" ? `CSV or Excel attachment<small>Original filename · default Inbox</small>` : flow.source_type === "file" ? `CSV or Excel file<small>${flow.local_file_worksheet ? `Worksheet: ${esc(flow.local_file_worksheet)} · ` : ""}Private snapshots · latest 3</small>` : `${esc(flow.download_mode === "one_per_period" || flow.download_mode === "one_per_week" ? `One ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} every ${flow.window_weeks || 1} week(s)` : `${flow.export_views?.length || 1} ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} export(s)`)}<small>${flow.period_strategy === "none" ? "No period prompt" : flow.period_strategy === "latest" ? "Start to latest available" : flow.period_strategy === "rolling" ? "Rolling window" : "Fixed start + end"}</small>`}<small>${flow.output_mode === "direct_replace" ? "Direct files · exact-name replacement" : "Run folders · newest 3"}</small><small>${esc(row.to || "")}${flow.sql_handoff_enabled ? ` · SQL ${esc(flow.sql_mode)}` : ""}${flow.email_delivery?.enabled ? ` · Email ${flow.email_delivery.recipients?.length || 0} recipient(s)` : ""}</small></td>
+        <td>${["outlook", "file", "python"].includes(flow.source_type) ? "—" : `<select class="flow-inline-edit" data-id="${flow.id}" data-field="browser_mode" data-flow-focus="browser-${flow.id}" aria-label="Browser: ${esc(flow.name)}"><option value="headless" ${flow.browser_mode !== "headed" ? "selected" : ""}>Headless</option><option value="headed" ${flow.browser_mode === "headed" ? "selected" : ""}>Headed</option></select>`}</td>
         <td>${esc(_flowScheduleLabel(flow))}</td>
         <td><div class="flow-last-run">${_flowLastRunHtml(activeRun || { status: flow.last_status, created_at: flow.last_run_at })}</div>${flow.sql_reconciliation_required && flow.sql_mode === "append" ? '<small class="flow-error">SQL reconciliation required</small>' : ""}</td>
         <td class="flow-row-actions">${button("flow-run", activeRun?.status === "queued" ? "Start now" : activeRun ? "Running" : "Run", activeRun && activeRun.status !== "queued" ? "disabled" : "")}<button class="btn-sm btn-outline btn-danger-outline flow-stop" type="button" data-id="${flow.id}" data-flow-focus="flow-stop-${flow.id}" ${activeRun ? "" : "hidden"}>Stop</button>${button("flow-edit", "Edit")}<details class="flow-row-menu"><summary aria-label="More actions: ${esc(flow.name)}" data-flow-focus="more-${flow.id}">More</summary><div>${button("flow-open-folder", "Open folder")}${flow.flow_folder ? button("flow-standalone-status", "Flow files") : ""}${button("flow-classification", (flow.classification || "production") === "draft" ? "Move to Production" : "Move to Draft", `data-classification="${(flow.classification || "production") === "draft" ? "production" : "draft"}"`)}${flow.sql_reconciliation_required && flow.sql_mode === "append" ? button('flow-sql-reconciled', 'Acknowledge SQL reconciliation') : ''}<button class="btn-sm btn-outline btn-danger-outline flow-delete" type="button" data-id="${flow.id}" data-flow-focus="flow-delete-${flow.id}">Delete</button></div></details></td>
@@ -11476,10 +11482,102 @@ function _flowOutlookBuilderHtml(existing = null) {
         </div></div>`;
 }
 
+function _flowPythonScriptRowHtml(index, value = "", single = false) {
+    return `<li class="flow-python-script"><span class="flow-python-step" aria-hidden="true">${index}.</span><div class="flow-file-control"><input class="flow-python-script-path" id="flow-python-script-${index}" maxlength="2000" required value="${esc(value || "")}" placeholder="C:\\scripts\\fetch_orders.py" aria-label="Script ${index} path"><button type="button" class="btn-secondary flow-python-browse" aria-label="Browse for script ${index}">Browse...</button><button type="button" class="btn-secondary flow-python-remove" aria-label="Remove script ${index}" ${single ? "disabled" : ""}>Remove</button></div></li>`;
+}
+
+function _flowPythonBuilderHtml(existing = null) {
+    const scheduleDays = new Set(existing?.schedule_days || []);
+    const sqlCatalog = window._flowsState?.sqlCatalog || { configured: false, targets: [], scan: {} };
+    const targets = sqlCatalog.targets || [];
+    const sqlDatabases = [...new Set(targets.map(item => item.database))];
+    const selectedDatabase = existing?.sql_database || sqlDatabases[0] || "";
+    const sqlSchemas = [...new Set(targets.filter(item => item.database === selectedDatabase).map(item => item.schema))];
+    const selectedSchema = existing?.sql_schema || sqlSchemas[0] || "";
+    const sqlTables = targets.filter(item => item.database === selectedDatabase && item.schema === selectedSchema).map(item => item.table);
+    const people = window._flowsState?.people || [];
+    const owner = people.find(person => person.id === existing?.owner_person_id);
+    const scripts = Array.isArray(existing?.python_scripts) && existing.python_scripts.length ? existing.python_scripts : [""];
+    const sql = Boolean(existing?.sql_handoff_enabled);
+    const format = existing?.file_format === "xlsx" ? "xlsx" : "csv";
+    const direct = existing?.output_mode === "direct_replace";
+    return `
+        <div class="flow-builder-shell"><div class="flow-builder-main">
+            <form id="flow-builder-form" data-id="${existing?.id || ""}" data-source-type="python">
+                <div class="flow-form-section">
+                    <div class="flow-section-head"><h2>Python scripts</h2></div>
+                    <div class="flow-form-grid">
+                        <label><span>Flow name</span><input id="flow-name" required maxlength="200" value="${esc(existing?.name || "")}" placeholder="Daily orders extract"></label>
+                        <div class="flow-span-2 flow-python-scripts-field">
+                            <span>Scripts, in run order</span>
+                            <ol id="flow-python-scripts" class="flow-python-scripts">${scripts.map((path, index) => _flowPythonScriptRowHtml(index + 1, path, scripts.length === 1)).join("")}</ol>
+                            <input id="flow-python-file" type="file" accept=".py" hidden>
+                            <div class="flow-python-scripts-actions"><button type="button" class="btn-secondary" id="flow-python-add">Add another script</button></div>
+                            <p class="flow-dialog-help">The worker runs each script in place with its own Python, in this order. Every script receives <code>--output</code>, the file it must create; from the second script on it also receives <code>--input</code>, the previous script's output. The same paths, the step number and the run's steps folder are available as <code>METRONOME_FLOW_*</code> environment variables. The last script writes the final CSV or Excel file. Enter absolute paths the worker can see, or upload a script.</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="flow-form-section">
+                    <div class="flow-section-head"><h2>Output</h2></div>
+                    <div class="flow-form-grid">
+                        <fieldset id="flow-python-output" class="flow-span-2 flow-python-output">
+                            <legend>Where the final file goes</legend>
+                            <label class="flow-check"><input type="radio" name="flow-python-output" id="flow-python-output-file" value="file" ${sql ? "" : "checked"}><span>Final file · Excel or CSV</span></label>
+                            <label class="flow-check ${sqlCatalog.configured ? "" : "disabled"}"><input type="radio" name="flow-python-output" id="flow-python-output-sql" value="sql" ${sql ? "checked" : ""} ${sqlCatalog.configured ? "" : "disabled"}><span>SQL table · the final CSV is inserted into PostgreSQL</span></label>
+                            ${sqlCatalog.configured ? "" : `<p id="flow-python-sql-note" class="flow-dialog-help">SQL insertion needs the PostgreSQL upload connection configured in Settings before it can be chosen.</p>`}
+                        </fieldset>
+                        <div id="flow-python-file-fields" class="flow-form-grid flow-span-2" ${sql ? "hidden" : ""}>
+                            <label><span>File type</span><select id="flow-file-format"><option value="csv" ${format === "csv" ? "selected" : ""}>CSV</option><option value="xlsx" ${format === "xlsx" ? "selected" : ""}>Excel workbook (.xlsx)</option></select></label>
+                            <label><span>Filename template</span><input id="flow-filename" maxlength="200" value="${esc(existing?.filename_template || `{flow}.${format}`)}"><small>Tokens: {flow}, {date}, {index}. The extension follows the file type.</small></label>
+                            <label><span>Output files</span><select id="flow-output-mode"><option value="run_folders" ${direct ? "" : "selected"}>Separate runs · keep last 3</option><option value="direct_replace" ${direct ? "selected" : ""}>Fixed file path · replace previous output</option></select><small id="flow-output-mode-help">${direct ? "Use this file path in Power BI or Excel. Each successful run replaces the previous file." : "Each run has a separate folder. The last 3 runs are kept."}</small></label>
+                            ${_flowDestinationHtml(existing)}
+                        </div>
+                        <div id="flow-python-sql-fields" class="flow-form-grid flow-span-2" ${sql ? "" : "hidden"}>
+                            <input id="flow-sql-enabled" type="checkbox" hidden tabindex="-1" aria-hidden="true" ${sql ? "checked" : ""}>
+                            <div id="flow-sql-fields" class="flow-form-grid flow-span-2">
+                                <label><span>Write behavior</span><select id="flow-sql-mode"><option value="append" ${existing?.sql_mode !== "replace" ? "selected" : ""}>Append rows</option><option value="replace" ${existing?.sql_mode === "replace" ? "selected" : ""}>Replace all rows</option></select></label>
+                                <label class="flow-check flow-span-2"><input id="flow-sql-uppercase" type="checkbox" ${existing?.sql_uppercase ? "checked" : ""}><span>Uppercase all text values</span></label>
+                                <label><span>Database</span><select id="flow-sql-database">${sqlDatabases.map(value => `<option ${value === selectedDatabase ? "selected" : ""}>${esc(value)}</option>`).join("")}</select></label>
+                                <label><span>Schema</span><select id="flow-sql-schema">${sqlSchemas.map(value => `<option ${value === selectedSchema ? "selected" : ""}>${esc(value)}</option>`).join("")}</select></label>
+                                <label><span>Table</span><input id="flow-sql-table" list="flow-sql-table-options" maxlength="63" value="${esc(existing?.sql_table || sqlTables[0] || "")}" placeholder="Existing or new table name"><datalist id="flow-sql-table-options">${sqlTables.map(value => `<option value="${esc(value)}"></option>`).join("")}</datalist><small>New table names are lowercased with spaces converted to underscores automatically; existing tables keep their exact names.</small></label>
+                                ${_flowSqlLinkHtml(existing)}
+                                ${_flowViewRefreshHtml(existing)}
+                                <button type="button" class="btn-secondary" id="flow-sql-refresh">Refresh SQL targets</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="flow-form-section">
+                    <div class="flow-section-head"><h2>Ownership and failure alerts</h2></div>
+                    <div class="flow-form-grid"><label class="flow-span-2"><span>Flow owner</span><select id="flow-owner">${_flowOwnerOptions(people, existing?.owner_person_id)}</select><small id="flow-owner-help">${_flowOwnerHelp(owner)}</small></label></div>
+                </div>
+                <div class="flow-form-section">
+                    <div class="flow-section-head"><h2>Schedule</h2></div>
+                    <div class="flow-form-grid">
+                        <label><span>Schedule</span><select id="flow-schedule-type"><option value="manual" ${existing?.schedule_type === "manual" || !existing ? "selected" : ""}>Manual</option><option value="daily" ${existing?.schedule_type === "daily" ? "selected" : ""}>Daily</option><option value="weekly" ${existing?.schedule_type === "weekly" ? "selected" : ""}>Weekly</option><option value="monthly" ${existing?.schedule_type === "monthly" ? "selected" : ""}>Monthly</option></select></label>
+                        <label><span>Run time</span><input id="flow-schedule-time" type="time" value="${esc(existing?.schedule_time || "08:00")}"></label>
+                        <fieldset class="flow-weekdays flow-span-2"><legend>Weekdays</legend>${_FLOW_WEEKDAYS.map(day => `<label><input type="checkbox" value="${day}" ${scheduleDays.has(day) ? "checked" : ""}> ${day.slice(0, 3)}</label>`).join("")}</fieldset>
+                        <label id="flow-schedule-day-field"><span>Day of month</span><input id="flow-schedule-day" type="number" min="1" max="31" value="${esc(existing?.schedule_day || 1)}"><small>Months without that day are skipped.</small></label>
+                    </div>
+                </div>
+                <div class="flow-form-section">
+                    <div class="flow-section-head"><h2>Email</h2></div>
+                    <div class="flow-form-grid">
+                        ${_flowEmailHtml(existing)}
+                    </div>
+                </div>
+                <div class="flow-form-error" role="alert"></div><div class="flow-builder-actions"><button type="button" class="btn-secondary" id="flow-builder-cancel">Cancel</button><button type="submit" class="btn-primary">${existing?.id ? "Save changes" : "Create flow"}</button></div>
+            </form>
+        </div></div>`;
+}
+
 function _flowBuilderHtml(catalog, existing = null) {
     if (existing?.id) existing = {...window._flowsState?.flows?.find(flow => flow.id === existing.id), ...existing};
     if (["outlook", "file"].includes(existing?.source_type || existing?._source_type)) {
         return _flowOutlookBuilderHtml(existing);
+    }
+    if ((existing?.source_type || existing?._source_type) === "python") {
+        return _flowPythonBuilderHtml(existing);
     }
     const sites = catalog.sites.filter(site => site.enabled);
     const siteId = existing?.site_id || sites[0]?.id || "";
@@ -11779,6 +11877,8 @@ function _flowRunsHtml(runs) {
         const sourceType = run.job?.flow?.source_type || "portal";
         const workerMode = sourceType === "file"
             ? "Local file"
+            : sourceType === "python"
+                ? "Python scripts"
             : run.job?.execution?.browser_mode === "headed"
                 ? "Headed browser" : "Headless browser";
         const totalFiles = (run.job?.downloads?.periods?.length || 1)
@@ -11812,7 +11912,7 @@ async function renderFlows() {
         openCatalogTopics: new Set(), view: "list", classification: "production",
     };
     return `
-        <div class="page-header flow-page-header"><div><h1>Flows</h1><p class="subtitle">Acquire data from files, Outlook, or website reports on the authenticated BI desktop.</p></div><button class="btn-primary" id="flow-create">Create flow</button></div>
+        <div class="page-header flow-page-header"><div><h1>Flows</h1><p class="subtitle">Acquire data from files, Outlook, Python scripts, or website reports on the authenticated BI desktop.</p></div><button class="btn-primary" id="flow-create">Create flow</button></div>
         <div class="flow-tabs" role="tablist" aria-label="Flow views"><button id="flow-tab-list" class="active" role="tab" aria-selected="true" aria-controls="flow-workspace" data-flow-view="list">Flows</button><button id="flow-tab-catalog" role="tab" aria-selected="false" aria-controls="flow-workspace" data-flow-view="catalog">Catalog</button><button id="flow-tab-runs" role="tab" aria-selected="false" aria-controls="flow-workspace" data-flow-view="runs">Run history</button><button id="flow-tab-settings" role="tab" aria-selected="false" aria-controls="flow-workspace" data-flow-view="settings">Settings</button></div>
         <div id="flow-workspace" role="tabpanel" aria-labelledby="flow-tab-list">${_flowListHtml(flows, workers, catalog, runs)}</div>`;
 }
@@ -12157,6 +12257,24 @@ function _flowCollectBuilder() {
             filename_template: null,
         };
     }
+    if (form?.dataset.sourceType === "python") {
+        const format = sqlEnabled ? "csv" : (String($("#flow-file-format")?.value || "csv").trim().toLowerCase() === "xlsx" ? "xlsx" : "csv");
+        const filename = ($("#flow-filename")?.value || "").trim() || `{flow}.${format}`;
+        return {
+            ...shared, source_type: "python",
+            python_scripts: [...document.querySelectorAll(".flow-python-script-path")].map(input => input.value.trim()).filter(Boolean),
+            file_format: format,
+            filename_template: sqlEnabled ? filename.replace(/\.xlsx$/i, ".csv") : filename,
+            output_mode: $("#flow-output-mode")?.value || "run_folders",
+            transform_enabled: false, transform_script_path: null,
+            outlook_subject_contains: null, local_file_path: null, local_file_worksheet: null, excel_worksheets: null,
+            site_id: null, report_id: null, export_views: [], download_links: [], selections: {},
+            download_mode: "single", period_strategy: "none", window_weeks: null,
+            browser_mode: "headless", start_week: null, end_week: null,
+            asap_download_type: null, export_report_title: null, export_filter_details: null,
+            target_folder: null,
+        };
+    }
     if (form?.dataset.sourceType === "outlook") {
         return {
             ...shared, source_type: "outlook",
@@ -12386,7 +12504,7 @@ function _flowRevealStep(form, target) {
 }
 
 function _flowRevealServerError(form, error) {
-    const ids = {name: "flow-name", local_file_path: "flow-local-file-path", local_file_worksheet: "flow-local-file-worksheet", outlook_subject_contains: "flow-outlook-subject", site_id: "flow-site", report_id: "flow-report", target_folder: "flow-target-folder", filename_template: "flow-filename", transform_script_path: "flow-transform-script", schedule_type: "flow-schedule-type", schedule_time: "flow-schedule-time", schedule_days: "flow-schedule-type", schedule_day: "flow-schedule-day", owner_person_id: "flow-owner", sql_table: "flow-sql-table", sql_schema: "flow-sql-schema", sql_database: "flow-sql-database", sql_mode: "flow-sql-mode", start_week: "flow-start-week", end_week: "flow-end-week", period_strategy: "flow-period-strategy", file_format: "flow-file-format", email_delivery: "flow-email-recipients"};
+    const ids = {name: "flow-name", python_scripts: "flow-python-script-1", local_file_path: "flow-local-file-path", local_file_worksheet: "flow-local-file-worksheet", outlook_subject_contains: "flow-outlook-subject", site_id: "flow-site", report_id: "flow-report", target_folder: "flow-target-folder", filename_template: "flow-filename", transform_script_path: "flow-transform-script", schedule_type: "flow-schedule-type", schedule_time: "flow-schedule-time", schedule_days: "flow-schedule-type", schedule_day: "flow-schedule-day", owner_person_id: "flow-owner", sql_table: "flow-sql-table", sql_schema: "flow-sql-schema", sql_database: "flow-sql-database", sql_mode: "flow-sql-mode", start_week: "flow-start-week", end_week: "flow-end-week", period_strategy: "flow-period-strategy", file_format: "flow-file-format", email_delivery: "flow-email-recipients"};
     for (const item of error.validation || []) {
         ids.excel_worksheets = 'flow-excel-names';
         ids.local_file_worksheet = 'flow-excel-names';
@@ -12407,8 +12525,9 @@ function _flowBuildSteps(form) {
     if (!form || form.dataset.stepsReady) return;
     form.dataset.stepsReady = "1";
     const section = id => form.querySelector(`#${id}`)?.closest(".flow-form-section");
+    const python = form.dataset.sourceType === "python";
     const source = section("flow-name"), transform = section("flow-transform-enabled"), schedule = section("flow-schedule-type"), owner = section("flow-owner");
-    const download = section("flow-file-format");
+    const download = python ? null : section("flow-file-format");
     const recorded = form.querySelector('#flow-execution-method')?.value === 'recorded';
     const sourceGrid = source?.querySelector('.flow-form-grid');
     const website = form.querySelector('#flow-site')?.closest('label');
@@ -12427,42 +12546,61 @@ function _flowBuildSteps(form) {
     }
     form.querySelectorAll('.flow-section-head').forEach(heading => heading.remove());
 
-    const destination = document.createElement("div"); destination.className = "flow-form-grid";
-    for (const id of ["flow-output-mode", "flow-destination", "flow-filename"]) {
-        const input = form.querySelector(`#${id}`);
-        if (input) destination.append(id === "flow-destination" ? input : input.closest("label"));
+    let groups;
+    if (python) {
+        // Python Flows keep their Output choice (final file or SQL table) together;
+        // the radio decides which of the two field groups stays visible.
+        const output = form.querySelector("#flow-python-output")?.closest(".flow-form-section");
+        const fileFields = form.querySelector("#flow-python-file-fields");
+        if (fileFields && !fileFields.querySelector(".flow-filename-preview")) {
+            const preview = document.createElement("p"); preview.className = "flow-filename-preview flow-span-2";
+            fileFields.append(preview);
+        }
+        const email = form.querySelector("#flow-email-enabled")?.closest(".flow-form-section");
+        groups = [
+            ["source", "Python scripts", [source]],
+            ["destination", "Output", [output]],
+            ["after", "Email the final file", [email]],
+            ["schedule", "Schedule and owner", [schedule, owner]],
+        ];
+    } else {
+        const destination = document.createElement("div"); destination.className = "flow-form-grid";
+        for (const id of ["flow-output-mode", "flow-destination", "flow-filename"]) {
+            const input = form.querySelector(`#${id}`);
+            if (input) destination.append(id === "flow-destination" ? input : input.closest("label"));
+        }
+        if (destination.querySelector("#flow-filename")) {
+            const preview = document.createElement("p"); preview.className = "flow-filename-preview flow-span-2";
+            destination.append(preview);
+        }
+        const sql = document.createElement("div"); sql.className = "flow-form-grid";
+        const sqlTitle = document.createElement("h3"); sqlTitle.textContent = "SQL handoff";
+        for (const id of ["flow-sql-enabled", "flow-sql-fields"]) {
+            const input = form.querySelector(`#${id}`);
+            if (input) sql.append(id === "flow-sql-enabled" ? input.closest("label") : input);
+        }
+        // The portal catalog notice and refresh action move with SQL controls.
+        const refresh = form.querySelector("#flow-sql-refresh");
+        if (refresh && !sql.contains(refresh)) sql.append(refresh.closest(".flow-dialog-help") || refresh);
+        transform?.append(sqlTitle, sql);
+        // The Email step is the last block of "After download", independent of SQL.
+        const email = document.createElement("div"); email.className = "flow-form-grid";
+        const emailTitle = document.createElement("h3"); emailTitle.textContent = "Email the final file";
+        for (const id of ["flow-email-enabled", "flow-email-fields"]) {
+            const input = form.querySelector(`#${id}`);
+            if (input) email.append(id === "flow-email-enabled" ? input.closest("label") : input);
+        }
+        if (email.childElementCount) transform?.append(emailTitle, email);
+        const scheduleHeading = schedule?.querySelector("h2");
+        if (scheduleHeading) scheduleHeading.textContent = "Schedule";
+        groups = [
+            ["source", "Source", [form.querySelector("#flow-replicate-section"), source]],
+            ...(download && !recorded ? [["download", "What to download", [form.querySelector("#flow-report-filters"), form.querySelector("#flow-export-views-section"), form.querySelector("#flow-download-links-section"), download]]] : []),
+            ["destination", "Output", [destination]],
+            ["after", "After download", [transform]],
+            ["schedule", "Schedule and owner", [schedule, owner]],
+        ];
     }
-    if (destination.querySelector("#flow-filename")) {
-        const preview = document.createElement("p"); preview.className = "flow-filename-preview flow-span-2";
-        destination.append(preview);
-    }
-    const sql = document.createElement("div"); sql.className = "flow-form-grid";
-    const sqlTitle = document.createElement("h3"); sqlTitle.textContent = "SQL handoff";
-    for (const id of ["flow-sql-enabled", "flow-sql-fields"]) {
-        const input = form.querySelector(`#${id}`);
-        if (input) sql.append(id === "flow-sql-enabled" ? input.closest("label") : input);
-    }
-    // The portal catalog notice and refresh action move with SQL controls.
-    const refresh = form.querySelector("#flow-sql-refresh");
-    if (refresh && !sql.contains(refresh)) sql.append(refresh.closest(".flow-dialog-help") || refresh);
-    transform?.append(sqlTitle, sql);
-    // The Email step is the last block of "After download", independent of SQL.
-    const email = document.createElement("div"); email.className = "flow-form-grid";
-    const emailTitle = document.createElement("h3"); emailTitle.textContent = "Email the final file";
-    for (const id of ["flow-email-enabled", "flow-email-fields"]) {
-        const input = form.querySelector(`#${id}`);
-        if (input) email.append(id === "flow-email-enabled" ? input.closest("label") : input);
-    }
-    if (email.childElementCount) transform?.append(emailTitle, email);
-    const scheduleHeading = schedule?.querySelector("h2");
-    if (scheduleHeading) scheduleHeading.textContent = "Schedule";
-    const groups = [
-        ["source", "Source", [form.querySelector("#flow-replicate-section"), source]],
-        ...(download && !recorded ? [["download", "What to download", [form.querySelector("#flow-report-filters"), form.querySelector("#flow-export-views-section"), form.querySelector("#flow-download-links-section"), download]]] : []),
-        ["destination", "Output", [destination]],
-        ["after", "After download", [transform]],
-        ["schedule", "Schedule and owner", [schedule, owner]],
-    ];
     const anchor = form.querySelector(".flow-form-error");
     if (recorded) download.hidden = true;
     groups.forEach(([key, title, sections], index) => {
@@ -12634,6 +12772,7 @@ function _bindFlowWorkspace() {
     $("#flow-create-empty")?.addEventListener("click", () => _flowShowView("source-picker"));
     $("#flow-source-outlook")?.addEventListener("click", () => _flowShowView("builder", { _source_type: "outlook" }));
     $("#flow-source-file")?.addEventListener("click", () => _flowShowView("builder", { _source_type: "file" }));
+    $("#flow-source-python")?.addEventListener("click", () => _flowShowView("builder", { _source_type: "python" }));
     $("#flow-source-record")?.addEventListener("click", () => FlowRecordings.create());
     $("#flow-record-review")?.addEventListener("click", () => FlowRecordings.open(Number($("#flow-builder-form").dataset.id), _flowCollectBuilder()));
     $("#flow-source-portal")?.addEventListener("click", () => _flowShowView("builder"));
@@ -12700,7 +12839,7 @@ function _bindFlowWorkspace() {
         if (flow) _flowDeleteDialog(flow);
     });
     document.querySelectorAll(".flow-enabled-switch").forEach(input => input.onchange = async () => { const enabled = input.checked; input.disabled = true; try { const updated = await apiPatch(`/api/flows/${input.dataset.id}/enabled`, { enabled }); const flow = state.flows.find(item => item.id === updated.id); Object.assign(flow, updated); input.disabled = false; toast(enabled ? "Flow activated" : "Flow paused"); } catch (err) { input.checked = !enabled; input.disabled = false; toast("Flow status not changed: " + err.message); } });
-    document.querySelectorAll(".flow-run").forEach(button => button.onclick = async () => { button.disabled = true; button.dataset.busy = "true"; const flow = state.flows.find(item => item.id === Number(button.dataset.id)); try { await apiPost(`/api/flows/${button.dataset.id}/run`); toast(flow?.source_type === "file" ? "Run queued. The worker will read the configured file and force a new snapshot." : flow?.source_type === "outlook" ? "Run queued. The worker will check the signed-in user's Outlook Inbox." : flow?.browser_mode === "headed" ? "Run queued. The selected browser is opening in the BI desktop." : "Run queued for the background worker"); } catch (err) { toast("Run not queued: " + err.message); button.disabled = false; } finally { delete button.dataset.busy; button.disabled = false; _flowRefreshActivity(); } });
+    document.querySelectorAll(".flow-run").forEach(button => button.onclick = async () => { button.disabled = true; button.dataset.busy = "true"; const flow = state.flows.find(item => item.id === Number(button.dataset.id)); try { await apiPost(`/api/flows/${button.dataset.id}/run`); toast(flow?.source_type === "python" ? "Run queued. The worker will run the Python scripts in order." : flow?.source_type === "file" ? "Run queued. The worker will read the configured file and force a new snapshot." : flow?.source_type === "outlook" ? "Run queued. The worker will check the signed-in user's Outlook Inbox." : flow?.browser_mode === "headed" ? "Run queued. The selected browser is opening in the BI desktop." : "Run queued for the background worker"); } catch (err) { toast("Run not queued: " + err.message); button.disabled = false; } finally { delete button.dataset.busy; button.disabled = false; _flowRefreshActivity(); } });
     document.querySelectorAll(".flow-stop").forEach(button => button.onclick = async () => { button.disabled = true; button.dataset.busy = "true"; try { const result = await apiPost(`/api/flows/${button.dataset.id}/stop`); toast(result.message || "Run stopped"); } catch (err) { toast("Run not stopped: " + err.message); button.disabled = false; } finally { delete button.dataset.busy; button.disabled = false; _flowRefreshActivity(); } });
     document.querySelectorAll(".flow-retry-views").forEach(button => button.onclick = async () => { button.disabled = true; try { const result = await apiPost(`/api/flows/runs/${button.dataset.id}/retry-views`); toast(`View refresh queued - ${result.remaining_views} view(s) left; SQL insertion is not repeated`); await navigate("flows"); } catch (err) { toast("View refresh not queued: " + err.message); button.disabled = false; } });
     document.querySelectorAll(".flow-resume").forEach(button => button.onclick = async () => { button.disabled = true; try { const result = await apiPost(`/api/flows/runs/${button.dataset.id}/resume`); toast(`Resume queued - skipping ${result.skipped_files} saved file(s)`); await navigate("flows"); } catch (err) { toast("Resume not queued: " + err.message); button.disabled = false; } });
@@ -13059,6 +13198,76 @@ function _bindFlowWorkspace() {
     $("#flow-sql-schema")?.addEventListener("change", repopulateSql);
     $("#flow-sql-refresh")?.addEventListener("click", async event => { const button = event.currentTarget; button.disabled = true; try { await apiPost("/api/flows/sql/catalog/refresh"); state.sqlCatalog = await api("/api/flows/sql/catalog"); repopulateSql(); updateSqlFields(); toast("SQL targets refreshed; your draft is preserved."); } catch (err) { toast("SQL targets not refreshed: " + err.message); } finally { button.disabled = false; } });
     if ($("#flow-sql-fields")) updateSqlFields();
+    const pythonScripts = $("#flow-python-scripts");
+    if (pythonScripts) {
+        const renumberPythonScripts = () => {
+            const rows = [...pythonScripts.querySelectorAll(".flow-python-script")];
+            rows.forEach((row, index) => {
+                const input = row.querySelector(".flow-python-script-path");
+                input.id = `flow-python-script-${index + 1}`;
+                input.setAttribute("aria-label", `Script ${index + 1} path`);
+                row.querySelector(".flow-python-step").textContent = `${index + 1}.`;
+                row.querySelector(".flow-python-browse").setAttribute("aria-label", `Browse for script ${index + 1}`);
+                const remove = row.querySelector(".flow-python-remove");
+                remove.setAttribute("aria-label", `Remove script ${index + 1}`);
+                remove.disabled = rows.length === 1;
+            });
+        };
+        $("#flow-python-add")?.addEventListener("click", () => {
+            if (pythonScripts.children.length >= 20) { toast("Choose at most 20 Python scripts."); return; }
+            pythonScripts.insertAdjacentHTML("beforeend", _flowPythonScriptRowHtml(pythonScripts.children.length + 1));
+            renumberPythonScripts();
+            pythonScripts.lastElementChild.querySelector(".flow-python-script-path").focus();
+        });
+        pythonScripts.addEventListener("click", event => {
+            const row = event.target.closest(".flow-python-script");
+            if (!row) return;
+            if (event.target.closest(".flow-python-remove")) {
+                if (pythonScripts.children.length <= 1) return;
+                const neighbour = row.nextElementSibling || row.previousElementSibling;
+                row.remove();
+                renumberPythonScripts();
+                neighbour?.querySelector(".flow-python-script-path")?.focus();
+            } else if (event.target.closest(".flow-python-browse")) {
+                const picker = $("#flow-python-file");
+                picker.dataset.target = row.querySelector(".flow-python-script-path").id;
+                picker.click();
+            }
+        });
+        $("#flow-python-file")?.addEventListener("change", async event => {
+            const file = event.target.files?.[0];
+            const input = document.getElementById(event.target.dataset.target || "");
+            if (!file || !input) { event.target.value = ""; return; }
+            const button = input.closest(".flow-python-script").querySelector(".flow-python-browse");
+            button.disabled = true;
+            const original = button.textContent;
+            button.textContent = "Adding...";
+            try {
+                const body = new FormData();
+                body.append("file", file, file.name);
+                const saved = await apiPostForm("/api/flows/transform-script", body);
+                input.value = saved.script_path;
+                input.dispatchEvent(new Event("input", {bubbles: true}));
+                toast(`Python script added: ${saved.filename}`);
+            } catch (err) {
+                toast("Script not added: " + err.message);
+            } finally {
+                event.target.value = "";
+                button.disabled = false;
+                button.textContent = original;
+            }
+        });
+        const updatePythonOutput = () => {
+            const sql = $("#flow-python-output-sql")?.checked || false;
+            const handoff = $("#flow-sql-enabled");
+            if (handoff && handoff.checked !== sql) { handoff.checked = sql; handoff.dispatchEvent(new Event("change")); }
+            const fileFields = $("#flow-python-file-fields"), sqlFields = $("#flow-python-sql-fields");
+            if (fileFields) fileFields.hidden = sql;
+            if (sqlFields) sqlFields.hidden = !sql;
+        };
+        document.querySelectorAll('input[name="flow-python-output"]').forEach(radio => radio.addEventListener("change", updatePythonOutput));
+        updatePythonOutput();
+    }
     _flowBindViewRefresh();
     const updateEmailFields = () => {
         const enabled = $("#flow-email-enabled")?.checked || false;

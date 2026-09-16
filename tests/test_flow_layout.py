@@ -9,14 +9,15 @@ from app.routers import flows
 from test_flows import flow_db, _request, _seed_catalog, _flow
 
 
-@pytest.mark.parametrize("source", ["portal", "outlook", "file"])
+@pytest.mark.parametrize("source", ["portal", "outlook", "file", "python"])
 def test_new_flow_without_target_creates_owned_layout(flow_db, tmp_path, source):
     if source == "portal":
         site, report = _seed_catalog()
         body = _flow(site["id"], report["id"], target_folder=None)
     else:
         body = flows.FlowWrite(name="New flow", source_type=source,
-            local_file_path=str(tmp_path / "input.csv"), outlook_subject_contains="Report")
+            local_file_path=str(tmp_path / "input.csv"), outlook_subject_contains="Report",
+            python_scripts=[str(tmp_path / "step.py")])
     saved = flows.create_flow(body, _request())
     folder = Path(saved["flow_folder"])
     assert folder.name == flow_layout.flow_folder_slug(saved['name'], saved['id'])

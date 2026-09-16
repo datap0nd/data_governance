@@ -47,7 +47,7 @@ from app.flow_paths import assert_job_paths
 from app import flow_layout, flow_excel
 
 try:
-    from app import flow_gscm, flow_outlook, flow_publish, flow_replay, flow_retention
+    from app import flow_gscm, flow_outlook, flow_publish, flow_python, flow_replay, flow_retention
     from app.flow_asap_exports import (
         ASAP_DOWNLOAD_TYPES,
         ASAP_EXPORT_CHECKBOXES,
@@ -59,6 +59,7 @@ except ModuleNotFoundError:  # setup.ps1 also invokes this file directly
     import flow_gscm
     import flow_outlook
     import flow_publish
+    import flow_python
     import flow_replay
     import flow_retention
     from flow_asap_exports import (
@@ -75,6 +76,7 @@ ASAP_PORTAL_ADAPTER = "asap_portal"
 GSCM_PORTAL_ADAPTER = flow_gscm.GSCM_PORTAL_ADAPTER
 OUTLOOK_ATTACHMENT_ADAPTER = flow_outlook.OUTLOOK_ATTACHMENT_ADAPTER
 LOCAL_FILE_ADAPTER = "local_file"
+PYTHON_SCRIPT_ADAPTER = flow_python.ADAPTER
 AUTH_MARKER = ".asap_authenticated"
 GSCM_AUTH_MARKER = ".gscm_authenticated"
 ASAP_LOADING_OVERLAY_SELECTOR = (
@@ -7235,6 +7237,103 @@ def execute_local_file_job(
     }
 
 
+def execute_python_job(
+    job: dict, report_progress, profile_dir: Path, *, run_id: int, register_folder,
+) -> tuple[list[dict], list[dict], dict]:
+    """Run the saved Python scripts in order; the last one writes the deliverable."""
+    assert_job_paths(job)
+    source = job.get("python_source") or {}
+    # Fail closed before any script runs or a run folder exists.
+    scripts = flow_python.check_scripts(
+        [Path(str(item)) for item in (source.get("scripts") or [])]
+    )
+    output_format = str(
+        source.get("output_format") or job.get("downloads", {}).get("file_format") or "csv"
+    ).strip().casefold()
+    if output_format not in flow_python.OUTPUT_FORMATS:
+        raise RuntimeError(f"Python-script job names an unsupported final file format: {output_format}.")
+    destination = "sql" if job.get("sql_handoff", {}).get("enabled") else "file"
+    if destination == "sql" and output_format != "csv":
+        raise RuntimeError("SQL insertion requires the final Python-script file to be CSV.")
+    timeout_seconds = int(source.get("timeout_seconds") or flow_python.SCRIPT_TIMEOUT_SECONDS)
+    timings = _Timings()
+    names = flow_python.describe([str(item) for item in scripts])
+    report_progress("running", {
+        "stage": "python_scripts",
+        "message": f"Running {len(scripts)} Python script(s) in order: {names}.",
+    })
+    run_folder = _prepare_run_folder(
+        job, profile_dir, run_id=run_id, register_folder=register_folder,
+        report_progress=report_progress,
+    )
+    job["_runtime_artifact_store_id"] = _job_store_id(job, profile_dir)
+    job["_runtime_artifact_store_ids"] = list(_runtime_store_ids(job, profile_dir))
+    job["_runtime_bundle_count"] = 1
+    steps_folder = run_folder / "steps"
+    steps_folder.mkdir()
+    if steps_folder.is_symlink() or not steps_folder.is_dir():
+        raise RuntimeError(f"Python step folder is not a regular directory: {steps_folder}")
+    final = _safe_output_path(
+        run_folder, _render_filename(job["downloads"]["filename_template"], job, None, 1),
+    )
+    with timings.measure("python_scripts", report_id=job.get("report", {}).get("id")):
+        steps = flow_python.run_scripts(
+            scripts, final, steps_folder,
+            environment=os.environ.copy(),
+            flow_name=job["flow"]["name"], run_id=run_id,
+            output_format=output_format, timeout_seconds=timeout_seconds,
+            progress=lambda index, total, script: report_progress("running", {
+                "stage": "python_step",
+                "message": f"Running script {index} of {total}: {script.name}.",
+                "step": index, "steps": total, "script": script.name,
+            }),
+        )
+    with timings.measure("file_normalization", report_id=job.get("report", {}).get("id")):
+        detected = _detect_download_format(final)
+        if detected != output_format:
+            raise RuntimeError(
+                f"The final file {final.name} should be {output_format.upper()} but its content looks like {detected}."
+            )
+        if output_format == "csv":
+            if destination == "sql":
+                # SQL loads the normalized file in place: header row required.
+                normalization = _normalize_csv(final, preamble="none", strict_headers=True)
+                metadata = {**_csv_metadata(final), **normalization}
+            else:
+                metadata = _csv_metadata(final)
+        else:
+            _validate_excel_container(final, "xlsx")
+            metadata = {**flow_publish.read_size_checksum(final), "row_count": None}
+    artifact = _decorate_artifact_storage({
+        "period_key": None,
+        "export_view": None,
+        "bundle_index": 1,
+        "bundle_count": 1,
+        "status": "saved",
+        "file_path": str(final),
+        "filename": final.name,
+        "detected_format": detected,
+        "python_steps": steps,
+        **metadata,
+    }, job, profile_dir)
+    report_progress("running", {
+        "stage": "python_complete",
+        "message": (
+            f"Ran {len(steps)} script(s); final {output_format.upper()} {final.name} is "
+            f"{metadata['file_size']} bytes."
+        ),
+        "results": [
+            {
+                "step": item["index"], "script": item["script_name"], "output": item["output_path"],
+                "exit_code": item["exit_code"], "duration_ms": item["duration_ms"],
+                "stdout": item["stdout"], "stderr": item["stderr"],
+            }
+            for item in steps
+        ],
+    })
+    return [artifact], timings.finish(item_count=1), {"no_op": False, "sql_artifacts": [artifact]}
+
+
 def execute_job(
     page: Page, job: dict, report_progress, profile_dir: Path,
     download_staging_dir: Path | None = None,
@@ -7949,6 +8048,16 @@ def _code_version() -> str:
         return "unknown"
 
 
+def _python_success_message(job: dict, artifacts: list[dict], sql_result: dict | None) -> str:
+    steps = len((job.get("python_source") or {}).get("scripts") or [])
+    final = artifacts[0] if artifacts else {}
+    filename = final.get("published_filename") or final.get("filename") or "the final file"
+    message = f"Ran {steps} Python script(s) and saved {filename}."
+    if sql_result is not None:
+        message += f" Committed {sql_result['rows_written']} row(s) to {sql_result['target']}."
+    return message
+
+
 def execute_flow(page, job: dict, progress, profile_dir: Path, download_staging_dir=None,
                  *, run_id: int, register_folder, headed: bool = False,
                  artifacts=None, state=None, run_started=None, acquire_bundle=None) -> dict:
@@ -8048,6 +8157,22 @@ def execute_flow(page, job: dict, progress, profile_dir: Path, download_staging_
             no_op = bool(source_outcome.get("no_op"))
             source_receipt = source_outcome.get("source_receipt")
             sql_artifacts = source_outcome.get("sql_artifacts") or []
+        elif (
+            (job.get("flow", {}).get("source_type") or "portal") == "python"
+            or bool((job.get("python_source") or {}).get("enabled"))
+        ):
+            if (
+                (job.get("flow", {}).get("source_type") or "portal") != "python"
+                or job.get("schema_version") != 3
+                or not (job.get("python_source") or {}).get("enabled")
+            ):
+                raise RuntimeError("Python-script job payload is malformed or uses an unsupported schema version.")
+            artifacts, timings, source_outcome = execute_python_job(
+                job, progress, profile_dir,
+                run_id=run_id, register_folder=register_folder,
+            )
+            sql_artifacts = source_outcome["sql_artifacts"]
+            no_op = False
         elif (job.get("outlook_source") or {}).get("enabled"):
             artifacts, timings, outlook_outcome = execute_outlook_job(
                 job, progress, profile_dir,
@@ -8149,6 +8274,10 @@ def execute_flow(page, job: dict, progress, profile_dir: Path, download_staging_
         else:
             view_results = None
         refreshed = f" Refreshed {len(view_results)} materialized view(s)." if view_results else ""
+        python_run = (
+            not sql_only and not no_op
+            and (job.get("flow", {}).get("source_type") or "portal") == "python"
+        )
         progress(
             "succeeded", {
                 "stage": "complete",
@@ -8158,6 +8287,8 @@ def execute_flow(page, job: dict, progress, profile_dir: Path, download_staging_
                     if no_op
                     else f"SQL-only retry committed {sql_result['rows_written']} row(s) from {sql_result['files_loaded']} saved file(s).{refreshed}"
                     if sql_only
+                    else _python_success_message(job, sql_artifacts, sql_result) + refreshed
+                    if python_run
                     else f"Saved the full {len(sql_artifacts)}-export bundle and committed {sql_result['rows_written']} row(s) to {sql_result['target']}.{refreshed}"
                     if sql_result is not None
                     else f"Saved {len(sql_artifacts)} transformed CSV file(s) after {len(artifacts) - len(sql_artifacts)} download(s)."
@@ -8215,7 +8346,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
         registration = {
             "worker_id": worker_id,
             "display_name": display_name,
-            "capabilities": {"adapters": ["web_export", ASAP_PORTAL_ADAPTER, GSCM_PORTAL_ADAPTER, OUTLOOK_ATTACHMENT_ADAPTER, LOCAL_FILE_ADAPTER], "headed": headed, "process_id": os.getpid(), "delete_existing": False, "overwrite_existing": True, "artifact_store_id": flow_publish.artifact_store_id(profile_dir), "code_version": code_version},
+            "capabilities": {"adapters": ["web_export", ASAP_PORTAL_ADAPTER, GSCM_PORTAL_ADAPTER, OUTLOOK_ATTACHMENT_ADAPTER, LOCAL_FILE_ADAPTER, PYTHON_SCRIPT_ADAPTER], "headed": headed, "process_id": os.getpid(), "delete_existing": False, "overwrite_existing": True, "artifact_store_id": flow_publish.artifact_store_id(profile_dir), "code_version": code_version},
         }
         from app.flow_capacity import slot_number
         from app import flow_tasks
@@ -8279,7 +8410,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                 work = run or scan or claimed.get('task')
                 if work:
                     browser_job = work['job']
-                    portal_work = (browser_job.get('flow', {}).get('source_type') not in {'file', 'outlook'}
+                    portal_work = (browser_job.get('flow', {}).get('source_type') not in {'file', 'outlook', 'python'}
                                    and browser_job.get('job_type') not in {'sql_retry', 'view_retry'} and not browser_job.get('recording_operation'))
                     requested_channel = flow_browser.channel_for(browser_job)
                     if portal_work and (context is None or requested_channel != current_channel):

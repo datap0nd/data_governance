@@ -29,7 +29,7 @@ def row_progress(db, run):
     exports = (report.get("download_links") if job.get("site", {}).get("adapter") == "asap_portal" else None) or report.get("export_views") or [None]
     count = len(exports) * len(downloads.get("periods") or [None]) if source == "portal" else 1
     # Old/malformed snapshots cannot support a trustworthy denominator.
-    known = bool(job.get("flow") and (sql_only or job.get("downloads") or source in {"file", "outlook"}))
+    known = bool(job.get("flow") and (sql_only or job.get("downloads") or source in {"file", "outlook", "python"}))
     tasks = [dict(row) for row in db.execute(
         """SELECT id,ordinal,state,worker_id,progress_json FROM flow_download_tasks
            WHERE run_id=? ORDER BY ordinal""", (run["id"],),
@@ -40,24 +40,25 @@ def row_progress(db, run):
         "SELECT DISTINCT stage FROM flow_run_events WHERE run_id=?", (run["id"],),
     )}
     stages.add(stage)
-    later = {"direct_publish", "publish_complete", "transformation", "transformation_complete", "complete"}
+    later = {"direct_publish", "publish_complete", "transformation", "transformation_complete", "complete", "python_complete"}
     after_download = bool(stages & later or any(str(item).startswith("sql_") for item in stages))
     saved = {str(item.get("bundle_index") or json.dumps([item.get("export_view"), item.get("period_key")]))
              for item in artifacts if isinstance(item, dict) and item.get("status") == "saved"}
     acquired = sum(task["state"] == "succeeded" for task in tasks) if tasks else min(count, len(saved))
     if after_download:
         acquired = count
-    if source in {"file", "outlook"} and stages & {"file_normalization", "file_validation"}:
+    if source in {"file", "outlook", "python"} and stages & {"file_normalization", "file_validation", "python_complete"}:
         acquired = count
     prepare_stages = {"configuring", "report_execution", "report_rendering", "file_export", "download_waiting",
                       "download_progress", "download_stall_warning", "file_transfer", "file_normalization",
-                      "file_validation", "local_file_copy", "outlook_attachment_transfer", "parallel_downloads"}
+                      "file_validation", "local_file_copy", "outlook_attachment_transfer", "parallel_downloads",
+                      "python_scripts", "python_step"}
     prepared = bool(acquired or after_download or stages & prepare_stages)
     normalized = after_download or (acquired == count and bool(saved or tasks))
     work = []
     if not sql_only:
         work += [("Prepare run", 1, int(prepared)),
-                 ("Read file" if source == "file" else "Download", count, acquired),
+                 ("Run scripts" if source == "python" else "Read file" if source == "file" else "Download", count, acquired),
                  ("Prepare files", 1, int(normalized))]
         if downloads.get("output_mode") == "direct_replace" and source != "file":
             work.append(("Publish files", 1, int(bool(stages & {"publish_complete", "transformation", "transformation_complete", "sql_insertion", "complete"}))))

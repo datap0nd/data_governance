@@ -86,3 +86,37 @@ for (const sourceType of ['file', 'outlook', 'portal']) {
 set('flow-excel-enabled', '', {checked:false});
 assert.equal(context._flowCollectBuilder().excel_worksheets, null);
 console.log('flow builder worksheet payload tests passed');
+
+// Python scripts: ordered absolute paths from the script rows (blank rows dropped),
+// the Output radio drives the hidden #flow-sql-enabled checkbox, and SQL forces CSV.
+const pythonRows = [{value:' C:\\scripts\\fetch_orders.py '}, {value:'   '}, {value:'C:\\scripts\\clean_orders.py'}];
+const baseQuerySelectorAll = context.document.querySelectorAll;
+context.document.querySelectorAll = selector => selector.includes('flow-python-script-path') ? pythonRows : baseQuerySelectorAll(selector);
+form.dataset.sourceType = 'python';
+set('flow-file-format', 'xlsx'); set('flow-filename', ' {flow}_{date}.xlsx '); set('flow-output-mode', 'direct_replace');
+set('flow-sql-enabled', '', {checked:false});
+body = context._flowCollectBuilder();
+assert.equal(body.source_type, 'python');
+assert.deepEqual(plain(body.python_scripts), ['C:\\scripts\\fetch_orders.py', 'C:\\scripts\\clean_orders.py']);
+assert.equal(body.sql_handoff_enabled, false); assert.equal(body.sql_table, null);
+assert.equal(body.file_format, 'xlsx'); assert.equal(body.filename_template, '{flow}_{date}.xlsx');
+assert.equal(body.output_mode, 'direct_replace');
+assert.equal(body.transform_enabled, false); assert.equal(body.transform_script_path, null);
+assert.equal(body.browser_mode, 'headless'); assert.equal(body.target_folder, null); assert.equal(body.local_file_path, null);
+assert.equal(body.outlook_subject_contains, null); assert.equal(body.site_id, null); assert.equal(body.excel_worksheets, null);
+set('flow-sql-enabled', '', {checked:true});
+body = context._flowCollectBuilder();
+assert.equal(body.sql_handoff_enabled, true); assert.equal(body.sql_table, 'MyTable'); assert.equal(body.sql_schema, 'CaseSchema');
+assert.equal(body.file_format, 'csv'); assert.equal(body.filename_template, '{flow}_{date}.csv');
+set('flow-filename', '');
+assert.equal(context._flowCollectBuilder().filename_template, '{flow}.csv');
+set('flow-sql-enabled', '', {checked:false}); set('flow-file-format', 'csv');
+assert.equal(context._flowCollectBuilder().filename_template, '{flow}.csv');
+context.document.querySelectorAll = baseQuerySelectorAll;
+assert.match(source, /id="flow-source-python"/);
+assert.match(source, /data-source-type="python"/);
+assert.match(source, /id="flow-sql-enabled" type="checkbox" hidden/);
+assert.match(source, /name="flow-python-output" id="flow-python-output-sql"/);
+assert.match(source, /python_scripts: "flow-python-script-1"/);
+assert.match(source, /"Run queued. The worker will run the Python scripts in order."/);
+console.log('flow builder python payload tests passed');
