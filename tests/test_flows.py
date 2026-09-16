@@ -4106,6 +4106,38 @@ def test_stop_cancels_assigned_run_and_targets_reported_worker_pid(flow_db, monk
     assert flows.list_runs(flow_id=saved["id"], limit=100)[0]["status"] == "cancelled"
 
 
+def test_run_history_normalizes_legacy_artifact_shapes(flow_db, monkeypatch):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(
+        _flow(site["id"], report["id"], browser_mode="headed"), _request()
+    )
+    monkeypatch.setattr(flows, "launch_local_worker", lambda mode: {"status": "starting"})
+    queued = flows.queue_run(saved["id"], _request())
+    legacy_artifact = {
+        "file_path": "fictional/legacy.csv",
+        "filename": "legacy.csv",
+        "status": "saved",
+    }
+    with database.get_db() as db:
+        db.execute(
+            "UPDATE flow_runs SET artifact_json=? WHERE id=?",
+            (json.dumps(legacy_artifact), queued["id"]),
+        )
+
+    assert flows.list_runs(flow_id=saved["id"], limit=100)[0]["artifacts"] == [
+        legacy_artifact
+    ]
+
+    with database.get_db() as db:
+        db.execute(
+            "UPDATE flow_runs SET artifact_json=? WHERE id=?",
+            (json.dumps({"legacy_path": "fictional/legacy.csv"}), queued["id"]),
+        )
+
+    assert flows.get_run(queued["id"])["artifacts"] == []
+
+
 def test_stop_cancels_queued_run_without_stopping_another_flows_worker(flow_db, monkeypatch):
     site, report = _seed_catalog()
     _mark_discovered(report["id"])
