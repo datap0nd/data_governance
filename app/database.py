@@ -2000,11 +2000,17 @@ MIGRATIONS = [
     # Python-script Flows run saved scripts in order on the worker. As with
     # Outlook and local files, a hidden site/report pair keeps the non-null
     # Flow lineage shape without exposing a synthetic website in the catalog.
+    # flow_sites.name is UNIQUE and a user may already own a portal site called
+    # "Python", so the internal name steps aside instead of failing init_db().
     "ALTER TABLE flows ADD COLUMN python_scripts_json TEXT",
     """INSERT INTO flow_sites
            (name, adapter, base_url, auth_url, discovery_enabled, discovery_scope_json,
             enabled, created_at, updated_at)
-       SELECT 'Python', 'python_script', NULL, NULL, 0, '[]',
+       SELECT CASE WHEN EXISTS (SELECT 1 FROM flow_sites WHERE name='Python')
+                   THEN 'Python scripts (internal '
+                        || (SELECT COALESCE(MAX(id), 0) + 1 FROM flow_sites) || ')'
+                   ELSE 'Python' END,
+              'python_script', NULL, NULL, 0, '[]',
               1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
        WHERE NOT EXISTS (SELECT 1 FROM flow_sites WHERE adapter='python_script')""",
     """DELETE FROM flow_reports

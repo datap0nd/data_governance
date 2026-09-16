@@ -45,7 +45,10 @@ Before any script runs or a run folder is created, the worker checks that
 every configured script exists and ends in `.py`; a missing or renamed script
 fails the run closed. At most 20 scripts can be chained. Each step records the
 script's SHA-256, exit code, duration, `stdout` and `stderr` in the run's
-progress events for auditability.
+progress events for auditability. Every finished step emits its own
+`python_step_complete` event, and a step that exits non-zero, writes no output
+or times out emits `python_step_failed` with the same fields plus the error,
+so a broken chain still leaves a structured record for each step that ran.
 
 ## Environment variables
 
@@ -83,7 +86,9 @@ The Output section offers two destinations:
   folder and recovery files in the private artifact store.
 - **SQL table** inserts the final CSV into PostgreSQL with the existing
   append/replace modes, target and uppercase options. The file type is forced
-  to CSV because SQL only loads CSV. The optional **Refresh materialized
+  to CSV because SQL only loads CSV, and the output mode is forced to
+  **Separate runs** so the CSV stays in the run folder for **Retry SQL** and
+  is never published to a fixed file path. The optional **Refresh materialized
   views** step runs after PostgreSQL confirms the insertion commit, exactly as
   for other Flows, and **Retry view refresh** stays available when a view
   fails.

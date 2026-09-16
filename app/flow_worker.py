@@ -7237,6 +7237,23 @@ def execute_local_file_job(
     }
 
 
+def _python_step_event(record: dict) -> dict:
+    """One structured event per finished script, success or failure."""
+    index, total, name = record.get("index"), record.get("steps"), record.get("script_name")
+    error = record.get("error")
+    return {
+        "stage": "python_step_failed" if error else "python_step_complete",
+        "message": f"Script {index} of {total}: {name} " + (
+            f"failed: {error}" if error
+            else f"finished in {record.get('duration_ms')} ms (exit 0, {record.get('output_size')} bytes)."
+        ),
+        "step": index, "steps": total, "script": name, "checksum": record.get("script_checksum"),
+        "exit_code": record.get("exit_code"), "duration_ms": record.get("duration_ms"),
+        "output": record.get("output_path"), "stdout": record.get("stdout"), "stderr": record.get("stderr"),
+        "error": error,
+    }
+
+
 def execute_python_job(
     job: dict, report_progress, profile_dir: Path, *, run_id: int, register_folder,
 ) -> tuple[list[dict], list[dict], dict]:
@@ -7287,6 +7304,7 @@ def execute_python_job(
                 "message": f"Running script {index} of {total}: {script.name}.",
                 "step": index, "steps": total, "script": script.name, "checksum": checksum,
             }),
+            step_result=lambda record: report_progress("running", _python_step_event(record)),
         )
     with timings.measure("file_normalization", report_id=job.get("report", {}).get("id")):
         detected = _detect_download_format(final)

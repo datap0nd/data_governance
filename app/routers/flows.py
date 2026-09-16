@@ -883,7 +883,10 @@ class FlowWrite(BaseModel):
             self.end_week = None
             self.file_format = (self.file_format or "csv").strip().casefold()
             if self.sql_handoff_enabled:
+                # SQL loads the final CSV from the run folder (Retry SQL relies
+                # on it); the hidden file-output controls never publish it.
                 self.file_format = "csv"
+                self.output_mode = "run_folders"
             if self.file_format not in flow_python.OUTPUT_FORMATS:
                 raise ValueError("Python Flows produce a CSV or Excel (.xlsx) file.")
             self.filename_template = _clean_filename_template(

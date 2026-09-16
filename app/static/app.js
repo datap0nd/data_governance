@@ -12265,7 +12265,7 @@ function _flowCollectBuilder() {
             python_scripts: [...document.querySelectorAll(".flow-python-script-path")].map(input => input.value.trim()).filter(Boolean),
             file_format: format,
             filename_template: sqlEnabled ? filename.replace(/\.xlsx$/i, ".csv") : filename,
-            output_mode: $("#flow-output-mode")?.value || "run_folders",
+            output_mode: sqlEnabled ? "run_folders" : ($("#flow-output-mode")?.value || "run_folders"),
             transform_enabled: false, transform_script_path: null,
             outlook_subject_contains: null, local_file_path: null, local_file_worksheet: null, excel_worksheets: null,
             site_id: null, report_id: null, export_views: [], download_links: [], selections: {},

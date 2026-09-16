@@ -108,6 +108,9 @@ set('flow-sql-enabled', '', {checked:true});
 body = context._flowCollectBuilder();
 assert.equal(body.sql_handoff_enabled, true); assert.equal(body.sql_table, 'MyTable'); assert.equal(body.sql_schema, 'CaseSchema');
 assert.equal(body.file_format, 'csv'); assert.equal(body.filename_template, '{flow}_{date}.csv');
+// SQL keeps the final CSV in the run folder: the hidden file-output mode never publishes it.
+assert.equal(controls['#flow-output-mode'].value, 'direct_replace');
+assert.equal(body.output_mode, 'run_folders');
 set('flow-filename', '');
 assert.equal(context._flowCollectBuilder().filename_template, '{flow}.csv');
 set('flow-sql-enabled', '', {checked:false}); set('flow-file-format', 'csv');

@@ -147,10 +147,20 @@ def check_scripts(scripts: list[Path]) -> list[Path]:
     return checked
 
 
+def _tail(text) -> str:
+    return (text or "").strip()[-OUTPUT_TAIL_CHARS:]
+
+
 def run_scripts(scripts: list[Path], final_output: Path, steps_folder: Path, *, environment: dict,
                 flow_name: str, run_id: int, output_format: str, timeout_seconds: int = SCRIPT_TIMEOUT_SECONDS,
-                progress=None) -> list[dict]:
-    """Run every script in order; each must write exactly its ``--output`` file."""
+                progress=None, step_result=None) -> list[dict]:
+    """Run every script in order; each must write exactly its ``--output`` file.
+
+    ``step_result`` receives each step's record as soon as the step ends: the
+    same dict that is returned for a successful step, or one carrying ``error``
+    for the failed step before the failure is raised, so a broken chain still
+    leaves a structured record per step that ran.
+    """
     scripts = check_scripts(scripts)
     total = len(scripts)
     records: list[dict] = []
@@ -166,6 +176,27 @@ def run_scripts(scripts: list[Path], final_output: Path, steps_folder: Path, *, 
             environment, input_path=previous_output, output_path=output, results_dir=steps_folder,
             step=index, steps=total, output_format=output_format, flow_name=flow_name, run_id=run_id,
         )
+        record = {
+            "index": index,
+            "steps": total,
+            "script": str(script),
+            "script_name": script.name,
+            "script_checksum": checksum,
+            "output_path": str(output),
+            "output_size": 0,
+            "exit_code": None,
+            "duration_ms": 0,
+            "stdout": "",
+            "stderr": "",
+        }
+
+        def fail(message: str, cause: BaseException | None = None):
+            record["error"] = message
+            record["output_size"] = output.stat().st_size if output.is_file() else 0
+            if step_result is not None:
+                step_result(record)
+            raise RuntimeError(message) from cause
+
         started = time.perf_counter()
         try:
             completed = subprocess.run(
@@ -174,33 +205,29 @@ def run_scripts(scripts: list[Path], final_output: Path, steps_folder: Path, *, 
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
         except subprocess.TimeoutExpired as exc:
-            raise RuntimeError(
-                f"{label} timed out after {timeout_seconds} seconds and was stopped."
-            ) from exc
-        duration_ms = round((time.perf_counter() - started) * 1000)
-        stdout = (completed.stdout or "").strip()[-OUTPUT_TAIL_CHARS:]
-        stderr = (completed.stderr or "").strip()[-OUTPUT_TAIL_CHARS:]
+            record["duration_ms"] = round((time.perf_counter() - started) * 1000)
+            record["stdout"] = _tail(exc.stdout.decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else exc.stdout)
+            record["stderr"] = _tail(exc.stderr.decode("utf-8", "replace") if isinstance(exc.stderr, bytes) else exc.stderr)
+            fail(f"{label} timed out after {timeout_seconds} seconds and was stopped.", exc)
+        except OSError as exc:
+            record["duration_ms"] = round((time.perf_counter() - started) * 1000)
+            fail(f"{label} could not be started: {exc}", exc)
+        record["duration_ms"] = round((time.perf_counter() - started) * 1000)
+        record["exit_code"] = completed.returncode
+        stdout = record["stdout"] = _tail(completed.stdout)
+        stderr = record["stderr"] = _tail(completed.stderr)
         if completed.returncode != 0:
             detail = stderr or stdout or "no output"
-            raise RuntimeError(f"{label} failed with exit code {completed.returncode}: {detail}")
+            fail(f"{label} failed with exit code {completed.returncode}: {detail}")
         if not output.is_file() or output.stat().st_size <= 0:
             detail = f" Script output: {stderr or stdout}" if (stderr or stdout) else ""
-            raise RuntimeError(
+            fail(
                 f"{label} completed but did not create --output {output}. "
                 f"The script must write the file named by --output (METRONOME_FLOW_OUTPUT).{detail}"
             )
-        records.append({
-            "index": index,
-            "steps": total,
-            "script": str(script),
-            "script_name": script.name,
-            "script_checksum": checksum,
-            "output_path": str(output),
-            "output_size": output.stat().st_size,
-            "exit_code": completed.returncode,
-            "duration_ms": duration_ms,
-            "stdout": stdout,
-            "stderr": stderr,
-        })
+        record["output_size"] = output.stat().st_size
+        records.append(record)
+        if step_result is not None:
+            step_result(record)
         previous_output = output
     return records

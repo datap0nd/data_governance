@@ -167,9 +167,12 @@ def test_python_flow_write_validates_scripts_and_forces_shared_defaults():
     assert excel.output_mode == "direct_replace"
 
     sql = flows.FlowWrite(name="SQL", source_type="python", python_scripts=["/scripts/a.py"],
-                          file_format="xlsx", **_sql_fields())
+                          file_format="xlsx", output_mode="direct_replace", **_sql_fields())
     assert sql.file_format == "csv" and sql.filename_template == "{flow}.csv"
     assert sql.sql_handoff_enabled is True
+    # The hidden file-output controls never publish a SQL-bound CSV: it stays
+    # in the run folder, which Retry SQL reads.
+    assert sql.output_mode == "run_folders"
 
     named = flows.FlowWrite(name="Named", source_type="python", python_scripts=["/scripts/a.py"],
                             filename_template="orders.csv")
@@ -241,6 +244,33 @@ def test_python_flow_uses_hidden_anchor_managed_folder_and_v3_job(flow_db, tmp_p
     key = pipelines.flow_target_resource_key_from_job(job)
     assert key is not None and key.startswith("file|")
     flow_paths.assert_job_paths(job)
+
+
+def test_python_site_migration_steps_aside_from_a_user_site_named_python(flow_db, tmp_path):
+    with database.get_db() as db:
+        db.execute("DELETE FROM flow_reports WHERE source_kind='system' AND site_id IN "
+                   "(SELECT id FROM flow_sites WHERE adapter='python_script')")
+        db.execute("DELETE FROM flow_sites WHERE adapter='python_script'")
+        db.execute(
+            """INSERT INTO flow_sites (name, adapter, base_url, enabled, created_at, updated_at)
+               VALUES ('Python', 'asap_portal', 'https://asap.example.test/', 1,
+                       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"""
+        )
+    # Migrations replay on every start; the UNIQUE name must not break the upgrade.
+    database.init_db()
+    with database.get_db() as db:
+        sites = [dict(row) for row in db.execute(
+            "SELECT id, name FROM flow_sites WHERE adapter='python_script'")]
+        user = db.execute("SELECT adapter FROM flow_sites WHERE name='Python'").fetchone()
+    assert len(sites) == 1 and sites[0]["name"] != "Python"
+    assert sites[0]["name"].startswith("Python scripts (internal ")
+    assert user["adapter"] == "asap_portal"
+
+    scripts = _write_scripts(tmp_path / "scripts")
+    saved = flows.create_flow(_python_flow(scripts), _request())
+    assert saved["source_type"] == "python" and saved["site_id"] == sites[0]["id"]
+    assert saved["source_adapter"] == "python_script"
+    assert all(site["adapter"] != "python_script" for site in flows.catalog()["sites"])
 
 
 def test_python_flow_update_changes_scripts_and_source_category_is_fixed(flow_db, tmp_path):
@@ -327,6 +357,18 @@ def test_scripts_run_in_order_with_the_worker_interpreter(tmp_path):
     expected = [(script.name, hashlib.sha256(script.read_bytes()).hexdigest()) for script in scripts]
     assert [(detail["script"], detail["checksum"]) for _, detail in events if detail["stage"] == "python_step"] == expected
     assert [(item["script_name"], item["script_checksum"]) for item in records] == expected
+    # Each finished step is reported on its own, before the completion summary.
+    finished = [detail for _, detail in events if detail["stage"] == "python_step_complete"]
+    assert [(item["step"], item["script"], item["checksum"]) for item in finished] == [
+        (1, "fetch_orders.py", expected[0][1]), (2, "enrich_orders.py", expected[1][1]),
+    ]
+    assert all(item["exit_code"] == 0 and item["error"] is None for item in finished)
+    assert [item["stdout"] for item in finished] == ["fetched Python orders run 31", "enriched 2 rows"]
+    assert finished[1]["output"] == str(final) and finished[1]["message"].startswith(
+        "Script 2 of 2: enrich_orders.py finished in "
+    )
+    assert stages.index("python_step_complete") < stages.index("python_complete")
+    assert not any(detail["stage"] == "python_step_failed" for _, detail in events)
     assert stages[-1] == "python_complete"
     assert events[-1][1]["message"].startswith("Ran 2 script(s); final CSV Python_orders.csv is ")
     assert [item["step"] for item in events[-1][1]["results"]] == [1, 2]
@@ -352,6 +394,17 @@ def test_failing_script_names_step_and_stderr(tmp_path):
     assert failed["step"] == 2 and failed["script"] == "clean_orders.py"
     assert failed["checksum"] == hashlib.sha256(failing.read_bytes()).hexdigest()
     assert not any(detail["stage"] == "python_complete" for detail in events)
+    # The earlier step keeps its structured record and the failed step gets one too.
+    complete = [detail for detail in events if detail["stage"] == "python_step_complete"]
+    assert [(item["step"], item["script"], item["exit_code"]) for item in complete] == [(1, "fetch_orders.py", 0)]
+    broken = [detail for detail in events if detail["stage"] == "python_step_failed"]
+    assert len(broken) == 1 and broken[0]["step"] == 2 and broken[0]["script"] == "clean_orders.py"
+    assert broken[0]["exit_code"] == 3 and broken[0]["stderr"] == "KeyError: 'region'"
+    assert broken[0]["stdout"] == "partial output"
+    assert broken[0]["checksum"] == hashlib.sha256(failing.read_bytes()).hexdigest()
+    assert broken[0]["error"].startswith("Python script clean_orders.py (step 2 of 2) failed with exit code 3")
+    assert broken[0]["message"] == "Script 2 of 2: clean_orders.py failed: " + broken[0]["error"]
+    assert broken[0]["duration_ms"] >= 0
 
 
 def test_script_that_writes_nothing_fails_on_missing_output(tmp_path):
@@ -392,8 +445,42 @@ def test_script_timeout_fails_the_run(tmp_path):
     target = tmp_path / "Downloads"
     job = _worker_job([slow], target)
     job["python_source"]["timeout_seconds"] = 1
+    target.mkdir()
+    events = []
     with pytest.raises(RuntimeError, match=r"slow\.py \(step 1 of 1\) timed out after 1 seconds"):
-        _run(job, target, tmp_path / "profile")
+        flow_worker.execute_python_job(
+            job, lambda _status, detail: events.append(detail), tmp_path / "profile",
+            run_id=31, register_folder=lambda path: {"ops": []},
+        )
+    events = [detail for detail in events if detail["stage"] == "python_step_failed"]
+    assert len(events) == 1 and events[0]["step"] == 1 and events[0]["script"] == "slow.py"
+    assert events[0]["exit_code"] is None
+    assert events[0]["error"] == "Python script slow.py (step 1 of 1) timed out after 1 seconds and was stopped."
+    assert events[0]["checksum"] == hashlib.sha256(slow.read_bytes()).hexdigest()
+
+
+def test_interpreter_that_cannot_start_leaves_a_failed_step_record(tmp_path, monkeypatch):
+    scripts = _write_scripts(tmp_path / "scripts")
+    target = tmp_path / "Downloads"
+    target.mkdir()
+
+    def refuse(*_args, **_kwargs):
+        raise OSError(11, "Resource temporarily unavailable")
+
+    monkeypatch.setattr(flow_python.subprocess, "run", refuse)
+    events = []
+    with pytest.raises(RuntimeError, match=r"fetch_orders\.py \(step 1 of 2\) could not be started: .*Resource temporarily unavailable") as failure:
+        flow_worker.execute_python_job(
+            _worker_job(scripts, target), lambda _status, detail: events.append(detail), tmp_path / "profile",
+            run_id=34, register_folder=lambda path: {"ops": []},
+        )
+    assert isinstance(failure.value.__cause__, OSError)
+    assert not any(detail["stage"] in ("python_step_complete", "python_complete") for detail in events)
+    failed = [detail for detail in events if detail["stage"] == "python_step_failed"]
+    assert len(failed) == 1 and failed[0]["step"] == 1 and failed[0]["script"] == "fetch_orders.py"
+    assert failed[0]["exit_code"] is None and failed[0]["stdout"] == "" and failed[0]["stderr"] == ""
+    assert failed[0]["error"].startswith("Python script fetch_orders.py (step 1 of 2) could not be started: ")
+    assert failed[0]["checksum"] == hashlib.sha256(scripts[0].read_bytes()).hexdigest()
 
 
 def test_xlsx_final_file_is_validated_as_a_workbook(tmp_path):

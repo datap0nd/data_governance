@@ -52,7 +52,7 @@ def row_progress(db, run):
     prepare_stages = {"configuring", "report_execution", "report_rendering", "file_export", "download_waiting",
                       "download_progress", "download_stall_warning", "file_transfer", "file_normalization",
                       "file_validation", "local_file_copy", "outlook_attachment_transfer", "parallel_downloads",
-                      "python_scripts", "python_step"}
+                      "python_scripts", "python_step", "python_step_complete"}
     prepared = bool(acquired or after_download or stages & prepare_stages)
     normalized = after_download or (acquired == count and bool(saved or tasks))
     work = []
