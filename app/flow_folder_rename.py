@@ -81,7 +81,8 @@ def recover(folder: Path, flow_id: int, root: str):
 def _update_paths(db, flow_id: int, old: Path, new: Path):
     # Keep frozen run settings/evidence, changing only paths into the moved tree.
     tables = [
-        ('flows', 'id=?', ('flow_folder', 'target_folder', 'transform_script_path', 'local_file_path')),
+        ('flows', 'id=?', ('flow_folder', 'target_folder', 'transform_script_path', 'local_file_path',
+                           'python_scripts_json')),
         ('flow_runs', 'flow_id=?', ('job_json', 'artifact_json', 'run_folder', 'folder_key')),
         ('flow_run_files', 'run_id IN (SELECT id FROM flow_runs WHERE flow_id=?)',
          ('file_path', 'published_file_path')),
@@ -133,8 +134,11 @@ class FolderSave:
         if db.execute("SELECT 1 FROM flow_runs WHERE flow_id=? AND status IN ('queued','claimed','running')",
                       (self.flow_id,)).fetchone():
             raise ValueError('Wait for the active Flow run to finish before renaming its folder.')
-        for other in db.execute('SELECT id,local_file_path,transform_script_path,target_folder FROM flows WHERE id<>?', (self.flow_id,)):
-            if any(relocated(other[key], old, new) != other[key] for key in ('local_file_path', 'transform_script_path', 'target_folder')):
+        for other in db.execute('SELECT id,local_file_path,transform_script_path,target_folder,python_scripts_json'
+                                ' FROM flows WHERE id<>?', (self.flow_id,)):
+            used = [other[key] for key in ('local_file_path', 'transform_script_path', 'target_folder')]
+            used.append(json.loads(other['python_scripts_json']) if other['python_scripts_json'] else None)
+            if any(relocated(value, old, new) != value for value in used):
                 raise ValueError('Another Flow uses files in this folder. Update that Flow before renaming this folder.')
         for child in old.parent.iterdir():
             if child.name.casefold() == new.name.casefold() and child.name != old.name:

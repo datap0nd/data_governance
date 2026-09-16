@@ -3501,24 +3501,36 @@ def repair_flow_layout(flow_id: int, request: Request):
 
 
 @router.post("/transform-script")
-async def add_transform_script(request: Request, file: UploadFile = File(...)):
-    """Store a user-selected script locally without committing it to the repository."""
+async def add_transform_script(request: Request, file: UploadFile = File(...),
+                               target: Literal["transform", "python"] = "transform"):
+    """Store a user-selected script locally without committing it to the repository.
+
+    ``target=python`` stages a Python-source script under ``<root>/Python/.uploads``
+    so the enforced path policy (scripts inside ``<root>/Python``) accepts it.
+    """
     filename = Path(ntpath.basename(file.filename or "")).name
     suffix = Path(filename).suffix.casefold()
-    if not filename or suffix not in TRANSFORM_SCRIPT_SUFFIXES:
+    if target == "python":
+        if not filename or suffix != ".py":
+            raise HTTPException(400, "Choose a .py Python script.")
+    elif not filename or suffix not in TRANSFORM_SCRIPT_SUFFIXES:
         raise HTTPException(400, "Choose a .py, .ps1, or .exe transformation script.")
     if (not SAFE_NAME_RE.fullmatch(filename) or filename.endswith((".", " "))
             or re.fullmatch(r"(?i)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])", filename.split(".")[0])):
         raise HTTPException(400, "Choose a script with a safe Windows filename.")
+    kind = "Python script" if target == "python" else "transformation script"
     content = await file.read(10 * 1024 * 1024 + 1)
     if not content:
-        raise HTTPException(400, "The selected transformation script is empty.")
+        raise HTTPException(400, f"The selected {kind} is empty.")
     if len(content) > 10 * 1024 * 1024:
-        raise HTTPException(413, "Transformation scripts must be 10 MB or smaller.")
+        raise HTTPException(413, f"{kind.capitalize()}s must be 10 MB or smaller.")
     import uuid
     with get_db() as db:
         root = flow_paths.get_flows_root(db)
-    folder = Path(root) / ".metronome" / "uploads" / str(uuid.uuid4())
+    if target == "python":
+        folder = Path(root) / flow_paths.SOURCE_FOLDERS[PYTHON_SCRIPT_ADAPTER] / ".uploads" / str(uuid.uuid4())
+    else:
+        folder = Path(root) / ".metronome" / "uploads" / str(uuid.uuid4())
     flow_paths.assert_inside(str(folder), root, label="Upload folder")
     folder.mkdir(parents=True, exist_ok=False)
     candidate = folder / filename
@@ -3534,8 +3546,8 @@ async def add_transform_script(request: Request, file: UploadFile = File(...)):
         handle.write(content)
     with get_db() as db:
         log_event(
-            db, "flow_transform_script", None, candidate.name,
-            "added", f"size={len(content)}", get_actor(request),
+            db, "flow_python_script" if target == "python" else "flow_transform_script", None,
+            candidate.name, "added", f"size={len(content)}", get_actor(request),
         )
     return {"script_path": str(candidate), "filename": candidate.name, "file_size": len(content)}
 

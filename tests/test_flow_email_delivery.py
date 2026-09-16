@@ -344,6 +344,29 @@ def test_send_again_rules_and_outcome(flow_db, monkeypatch, outlook):
     assert excinfo.value.status_code == 404
 
 
+def test_python_source_label_names_the_scripts_in_order(flow_db, monkeypatch, tmp_path):
+    monkeypatch.setattr(flows, "launch_local_worker", lambda mode, **kwargs: {"status": "starting"})
+    scripts = [str(tmp_path / "fetch_orders.py"), str(tmp_path / "clean_orders.py")]
+    saved = flows.create_flow(flows.FlowWrite(
+        name="Python orders", source_type="python", python_scripts=scripts,
+        schedule_type="daily", schedule_time="08:00", email_delivery=EMAIL,
+    ), _request())
+    assert saved["source_type"] == "python"
+    with database.get_db() as db:
+        run_id = db.execute(
+            """INSERT INTO flow_runs(flow_id, trigger_type, status, job_json, created_at, finished_at)
+               VALUES (?, 'manual', 'succeeded', '{}', '2026-09-16T08:00:00', '2026-09-16T08:01:00')""",
+            (saved["id"],),
+        ).lastrowid
+        context = delivery.run_context(db, run_id)
+    assert context["source_type"] == "python"
+    assert delivery._source_label(context) == "Python scripts: fetch_orders.py \u2192 clean_orders.py"
+    assert "Python scripts: fetch_orders.py \u2192 clean_orders.py" in delivery.build_message(context, attach=False)["html_body"]
+    # Unreadable script metadata degrades to the label without inventing names.
+    assert delivery._source_label({"source_type": "python", "python_scripts_json": "{bad"}) == "Python scripts: "
+    assert delivery._source_label({"source_type": "python", "python_scripts_json": None}) == "Python scripts: "
+
+
 def test_retry_runs_resolve_the_source_files(flow_db, monkeypatch):
     saved = _saved_flow(monkeypatch)
     source_id, _ = _finish(saved["id"])

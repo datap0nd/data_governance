@@ -16,6 +16,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
+from app import flow_python
 from app.database import get_db
 
 EMAIL_PATTERN = re.compile(r"^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$")
@@ -180,6 +181,8 @@ def _source_label(context: dict) -> str:
         return f"Outlook Inbox subject containing {context.get('outlook_subject_contains')!r}"
     if context.get("source_type") == "file":
         return f"Configured file {context.get('local_file_path')}"
+    if context.get("source_type") == "python":
+        return "Python scripts: " + flow_python.describe(_loads(context.get("python_scripts_json"), []))
     return f"{context.get('site_name')} / {context.get('report_name')}"
 
 
@@ -305,7 +308,8 @@ def run_context(db, run_id: int) -> dict | None:
                   r.created_at, r.started_at, r.finished_at, r.job_json, r.progress_json,
                   r.sql_outcome_json, r.email_status, r.email_detail, r.email_dispatch_id,
                   f.name AS flow_name, f.source_type, f.outlook_subject_contains,
-                  f.local_file_path, s.name AS site_name, rep.name AS report_name,
+                  f.local_file_path, f.python_scripts_json,
+                  s.name AS site_name, rep.name AS report_name,
                   p.name AS owner_name
              FROM flow_runs r
              JOIN flows f ON f.id = r.flow_id

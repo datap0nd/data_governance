@@ -13245,7 +13245,7 @@ function _bindFlowWorkspace() {
             try {
                 const body = new FormData();
                 body.append("file", file, file.name);
-                const saved = await apiPostForm("/api/flows/transform-script", body);
+                const saved = await apiPostForm("/api/flows/transform-script?target=python", body);
                 input.value = saved.script_path;
                 input.dispatchEvent(new Event("input", {bubbles: true}));
                 toast(`Python script added: ${saved.filename}`);

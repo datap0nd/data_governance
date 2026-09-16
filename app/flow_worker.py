@@ -7282,10 +7282,10 @@ def execute_python_job(
             environment=os.environ.copy(),
             flow_name=job["flow"]["name"], run_id=run_id,
             output_format=output_format, timeout_seconds=timeout_seconds,
-            progress=lambda index, total, script: report_progress("running", {
+            progress=lambda index, total, script, checksum: report_progress("running", {
                 "stage": "python_step",
                 "message": f"Running script {index} of {total}: {script.name}.",
-                "step": index, "steps": total, "script": script.name,
+                "step": index, "steps": total, "script": script.name, "checksum": checksum,
             }),
         )
     with timings.measure("file_normalization", report_id=job.get("report", {}).get("id")):
@@ -7325,6 +7325,7 @@ def execute_python_job(
         "results": [
             {
                 "step": item["index"], "script": item["script_name"], "output": item["output_path"],
+                "checksum": item["script_checksum"],
                 "exit_code": item["exit_code"], "duration_ms": item["duration_ms"],
                 "stdout": item["stdout"], "stderr": item["stderr"],
             }

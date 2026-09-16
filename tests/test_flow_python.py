@@ -4,6 +4,7 @@ Synthetic only. Scripts run with the test interpreter inside tmp_path; no
 PostgreSQL server or portal is contacted (SQL and view refresh are stubbed).
 """
 import csv
+import hashlib
 import json
 import subprocess
 import sys
@@ -11,11 +12,12 @@ import textwrap
 from pathlib import Path
 
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
 
 from app import database, flow_activity, flow_browser, flow_paths, flow_python, flow_sql, flow_worker
 from app import flow_view_refresh
-from app.routers import flow_groups, flows, pipelines
+from app.routers import flow_groups, flows, pipelines, system_paths
 from test_flows import flow_db, _request
 
 
@@ -260,6 +262,31 @@ def test_python_flow_update_changes_scripts_and_source_category_is_fixed(flow_db
     assert failure.value.status_code == 409
 
 
+def test_renaming_a_python_flow_relocates_scripts_kept_in_its_folder(flow_db, tmp_path):
+    root = tmp_path / "managed"
+    system_paths.put_paths(system_paths.PathsWrite(flows_root=str(root), create=True, enforced=True), _request())
+    saved = flows.create_flow(_python_flow(_write_scripts(root / "Python" / "seed")[:1]), _request())
+    # The Flow's own Scripts folder is the natural, enforcement-accepted home for its scripts.
+    own = _write_scripts(Path(saved["flow_folder"]) / "Scripts")
+    saved = flows.update_flow(saved["id"], _python_flow(own), _request())
+    assert saved["python_scripts"] == [str(item) for item in own]
+    renamed = flows.update_flow(saved["id"], _python_flow(own, name="Python orders renamed"), _request())
+    folder = Path(renamed["flow_folder"])
+    assert folder == Path(saved["flow_folder"]).with_name("Python orders renamed") and not Path(saved["flow_folder"]).exists()
+    assert renamed["python_scripts"] == [str(folder / "Scripts" / item.name) for item in own]
+    assert all(Path(item).is_file() for item in renamed["python_scripts"])
+    with database.get_db() as db:
+        assert json.loads(db.execute(
+            "SELECT python_scripts_json FROM flows WHERE id=?", (saved["id"],),
+        ).fetchone()[0]) == renamed["python_scripts"]
+    # A rename never silently breaks another Flow whose scripts live in this folder.
+    flows.create_flow(_python_flow(renamed["python_scripts"], name="Python reuse"), _request())
+    with pytest.raises(HTTPException) as failure:
+        flows.update_flow(saved["id"], _python_flow(renamed["python_scripts"], name="Python orders again"), _request())
+    assert failure.value.status_code == 409 and "Another Flow uses files in this folder" in failure.value.detail
+    assert folder.is_dir() and all(Path(item).is_file() for item in renamed["python_scripts"])
+
+
 # --- Worker execution -------------------------------------------------------
 
 def test_scripts_run_in_order_with_the_worker_interpreter(tmp_path):
@@ -296,9 +323,14 @@ def test_scripts_run_in_order_with_the_worker_interpreter(tmp_path):
     assert "Running 2 Python script(s) in order: fetch_orders.py \u2192 enrich_orders.py." == events[0][1]["message"]
     assert stages.count("python_step") == 2
     assert [detail["script"] for _, detail in events if detail["stage"] == "python_step"] == ["fetch_orders.py", "enrich_orders.py"]
+    # Every step event and the completion summary carry the SHA-256 of the script that ran.
+    expected = [(script.name, hashlib.sha256(script.read_bytes()).hexdigest()) for script in scripts]
+    assert [(detail["script"], detail["checksum"]) for _, detail in events if detail["stage"] == "python_step"] == expected
+    assert [(item["script_name"], item["script_checksum"]) for item in records] == expected
     assert stages[-1] == "python_complete"
     assert events[-1][1]["message"].startswith("Ran 2 script(s); final CSV Python_orders.csv is ")
     assert [item["step"] for item in events[-1][1]["results"]] == [1, 2]
+    assert [(item["script"], item["checksum"]) for item in events[-1][1]["results"]] == expected
     assert [item["phase"] for item in timings] == ["python_scripts", "file_normalization", "total"]
 
 
@@ -307,9 +339,19 @@ def test_failing_script_names_step_and_stderr(tmp_path):
     failing = tmp_path / "scripts" / "clean_orders.py"
     failing.write_text("import sys\nprint('partial output')\nsys.stderr.write(\"KeyError: 'region'\\n\")\nsys.exit(3)\n")
     target = tmp_path / "Downloads"
+    target.mkdir()
+    events = []
     with pytest.raises(RuntimeError, match=r"Python script clean_orders\.py \(step 2 of 2\) failed with exit code 3: KeyError: 'region'"):
-        _run(_worker_job([scripts[0], failing], target), target, tmp_path / "profile")
+        flow_worker.execute_python_job(
+            _worker_job([scripts[0], failing], target), lambda _status, detail: events.append(detail),
+            tmp_path / "profile", run_id=31, register_folder=lambda path: {"ops": []},
+        )
     assert (tmp_path / "Downloads").is_dir()
+    # The failed step was announced with its checksum before it ran, so the audit trail keeps it.
+    failed = [detail for detail in events if detail["stage"] == "python_step"][-1]
+    assert failed["step"] == 2 and failed["script"] == "clean_orders.py"
+    assert failed["checksum"] == hashlib.sha256(failing.read_bytes()).hexdigest()
+    assert not any(detail["stage"] == "python_complete" for detail in events)
 
 
 def test_script_that_writes_nothing_fails_on_missing_output(tmp_path):
@@ -548,6 +590,60 @@ def test_python_surfaces_activity_groups_resume_and_paths(flow_db, tmp_path):
     flow_paths.assert_job_paths(job)
     with pytest.raises(flow_paths.PathOutsideRoot, match="Python script must be inside"):
         flow_paths.assert_job_paths({**job, "paths": {**job["paths"], "enforced": True}})
+
+
+def test_browse_upload_stages_python_scripts_inside_the_enforced_folder(flow_db, tmp_path):
+    root = tmp_path / "managed"
+    system_paths.put_paths(system_paths.PathsWrite(flows_root=str(root), create=True, enforced=True), _request())
+    app = FastAPI()
+    app.include_router(flows.router)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/flows/transform-script", params={"target": "python"},
+            files={"file": ("fetch_orders.py", FETCH_SCRIPT.encode("utf-8"), "text/x-python")},
+        )
+        assert response.status_code == 200, response.text
+        saved = response.json()
+        assert saved["filename"] == "fetch_orders.py" and saved["file_size"] == len(FETCH_SCRIPT.encode("utf-8"))
+        staged = Path(saved["script_path"])
+        assert staged.is_file() and staged.read_text(encoding="utf-8") == FETCH_SCRIPT
+        assert staged.parent.parent == root / "Python" / ".uploads"
+        assert flow_paths.is_inside(str(staged), str(root / "Python"))
+        # Only Python files may be staged as Python-source scripts.
+        rejected = client.post(
+            "/api/flows/transform-script", params={"target": "python"},
+            files={"file": ("clean.ps1", b"Write-Output 'x'", "text/plain")},
+        )
+        assert rejected.status_code == 400 and "Choose a .py Python script." in rejected.text
+        empty = client.post(
+            "/api/flows/transform-script", params={"target": "python"},
+            files={"file": ("empty.py", b"", "text/x-python")},
+        )
+        assert empty.status_code == 400 and "The selected Python script is empty." in empty.text
+        # Transformation uploads keep their own staging area.
+        transform = client.post(
+            "/api/flows/transform-script",
+            files={"file": ("transform.py", b"print('x')\n", "text/x-python")},
+        ).json()
+        assert Path(transform["script_path"]).parent.parent == root / ".metronome" / "uploads"
+    with database.get_db() as db:
+        entities = [row[0] for row in db.execute(
+            "SELECT entity_type FROM event_log WHERE action='added' AND entity_name IN ('fetch_orders.py','transform.py') ORDER BY id",
+        ).fetchall()]
+    assert entities == ["flow_python_script", "flow_transform_script"]
+    # The hidden staging area can never be allocated as a Flow's managed folder.
+    hidden = flows.create_flow(_python_flow([staged], name=".uploads"), _request())
+    assert Path(hidden["flow_folder"]) == root / "Python" / "uploads"
+    # The enforced path policy accepts the staged script for a Python Flow.
+    rules = {"flows_root": str(root), "source_folder": "Python", "enforced": True, "version": 1}
+    flow = {"source_type": "python", "target_folder": str(root / "Python" / "Flow" / "Downloads"),
+            "python_scripts": [str(staged)]}
+    flow_paths.validate_flow(flow, rules)
+    with pytest.raises(flow_paths.PathOutsideRoot, match="Python script must be inside"):
+        flow_paths.validate_flow({**flow, "python_scripts": [transform["script_path"]]}, rules)
+    created = flows.create_flow(_python_flow([staged]), _request())
+    assert created["python_scripts"] == [str(staged)]
+    assert flow_paths.is_inside(created["target_folder"], str(root / "Python"))
 
 
 def test_standalone_dry_run_reports_python_source_and_creates_nothing(flow_db, tmp_path):

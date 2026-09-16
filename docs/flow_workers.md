@@ -100,7 +100,7 @@ when no process ID is available. An unknown worker is never mapped to slot 1.
 
 The builder's Parallel downloads setting is 1–32, default 1. More than one
 requires a managed Flow folder. Both headed and headless browsers support it.
-Local files, Outlook and SQL-only retries stay sequential. Flows > Settings
+Local files, Outlook, Python scripts and SQL-only retries stay sequential. Flows > Settings
 also has a limit per portal (1–32), default 4; the shared total and browser-mode limits
 always apply. Saved portal limits remain unchanged. Individual recordings,
 local-file flows and Outlook acquisition remain sequential.

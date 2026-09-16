@@ -32,7 +32,7 @@ def frozen(saved):
 
 
 @pytest.mark.parametrize('name,expected', [('Daily orders', 'Daily orders'), ('bad/name?', 'badname'),
-    ('CON.py', 'Flow CON.py'), ('  Daily   orders. ', 'Daily orders'), ('...', 'Flow'),
+    ('CON.py', 'Flow CON.py'), ('  Daily   orders. ', 'Daily orders'), ('...', 'Flow'), ('.uploads', 'uploads'),
     ('x' * 100, 'x' * 72)])
 def test_folder_names_are_safe_and_do_not_append_identity(name, expected):
     assert flow_layout.flow_folder_slug(name, 987654) == expected

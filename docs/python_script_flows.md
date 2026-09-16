@@ -49,7 +49,10 @@ progress events for auditability.
 
 ## Environment variables
 
-Every step receives the worker's environment plus:
+Every step receives the worker's environment plus the variables below. Scripts
+inherit the whole worker process environment, including any credentials the
+worker service was started with (for example `DG_UPLOAD_PG*`), so only trusted
+scripts should be configured.
 
 | Variable | Value |
 | --- | --- |
@@ -118,8 +121,11 @@ Web. While enforcement is off, scripts may live anywhere the worker service
 account can read. When **Enforce paths** is on, every configured script must be
 inside `<root>/Python`, and the Flow's target folder must be inside its own
 managed folder; Save and queued jobs reject other locations. Scripts uploaded
-through **Browse...** in the builder are staged under `.metronome/uploads` in
-unique directories.
+through **Browse...** in the builder are staged under `<root>/Python/.uploads`
+in unique directories, so enforcement accepts them as configured.
+Scripts kept inside the Flow's own managed folder (for example its `Scripts`
+subfolder) follow that folder when the Flow is renamed; the rename is refused
+while another Flow still uses scripts from it.
 
 ## Minimal two-script example
 

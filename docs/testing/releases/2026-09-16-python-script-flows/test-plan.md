@@ -35,13 +35,16 @@ with in-memory data and touches no API, worker or file.
 | P-10 | `flow_groups.module_of` for a Python Flow; `GroupWrite(module="Python")`. | Returns `'Python'`; the literal accepts it. |
 | P-11 | After `create_flow`, read `saved["standalone"]["state"]` and run the generated `run_flow.py --dry-run` with `sys.executable`. | State is `current`; the dry run prints `"source": "python"` and creates nothing. |
 | P-12 | `tests/test_flow_layout.py` parametrized layout cases with `source == "python"`. | Managed folder layout, ownership manifest and repair behave as for the other sources. |
+| P-13 | `POST /api/flows/transform-script?target=python` with a `.py` file, with a `.ps1` file and with an empty `.py` file; a plain (transformation) upload; then `flow_paths.validate_flow` with enforcement on for both staged paths. | The `.py` is staged under `<root>/Python/.uploads/<uuid>/` and accepted by the enforced policy; the `.ps1` is rejected with "Choose a .py Python script."; the empty file is rejected with "The selected Python script is empty."; the plain upload still lands under `.metronome/uploads` and is rejected as a Python script; the event log records the Python upload as `flow_python_script` and the plain one as `flow_transform_script`; a Flow named `.uploads` gets the folder `<root>/Python/uploads` (`flow_folder_slug` strips leading dots), so the staging area is never a Flow folder. |
+| P-14 | `flow_email_delivery.run_context` and `_source_label` for a Python Flow's run; `_source_label` with unreadable or missing `python_scripts_json`. | The delivery HTML and label read "Python scripts: fetch_orders.py → clean_orders.py"; unreadable metadata degrades to "Python scripts: " without inventing names. |
+| P-15 | Move a Python Flow's scripts into its own `<flow_folder>/Scripts`, rename the Flow through `update_flow`; then create a second Flow using those scripts and rename the first again. | After the rename `python_scripts` (row and API) point into the moved folder and every path exists; the second rename is refused with 409 "Another Flow uses files in this folder" and the folder and scripts stay in place. |
 
 ### Worker execution
 
 | ID | Actions | Expected result / evidence |
 | --- | --- | --- |
-| W-01 | Two fixture scripts (script 1 writes a CSV with a header from nothing; script 2 reads `--input`, adds a column, writes `--output`); run `execute_python_job` with the real `sys.executable`. | Final CSV holds the added column; `steps/step-1-<stem>.csv` holds the intermediate; each step record has index, checksum, exit code 0, duration, stdout; progress stages `python_scripts`, `python_step` (1 of 2, 2 of 2) and `python_complete`; the artifact has `status == "saved"` and `python_steps`. |
-| W-02 | Script 2 exits 3 after writing to stderr. | `RuntimeError` names the script, "step 2 of 2", exit code 3 and the stderr text; the run fails. |
+| W-01 | Two fixture scripts (script 1 writes a CSV with a header from nothing; script 2 reads `--input`, adds a column, writes `--output`); run `execute_python_job` with the real `sys.executable`. | Final CSV holds the added column; `steps/step-1-<stem>.csv` holds the intermediate; each step record has index, checksum, exit code 0, duration, stdout; progress stages `python_scripts`, `python_step` (1 of 2, 2 of 2) and `python_complete`; each `python_step` event and each `python_complete` result carries the script's SHA-256 checksum; the artifact has `status == "saved"` and `python_steps`. |
+| W-02 | Script 2 exits 3 after writing to stderr. | `RuntimeError` names the script, "step 2 of 2", exit code 3 and the stderr text; the run fails; the step-2 `python_step` event was emitted with its checksum before the failure and no `python_complete` event follows. |
 | W-03 | A script exits 0 without creating its `--output`. | `RuntimeError` mentions `--output`; the run fails. |
 | W-04 | Configure a script path that does not exist. | The run fails before `register_folder` is called and before any run folder exists. |
 | W-05 | A script that sleeps past the configured timeout (fixture uses a short `timeout_seconds`). | The step is killed, the run fails naming the script and step, and the timeout is reported. |
@@ -57,7 +60,7 @@ with in-memory data and touches no API, worker or file.
 | ID | Actions | Expected result / evidence |
 | --- | --- | --- |
 | U-01 | Serve `app` locally and open `/static/recording-preview/python-scripts.html` at 1280×900 and 390×844. Choose **Create flow**. | The source picker shows a fifth card **Python scripts** between From file and Record a portal flow; the grid wraps 3+2 without horizontal overflow. |
-| U-02 | Open the Python card. Add a second script row, then remove it; add it again and fill both paths. | Rows renumber; Remove is disabled when one row remains; the help text states order, `--output`, `--input` from the second script, the `METRONOME_FLOW_*` variables and in-place execution. |
+| U-02 | Open the Python card. Add a second script row, then remove it; add it again and fill both paths, one through **Browse...** (the preview's in-memory upload stub). | Rows renumber; Remove is disabled when one row remains; Browse fills that row's path with the staged script; the help text states order, `--output`, `--input` from the second script, the `METRONOME_FLOW_*` variables and in-place execution. |
 | U-03 | Switch Output between **Final file** and **SQL table**. | File fields (file type, filename, output mode, destination) hide under SQL and the SQL controls plus the materialized-view refresh block appear; switching file type swaps the filename extension; under SQL the collected payload sends `file_format: "csv"`. |
 | U-04 | Choose the preview outcome "validation error" and Save. | "Python scripts must be .py files." is shown beside Save; the form keeps both scripts and the chosen output. |
 | U-05 | Choose "saved" and Save. | The Flows list shows a **Python** group; the row's source is the script basenames joined with " → ", type "2 Python script(s)" with "Final CSV → SQL"; the browser cell shows "—". |
@@ -69,7 +72,7 @@ with in-memory data and touches no API, worker or file.
 Backend focused set, from the checkout with its owned `.venv`:
 
 ```bash
-cd /home/user/data_governance && .venv/bin/python tools/check.py verify --test tests/test_flow_python.py --test tests/test_flow_layout.py --test tests/test_flow_local_file.py --test tests/test_flow_outlook.py --test tests/test_flow_standalone.py --test tests/test_flow_topic_groups.py --test tests/test_flow_activity.py --test tests/test_flow_paths.py --syntax app/flow_python.py --syntax app/flow_worker.py --syntax app/routers/flows.py
+cd /home/user/data_governance && .venv/bin/python tools/check.py verify --test tests/test_flow_python.py --test tests/test_flow_layout.py --test tests/test_flow_local_file.py --test tests/test_flow_outlook.py --test tests/test_flow_standalone.py --test tests/test_flow_topic_groups.py --test tests/test_flow_activity.py --test tests/test_flow_paths.py --test tests/test_flow_email_delivery.py --syntax app/flow_python.py --syntax app/flow_worker.py --syntax app/routers/flows.py
 ```
 
 Frontend contract, syntax and preview walk:

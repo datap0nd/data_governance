@@ -93,6 +93,7 @@ def test_layout_refuses_foreign_marker_and_cleanup_preserves_user_content(tmp_pa
     folder = flow_layout.create_flow_folder(str(tmp_path / "root"), "web_export", "CON.py", 1)
     assert folder.name == "Flow CON.py"
     assert "/" not in flow_layout.flow_folder_slug("bad/name", 2)
+    assert flow_layout.flow_folder_slug(".uploads", 1) == "uploads"  # hidden staging names stay unreachable
     with pytest.raises(ValueError, match="another flow"):
         flow_layout.read_manifest(folder, 2)
     (folder / "Scripts" / "mine.py").write_text("keep")

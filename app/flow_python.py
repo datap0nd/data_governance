@@ -158,9 +158,9 @@ def run_scripts(scripts: list[Path], final_output: Path, steps_folder: Path, *, 
     for index, script in enumerate(scripts, start=1):
         output = final_output if index == total else steps_folder / f"step-{index}-{script.stem}.csv"
         label = f"Python script {script.name} (step {index} of {total})"
-        if progress is not None:
-            progress(index, total, script)
         checksum = _checksum(script)
+        if progress is not None:
+            progress(index, total, script, checksum)
         command = script_command(script, previous_output, output)
         step_env = step_environment(
             environment, input_path=previous_output, output_path=output, results_dir=steps_folder,

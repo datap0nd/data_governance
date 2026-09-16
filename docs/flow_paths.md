@@ -15,7 +15,9 @@ application paths, not the filesystem permissions of transformation processes.
 Browser profiles, credentials and private legacy recovery stores retain their
 existing ownership. Historic recovery jobs retain their frozen configuration.
 
-Uploaded scripts are staged under .metronome/uploads in unique directories.
+Uploaded transformation scripts are staged under .metronome/uploads in unique
+directories; Python-source scripts uploaded from the builder are staged under
+Python/.uploads so enforcement accepts them.
 No user files are moved or deleted by changing these settings.
 
 ## Managed flow folders

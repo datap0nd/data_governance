@@ -119,7 +119,7 @@ window.apiPut=async(path,body)=>{
 window.apiPatch=async(path,body)=>{record('PATCH',path,body);const target=data.flows.find(f=>f.id===flowId(path));if(target)Object.assign(target,body);return {...target,...body};};
 window.apiPostForm=async(path,body)=>{
     record('POST',path);
-    if(path==='/api/flows/transform-script'){const file=body.get('file');const filename=(file?.name||'script.py');return {script_path:`C:\\Metronome\\Flows\\.metronome\\uploads\\3f2c9a\\${filename}`,filename,file_size:file?.size||0};}
+    if(path.split('?')[0]==='/api/flows/transform-script'){const file=body.get('file');const filename=(file?.name||'script.py');const staged=path.includes('target=python')?'Python\\.uploads':'.metronome\\uploads';return {script_path:`C:\\Metronome\\Flows\\${staged}\\3f2c9a\\${filename}`,filename,file_size:file?.size||0};}
     throw Error('Preview only.');
 };
 window.apiPost=async path=>{
