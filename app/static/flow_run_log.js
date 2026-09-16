@@ -14,7 +14,8 @@ function render(run) {
     const sql = run.job?.sql_handoff || {};
     const transformation = run.job?.transformation || {};
     const terminal = ["succeeded", "failed", "cancelled"].includes(run.status);
-    const savedArtifacts = (run.artifacts || []).filter(item => item.file_path && item.filename);
+    const artifacts = Array.isArray(run.artifacts) ? run.artifacts : [];
+    const savedArtifacts = artifacts.filter(item => item?.file_path && item.filename);
     // A confirmed commit rules out an SQL-only retry: appending again would duplicate rows. Recovery then means refreshing views.
     const reconciliationBlocksRetry = run.sql_reconciliation_required && sql.mode === "append";
     const canRetrySql = terminal && !excelFailure && sql.enabled && savedArtifacts.length > 0 && !reconciliationBlocksRetry && !run.sql_outcome?.committed && (!run.downloads || run.downloads.completed === run.downloads.total);
@@ -37,7 +38,7 @@ function render(run) {
         : sqlOutcome ? (sql.mode === "replace" ? "SQL completion was interrupted; rerun the replace operation" : "SQL commit outcome uncertain; reconcile the target before rerunning")
         : "SQL insertion has not started";
     const timingRows = (run.timings || []).map(item => `<tr><td>${esc(label(item.phase))}</td><td>${esc(duration(item.duration_ms))}</td><td>${esc(item.status)}</td><td>${esc(item.item_count ?? "")}</td></tr>`).join("");
-    const fileRows = (run.files?.length ? run.files : run.artifacts || []).map(item => `<tr><td>${esc(item.filename)}</td><td>${esc(item.period_key || "Full range")}</td><td>${esc(item.row_count ?? "Unknown")}</td><td>${esc(item.file_size ?? "Unknown")}</td><td class="flow-log-path">${esc(item.file_path)}</td></tr>`).join("");
+    const fileRows = (run.files?.length ? run.files : artifacts).map(item => `<tr><td>${esc(item.filename)}</td><td>${esc(item.period_key || "Full range")}</td><td>${esc(item.row_count ?? "Unknown")}</td><td>${esc(item.file_size ?? "Unknown")}</td><td class="flow-log-path">${esc(item.file_path)}</td></tr>`).join("");
     const events = (run.events || []).map(item => `<article class="flow-log-event ${item.error ? "is-error" : ""}"><header><time>${esc(stamp(item.created_at))}</time><strong>${esc(label(item.stage || item.status))}</strong><span>${esc(item.status)}</span></header><p>${esc(item.message || item.error || "No message")}</p>${item.error ? `<div class="flow-log-error"><strong>Error</strong><pre>${esc(item.error)}</pre></div>` : ""}${item.traceback ? `<details><summary>Full traceback</summary><pre>${esc(item.traceback)}</pre></details>` : ""}<details><summary>Event details</summary><pre>${esc(JSON.stringify(item.details || {}, null, 2))}</pre></details></article>`).join("");
     document.title = `Run #${run.id} logs - Metronome`;
     document.getElementById("flow-run-log").innerHTML = `

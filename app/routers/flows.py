@@ -460,6 +460,16 @@ def _loads(value: str | None, default):
         return default
 
 
+def _artifact_list(value: str | None) -> list[dict[str, Any]]:
+    """Return the public artifact collection for current and legacy runs."""
+    parsed = _loads(value, [])
+    if isinstance(parsed, list):
+        return [item for item in parsed if isinstance(item, dict)]
+    if isinstance(parsed, dict) and ({"file_path", "filename"} & parsed.keys()):
+        return [parsed]
+    return []
+
+
 def _validate_http_url(value: str, label: str) -> str:
     value = value.strip()
     parts = urlsplit(value)
@@ -2222,7 +2232,7 @@ def list_runs(flow_id: int | None = None, limit: int = Query(default=100, ge=1, 
             result.append({
                 **public_row, "job": _public_flow_job(job),
                 "progress": _loads(row["progress_json"], {}),
-                "artifacts": _loads(row["artifact_json"], []),
+                "artifacts": _artifact_list(row["artifact_json"]),
                 "timings": [dict(item) for item in timings],
                 "sql_outcome": _loads(public_row.pop("sql_outcome_json", None), None),
                 "view_refresh": _view_refresh_summary(db, row),
@@ -2264,7 +2274,7 @@ def get_run(run_id: int):
             **public_row,
             "job": _public_flow_job(_loads(row["job_json"], {})),
             "progress": _loads(row["progress_json"], {}),
-            "artifacts": _loads(row["artifact_json"], []),
+            "artifacts": _artifact_list(row["artifact_json"]),
             "timings": [
                 {**dict(item), "metadata": _loads(item["metadata_json"], {})}
                 for item in timings

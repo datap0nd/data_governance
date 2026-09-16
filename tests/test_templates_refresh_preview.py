@@ -278,8 +278,10 @@ def test_replicate_copies_recording_by_default_into_a_paused_new_flow(preview):
 
 def test_run_history_and_run_log_show_stages_and_retry_only_unfinished_views(preview):
     page, evidence, _ = preview
+    page.evaluate("previewData.runs[0].artifacts={legacy_path:'fictional.xlsx'}")
     page.evaluate("previewShow('runs')")
     row = page.locator('tr', has_text='#41')
+    expect(row).to_be_visible()
     expect(row).to_contain_text('Materialized views: 1 of 3 refreshed · SQL insertion committed')
     expect(row.get_by_role('button', name='Retry view refresh')).to_be_visible()
     expect(page.locator('tr', has_text='#40')).to_contain_text('1 of 1 refreshed')
