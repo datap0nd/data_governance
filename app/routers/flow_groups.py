@@ -13,7 +13,7 @@ FlowId = Annotated[int, Field(strict=True, gt=0)]
 
 class GroupWrite(BaseModel):
     name: str = Field(min_length=1, max_length=80)
-    module: Literal['ASAP', 'GSCM', 'Outlook', 'Local', 'Web']
+    module: Literal['ASAP', 'GSCM', 'Outlook', 'Local', 'Python', 'Web']
     classification: Literal['production', 'draft'] = 'production'
     flow_ids: list[FlowId] = Field(min_length=1, max_length=1000)
     version: int | None = Field(default=None, strict=True, ge=1)
@@ -36,6 +36,8 @@ def module_of(flow):
         return 'Local'
     if flow['source_type'] == 'outlook':
         return 'Outlook'
+    if flow['source_type'] == 'python':
+        return 'Python'
     return {'asap_portal': 'ASAP', 'gscm_portal': 'GSCM'}.get(flow['source_adapter'], 'Web')
 
 

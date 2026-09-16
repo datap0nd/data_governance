@@ -1,6 +1,7 @@
 """Managed Flow paths. This is path containment, not process isolation."""
 from __future__ import annotations
 
+import json
 import ntpath
 import os
 import re
@@ -9,6 +10,7 @@ from pathlib import Path
 SOURCE_FOLDERS = {
     "asap_portal": "ASAP", "gscm_portal": "GSCM",
     "outlook_attachment": "Outlook", "local_file": "Local", "web_export": "Web",
+    "python_script": "Python",
 }
 
 
@@ -163,6 +165,15 @@ def validate_flow(flow: dict, rules: dict | None, *, resolve=True):
         assert_inside(flow.get("target_folder"), source, label="Target folder", resolve=resolve)
     elif rules.get("enforced"):
         assert_inside(flow.get("local_file_path"), str(Path(root) / "Local"), label="Source file", resolve=resolve)
+    if flow.get("source_type") == "python" and rules.get("enforced"):
+        scripts = flow.get("python_scripts")
+        if scripts is None:
+            try:
+                scripts = json.loads(flow.get("python_scripts_json") or "[]")
+            except (TypeError, ValueError):
+                scripts = []
+        for script in (scripts if isinstance(scripts, list) else []):
+            assert_inside(str(script), str(Path(root) / "Python"), label="Python script", resolve=resolve)
     if flow.get("transform_enabled") and (rules.get("enforced") or rules.get("scripts_folder")):
         assert_inside(flow.get("transform_script_path"), rules.get("scripts_folder") or root, label="Transformation script", resolve=resolve)
 
@@ -188,6 +199,7 @@ def assert_job_paths(job: dict):
     validate_flow({**job.get("flow", {}),
         "target_folder": job.get("downloads", {}).get("target_folder"),
         "local_file_path": job.get("local_file", {}).get("path"),
+        "python_scripts": (job.get("python_source") or {}).get("scripts"),
         "transform_enabled": job.get("transformation", {}).get("enabled"),
         "transform_script_path": job.get("transformation", {}).get("script_path")}, rules)
     for section in ("resume", "sql_retry"):

@@ -48,7 +48,7 @@ def test_setting_root_does_not_enable_enforcement_and_diagnostics_do_not_probe(f
     saved = flows.create_flow(_flow(site["id"], report["id"]), _request())
     root = str(tmp_path / "managed")
     state = system_paths.put_paths(system_paths.PathsWrite(flows_root=root, create=True), _request())
-    assert not state["enforced"] and len(state["source_folders"]) == 5
+    assert not state["enforced"] and len(state["source_folders"]) == 6
     assert (Path(root) / "Web").is_dir()
     assert state["flows_outside_root"][0]["id"] == saved["id"]
     with database.get_db() as db:

@@ -17,7 +17,7 @@ LAYOUT_VERSION = 1
 
 def flow_folder_slug(name: str, flow_id: int) -> str:
     name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", name)
-    name = re.sub(r"\s+", " ", name).strip().rstrip(". ")[:72].rstrip(". ") or "Flow"
+    name = re.sub(r"\s+", " ", name).strip().strip(". ")[:72].rstrip(". ") or "Flow"
     if re.fullmatch(r"(?i)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])", name.split(".")[0]):
         name = "Flow " + name
     return name

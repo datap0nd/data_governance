@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 from app.config import DB_PATH, UPLOAD_PGHOST, UPLOAD_PGPORT
 from app.database import get_db
 from app import flow_paths, flow_layout, flow_capacity, flow_tasks, flow_parallel, flow_browser, flow_recording, flow_view_refresh
-from app import flow_email_delivery, flow_excel
+from app import flow_email_delivery, flow_excel, flow_python
 from app.flow_credentials import asap_credential_status, save_asap_credentials
 from app.flow_asap_exports import (
     public_asap_download_types,
@@ -70,7 +70,7 @@ FILE_FORMATS = {"csv", "xlsx", "html", "txt"}
 # workbook to CSV, before header detection. GSCM's toolbar export frames
 # every workbook with a blank first column and a title first row.
 EXCEL_TRIMS = {"none", "first_row_and_column"}
-SOURCE_TYPES = {"portal", "outlook", "file"}
+SOURCE_TYPES = {"portal", "outlook", "file", "python"}
 SQL_MODES = {"append", "replace"}
 SCHEDULE_TYPES = {"manual", "daily", "weekly", "monthly"}
 SCAN_MODES = {"full", "partial"}
@@ -85,7 +85,8 @@ ASAP_PORTAL_ADAPTER = "asap_portal"
 GSCM_PORTAL_ADAPTER = "gscm_portal"
 OUTLOOK_ATTACHMENT_ADAPTER = "outlook_attachment"
 LOCAL_FILE_ADAPTER = "local_file"
-INTERNAL_FLOW_ADAPTERS = {OUTLOOK_ATTACHMENT_ADAPTER, LOCAL_FILE_ADAPTER}
+PYTHON_SCRIPT_ADAPTER = flow_python.ADAPTER
+INTERNAL_FLOW_ADAPTERS = {OUTLOOK_ATTACHMENT_ADAPTER, LOCAL_FILE_ADAPTER, PYTHON_SCRIPT_ADAPTER}
 SUPPORTED_LOCAL_FILE_EXTENSIONS = frozenset({
     ".csv", ".xls", ".xlt", ".xlsb", ".xlsx", ".xlsm", ".xltx", ".xltm",
 })
@@ -160,7 +161,7 @@ def _flow_failure_context(db, run_id: int) -> dict | None:
         """SELECT r.id AS run_id, r.flow_id, r.trigger_type, r.requested_by, r.worker_id,
                   r.error, r.created_at, r.started_at, r.finished_at,
                   f.name AS flow_name, f.target_folder, f.source_type,
-                   f.outlook_subject_contains, f.local_file_path,
+                   f.outlook_subject_contains, f.local_file_path, f.python_scripts_json,
                   s.name AS site_name, rep.name AS report_name,
                   p.name AS owner_name, p.email AS owner_email
            FROM flow_runs r
@@ -212,6 +213,8 @@ def _flow_failure_message(context: dict) -> dict:
         if context.get("source_type") == "outlook"
         else f"Configured file {context.get('local_file_path')}"
         if context.get("source_type") == "file"
+        else "Python scripts: " + flow_python.describe(_loads(context.get("python_scripts_json"), []))
+        if context.get("source_type") == "python"
         else f'{context["site_name"]} / {context["report_name"]}'
     )
     rows = [
@@ -689,6 +692,7 @@ class FlowWrite(BaseModel):
     outlook_subject_contains: str | None = Field(default=None, max_length=500)
     local_file_path: str | None = Field(default=None, max_length=2000)
     local_file_worksheet: str | None = Field(default=None, max_length=500)
+    python_scripts: list[str] = Field(default_factory=list, max_length=flow_python.MAX_SCRIPTS)
     export_views: list[str] = Field(default_factory=list, max_length=20)
     download_links: list[str] = Field(default_factory=list, max_length=50)
     enabled: bool = False
@@ -771,7 +775,7 @@ class FlowWrite(BaseModel):
                 raise ValueError('Recorded Flows require a Python transformation.')
         self.source_type = self.source_type.strip().casefold()
         if self.source_type not in SOURCE_TYPES:
-            raise ValueError("Flow source type must be a website report, Outlook attachment, or file.")
+            raise ValueError("Flow source type must be a website report, Outlook attachment, file, or Python scripts.")
         self.target_folder = (self.target_folder or "").strip() or None
         self.output_mode = (self.output_mode or "run_folders").strip().casefold()
         if self.output_mode not in OUTPUT_MODES:
@@ -783,6 +787,7 @@ class FlowWrite(BaseModel):
             str(value).strip() for value in self.download_links if str(value).strip()
         ))
         if self.source_type == "file":
+            self.python_scripts = []
             self.local_file_path = (self.local_file_path or "").strip().strip('"')
             if not self.local_file_path:
                 raise ValueError("Enter the full path and filename to read.")
@@ -827,6 +832,7 @@ class FlowWrite(BaseModel):
             self.filename_template = "{original}"
             self.output_mode = "private_snapshot"
         elif self.source_type == "outlook":
+            self.python_scripts = []
             self.local_file_path = None
             self.local_file_worksheet = None
             self.outlook_subject_contains = (self.outlook_subject_contains or "").strip()
@@ -852,7 +858,44 @@ class FlowWrite(BaseModel):
             # sentinel documents that the attachment basename is authoritative;
             # portal filename rendering never receives it.
             self.filename_template = "{original}"
+        elif self.source_type == "python":
+            # The scripts are the transformation; the last one writes the
+            # final CSV/XLSX that is kept or inserted into SQL.
+            self.python_scripts = flow_python.normalize_scripts(self.python_scripts)
+            self.outlook_subject_contains = None
+            self.local_file_path = None
+            self.local_file_worksheet = None
+            self.site_id = None
+            self.report_id = None
+            self.export_views = []
+            self.download_links = []
+            self.selections = {}
+            self.download_mode = "single"
+            self.period_strategy = "none"
+            self.window_weeks = None
+            self.asap_download_type = None
+            self.export_report_title = None
+            self.export_filter_details = None
+            self.excel_trim = "none"
+            self.excel_worksheets = None
+            self.browser_mode = "headless"
+            self.start_week = None
+            self.end_week = None
+            self.file_format = (self.file_format or "csv").strip().casefold()
+            if self.sql_handoff_enabled:
+                # SQL loads the final CSV from the run folder (Retry SQL relies
+                # on it); the hidden file-output controls never publish it.
+                self.file_format = "csv"
+                self.output_mode = "run_folders"
+            if self.file_format not in flow_python.OUTPUT_FORMATS:
+                raise ValueError("Python Flows produce a CSV or Excel (.xlsx) file.")
+            self.filename_template = _clean_filename_template(
+                self.filename_template or f"{{flow}}.{self.file_format}", self.file_format,
+            )
+            self.transform_enabled = False
+            self.transform_script_path = None
         else:
+            self.python_scripts = []
             self.outlook_subject_contains = None
             self.local_file_path = None
             self.local_file_worksheet = None
@@ -1211,6 +1254,7 @@ def _flow_out(db, flow_id: int, *, include_private_storage: bool = False) -> dic
     result["email_delivery"] = flow_email_delivery.saved_config(result.pop("email_delivery_json", None))
     result["export_views"] = _loads(result.pop("export_views_json", None), [])
     result["download_links"] = _loads(result.pop("download_links_json", None), [])
+    result["python_scripts"] = _loads(result.pop("python_scripts_json", None), [])
     result["schedule_days"] = _loads(result.pop("schedule_days"), [])
     freshness_rule, freshness_health = flow_freshness(row)
     result["freshness_rule"] = freshness_rule
@@ -1345,11 +1389,51 @@ def _local_file_source_ids(db) -> tuple[int, int]:
     return row["site_id"], row["report_id"]
 
 
+def _python_source_ids(db) -> tuple[int, int]:
+    row = db.execute(
+        """SELECT s.id AS site_id, r.id AS report_id
+           FROM flow_sites s JOIN flow_reports r ON r.site_id=s.id
+           WHERE s.adapter=? AND r.source_kind='system'
+           ORDER BY r.id LIMIT 1""",
+        (PYTHON_SCRIPT_ADAPTER,),
+    ).fetchone()
+    if not row:
+        site = db.execute(
+            "SELECT id FROM flow_sites WHERE adapter=? ORDER BY id LIMIT 1",
+            (PYTHON_SCRIPT_ADAPTER,),
+        ).fetchone()
+        if not site:
+            raise HTTPException(
+                500,
+                "The internal Python flow source is missing. Restart Metronome to apply migrations.",
+            )
+        now = _iso(_now())
+        db.execute(
+            """INSERT OR IGNORE INTO flow_reports
+               (site_id, name, report_url, download_text, automation_json, source_kind,
+                stale, enabled, created_at, updated_at)
+               VALUES (?, 'Python scripts', 'python://scripts', 'Run scripts',
+                       '{"kind":"python_script"}', 'system', 0, 1, ?, ?)""",
+            (site["id"], now, now),
+        )
+        report = db.execute(
+            """SELECT id FROM flow_reports
+               WHERE site_id=? AND source_kind='system' ORDER BY id LIMIT 1""",
+            (site["id"],),
+        ).fetchone()
+        if not report:
+            raise HTTPException(500, "The internal Python report could not be created.")
+        return site["id"], report["id"]
+    return row["site_id"], row["report_id"]
+
+
 def _resolve_flow_source(db, body: FlowWrite) -> None:
     if body.source_type == "outlook":
         body.site_id, body.report_id = _outlook_source_ids(db)
     elif body.source_type == "file":
         body.site_id, body.report_id = _local_file_source_ids(db)
+    elif body.source_type == "python":
+        body.site_id, body.report_id = _python_source_ids(db)
     elif body.execution_method == 'recorded' and body.report_id is None:
         site = db.execute('SELECT * FROM flow_sites WHERE id=? AND enabled=1', (body.site_id,)).fetchone()
         if not site or site['adapter'] not in {ASAP_PORTAL_ADAPTER, GSCM_PORTAL_ADAPTER}:
@@ -1484,6 +1568,11 @@ def _validate_flow_selections(db, body: FlowWrite, *, new_flow: bool = False):
         expected_site, expected_report = _local_file_source_ids(db)
         if body.site_id != expected_site or body.report_id != expected_report:
             raise HTTPException(400, "The local-file flow source could not be resolved.")
+        return
+    if body.source_type == "python":
+        expected_site, expected_report = _python_source_ids(db)
+        if body.site_id != expected_site or body.report_id != expected_report:
+            raise HTTPException(400, "The Python flow source could not be resolved.")
         return
     if body.execution_method == 'recorded':
         site = db.execute('SELECT adapter FROM flow_sites WHERE id=? AND enabled=1', (body.site_id,)).fetchone()
@@ -1673,6 +1762,8 @@ def _build_job(db, flow_id: int, *, force_reprocess: bool = False, recording_dra
     }
     if source_type == "file":
         execution["required_adapter"] = LOCAL_FILE_ADAPTER
+    elif source_type == "python":
+        execution["required_adapter"] = PYTHON_SCRIPT_ADAPTER
     execution['browser_channel'] = flow_browser.configured(db)
     job = {
         "schema_version": 3,
@@ -1720,6 +1811,7 @@ def _build_job(db, flow_id: int, *, force_reprocess: bool = False, recording_dra
             "private_store_key": flow.get("target_folder") if source_type == "file" else None,
             "supported_extensions": sorted(SUPPORTED_LOCAL_FILE_EXTENSIONS),
         },
+        "python_source": flow_python.job_section(flow),
         "downloads": {
             "mode": flow["download_mode"], "periods": periods,
             "period_strategy": flow.get("period_strategy") or "fixed",
@@ -1955,13 +2047,13 @@ def queue_due_flows() -> dict:
 def catalog():
     with get_db() as db:
         sites = [dict(row) for row in db.execute(
-            "SELECT * FROM flow_sites WHERE adapter NOT IN (?, ?) ORDER BY name",
-            (OUTLOOK_ATTACHMENT_ADAPTER, LOCAL_FILE_ADAPTER),
+            "SELECT * FROM flow_sites WHERE adapter NOT IN (?, ?, ?) ORDER BY name",
+            (OUTLOOK_ATTACHMENT_ADAPTER, LOCAL_FILE_ADAPTER, PYTHON_SCRIPT_ADAPTER),
         ).fetchall()]
         reports = [dict(row) for row in db.execute(
             """SELECT r.* FROM flow_reports r JOIN flow_sites s ON s.id=r.site_id
-               WHERE s.adapter NOT IN (?, ?) AND r.source_kind != 'recording' ORDER BY r.name""",
-            (OUTLOOK_ATTACHMENT_ADAPTER, LOCAL_FILE_ADAPTER),
+               WHERE s.adapter NOT IN (?, ?, ?) AND r.source_kind != 'recording' ORDER BY r.name""",
+            (OUTLOOK_ATTACHMENT_ADAPTER, LOCAL_FILE_ADAPTER, PYTHON_SCRIPT_ADAPTER),
         ).fetchall()]
         report_ids = [report["id"] for report in reports]
         filters = (
@@ -2677,10 +2769,10 @@ def inspect_resume_eligibility(db, run_id: int) -> dict:
     if source['sql_reconciliation_required'] and _loads(source["job_json"], {}).get("sql_handoff", {}).get("mode") == "append":
         return _recovery_result('blocked', 'sql_reconciliation_required',
             'Reconcile the uncertain SQL commit and acknowledge it before resuming.', _source=source)
-    if (source["source_type"] or "portal") in {"outlook", "file"}:
+    if (source["source_type"] or "portal") in {"outlook", "file", "python"}:
         return _recovery_result(
             "not_applicable", "source_no_resume",
-            "Outlook attachment and file-source runs cannot be resumed. Use Run to process the source again, or Retry SQL for a saved file.",
+            "Outlook attachment, file-source and Python-script runs cannot be resumed. Use Run to process the source again, or Retry SQL for a saved file.",
             _source=source,
         )
     active = db.execute(
@@ -3226,6 +3318,7 @@ def create_flow(body: FlowWrite, request: Request):
                        (_json(body.post_sql_refresh or {"mode": "off", "views": []}), flow_id))
             db.execute("UPDATE flows SET email_delivery_json=? WHERE id=?",
                        (_json(body.email_delivery or flow_email_delivery.default_config()), flow_id))
+            db.execute("UPDATE flows SET python_scripts_json=? WHERE id=?", (_json(body.python_scripts), flow_id))
             if managed:
                 adapter = db.execute("SELECT adapter FROM flow_sites WHERE id=?", (body.site_id,)).fetchone()[0]
                 allocated = flow_layout.create_flow_folder(flow_paths.get_flows_root(db), adapter, body.name, flow_id)
@@ -3411,24 +3504,36 @@ def repair_flow_layout(flow_id: int, request: Request):
 
 
 @router.post("/transform-script")
-async def add_transform_script(request: Request, file: UploadFile = File(...)):
-    """Store a user-selected script locally without committing it to the repository."""
+async def add_transform_script(request: Request, file: UploadFile = File(...),
+                               target: Literal["transform", "python"] = "transform"):
+    """Store a user-selected script locally without committing it to the repository.
+
+    ``target=python`` stages a Python-source script under ``<root>/Python/.uploads``
+    so the enforced path policy (scripts inside ``<root>/Python``) accepts it.
+    """
     filename = Path(ntpath.basename(file.filename or "")).name
     suffix = Path(filename).suffix.casefold()
-    if not filename or suffix not in TRANSFORM_SCRIPT_SUFFIXES:
+    if target == "python":
+        if not filename or suffix != ".py":
+            raise HTTPException(400, "Choose a .py Python script.")
+    elif not filename or suffix not in TRANSFORM_SCRIPT_SUFFIXES:
         raise HTTPException(400, "Choose a .py, .ps1, or .exe transformation script.")
     if (not SAFE_NAME_RE.fullmatch(filename) or filename.endswith((".", " "))
             or re.fullmatch(r"(?i)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])", filename.split(".")[0])):
         raise HTTPException(400, "Choose a script with a safe Windows filename.")
+    kind = "Python script" if target == "python" else "transformation script"
     content = await file.read(10 * 1024 * 1024 + 1)
     if not content:
-        raise HTTPException(400, "The selected transformation script is empty.")
+        raise HTTPException(400, f"The selected {kind} is empty.")
     if len(content) > 10 * 1024 * 1024:
-        raise HTTPException(413, "Transformation scripts must be 10 MB or smaller.")
+        raise HTTPException(413, f"{kind.capitalize()}s must be 10 MB or smaller.")
     import uuid
     with get_db() as db:
         root = flow_paths.get_flows_root(db)
-    folder = Path(root) / ".metronome" / "uploads" / str(uuid.uuid4())
+    if target == "python":
+        folder = Path(root) / flow_paths.SOURCE_FOLDERS[PYTHON_SCRIPT_ADAPTER] / ".uploads" / str(uuid.uuid4())
+    else:
+        folder = Path(root) / ".metronome" / "uploads" / str(uuid.uuid4())
     flow_paths.assert_inside(str(folder), root, label="Upload folder")
     folder.mkdir(parents=True, exist_ok=False)
     candidate = folder / filename
@@ -3444,8 +3549,8 @@ async def add_transform_script(request: Request, file: UploadFile = File(...)):
         handle.write(content)
     with get_db() as db:
         log_event(
-            db, "flow_transform_script", None, candidate.name,
-            "added", f"size={len(content)}", get_actor(request),
+            db, "flow_python_script" if target == "python" else "flow_transform_script", None,
+            candidate.name, "added", f"size={len(content)}", get_actor(request),
         )
     return {"script_path": str(candidate), "filename": candidate.name, "file_size": len(content)}
 
@@ -3595,6 +3700,7 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
         db.execute("UPDATE flows SET excel_worksheets_json=? WHERE id=?", (_json(body.excel_worksheets), flow_id))
         db.execute("UPDATE flows SET post_sql_refresh_json=? WHERE id=?", (_json(body.post_sql_refresh), flow_id))
         db.execute("UPDATE flows SET email_delivery_json=? WHERE id=?", (_json(body.email_delivery), flow_id))
+        db.execute("UPDATE flows SET python_scripts_json=? WHERE id=?", (_json(body.python_scripts), flow_id))
         db.execute('UPDATE flows SET execution_method=? WHERE id=?', (body.execution_method, flow_id))
         if body.recording_revision_id is not None:
             if body.execution_method != 'recorded':

@@ -1239,7 +1239,8 @@ def test_flow_builder_exposes_and_replicates_output_storage_setting():
     source = Path(__file__).parents[1].joinpath("app", "static", "app.js").read_text(
         encoding="utf-8",
     )
-    assert source.count('id="flow-output-mode"') == 2
+    # Portal, Outlook and Python builders each expose the output storage setting.
+    assert source.count('id="flow-output-mode"') == 3
     assert 'output_mode: $("#flow-output-mode")?.value || "run_folders"' in source
     assert "...source" in source and "_flowShowView(\"builder\", copy)" in source
     assert "Outlook keeps the original attachment name" in source
