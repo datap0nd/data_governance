@@ -49,6 +49,14 @@ real worker run.
   capability (A-18, `test_worker_claim_requires_the_arguments_capability_only_when_arguments_or_values_are_used`);
   plain Python jobs stay claimable by the older worker. Result recorded in
   the executed-checks table (retest row).
+- Final-head CI run 381 on `2f0ca20` failed one case in Python shard 0:
+  `tests/test_flow_email_delivery.py::test_python_source_label_names_the_scripts_in_order`
+  registered a worker with only the `python_script` adapter and then claimed a
+  job that uses values, which the new capability gate correctly refuses. The
+  test worker now also advertises `python_script_arguments_v1`; the focused
+  retest (`--test tests/test_flow_email_delivery.py --test tests/test_flow_python.py`)
+  passed 43/43 in `.test-runs/20260917T103535334Z-367-a914fd7a/result.json`.
+  The gate itself is unchanged.
 - No failure attributable to the change in the final tree. During
   implementation one new test initially passed an unquoted `{value}` token
   with a value containing a space, which correctly split into two tokens

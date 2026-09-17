@@ -385,7 +385,8 @@ def test_python_source_label_names_the_scripts_in_order(flow_db, monkeypatch, tm
     queued = flows.queue_run(saved["id"], _request())
     flows.register_worker(flows.WorkerRegister(
         worker_id="py-worker", display_name="Python worker",
-        capabilities={"adapters": ["python_script"], "shared_flow_artifacts": True},
+        # The current worker also honours per-script arguments and values.
+        capabilities={"adapters": ["python_script"], "python_script_arguments_v1": True, "shared_flow_artifacts": True},
     ))
     assert flows.claim_run("py-worker")["run"]["id"] == queued["id"]
     bundle = [
