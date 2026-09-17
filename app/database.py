@@ -588,6 +588,8 @@ CREATE TABLE IF NOT EXISTS flows (
     local_file_last_identity TEXT,
     local_file_config_revision INTEGER NOT NULL DEFAULT 1,
     python_scripts_json TEXT,
+    python_script_arguments_json TEXT,
+    python_script_values_json TEXT,
     export_views_json   TEXT NOT NULL DEFAULT '[]',
     download_links_json TEXT NOT NULL DEFAULT '[]',
     enabled             INTEGER DEFAULT 0,
@@ -2017,6 +2019,10 @@ MIGRATIONS = [
        WHERE source_kind='system'
          AND site_id IN (SELECT id FROM flow_sites WHERE adapter='python_script')
          AND NOT EXISTS (SELECT 1 FROM flows WHERE source_type='python')""",
+    # Per-script arguments (one line each) and values (one run per value),
+    # both JSON lists aligned index-by-index with python_scripts_json.
+    "ALTER TABLE flows ADD COLUMN python_script_arguments_json TEXT",
+    "ALTER TABLE flows ADD COLUMN python_script_values_json TEXT",
 ]
 
 

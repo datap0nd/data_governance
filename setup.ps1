@@ -26,7 +26,10 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
     if ($FlowHeadlessSlots) { $ElevationArguments += " -FlowHeadlessSlots $FlowHeadlessSlots" }
     if ($FlowHeadedSlots) { $ElevationArguments += " -FlowHeadedSlots $FlowHeadedSlots" }
     if ($FlowTotalWorkers) { $ElevationArguments += " -FlowTotalWorkers $FlowTotalWorkers" }
-    Start-Process powershell.exe $ElevationArguments -Verb RunAs -WindowStyle Hidden
+    # An interactive user must see the elevated window (and its prompts);
+    # only unattended runs keep it hidden.
+    $ElevationWindowStyle = if ($Unattended) { 'Hidden' } else { 'Normal' }
+    Start-Process powershell.exe $ElevationArguments -Verb RunAs -WindowStyle $ElevationWindowStyle
     exit
 }
 
@@ -776,6 +779,10 @@ if ((Test-Path $DbPath) -and (Test-Path $FlowCredentialPath)) {
                 @{ Path = $FlowProfile;       Label = "headless service" },
                 @{ Path = $HeadedFlowProfile; Label = "headed on-demand" }
             ) + @($FlowSlots | Where-Object { $_.Slot -gt 1 } | ForEach-Object { @{ Path = $_.Profile; Label = "headless slot $($_.Slot)" } }) + @($HeadedSlots | Where-Object { $_.Slot -gt 1 } | ForEach-Object { @{ Path = $_.Profile; Label = "headed slot $($_.Slot)" } })
+            # The MXAnalytics service is stopped here, so the helper reads the
+            # browser channel from the same database the service uses (the
+            # app's default path is beside the code folder, not $DbPath).
+            $env:DG_DB_PATH = $DbPath
             foreach ($ProfileTarget in $AuthenticationProfiles) {
                 Write-Host "Authenticating the $($ProfileTarget.Label) Flows browser for $PortalLabel..." -ForegroundColor Yellow
                 Write-Host "  Complete $PortalLabel sign-in in the selected browser window if prompted." -ForegroundColor DarkGray

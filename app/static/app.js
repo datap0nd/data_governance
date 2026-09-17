@@ -10795,7 +10795,19 @@ function _flowRowModel(flow, runs = [], catalog = {}) {
 }
 
 function _flowPythonScriptNames(flow) {
-    return (Array.isArray(flow?.python_scripts) ? flow.python_scripts : []).map(path => String(path).split(/[\\/]/).pop() || String(path));
+    // "name args (N values)": the script basename, a space and its trimmed arguments when present,
+    // then the count of values (one run per value) when the row has any.
+    const scripts = Array.isArray(flow?.python_scripts) ? flow.python_scripts : [];
+    const scriptArguments = Array.isArray(flow?.python_script_arguments) ? flow.python_script_arguments : [];
+    const scriptValues = Array.isArray(flow?.python_script_values) ? flow.python_script_values : [];
+    return scripts.map((path, index) => {
+        const parts = [String(path).split(/[\\/]/).pop() || String(path)];
+        const extra = String(scriptArguments[index] ?? "").trim();
+        if (extra) parts.push(extra);
+        const values = Array.isArray(scriptValues[index]) ? scriptValues[index] : [];
+        if (values.length) parts.push(`(${values.length} value${values.length === 1 ? "" : "s"})`);
+        return parts.join(" ");
+    });
 }
 
 function _flowRowHtml(row) {
@@ -11482,8 +11494,19 @@ function _flowOutlookBuilderHtml(existing = null) {
         </div></div>`;
 }
 
-function _flowPythonScriptRowHtml(index, value = "", single = false) {
-    return `<li class="flow-python-script"><span class="flow-python-step" aria-hidden="true">${index}.</span><div class="flow-file-control"><input class="flow-python-script-path" id="flow-python-script-${index}" maxlength="2000" required value="${esc(value || "")}" placeholder="C:\\scripts\\fetch_orders.py" aria-label="Script ${index} path"><button type="button" class="btn-secondary flow-python-browse" aria-label="Browse for script ${index}">Browse...</button><button type="button" class="btn-secondary flow-python-remove" aria-label="Remove script ${index}" ${single ? "disabled" : ""}>Remove</button></div></li>`;
+function _flowPythonValuesList(text) {
+    // One value per line, trimmed, blank lines dropped; duplicates stay (the owner may want a repeat).
+    return String(text || "").split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+}
+
+function _flowPythonRunCountLabel(values) {
+    const count = Math.max(1, Array.isArray(values) ? values.length : 0);
+    return `${count} run${count === 1 ? "" : "s"}`;
+}
+
+function _flowPythonScriptRowHtml(index, value = "", single = false, argumentsValue = "", values = []) {
+    const valuesList = Array.isArray(values) ? values.map(item => String(item)) : [];
+    return `<li class="flow-python-script"><span class="flow-python-step" aria-hidden="true">${index}.</span><div class="flow-file-control"><input class="flow-python-script-path" id="flow-python-script-${index}" maxlength="2000" required value="${esc(value || "")}" placeholder="C:\\scripts\\fetch_orders.py" aria-label="Script ${index} path"><button type="button" class="btn-secondary flow-python-browse" aria-label="Browse for script ${index}">Browse...</button><button type="button" class="btn-secondary flow-python-remove" aria-label="Remove script ${index}" ${single ? "disabled" : ""}>Remove</button></div><label class="flow-python-row-label flow-python-arguments-label" for="flow-python-arguments-${index}">Arguments <span class="flow-python-row-hint">(optional)</span></label><input class="flow-python-script-arguments" id="flow-python-arguments-${index}" maxlength="2000" value="${esc(argumentsValue || "")}" placeholder="-sheet T" aria-label="Script ${index} arguments"><label class="flow-python-row-label flow-python-values-label" for="flow-python-values-${index}">Values, one per run <span class="flow-python-row-hint">(optional)</span></label><textarea class="flow-python-script-values" id="flow-python-values-${index}" rows="2" placeholder="T&#10;U" aria-label="Script ${index} values">${esc(valuesList.join("\n"))}</textarea><span class="flow-python-values-count" aria-live="polite">${_flowPythonRunCountLabel(valuesList)}</span><p class="flow-dialog-help flow-python-values-help">Paste one value per line; the script runs once per value. The value replaces {value} in Arguments, or is added after them.</p></li>`;
 }
 
 function _flowPythonBuilderHtml(existing = null) {
@@ -11498,6 +11521,8 @@ function _flowPythonBuilderHtml(existing = null) {
     const people = window._flowsState?.people || [];
     const owner = people.find(person => person.id === existing?.owner_person_id);
     const scripts = Array.isArray(existing?.python_scripts) && existing.python_scripts.length ? existing.python_scripts : [""];
+    const scriptArguments = Array.isArray(existing?.python_script_arguments) ? existing.python_script_arguments : [];
+    const scriptValues = Array.isArray(existing?.python_script_values) ? existing.python_script_values : [];
     const sql = Boolean(existing?.sql_handoff_enabled);
     const format = existing?.file_format === "xlsx" ? "xlsx" : "csv";
     const direct = existing?.output_mode === "direct_replace";
@@ -11510,10 +11535,10 @@ function _flowPythonBuilderHtml(existing = null) {
                         <label><span>Flow name</span><input id="flow-name" required maxlength="200" value="${esc(existing?.name || "")}" placeholder="Daily orders extract"></label>
                         <div class="flow-span-2 flow-python-scripts-field">
                             <span>Scripts, in run order</span>
-                            <ol id="flow-python-scripts" class="flow-python-scripts">${scripts.map((path, index) => _flowPythonScriptRowHtml(index + 1, path, scripts.length === 1)).join("")}</ol>
+                            <ol id="flow-python-scripts" class="flow-python-scripts">${scripts.map((path, index) => _flowPythonScriptRowHtml(index + 1, path, scripts.length === 1, scriptArguments[index] || "", scriptValues[index] || [])).join("")}</ol>
                             <input id="flow-python-file" type="file" accept=".py" hidden>
                             <div class="flow-python-scripts-actions"><button type="button" class="btn-secondary" id="flow-python-add">Add another script</button></div>
-                            <p class="flow-dialog-help">The worker runs each script in place with its own Python, in this order. Every script receives <code>--output</code>, the file it must create; from the second script on it also receives <code>--input</code>, the previous script's output. The same paths, the step number and the run's steps folder are available as <code>METRONOME_FLOW_*</code> environment variables. The last script writes the final CSV or Excel file. Enter absolute paths the worker can see, or upload a script.</p>
+                            <p class="flow-dialog-help">The worker runs each script in place with its own Python, in this order. Every script receives <code>--output</code>, the file it must create; from the second script on it also receives <code>--input</code>, the previous script's output. The same paths, the step number and the run's steps folder are available as <code>METRONOME_FLOW_*</code> environment variables. The last script writes the final CSV or Excel file. Enter absolute paths the worker can see, or upload a script. Arguments are added to the command exactly as typed, before Metronome's <code>--input</code>/<code>--output</code>; use double quotes around a value with spaces; {flow}, {date} and {run_id} are replaced per run.</p>
                         </div>
                     </div>
                 </div>
@@ -11528,7 +11553,7 @@ function _flowPythonBuilderHtml(existing = null) {
                         </fieldset>
                         <div id="flow-python-file-fields" class="flow-form-grid flow-span-2" ${sql ? "hidden" : ""}>
                             <label><span>File type</span><select id="flow-file-format"><option value="csv" ${format === "csv" ? "selected" : ""}>CSV</option><option value="xlsx" ${format === "xlsx" ? "selected" : ""}>Excel workbook (.xlsx)</option></select></label>
-                            <label><span>Filename template</span><input id="flow-filename" maxlength="200" value="${esc(existing?.filename_template || `{flow}.${format}`)}"><small>Tokens: {flow}, {date}, {index}. The extension follows the file type.</small></label>
+                            <label><span>Filename template</span><input id="flow-filename" maxlength="200" value="${esc(existing?.filename_template || `{flow}.${format}`)}"><small>Tokens: {flow}, {date}, {index}, {value}. Several values in the last script need {value} or {index}. The extension follows the file type.</small></label>
                             <label><span>Output files</span><select id="flow-output-mode"><option value="run_folders" ${direct ? "" : "selected"}>Separate runs · keep last 3</option><option value="direct_replace" ${direct ? "selected" : ""}>Fixed file path · replace previous output</option></select><small id="flow-output-mode-help">${direct ? "Use this file path in Power BI or Excel. Each successful run replaces the previous file." : "Each run has a separate folder. The last 3 runs are kept."}</small></label>
                             ${_flowDestinationHtml(existing)}
                         </div>
@@ -12260,9 +12285,17 @@ function _flowCollectBuilder() {
     if (form?.dataset.sourceType === "python") {
         const format = sqlEnabled ? "csv" : (String($("#flow-file-format")?.value || "csv").trim().toLowerCase() === "xlsx" ? "xlsx" : "csv");
         const filename = ($("#flow-filename")?.value || "").trim() || `{flow}.${format}`;
+        // Paths, arguments and values travel together: a row whose path is blank is dropped from all three lists.
+        const argumentInputs = [...document.querySelectorAll(".flow-python-script-arguments")];
+        const valueInputs = [...document.querySelectorAll(".flow-python-script-values")];
+        const scriptRows = [...document.querySelectorAll(".flow-python-script-path")]
+            .map((input, index) => ({path: String(input.value || "").trim(), arguments: String(argumentInputs[index]?.value || "").trim(), values: _flowPythonValuesList(valueInputs[index]?.value)}))
+            .filter(row => row.path);
         return {
             ...shared, source_type: "python",
-            python_scripts: [...document.querySelectorAll(".flow-python-script-path")].map(input => input.value.trim()).filter(Boolean),
+            python_scripts: scriptRows.map(row => row.path),
+            python_script_arguments: scriptRows.map(row => row.arguments),
+            python_script_values: scriptRows.map(row => row.values),
             file_format: format,
             filename_template: sqlEnabled ? filename.replace(/\.xlsx$/i, ".csv") : filename,
             output_mode: sqlEnabled ? "run_folders" : ($("#flow-output-mode")?.value || "run_folders"),
@@ -12504,7 +12537,7 @@ function _flowRevealStep(form, target) {
 }
 
 function _flowRevealServerError(form, error) {
-    const ids = {name: "flow-name", python_scripts: "flow-python-script-1", local_file_path: "flow-local-file-path", local_file_worksheet: "flow-local-file-worksheet", outlook_subject_contains: "flow-outlook-subject", site_id: "flow-site", report_id: "flow-report", target_folder: "flow-target-folder", filename_template: "flow-filename", transform_script_path: "flow-transform-script", schedule_type: "flow-schedule-type", schedule_time: "flow-schedule-time", schedule_days: "flow-schedule-type", schedule_day: "flow-schedule-day", owner_person_id: "flow-owner", sql_table: "flow-sql-table", sql_schema: "flow-sql-schema", sql_database: "flow-sql-database", sql_mode: "flow-sql-mode", start_week: "flow-start-week", end_week: "flow-end-week", period_strategy: "flow-period-strategy", file_format: "flow-file-format", email_delivery: "flow-email-recipients"};
+    const ids = {name: "flow-name", python_scripts: "flow-python-script-1", python_script_arguments: "flow-python-arguments-1", python_script_values: "flow-python-values-1", local_file_path: "flow-local-file-path", local_file_worksheet: "flow-local-file-worksheet", outlook_subject_contains: "flow-outlook-subject", site_id: "flow-site", report_id: "flow-report", target_folder: "flow-target-folder", filename_template: "flow-filename", transform_script_path: "flow-transform-script", schedule_type: "flow-schedule-type", schedule_time: "flow-schedule-time", schedule_days: "flow-schedule-type", schedule_day: "flow-schedule-day", owner_person_id: "flow-owner", sql_table: "flow-sql-table", sql_schema: "flow-sql-schema", sql_database: "flow-sql-database", sql_mode: "flow-sql-mode", start_week: "flow-start-week", end_week: "flow-end-week", period_strategy: "flow-period-strategy", file_format: "flow-file-format", email_delivery: "flow-email-recipients"};
     for (const item of error.validation || []) {
         ids.excel_worksheets = 'flow-excel-names';
         ids.local_file_worksheet = 'flow-excel-names';
@@ -13206,6 +13239,18 @@ function _bindFlowWorkspace() {
                 const input = row.querySelector(".flow-python-script-path");
                 input.id = `flow-python-script-${index + 1}`;
                 input.setAttribute("aria-label", `Script ${index + 1} path`);
+                const argumentsInput = row.querySelector(".flow-python-script-arguments");
+                if (argumentsInput) {
+                    argumentsInput.id = `flow-python-arguments-${index + 1}`;
+                    argumentsInput.setAttribute("aria-label", `Script ${index + 1} arguments`);
+                    row.querySelector(".flow-python-arguments-label")?.setAttribute("for", argumentsInput.id);
+                }
+                const valuesInput = row.querySelector(".flow-python-script-values");
+                if (valuesInput) {
+                    valuesInput.id = `flow-python-values-${index + 1}`;
+                    valuesInput.setAttribute("aria-label", `Script ${index + 1} values`);
+                    row.querySelector(".flow-python-values-label")?.setAttribute("for", valuesInput.id);
+                }
                 row.querySelector(".flow-python-step").textContent = `${index + 1}.`;
                 row.querySelector(".flow-python-browse").setAttribute("aria-label", `Browse for script ${index + 1}`);
                 const remove = row.querySelector(".flow-python-remove");
@@ -13218,6 +13263,12 @@ function _bindFlowWorkspace() {
             pythonScripts.insertAdjacentHTML("beforeend", _flowPythonScriptRowHtml(pythonScripts.children.length + 1));
             renumberPythonScripts();
             pythonScripts.lastElementChild.querySelector(".flow-python-script-path").focus();
+        });
+        pythonScripts.addEventListener("input", event => {
+            const textarea = event.target.closest(".flow-python-script-values");
+            if (!textarea) return;
+            const count = textarea.closest(".flow-python-script")?.querySelector(".flow-python-values-count");
+            if (count) count.textContent = _flowPythonRunCountLabel(_flowPythonValuesList(textarea.value));
         });
         pythonScripts.addEventListener("click", event => {
             const row = event.target.closest(".flow-python-script");

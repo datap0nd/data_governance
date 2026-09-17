@@ -344,7 +344,7 @@ def test_send_again_rules_and_outcome(flow_db, monkeypatch, outlook):
     assert excinfo.value.status_code == 404
 
 
-def test_python_source_label_names_the_scripts_in_order(flow_db, monkeypatch, tmp_path):
+def test_python_source_label_names_the_scripts_in_order(flow_db, monkeypatch, tmp_path, outlook):
     monkeypatch.setattr(flows, "launch_local_worker", lambda mode, **kwargs: {"status": "starting"})
     scripts = [str(tmp_path / "fetch_orders.py"), str(tmp_path / "clean_orders.py")]
     saved = flows.create_flow(flows.FlowWrite(
@@ -365,6 +365,44 @@ def test_python_source_label_names_the_scripts_in_order(flow_db, monkeypatch, tm
     # Unreadable script metadata degrades to the label without inventing names.
     assert delivery._source_label({"source_type": "python", "python_scripts_json": "{bad"}) == "Python scripts: "
     assert delivery._source_label({"source_type": "python", "python_scripts_json": None}) == "Python scripts: "
+    assert delivery._source_label({
+        "source_type": "python", "python_scripts_json": json.dumps(scripts),
+        "python_script_arguments_json": "{bad", "python_script_values_json": None,
+    }) == "Python scripts: fetch_orders.py \u2192 clean_orders.py"
+
+    # Per-script arguments and values appear in the label the way the Flows list shows them.
+    saved = flows.update_flow(saved["id"], flows.FlowWrite(
+        name="Python orders", source_type="python", python_scripts=scripts,
+        python_script_arguments=["-sheet", "-x"], python_script_values=[["T", "U", "V"], []],
+        schedule_type="daily", schedule_time="08:00", email_delivery=EMAIL,
+    ), _request())
+    with database.get_db() as db:
+        context = delivery.run_context(db, run_id)
+    assert delivery._source_label(context) == "Python scripts: fetch_orders.py -sheet (3 values) \u2192 clean_orders.py -x"
+    assert "fetch_orders.py -sheet (3 values) \u2192 clean_orders.py -x" in delivery.build_message(context, attach=False)["html_body"]
+
+    # Every final file of a last-row bundle is a deliverable of the email, like a portal bundle.
+    queued = flows.queue_run(saved["id"], _request())
+    flows.register_worker(flows.WorkerRegister(
+        worker_id="py-worker", display_name="Python worker",
+        # The current worker also honours per-script arguments and values.
+        capabilities={"adapters": ["python_script"], "python_script_arguments_v1": True, "shared_flow_artifacts": True},
+    ))
+    assert flows.claim_run("py-worker")["run"]["id"] == queued["id"]
+    bundle = [
+        {**_artifact("Python_orders_T.csv", rows=1, period=None), "bundle_index": 1, "bundle_count": 2, "export_view": "value:1"},
+        {**_artifact("Python_orders_U.csv", rows=1, period=None), "bundle_index": 2, "bundle_count": 2, "export_view": "value:2"},
+    ]
+    flows.update_run("py-worker", queued["id"], flows.WorkerProgress(
+        status="succeeded", artifacts=bundle, error=None,
+        progress={"stage": "complete", "message": "Ran 4 Python script run(s) and saved 2 file(s).", "no_op": False},
+    ))
+    with database.get_db() as db:
+        context = delivery.run_context(db, queued["id"])
+    assert [item["filename"] for item in context["files"]] == ["Python_orders_T.csv", "Python_orders_U.csv"]
+    body = delivery.build_message(context, attach=False)["html_body"]
+    assert "Python_orders_T.csv" in body and "Python_orders_U.csv" in body
+    assert [item["filename"] for item in outlook.messages()[0]["attachments"]] == ["Python_orders_T.csv", "Python_orders_U.csv"]
 
 
 def test_retry_runs_resolve_the_source_files(flow_db, monkeypatch):

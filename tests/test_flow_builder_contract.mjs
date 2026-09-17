@@ -90,14 +90,23 @@ console.log('flow builder worksheet payload tests passed');
 // Python scripts: ordered absolute paths from the script rows (blank rows dropped),
 // the Output radio drives the hidden #flow-sql-enabled checkbox, and SQL forces CSV.
 const pythonRows = [{value:' C:\\scripts\\fetch_orders.py '}, {value:'   '}, {value:'C:\\scripts\\clean_orders.py'}];
+// Arguments and values travel with their row: the blank-path row's entries are dropped with it.
+const pythonArgumentRows = [{value:' -sheet {value} '}, {value:'--dropped-with-its-row'}, {value:''}];
+const pythonValueRows = [{value:'T\r\nU\n\n  V  \n'}, {value:'dropped'}, {value:''}];
 const baseQuerySelectorAll = context.document.querySelectorAll;
-context.document.querySelectorAll = selector => selector.includes('flow-python-script-path') ? pythonRows : baseQuerySelectorAll(selector);
+context.document.querySelectorAll = selector => selector.includes('flow-python-script-path') ? pythonRows : selector.includes('flow-python-script-arguments') ? pythonArgumentRows : selector.includes('flow-python-script-values') ? pythonValueRows : baseQuerySelectorAll(selector);
+const helpersStart = source.indexOf('function _flowPythonValuesList');
+vm.runInContext(source.slice(helpersStart, source.indexOf('function _flowPythonBuilderHtml', helpersStart)), context);
 form.dataset.sourceType = 'python';
 set('flow-file-format', 'xlsx'); set('flow-filename', ' {flow}_{date}.xlsx '); set('flow-output-mode', 'direct_replace');
 set('flow-sql-enabled', '', {checked:false});
 body = context._flowCollectBuilder();
 assert.equal(body.source_type, 'python');
 assert.deepEqual(plain(body.python_scripts), ['C:\\scripts\\fetch_orders.py', 'C:\\scripts\\clean_orders.py']);
+assert.deepEqual(plain(body.python_script_arguments), ['-sheet {value}', '']);
+assert.deepEqual(plain(body.python_script_values), [['T', 'U', 'V'], []]);
+assert.equal(body.python_script_arguments.length, body.python_scripts.length);
+assert.equal(body.python_script_values.length, body.python_scripts.length);
 assert.equal(body.sql_handoff_enabled, false); assert.equal(body.sql_table, null);
 assert.equal(body.file_format, 'xlsx'); assert.equal(body.filename_template, '{flow}_{date}.xlsx');
 assert.equal(body.output_mode, 'direct_replace');
@@ -108,6 +117,8 @@ set('flow-sql-enabled', '', {checked:true});
 body = context._flowCollectBuilder();
 assert.equal(body.sql_handoff_enabled, true); assert.equal(body.sql_table, 'MyTable'); assert.equal(body.sql_schema, 'CaseSchema');
 assert.equal(body.file_format, 'csv'); assert.equal(body.filename_template, '{flow}_{date}.csv');
+assert.deepEqual(plain(body.python_script_arguments), ['-sheet {value}', '']);
+assert.deepEqual(plain(body.python_script_values), [['T', 'U', 'V'], []]);
 // SQL keeps the final CSV in the run folder: the hidden file-output mode never publishes it.
 assert.equal(controls['#flow-output-mode'].value, 'direct_replace');
 assert.equal(body.output_mode, 'run_folders');
@@ -115,6 +126,11 @@ set('flow-filename', '');
 assert.equal(context._flowCollectBuilder().filename_template, '{flow}.csv');
 set('flow-sql-enabled', '', {checked:false}); set('flow-file-format', 'csv');
 assert.equal(context._flowCollectBuilder().filename_template, '{flow}.csv');
+// Rows without an Arguments or Values control still send aligned entries.
+context.document.querySelectorAll = selector => selector.includes('flow-python-script-path') ? pythonRows : baseQuerySelectorAll(selector);
+body = context._flowCollectBuilder();
+assert.deepEqual(plain(body.python_script_arguments), ['', '']);
+assert.deepEqual(plain(body.python_script_values), [[], []]);
 context.document.querySelectorAll = baseQuerySelectorAll;
 assert.match(source, /id="flow-source-python"/);
 assert.match(source, /data-source-type="python"/);
@@ -123,3 +139,43 @@ assert.match(source, /name="flow-python-output" id="flow-python-output-sql"/);
 assert.match(source, /python_scripts: "flow-python-script-1"/);
 assert.match(source, /"Run queued. The worker will run the Python scripts in order."/);
 console.log('flow builder python payload tests passed');
+
+// Per-script arguments and values: the three-line row markup, renumbered ids, the list label,
+// the live run count and the server-error focus for both fields.
+context.esc = value => value == null ? '' : String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+const row = context._flowPythonScriptRowHtml(2, 'C:\\scripts\\clean.py', false, '-sheet "Q 1"', ['T', 'U', 'V']);
+assert.match(row, /<input class="flow-python-script-path" id="flow-python-script-2" maxlength="2000" required value="C:\\scripts\\clean\.py" [^>]*aria-label="Script 2 path">/);
+assert.match(row, /<label class="flow-python-row-label flow-python-arguments-label" for="flow-python-arguments-2">Arguments <span class="flow-python-row-hint">\(optional\)<\/span><\/label>/);
+assert.match(row, /<input class="flow-python-script-arguments" id="flow-python-arguments-2" maxlength="2000" value="-sheet &quot;Q 1&quot;" placeholder="-sheet T" aria-label="Script 2 arguments">/);
+assert.match(row, /<label class="flow-python-row-label flow-python-values-label" for="flow-python-values-2">Values, one per run <span class="flow-python-row-hint">\(optional\)<\/span><\/label>/);
+assert.match(row, /<textarea class="flow-python-script-values" id="flow-python-values-2" rows="2" [^>]*aria-label="Script 2 values">T\nU\nV<\/textarea><span class="flow-python-values-count" aria-live="polite">3 runs<\/span>/);
+assert.match(row, /Paste one value per line; the script runs once per value\. The value replaces \{value\} in Arguments, or is added after them\./);
+const emptyRow = context._flowPythonScriptRowHtml(1);
+assert.match(emptyRow, /id="flow-python-arguments-1" maxlength="2000" value="" placeholder="-sheet T" aria-label="Script 1 arguments"/);
+assert.match(emptyRow, /id="flow-python-values-1" rows="2" [^>]*aria-label="Script 1 values"><\/textarea><span class="flow-python-values-count" aria-live="polite">1 run<\/span>/);
+assert.deepEqual(plain(context._flowPythonValuesList(' T \r\n\nU\n  \nV\nV\n')), ['T', 'U', 'V', 'V']);
+assert.deepEqual(plain(context._flowPythonValuesList(undefined)), []);
+assert.equal(context._flowPythonRunCountLabel([]), '1 run');
+assert.equal(context._flowPythonRunCountLabel(['T']), '1 run');
+assert.equal(context._flowPythonRunCountLabel(['T', 'U', 'V']), '3 runs');
+const namesStart = source.indexOf('function _flowPythonScriptNames');
+vm.runInContext(source.slice(namesStart, source.indexOf('\nfunction ', namesStart + 1)), context);
+assert.deepEqual(plain(context._flowPythonScriptNames({python_scripts:['C:\\s\\run_download.py', '/srv/clean.py'], python_script_arguments:[' -sheet T ', '']})), ['run_download.py -sheet T', 'clean.py']);
+assert.deepEqual(plain(context._flowPythonScriptNames({python_scripts:['C:\\s\\run_download.py', '/srv/clean.py'], python_script_arguments:['-sheet', ''], python_script_values:[['T', 'U', 'V'], []]})), ['run_download.py -sheet (3 values)', 'clean.py']);
+assert.deepEqual(plain(context._flowPythonScriptNames({python_scripts:['C:\\s\\a.py'], python_script_values:[['only']]})), ['a.py (1 value)']);
+assert.deepEqual(plain(context._flowPythonScriptNames({python_scripts:['C:\\s\\run_download.py']})), ['run_download.py']);
+assert.deepEqual(plain(context._flowPythonScriptNames({python_scripts:['C:\\s\\a.py'], python_script_arguments:['-x', '-y'], python_script_values:[[], ['z']]})), ['a.py -x']);
+for (const [field, id] of [['python_script_arguments', 'flow-python-arguments-1'], ['python_script_values', 'flow-python-values-1']]) {
+    const focusSeen = [];
+    context._flowRevealStep = (_form, input) => focusSeen.push(input);
+    const target = {focus: () => focusSeen.push('focus')};
+    context._flowRevealServerError({querySelector: selector => selector === `#${id}` ? target : null}, {validation: [{loc: ['body', field], msg: 'Script arguments have an unclosed quote.'}]});
+    assert.deepEqual(focusSeen, [target, 'focus'], field);
+}
+assert.match(source, /python_script_arguments: "flow-python-arguments-1", python_script_values: "flow-python-values-1"/);
+assert.match(source, /argumentsInput\.id = `flow-python-arguments-\$\{index \+ 1\}`;\n\s+argumentsInput\.setAttribute\("aria-label", `Script \$\{index \+ 1\} arguments`\)/);
+assert.match(source, /valuesInput\.id = `flow-python-values-\$\{index \+ 1\}`;\n\s+valuesInput\.setAttribute\("aria-label", `Script \$\{index \+ 1\} values`\)/);
+assert.match(source, /count\.textContent = _flowPythonRunCountLabel\(_flowPythonValuesList\(textarea\.value\)\)/);
+assert.match(source, /Arguments are added to the command exactly as typed, before Metronome's <code>--input<\/code>\/<code>--output<\/code>; use double quotes around a value with spaces; \{flow\}, \{date\} and \{run_id\} are replaced per run\./);
+assert.match(source, /scriptArguments\[index\] \|\| "", scriptValues\[index\] \|\| \[\]\)\)\.join\(""\)/);
+console.log('flow builder python arguments and values tests passed');

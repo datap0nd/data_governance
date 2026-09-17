@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Python-script Flows preview</title><link rel="stylesheet" href="/static/style.css?v=61">
+<title>Python-script Flows preview</title><link rel="stylesheet" href="/static/style.css?v=62">
 <style>
 body{padding:24px}
 .preview-bar{max-width:1180px;margin:0 auto 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 16px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;font-size:.82rem}
@@ -14,7 +14,7 @@ body{padding:24px}
 @media(max-width:600px){body{padding:12px}.preview-bar h1{width:100%}}
 </style>
 <div class="preview-bar"><h1>Fictional preview · Python-script Flows</h1>
-<label>Save outcome <select id="preview-outcome" aria-label="Fictional save outcome"><option value="saved">Flow saved</option><option value="invalid">Validation error: not a .py file</option></select></label>
+<label>Save outcome <select id="preview-outcome" aria-label="Fictional save outcome"><option value="saved">Flow saved</option><option value="invalid">Validation error: not a .py file</option><option value="unclosed">Validation error: unclosed quote in arguments</option></select></label>
 <button id="preview-reset" class="btn-secondary">Reset preview</button></div>
 <nav class="preview-nav" aria-label="Preview screens"><button class="btn-secondary" data-screen="picker" aria-current="true">Choose a source</button><button class="btn-secondary" data-screen="new">New Python flow</button><button class="btn-secondary" data-screen="builder">Edit Python flow</button><button class="btn-secondary" data-screen="list">Flows list</button><button class="btn-secondary" data-screen="runs">Run history</button></nav>
 <div id="preview-status" role="status"></div>

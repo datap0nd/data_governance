@@ -182,7 +182,11 @@ def _source_label(context: dict) -> str:
     if context.get("source_type") == "file":
         return f"Configured file {context.get('local_file_path')}"
     if context.get("source_type") == "python":
-        return "Python scripts: " + flow_python.describe(_loads(context.get("python_scripts_json"), []))
+        return "Python scripts: " + flow_python.describe(
+            _loads(context.get("python_scripts_json"), []),
+            _loads(context.get("python_script_arguments_json"), []),
+            _loads(context.get("python_script_values_json"), []),
+        )
     return f"{context.get('site_name')} / {context.get('report_name')}"
 
 
@@ -309,6 +313,7 @@ def run_context(db, run_id: int) -> dict | None:
                   r.sql_outcome_json, r.email_status, r.email_detail, r.email_dispatch_id,
                   f.name AS flow_name, f.source_type, f.outlook_subject_contains,
                   f.local_file_path, f.python_scripts_json,
+                  f.python_script_arguments_json, f.python_script_values_json,
                   s.name AS site_name, rep.name AS report_name,
                   p.name AS owner_name
              FROM flow_runs r
