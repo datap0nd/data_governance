@@ -1,8 +1,8 @@
 # Python-script arguments and setup fixes: test plan
 
-- Change/PR: pending (the PR link is added when it is opened).
+- Change/PR: [PR #134](https://github.com/datap0nd/data_governance/pull/134).
 - Scope: per-script **Arguments** (one line, added to the command before Metronome's `--input`/`--output`, with `{flow}`, `{run_id}`, `{date}` and `{value}` tokens) and **Values** (the script runs once per value; every run of the last script is a deliverable, so the run becomes a bundle) for Python-script Flows across API, storage, job, worker, run events, labels, emails and the builder/list/run-history UI; two `setup.ps1` fixes: the self-elevated window is visible for an interactive user and the SSO authentication helper reads the browser channel from the local database when the stopped app's API is unreachable.
-- Baseline: current `origin/main` when work began (SHA recorded in the report).
+- Baseline: `origin/main` `916434745d130fb5cb7026a36960b88f23aac1dc` (PR #133 merged).
 - Related report: [test-report.md](test-report.md).
 - Environments: isolated Linux Python 3.13 fixtures (checkout-owned `.venv`, `requirements-ci.lock`), Node contract test, fictional browser preview through Playwright; final PR CI supplies the full Python regression. No live, work-PC, portal or PowerShell environment is in scope; the `setup.ps1` change is checked by reading its lines because Linux runners have no PowerShell.
 
