@@ -11,14 +11,15 @@ import copy
 import hashlib
 import json
 import re
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 from app.flow_clock import TIMEZONE
 
-VERSION = 3
+VERSION = 4
 V2_CAPABILITY = 'recorded_flows_v2'
 V3_CAPABILITY = 'recorded_flows_v3'
+V4_CAPABILITY = 'recorded_flows_v4'
 CAPABILITY = 'recorded_flows_v1'
 GSCM_BOOKMARK_CAPABILITY = 'gscm_bookmark_targets_v1'
 RECORD_CAPABILITY = 'flow_recorder_v1'
@@ -30,6 +31,13 @@ ASSERTIONS = {'to_be_visible', 'to_be_hidden', 'to_have_text', 'to_contain_text'
               'to_have_value', 'to_be_checked', 'to_have_url', 'to_have_title', 'to_have_count'}
 CALCULATIONS = {'today', 'yesterday', 'month_start', 'previous_month_start',
                 'previous_month_end', 'year_start', 'week_start'}
+# Week parameters drive date range controls; the newest selectable week is
+# read from the control itself at run time, the others are calendar maths.
+WEEK_CALCULATIONS = {'latest_selectable', 'current_week', 'previous_week'}
+WEEK_FORMATS = {'%G-W%V': re.compile(r'(20\d{2})-W(0[1-9]|[1-4]\d|5[0-3])'),
+                '%G%V': re.compile(r'(20\d{2})(0[1-9]|[1-4]\d|5[0-3])')}
+DAY_FORMATS = {'%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y', '%Y%m%d'}
+MAX_WEEK_OFFSET = 520
 SENSITIVE = re.compile(r'password|passwd|authorization|cookie|token|secret|otp|verification.?code', re.I)
 
 
@@ -49,6 +57,58 @@ def suggest_review(definition):
 
 def digest(value):
     return hashlib.sha256(canonical(value).encode()).hexdigest()
+
+
+def parameter_unit(parameter):
+    return parameter.get('unit', 'day')
+
+
+def parameter_format(parameter):
+    return parameter.get('format', '%Y-%m-%d' if parameter_unit(parameter) == 'day' else '%G-W%V')
+
+
+def parse_week(text, fmt='%G-W%V'):
+    """The Monday of an ISO week written as YYYY-Www or YYYYWW."""
+    pattern = WEEK_FORMATS.get(fmt)
+    if pattern is None:
+        raise ValueError('Unsupported week format.')
+    match = pattern.fullmatch(str(text or '').strip())
+    if not match:
+        raise ValueError('Week values must use ' + ('YYYYWW' if fmt == '%G%V' else 'YYYY-Www') + '.')
+    try:
+        return date.fromisocalendar(int(match.group(1)), int(match.group(2)), 1)
+    except ValueError:
+        raise ValueError(f'The week {text} does not exist in that year.') from None
+
+
+def week_monday(day, week_days='sunday'):
+    """Monday of the ISO week that owns ``day`` under a control's week convention.
+
+    ASAP weeks run Sunday to Saturday: a Sunday belongs to the ISO week that
+    starts the next day. ISO weeks run Monday to Sunday.
+    """
+    anchor = day + timedelta(days=1) if week_days == 'sunday' else day
+    return anchor - timedelta(days=anchor.weekday())
+
+
+def week_bounds(monday, week_days='sunday'):
+    """First and last calendar day of the week that ISO-starts on ``monday``."""
+    first = monday - timedelta(days=1) if week_days == 'sunday' else monday
+    return first, first + timedelta(days=6)
+
+
+def format_week(day, fmt='%G-W%V'):
+    iso = day.isocalendar()
+    return f'{iso[0]:04d}{iso[1]:02d}' if fmt == '%G%V' else f'{iso[0]:04d}-W{iso[1]:02d}'
+
+
+def parse_parameter_value(parameter, value):
+    """A date parameter's text as a datetime; weeks resolve to their Monday."""
+    fmt = parameter_format(parameter)
+    if parameter_unit(parameter) == 'week':
+        monday = parse_week(value, fmt)
+        return datetime(monday.year, monday.month, monday.day)
+    return datetime.strptime(value, fmt)
 
 
 def _literal(node):
@@ -263,7 +323,7 @@ def import_codegen(source, *, timezone=TIMEZONE):
 
 
 def validate_definition(definition, *, activation=True):
-    if not isinstance(definition, dict) or definition.get('version') not in {1, 2, VERSION}:
+    if not isinstance(definition, dict) or definition.get('version') not in {1, 2, 3, VERSION}:
         raise ValueError('Unsupported recording version.')
     if 'date_batch' in definition:
         raise ValueError('Date batching has been removed. Convert this recording to a single range and test it.')
@@ -297,7 +357,7 @@ def validate_definition(definition, *, activation=True):
             # frame context; playback resolves the bookmark by exact identity.
             from app.flow_recording_nexacro import validate_target
             validate_target(step)
-        if action not in ACTIONS | {'new_page', 'goto', 'close', 'download', 'popup', 'assert', 'wait', 'select_range'}:
+        if action not in ACTIONS | {'new_page', 'goto', 'close', 'download', 'popup', 'assert', 'wait', 'select_range', 'set_range'}:
             raise ValueError(f'Unsupported recorded action: {action}.')
         if 'delay_before_seconds' in step:
             delay = step['delay_before_seconds']
@@ -339,6 +399,22 @@ def validate_definition(definition, *, activation=True):
                 raise ValueError('A range Select all target needs a bounded selector.')
             if not step.get('locator'):
                 raise ValueError('A week range must identify its containing element box.')
+        if action == 'set_range':
+            if definition['version'] < 4:
+                raise ValueError('Date range control steps require recording version 4.')
+            contract = step.get('range')
+            if not isinstance(contract, dict) or contract.get('kind') not in {'week', 'date'}:
+                raise ValueError('A date range control shows week numbers or dates.')
+            if contract.get('week_days', 'sunday') not in {'sunday', 'monday'}:
+                raise ValueError('A date range control week starts on Sunday or Monday.')
+            levels = contract.get('container_ancestor_levels', 1)
+            if type(levels) is not int or not 1 <= levels <= 6:
+                raise ValueError('Choose 1–6 parent levels for the element box.')
+            if not step.get('locator'):
+                raise ValueError('A date range control must identify its containing element box.')
+            roles = sorted(str(p.get('role')) for p in parameters.values() if p.get('step_id') == step['id'])
+            if roles != ['end', 'start']:
+                raise ValueError('A date range control needs exactly one start and one end week parameter.')
         if action == 'assert' and step.get('assertion') not in ASSERTIONS:
             raise ValueError('Unsupported assertion.')
         if step.get('kwargs', {}).get('force') or step.get('kwargs', {}).get('position') or step.get('kwargs', {}).get('trial'):
@@ -397,16 +473,36 @@ def validate_definition(definition, *, activation=True):
             raise ValueError('A parameter must identify a recorded step or input locator.')
         if parameter.get('not_after') and parameter['not_after'] not in definition.get('parameters', {}):
             raise ValueError('Date range references an unknown parameter.')
+        unit = parameter_unit(parameter)
+        if unit not in {'day', 'week'}:
+            raise ValueError('Unsupported date parameter unit.')
+        action = next((step['action'] for step in steps if step['id'] == parameter.get('step_id')), None)
+        fmt = parameter_format(parameter)
+        if unit == 'week':
+            if definition['version'] < 4:
+                raise ValueError('Week parameters require recording version 4.')
+            if action != 'set_range' or parameter.get('role') not in {'start', 'end'}:
+                raise ValueError('Week parameters belong to a date range control as its start or end.')
+            if fmt not in WEEK_FORMATS:
+                raise ValueError('Unsupported week format.')
+            if parameter.get('mode') == 'calculated' and parameter.get('expression') not in WEEK_CALCULATIONS:
+                raise ValueError('Unsupported week calculation.')
+            offset = parameter.get('offset_weeks', 0)
+            if type(offset) is not int or abs(offset) > MAX_WEEK_OFFSET:
+                raise ValueError('Week offsets must be whole weeks within ten years.')
+            if parameter.get('mode') == 'fixed':
+                parse_week(parameter.get('value', ''), fmt)
+            continue
+        if action == 'set_range':
+            raise ValueError('A date range control needs week parameters.')
         if parameter.get('step_id'):
-            action = next(step['action'] for step in steps if step['id'] == parameter['step_id'])
             if action not in {'fill', 'select_option', 'press_sequentially'}:
                 raise ValueError('Date parameters must reference value-setting steps.')
         elif parameter.get('mode') != 'portal_default':
             raise ValueError('Fixed/calculated dates require a recorded value-setting step.')
         if parameter.get('mode') == 'calculated' and parameter.get('expression') not in CALCULATIONS:
             raise ValueError('Unsupported date calculation.')
-        fmt = parameter.get('format', '%Y-%m-%d')
-        if fmt not in {'%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y', '%Y%m%d'}:
+        if fmt not in DAY_FORMATS:
             raise ValueError('Unsupported date format.')
         if parameter.get('mode') == 'fixed':
             datetime.strptime(parameter.get('value', ''), fmt)
@@ -427,13 +523,27 @@ def resolve_parameters(definition, overrides=None, *, now=None):
     unknown = set(overrides) - set(definition.get('parameters', {}))
     if unknown:
         raise ValueError('Unknown parameter: ' + sorted(unknown)[0])
+    steps = {step['id']: step for step in walk_steps(definition.get('steps', []))}
     result = {}
     for name, parameter in definition.get('parameters', {}).items():
-        mode, fmt = parameter['mode'], parameter.get('format', '%Y-%m-%d')
+        mode, fmt = parameter['mode'], parameter_format(parameter)
         value = overrides.get(name)
-        if value is None:
-            value = parameter.get('value') if mode == 'fixed' else values[parameter['expression']].strftime(fmt) if mode == 'calculated' else None
+        if value is None and mode == 'fixed':
+            value = parameter.get('value')
+        elif value is None and mode == 'calculated':
+            if parameter_unit(parameter) == 'week':
+                # Calendar weeks follow the control's own week convention, so a
+                # Sunday already belongs to the new week on an ASAP control. The
+                # newest selectable week exists only on the live control.
+                contract = steps.get(parameter.get('step_id'), {}).get('range') or {}
+                monday = week_monday(day, contract.get('week_days', 'sunday'))
+                anchors = {'current_week': monday, 'previous_week': monday - timedelta(days=7)}
+                anchor = anchors.get(parameter['expression'])
+                if anchor is not None:
+                    value = format_week(anchor + timedelta(weeks=parameter.get('offset_weeks', 0)), fmt)
+            else:
+                value = values[parameter['expression']].strftime(fmt)
         if value is not None:
-            datetime.strptime(value, fmt)
+            parse_parameter_value(parameter, value)
         result[name] = value
     return result

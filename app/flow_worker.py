@@ -44,7 +44,7 @@ if str(_CODE_DIR) not in sys.path:
 
 from app.flow_clock import dubai_today
 from app.flow_paths import assert_job_paths
-from app import flow_layout, flow_excel
+from app import flow_layout, flow_excel, flow_range_slider
 
 try:
     from app import flow_gscm, flow_outlook, flow_publish, flow_python, flow_replay, flow_retention
@@ -437,16 +437,7 @@ def _week_to_asap(value: str) -> str:
 
 def _asap_week_dates(value: str) -> tuple[str, str]:
     """Return ASAP's Sunday-to-Saturday dates for one ISO-numbered week."""
-    match = re.fullmatch(r"(\d{4})-W(\d{2})", value)
-    if not match:
-        raise RuntimeError(f"ASAP week must use YYYY-Www: {value}")
-    try:
-        monday = date.fromisocalendar(int(match.group(1)), int(match.group(2)), 1)
-    except ValueError as exc:
-        raise RuntimeError(f"ASAP week does not exist: {value}") from exc
-    sunday = monday - timedelta(days=1)
-    saturday = sunday + timedelta(days=6)
-    return sunday.strftime("%Y%m%d"), saturday.strftime("%Y%m%d")
+    return flow_range_slider.week_dates(value)
 
 
 def _asap_range_scope(frame: Frame, label: str):
@@ -478,135 +469,18 @@ def _asap_range_scope(frame: Frame, label: str):
     raise RuntimeError(f"ASAP {label} range slider was not found.")
 
 
-def _asap_slider_value(handle, value_pattern: str) -> str | None:
-    """Read one semantic slider value without trusting its screen position."""
-    for attribute in (
-        "aria-valuetext", "aria-valuenow", "value", "data-value", "data-val",
-        "data-current-value",
-    ):
-        try:
-            raw = _clean_text(handle.get_attribute(attribute))
-        except Exception:
-            raw = ""
-        match = re.search(value_pattern, raw)
-        if match:
-            return match.group(0)
-    try:
-        match = re.search(value_pattern, _clean_text(handle.inner_text()))
-    except Exception:
-        match = None
-    return match.group(0) if match else None
-
-
-def _asap_slider_ordinal(value: str, kind: str) -> int:
-    if kind == "week":
-        match = re.fullmatch(r"(\d{4})(\d{2})", value)
-        if not match:
-            raise RuntimeError(f"ASAP Week slider exposed an invalid value: {value}")
-        try:
-            return date.fromisocalendar(int(match.group(1)), int(match.group(2)), 1).toordinal() // 7
-        except ValueError as exc:
-            raise RuntimeError(f"ASAP Week slider exposed a nonexistent week: {value}") from exc
-    if kind == "date":
-        try:
-            return datetime.strptime(value, "%Y%m%d").date().toordinal()
-        except ValueError as exc:
-            raise RuntimeError(f"ASAP Date slider exposed an invalid value: {value}") from exc
-    raise RuntimeError(f"Unsupported ASAP slider kind: {kind}")
-
-
-def _asap_move_slider(handle, target: str, kind: str, *, current: str | None = None,
-                      read_value=None) -> None:
-    """Move one focused slider handle by keyboard and verify its exact value."""
-    pattern = r"20\d{4}" if kind == "week" else r"20\d{6}"
-    read_value = read_value or (lambda: _asap_slider_value(handle, pattern))
-    current = current or read_value()
-    if current is None:
-        handle.press("Home")
-        current = read_value()
-    if current is None:
-        raise RuntimeError(f"ASAP {kind.title()} slider did not expose its current value.")
-    delta = _asap_slider_ordinal(target, kind) - _asap_slider_ordinal(current, kind)
-    if abs(delta) > 1_000:
-        raise RuntimeError(
-            f"ASAP {kind.title()} slider target is more than 1,000 steps from its current value."
-        )
-    key = "ArrowRight" if delta > 0 else "ArrowLeft"
-    for _step in range(abs(delta)):
-        handle.press(key)
-    actual = None
-    for _attempt in range(10):
-        actual = read_value()
-        if actual == target:
-            break
-        time.sleep(0.05)
-    if actual != target:
-        raise RuntimeError(
-            f"ASAP {kind.title()} slider mismatch. Requested: {target}. Selected: {actual or 'unknown'}."
-        )
-
-
-def _asap_range_values(scope, handles: list, kind: str) -> list[str | None]:
-    """Read both range values from handle semantics or the control's visible labels."""
-    pattern = r"20\d{4}" if kind == "week" else r"20\d{6}"
-    values = [_asap_slider_value(handle, pattern) for handle in handles]
-    if None not in values:
-        return values
-    try:
-        visible = re.findall(rf"(?<!\d){pattern}(?!\d)", _clean_text(scope.inner_text()))
-    except Exception:
-        visible = []
-    if len(visible) == len(handles):
-        return [value or visible[index] for index, value in enumerate(values)]
-    return values
+# The keyboard-driven slider driver is shared with recorded date range steps.
+_asap_slider_value = flow_range_slider.slider_value
+_asap_slider_ordinal = flow_range_slider.slider_ordinal
+_asap_move_slider = flow_range_slider.move_slider
+_asap_range_values = flow_range_slider.range_values
+_asap_week_options = flow_range_slider.week_options
 
 
 def _asap_set_range(frame: Frame, label: str, start: str, end: str, kind: str) -> None:
     """Set and read back an ASAP two-handle range without coordinate guessing."""
-    if _asap_slider_ordinal(end, kind) < _asap_slider_ordinal(start, kind):
-        raise RuntimeError(f"ASAP {label} range ends before it starts: {start} to {end}")
     scope, handles = _asap_range_scope(frame, label)
-    current = _asap_range_values(scope, handles, kind)
-    # When advancing a collapsed one-period range, the upper handle must move
-    # first or the lower handle is constrained by the old upper value.
-    if current[1] and _asap_slider_ordinal(start, kind) > _asap_slider_ordinal(current[1], kind):
-        order = ((1, end), (0, start))
-    elif current[0] and _asap_slider_ordinal(end, kind) < _asap_slider_ordinal(current[0], kind):
-        order = ((0, start), (1, end))
-    else:
-        order = ((0, start), (1, end))
-    for index, target in order:
-        _asap_move_slider(
-            handles[index], target, kind, current=current[index],
-            read_value=lambda index=index: _asap_range_values(scope, handles, kind)[index],
-        )
-        current = _asap_range_values(scope, handles, kind)
-    actual = _asap_range_values(scope, handles, kind)
-    if actual != [start, end]:
-        raise RuntimeError(
-            f"ASAP {label} range did not match the flow. Requested: {[start, end]}. Selected: {actual}."
-        )
-
-
-def _asap_week_options(start: str, end: str) -> list[str]:
-    """Expand compact ASAP week bounds into every valid YYYYWW value."""
-    start_match = re.fullmatch(r"(\d{4})(\d{2})", start)
-    end_match = re.fullmatch(r"(\d{4})(\d{2})", end)
-    if not start_match or not end_match:
-        return []
-    try:
-        current = date.fromisocalendar(int(start_match.group(1)), int(start_match.group(2)), 1)
-        final = date.fromisocalendar(int(end_match.group(1)), int(end_match.group(2)), 1)
-    except ValueError:
-        return []
-    if final < current or (final - current).days > 7 * 104:
-        return []
-    values = []
-    while current <= final:
-        year, week, _weekday = current.isocalendar()
-        values.append(f"{year:04d}{week:02d}")
-        current += timedelta(days=7)
-    return values
+    flow_range_slider.set_range_values(scope, handles, start, end, kind, label=f"ASAP {label}")
 
 
 def _asap_discover_labeled_week_slider(
@@ -8428,6 +8302,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
         registration['capabilities'][flow_excel.CAPABILITY] = True
         registration['capabilities']['recorded_flows_v2'] = True
         registration['capabilities']['recorded_flows_v3'] = True
+        registration['capabilities']['recorded_flows_v4'] = True
         registration['capabilities']['gscm_bookmark_targets_v1'] = True
         registration['capabilities']['recorded_validation_engine_v1'] = True
         # Older workers lack this key and are never given a job whose frozen

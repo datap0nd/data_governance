@@ -157,9 +157,15 @@ def test_duplicate_step_copies_it_after_itself_with_fresh_ids_and_selects_the_co
     assert page.get_by_label('Parameter name').input_value()=='start_2'
     assert page.locator('[data-save-state]').inner_text()=='Unsaved changes'
     assert page.evaluate("()=>document.activeElement.matches('[data-duplicate]')")
-    # The copy is an ordinary step: editing it leaves the source alone.
+    # The copy is an ordinary step: editing it leaves the source alone, and its
+    # fixed date follows the entered value because playback replays the parameter.
     page.get_by_label('Entered value').fill('2026-02-01')
     assert page.locator(f'[data-card="{start_fill["id"]}"]').count()==1
+    assert page.get_by_label('Fixed date',exact=True).input_value()=='2026-02-01'
+    page.locator(f'[data-select="{start_fill["id"]}"]').click()
+    assert page.get_by_label('Fixed date',exact=True).input_value()=='2026-01-01'
+    page.locator(f'[data-select="{copy_id}"]').click()
+    assert page.get_by_label('Fixed date',exact=True).input_value()=='2026-02-01'
     download=next(s for s in value['steps'] if s['action']=='download')
     page.locator(f'[data-select="{download["id"]}"]').click()
     page.get_by_role('button',name='Duplicate',exact=True).click()
@@ -171,7 +177,7 @@ def test_duplicate_step_copies_it_after_itself_with_fresh_ids_and_selects_the_co
     ids=[s['id'] for s in saved['steps']]
     assert ids[:3]==original_ids[:3] and ids[3]==copy_id and ids[4:-1]==original_ids[3:] and ids[-1] not in original_ids
     assert saved['steps'][2]['args']==[start_fill['args'][0]] and saved['steps'][3]['args']==['2026-02-01']
-    assert saved['parameters']['start']=={**value['parameters']['start']} and saved['parameters']['start_2']=={**value['parameters']['start'],'step_id':copy_id}
+    assert saved['parameters']['start']=={**value['parameters']['start']} and saved['parameters']['start_2']=={**value['parameters']['start'],'step_id':copy_id,'value':'2026-02-01'}
     assert saved['steps'][-1]['action']=='download' and saved['steps'][-1]['steps'][0]['id']!=download['steps'][0]['id'] and saved['steps'][-1]['output']==download['output']
     validate_definition(saved)
     # Undo removes the last copy; the page-opening step offers no Duplicate.
@@ -180,6 +186,28 @@ def test_duplicate_step_copies_it_after_itself_with_fresh_ids_and_selects_the_co
     page.locator(f'[data-select="{original_ids[0]}"]').click()
     assert page.get_by_role('button',name='Duplicate',exact=True).is_disabled()
     assert page.get_by_role('button',name='Duplicate',exact=True).get_attribute('title')=='Page open, popup and close steps cannot be duplicated.'
+
+
+def test_fixed_date_and_entered_value_stay_in_sync(editor_page):
+    page,value=editor_page
+    start_fill=next(s for s in value['steps'] if s['action']=='fill')
+    page.locator(f'[data-select="{start_fill["id"]}"]').click()
+    assert page.get_by_label('Date behavior').input_value()=='fixed'
+    page.get_by_label('Entered value').fill('2026-03-01');page.get_by_label('Entered value').press('Tab')
+    page.get_by_label('Fixed date',exact=True).fill('2026-04-01');page.get_by_label('Fixed date',exact=True).press('Tab')
+    assert page.get_by_label('Entered value').input_value()=='2026-04-01'
+    page.get_by_role('button',name='Save draft',exact=True).click()
+    saved=page.evaluate('()=>calls[0].body.definition')
+    step=next(s for s in saved['steps'] if s['id']==start_fill['id'])
+    assert step['args']==['2026-04-01'] and saved['parameters']['start']['value']=='2026-04-01'
+    # A portal-default parameter has no fixed value to keep, so its entered value stays its own.
+    end_fill=[s for s in value['steps'] if s['action']=='fill'][1]
+    page.locator(f'[data-select="{end_fill["id"]}"]').click()
+    page.get_by_label('Entered value').fill('2026-05-01');page.get_by_label('Entered value').press('Tab')
+    page.get_by_role('button',name='Save draft',exact=True).click()
+    saved=page.evaluate('()=>calls[1].body.definition')
+    assert next(s for s in saved['steps'] if s['id']==end_fill['id'])['args']==['2026-05-01']
+    assert 'value' not in saved['parameters']['end'] or saved['parameters']['end']['value'] in (None,'')
 
 
 def test_polling_preserves_selection_dirty_fields_and_collapsed_details(editor_page):

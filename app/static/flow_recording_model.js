@@ -15,6 +15,10 @@ window.RecordedFlowModel = (() => {
         const part = [...(step.locator || [])].reverse().find(p => p.kwargs?.name || ['get_by_text','get_by_label','get_by_title','get_by_placeholder','get_by_alt_text','get_by_test_id'].includes(p.method));
         return part?.kwargs?.name || part?.args?.[0] || (step.locator?.length ? 'recorded element' : '');
     };
+    const WEEK_ISO=/^(20\d{2})-W(0[1-9]|[1-4]\d|5[0-3])$/,WEEK_COMPACT=/^(20\d{2})(0[1-9]|[1-4]\d|5[0-3])$/;
+    const weekText=(value,fmt)=>{const text=String(value||'').trim(),match=text.match(WEEK_ISO)||text.match(WEEK_COMPACT);if(!match)return text;return fmt==='%G%V'?`${match[1]}${match[2]}`:`${match[1]}-W${match[2]}`;};
+    const validWeek=(value,fmt)=>(fmt==='%G%V'?WEEK_COMPACT:WEEK_ISO).test(String(value||'').trim());
+    const requiredVersion=definition=>{const steps=all(definition.steps||[]),parameters=Object.values(definition.parameters||{});if(steps.some(s=>s.action==='set_range')||parameters.some(p=>p&&p.unit==='week'))return 4;if(steps.some(s=>s.action==='select_range'))return 3;return Math.max(2,Number(definition.version)||1);};
     const isoWeek = value => {
         const text=String(value??'');
         const match=text.match(/(?:^|\D)(20\d{2})\s*[-/ ]?\s*[Ww]?\s*(0?[1-9]|[1-4]\d|5[0-3])(?:\D|$)/);
@@ -44,6 +48,7 @@ window.RecordedFlowModel = (() => {
         if (action.action === 'assert' && typeof action.args?.[0] === 'string') return `Check “${action.args[0]}”`;
         if (action.action === 'wait') return `Wait ${action.seconds} seconds`;
         if (action.action === 'select_range') return `Select week range from ${action.range?.start || 'recorded start'}`;
+        if (action.action === 'set_range') return `Set ${action.range?.kind === 'date' ? 'date' : 'week'} range`;
         if (action.action === 'goto') { try { return `Open ${new URL(action.args[0]).hostname}`; } catch { return 'Open report page'; } }
         const verbs = {new_page:'Open browser page',click:'Click',dblclick:'Double click',fill:'Enter value in',press:'Press key in',select_option:'Select value in',check:'Check',uncheck:'Uncheck',set_checked:'Set checkbox',hover:'Hover over',clear:'Clear',press_sequentially:'Type in',assert:'Check',popup:'Open popup',download:'Download files',close:'Close page'};
         const text = name(action);
@@ -139,7 +144,7 @@ window.RecordedFlowModel = (() => {
         const index=definition.steps.findIndex(step=>step.id===id);
         if(index<0)return null;
         const step=definition.steps[index],action=triggering(step);
-        if(['download','popup'].includes(step.action)||!action.locator?.length||action.action==='select_range')return null;
+        if(['download','popup'].includes(step.action)||!action.locator?.length||['select_range','set_range'].includes(action.action))return null;
         const start=isoWeek(name(action)) || '';
         return {first:index,last:index,steps:[step],weeks:start?[start]:[],start,anchor:action};
     }
@@ -170,10 +175,65 @@ window.RecordedFlowModel = (() => {
         return validatePages(next);
     }
     function setRangeAncestor(step,levels) {
-        if(step.action!=='select_range'||!Number.isInteger(levels)||levels<1||levels>6)throw Error('Choose 1–6 parent levels for the element box.');
+        if(!['select_range','set_range'].includes(step.action)||!Number.isInteger(levels)||levels<1||levels>6)throw Error('Choose 1–6 parent levels for the element box.');
         step.range.container_ancestor_levels=levels;
         step.locator=rangeLocator(step.range.anchor_locator,levels);
         return step;
     }
-    return {all,clone,target,frame,name,editableTarget,renameTarget,describe,triggering,canDelay,validatePages,move,remove,canDuplicate,duplicate,owner,rangeCandidate,makeRange,restoreRange,setRangeAncestor};
+    function dropParameters(next,names) {
+        const dropped=new Set(names);
+        for (const key of dropped) delete next.parameters?.[key];
+        for (const p of Object.values(next.parameters || {})) if (dropped.has(p.not_after)) delete p.not_after;
+        for (const s of all(next.steps)) if (s.output?.period_checks) s.output.period_checks=s.output.period_checks.filter(c=>!dropped.has(c.parameter));
+        return next;
+    }
+    function renameParameter(definition,oldName,newName) {
+        const next=clone(definition),parameters=next.parameters||{};
+        if(!(oldName in parameters))throw Error('This date parameter no longer exists.');
+        if(newName===oldName)return next;
+        if(newName in parameters)throw Error('Date parameter names must be unique.');
+        parameters[newName]=parameters[oldName];delete parameters[oldName];
+        for (const p of Object.values(parameters)) if (p.not_after===oldName) p.not_after=newName;
+        for (const s of all(next.steps)) for (const c of s.output?.period_checks||[]) if (c.parameter===oldName) c.parameter=newName;
+        return next;
+    }
+    // A date range control: one recorded click on a slider handle becomes a step
+    // that moves both handles to its start and end week parameters.
+    const freshName=(parameters,base)=>{if(!(base in parameters))return base;for(let n=2;;n++){const value=`${base}_${n}`;if(!(value in parameters))return value;}};
+    function sliderCandidate(definition,id) {
+        const index=definition.steps.findIndex(step=>step.id===id);
+        if(index<0)return null;
+        const step=definition.steps[index];
+        if(!interactions.has(step.action)||!step.locator?.length||step.bookmark_target)return null;
+        return {index,anchor:step};
+    }
+    function rangeParameters(definition,id) {
+        const result={};
+        for (const [name,parameter] of Object.entries(definition.parameters||{})) if (parameter.step_id===id&&['start','end'].includes(parameter.role)) result[parameter.role]={name,parameter};
+        return result;
+    }
+    function makeSlider(definition,id,levels=1) {
+        const candidate=sliderCandidate(definition,id);
+        if(!candidate)throw Error('This step needs a recorded element target before it can become a date range control.');
+        const next=clone(definition),source=clone(candidate.anchor),anchor=clone(source.locator||[]);
+        const replacement={id:source.id,action:'set_range',page:source.page,locator:rangeLocator(anchor,levels),
+            range:{kind:'week',week_days:'sunday',anchor_locator:anchor,container_ancestor_levels:levels,source_step:source}};
+        next.steps.splice(candidate.index,1,replacement);
+        next.parameters=next.parameters||{};
+        dropParameters(next,Object.keys(next.parameters).filter(name=>next.parameters[name].step_id===id));
+        const start=freshName(next.parameters,'start'),end=freshName(next.parameters,'end');
+        next.parameters[start]={step_id:source.id,role:'start',unit:'week',mode:'portal_default',format:'%G-W%V'};
+        next.parameters[end]={step_id:source.id,role:'end',unit:'week',mode:'calculated',expression:'latest_selectable',offset_weeks:0,format:'%G-W%V'};
+        next.version=4;
+        return validatePages(next);
+    }
+    function restoreSlider(definition,id) {
+        const next=clone(definition),index=next.steps.findIndex(step=>step.id===id),step=next.steps[index];
+        if(index<0||step.action!=='set_range'||!step.range?.source_step)throw Error('This date range control has no recorded action to restore.');
+        next.steps.splice(index,1,clone(step.range.source_step));
+        dropParameters(next,Object.keys(next.parameters||{}).filter(name=>next.parameters[name].step_id===id));
+        return validatePages(next);
+    }
+    return {all,clone,target,frame,name,editableTarget,renameTarget,describe,triggering,canDelay,validatePages,move,remove,canDuplicate,duplicate,owner,rangeCandidate,makeRange,restoreRange,setRangeAncestor,
+        weekText,validWeek,requiredVersion,renameParameter,sliderCandidate,rangeParameters,makeSlider,restoreSlider};
 })();

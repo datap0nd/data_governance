@@ -129,3 +129,52 @@ assert.throws(()=>M.duplicate(pages,'popup'),/cannot be duplicated/);
 assert.throws(()=>M.duplicate({steps:[{id:'open',action:'new_page',page:'page'}]},'open'),/cannot be duplicated/);
 assert.throws(()=>M.duplicate(def,'click'),/unit/);
 console.log('Duplicate step model tests passed');
+
+// A date range control: one recorded click on a slider handle becomes a set_range
+// step whose start and end are week parameters; the recorded click stays restorable.
+const handleClick={id:'week-handle',action:'click',page:'page',locator:[{method:'locator',args:['#week-prompt'],kwargs:{}},{method:'get_by_role',args:['slider'],kwargs:{name:'Week end'}}],args:[],kwargs:{}};
+const sliderDef={version:3,steps:[{id:'open',action:'goto',page:'page',locator:[],args:['https://example.test']},handleClick,event],parameters:{}};
+assert.equal(M.sliderCandidate(sliderDef,'week-handle').index,1);
+assert.equal(M.sliderCandidate(sliderDef,'open'),null);
+assert.equal(M.sliderCandidate(sliderDef,'event'),null);
+const slid=M.makeSlider(sliderDef,'week-handle');
+assert.equal(slid.version,4);assert.equal(slid.steps[1].action,'set_range');assert.equal(slid.steps[1].range.kind,'week');assert.equal(slid.steps[1].range.week_days,'sunday');
+assert.deepEqual(plain(slid.steps[1].locator),[{method:'locator',args:['#week-prompt'],kwargs:{}}]);
+assert.equal(slid.steps[1].range.source_step.action,'click');
+assert.deepEqual(plain(slid.parameters.start),{step_id:'week-handle',role:'start',unit:'week',mode:'portal_default',format:'%G-W%V'});
+assert.deepEqual(plain(slid.parameters.end),{step_id:'week-handle',role:'end',unit:'week',mode:'calculated',expression:'latest_selectable',offset_weeks:0,format:'%G-W%V'});
+assert.deepEqual(Object.keys(M.rangeParameters(slid,'week-handle')).sort(),['end','start']);
+assert.equal(M.describe(slid.steps[1]),'Set week range');
+assert.equal(M.describe({...slid.steps[1],range:{...slid.steps[1].range,kind:'date'}}),'Set date range');
+assert.equal(M.rangeCandidate(slid,'week-handle'),null);
+assert.equal(M.sliderCandidate(slid,'week-handle'),null);
+assert.equal(M.requiredVersion(slid),4);assert.equal(M.requiredVersion(sliderDef),3);assert.equal(M.requiredVersion(weekly),2);
+assert.equal(sliderDef.steps[1].action,'click');
+M.setRangeAncestor(slid.steps[1],2);
+assert.deepEqual(plain(slid.steps[1].locator).map(part=>part.args[0]),['#week-prompt','xpath=..']);
+const restored=M.restoreSlider(slid,'week-handle');
+assert.deepEqual(plain(restored.steps[1]),handleClick);assert.deepEqual(plain(restored.parameters),{});
+// Existing parameter names stay unique, and a duplicate of the step gets its own pair.
+const named={...sliderDef,parameters:{start:{step_id:'open',mode:'fixed',value:'2026-01-01'}}};
+const slid2=M.makeSlider(named,'week-handle');
+assert.deepEqual(Object.keys(slid2.parameters).sort(),['end','start','start_2']);
+assert.equal(slid2.parameters.start_2.role,'start');assert.equal(slid2.parameters.start.step_id,'open');
+const dupSlider=M.duplicate(slid,'week-handle');
+assert.equal(dupSlider.steps[2].action,'set_range');assert.equal(dupSlider.steps[2].range.source_step.id,'week-handle-copy');
+const copyParams=M.rangeParameters(dupSlider,'week-handle-copy');
+assert.equal(copyParams.start.name,'start_2');assert.equal(copyParams.end.name,'end_2');
+assert.equal(copyParams.start.parameter.step_id,'week-handle-copy');
+assert.equal(M.rangeParameters(dupSlider,'week-handle').start.name,'start');
+// Renaming a parameter follows its references; names must stay unique.
+const referenced={...slid,steps:[...slid.steps.slice(0,2),{...event,output:{format:'xlsx',period_checks:[{column:'Week',parameter:'end'}]}}],parameters:{...slid.parameters,other:{step_id:'open',mode:'fixed',not_after:'end'}}};
+const renamedParameters=M.renameParameter(referenced,'end','last_week');
+assert.equal(renamedParameters.parameters.end,undefined);assert.equal(renamedParameters.parameters.last_week.role,'end');
+assert.equal(renamedParameters.parameters.other.not_after,'last_week');assert.equal(renamedParameters.steps[2].output.period_checks[0].parameter,'last_week');
+assert.equal(referenced.parameters.end.role,'end');
+assert.throws(()=>M.renameParameter(slid,'end','start'),/unique/);
+assert.equal(M.renameParameter(slid,'end','end').parameters.end.role,'end');
+assert.equal(M.weekText('2026-W05','%G%V'),'202605');assert.equal(M.weekText('202605','%G-W%V'),'2026-W05');assert.equal(M.weekText('x','%G%V'),'x');
+assert.equal(M.validWeek('2026-W53','%G-W%V'),true);assert.equal(M.validWeek('2026-W54','%G-W%V'),false);assert.equal(M.validWeek('202605','%G-W%V'),false);assert.equal(M.validWeek('202605','%G%V'),true);
+assert.throws(()=>M.makeSlider(sliderDef,'open'),/element target/);
+assert.throws(()=>M.restoreSlider(sliderDef,'week-handle'),/no recorded action/);
+console.log('Date range control model tests passed');

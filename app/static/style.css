@@ -7948,6 +7948,8 @@ body.remote-flow-control-enabled { padding-top: 32px; }
 .recording-details input:not([type=checkbox]), .recording-details select, [data-title-panel] input, [data-title-panel] select { display:block; width:100%; margin-top:6px; }
 .recording-details details { margin-top:14px; }
 .recording-details summary { cursor:pointer; font-weight:600; }
+.recording-range-parameter { border:0; border-top:1px solid var(--border,#ddd); padding:8px 0 0; margin:12px 0 0; min-width:0; }
+.recording-range-parameter legend { font-size:.82rem; font-weight:600; padding:0; }
 .recording-locator { display:block; font-size:11px; overflow-wrap:anywhere; padding:8px; background:var(--surface-2); }
 .recording-target { color:var(--text-muted,#737d8c); overflow-wrap:anywhere; }
 .recording-group-action { display:block; border:0; background:none; color:var(--accent,#3b69d9); padding:8px 0; text-align:left; cursor:pointer; }

@@ -18,6 +18,7 @@ from pathlib import Path
 from app import flow_recording
 from app import flow_recording_diagnostics as diagnostics
 from app import flow_recording_pacing
+from app import flow_range_slider
 
 
 def _value(value):
@@ -384,6 +385,86 @@ def _select_week_range(container, step, update) -> dict:
     }
 
 
+def _set_slider_range(container, step, definition, parameters, update) -> dict:
+    """Move a two-handle date range control to its start and end weeks and prove them.
+
+    Fixed and calendar-calculated weeks arrive resolved in ``parameters``. A
+    portal-default handle keeps the value the portal shows, and the newest
+    selectable week is read from the control by sending its upper handle to
+    the end. Every handle move is verified by read-back; a control that does
+    not show the requested range fails before any download.
+    """
+    contract = step['range']
+    kind = contract['kind']
+    week_days = contract.get('week_days', 'sunday')
+    container.wait_for(state='visible', timeout=120_000)
+    handles = flow_range_slider.find_handles(container)
+    roles = {parameter.get('role'): (name, parameter)
+             for name, parameter in definition.get('parameters', {}).items()
+             if parameter.get('step_id') == step['id']}
+    current = flow_range_slider.range_values(container, handles, kind)
+    update('reading the current range.', {'phase': 'range_read', 'current': current})
+
+    def week_of(raw):
+        if kind == 'week':
+            return flow_recording.parse_week(raw, '%G%V')
+        return flow_range_slider.week_of(datetime.strptime(raw, '%Y%m%d').date(), week_days)
+
+    resolved, live, latest = {}, {}, None
+    for index, role in enumerate(('start', 'end')):
+        name, parameter = roles[role]
+        fmt = flow_recording.parameter_format(parameter)
+        value = parameters.get(name)
+        raw = None
+        if value is not None:
+            monday = flow_recording.parse_week(value, fmt)
+        elif parameter['mode'] == 'portal_default':
+            raw = current[index]
+            if raw is None:
+                raise RuntimeError(f'The date range control does not expose its current {role} value.')
+            monday = week_of(raw)
+            live[name] = True
+        else:
+            if latest is None:
+                # The upper handle's proven limit: settled, confirmed by a second
+                # press and checked against a declared maximum.
+                latest = week_of(flow_range_slider.read_extreme(container, handles, kind, end=True))
+                update(f'newest selectable week is {flow_recording.format_week(latest)}.',
+                       {'phase': 'range_latest', 'latest_selectable': flow_recording.format_week(latest)})
+            monday = latest + timedelta(weeks=parameter.get('offset_weeks', 0))
+            live[name] = True
+        resolved[role] = {'name': name, 'monday': monday, 'format': fmt, 'raw': raw}
+    start, end = resolved['start'], resolved['end']
+    if end['monday'] < start['monday']:
+        raise RuntimeError(
+            f"Date range end {flow_recording.format_week(end['monday'])} is before its start "
+            f"{flow_recording.format_week(start['monday'])}."
+        )
+    if kind == 'week':
+        targets = [flow_recording.format_week(start['monday'], '%G%V'), flow_recording.format_week(end['monday'], '%G%V')]
+    else:
+        first = flow_range_slider.week_bounds(start['monday'], week_days)[0]
+        last = flow_range_slider.week_bounds(end['monday'], week_days)[1]
+        targets = [first.strftime('%Y%m%d'), last.strftime('%Y%m%d')]
+    # A portal-default handle keeps the exact value the portal showed.
+    for index, role in enumerate((start, end)):
+        if role['raw'] is not None:
+            targets[index] = role['raw']
+    update(f'moving the handles to {targets[0]} through {targets[1]}.',
+           {'phase': 'range_move', 'targets': list(targets)})
+    flow_range_slider.set_range_values(
+        container, handles, targets[0], targets[1], kind,
+        progress=lambda detail: update(f"moving handle {detail['handle'] + 1} to {detail['target']}.",
+                                       {'phase': 'range_handle', **detail}),
+    )
+    actual = {start['name']: flow_recording.format_week(start['monday'], start['format']),
+              end['name']: flow_recording.format_week(end['monday'], end['format'])}
+    return {'kind': kind, 'control_values': targets, 'actual': actual, 'live': live,
+            'start_week': flow_recording.format_week(start['monday']),
+            'end_week': flow_recording.format_week(end['monday']),
+            'latest_selectable': flow_recording.format_week(latest) if latest else None}
+
+
 def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifacts):
     from playwright.sync_api import expect
     from app import flow_worker
@@ -444,7 +525,7 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
                     raise RuntimeError(f'Date parameter {name} could not be read from its recorded page.')
                 continue
             value = locate(pages, parameter['target']).input_value(timeout=30_000)
-            datetime.strptime(value, parameter.get('format', '%Y-%m-%d'))
+            flow_recording.parse_parameter_value(parameter, value)
             defaults[name] = actual_parameters[name] = value
         for name, expected in prior_defaults.items():
             if (name in defaults or final) and defaults.get(name) != expected:
@@ -452,7 +533,7 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
         dates = {}
         for name, parameter in definition.get('parameters', {}).items():
             if actual_parameters.get(name) is not None:
-                dates[name] = datetime.strptime(actual_parameters[name], parameter.get('format', '%Y-%m-%d'))
+                dates[name] = flow_recording.parse_parameter_value(parameter, actual_parameters[name])
         for name, parameter in definition.get('parameters', {}).items():
             end = parameter.get('not_after')
             if end and name in dates and end in dates and dates[name] > dates[end]:
@@ -521,6 +602,31 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
                 )
                 previous_step = step
                 continue
+            if action == 'set_range':
+                container = locate(pages, step)
+                result = _set_slider_range(
+                    container, step, definition, parameters,
+                    lambda message, detail: notify(
+                        step, f'{label}: {message}', outcome='running',
+                        diagnostic={'phase': 'range_slider', **detail},
+                    ),
+                )
+                for name, value in result['actual'].items():
+                    actual_parameters[name] = value
+                    if name in result['live']:
+                        # Live values behave like portal defaults: a resumed run
+                        # must see the same ones or start over.
+                        defaults[name] = value
+                notify(
+                    step,
+                    f"Set {result['kind']} range {result['control_values'][0]} through "
+                    f"{result['control_values'][1]} ({result['start_week']} to {result['end_week']}).",
+                    outcome='completed', confirmation='exact_range',
+                    diagnostic={'phase': 'action_finished', 'range': {
+                        key: result[key] for key in ('kind', 'control_values', 'start_week', 'end_week', 'latest_selectable')}},
+                )
+                previous_step = step
+                continue
             node = locate(pages, step)
             if timing:
                 notify(step, f'{label}: sending action.', outcome='running', diagnostic={
@@ -538,7 +644,7 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
                 value = parameters.get(name)
                 if value is None:
                     current = node.input_value(timeout=30_000)
-                    datetime.strptime(current, parameter.get('format', '%Y-%m-%d'))
+                    flow_recording.parse_parameter_value(parameter, current)
                     defaults[name] = actual_parameters[name] = current
                     skip = True
                 elif action in {'fill', 'press_sequentially', 'select_option'}:

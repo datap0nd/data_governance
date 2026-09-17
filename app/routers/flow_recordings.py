@@ -338,8 +338,10 @@ def save_revision(flow_id: int, body: RevisionWrite):
         submitted = {**body.definition, 'timezone': 'Asia/Dubai'}
         version = submitted.get('version', 1)
         if type(version) is int:
-            required = 3 if any(step.get('action') == 'select_range'
-                                for step in flow_recording.walk_steps(submitted.get('steps', []))) else 2
+            actions = {step.get('action') for step in flow_recording.walk_steps(submitted.get('steps', []))}
+            parameters = submitted.get('parameters') if isinstance(submitted.get('parameters'), dict) else {}
+            weekly = any(isinstance(p, dict) and p.get('unit') == 'week' for p in parameters.values())
+            required = 4 if 'set_range' in actions or weekly else 3 if 'select_range' in actions else 2
             submitted['version'] = max(required, version)
         definition = flow_recording.validate_definition(submitted, activation=False)
     except (ValueError, KeyError, TypeError) as exc:

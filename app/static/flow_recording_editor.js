@@ -45,7 +45,7 @@ window.RecordedFlowEditor = (() => {
         }
         function edit(next,selection=selected,render=true) {
             undo.push({draft:M.clone(draft),selected}); if(undo.length>100)undo.shift();
-            draft=next;draft.version=M.all(draft.steps||[]).some(step=>step.action==='select_range')?3:Math.max(2,Number(draft.version)||1);draft.timezone='Asia/Dubai';selected=selection;
+            draft=next;draft.version=M.requiredVersion(draft);draft.timezone='Asia/Dubai';selected=selection;
             dirty=JSON.stringify(draft)!==baseline;
             if(settings)delete settings.recording_revision_id;window._flowRecordingSelections?.set(flowId,null);window._flowUntestedRecordingSelections?.set(flowId,null);
             remember();
@@ -184,7 +184,7 @@ window.RecordedFlowEditor = (() => {
                 if(draft)undo.push({draft:M.clone(draft),selected});
                 if(undo.length>100)undo.shift();
                 draft=M.clone(result.definition);
-                draft.version=M.all(draft.steps||[]).some(step=>step.action==='select_range')?3:Math.max(2,Number(draft.version)||1);
+                draft.version=M.requiredVersion(draft);
                 draft.timezone='Asia/Dubai';
                 revisionId=result.revision_id;baseline=JSON.stringify(draft);dirty=false;selected=null;expanded=new Set();
                 if(settings)delete settings.recording_revision_id;window._flowRecordingSelections?.set(flowId,null);
@@ -212,7 +212,7 @@ window.RecordedFlowEditor = (() => {
         }
         function cards() {
             return draft.steps.map((step,i)=>`<div class="recording-gap"><span aria-hidden="true">${i?'↓':''}</span></div>
-                <article class="recording-card" data-card="${h(step.id)}"><span class="recording-number">${i+1}</span><button type="button" class="recording-card-title" data-select="${h(step.id)}">${h(M.describe(step))}</button>${step.action==='download'?'<span class="recording-badge">Download</span>':step.action==='select_range'?'<span class="recording-badge">Range</span>':''}<span class="recording-outcome" role="status"></span><button type="button" class="recording-drag" draggable="true" data-drag="${h(step.id)}" aria-label="Drag step ${i+1}">⠿</button></article>`).join('');
+                <article class="recording-card" data-card="${h(step.id)}"><span class="recording-number">${i+1}</span><button type="button" class="recording-card-title" data-select="${h(step.id)}">${h(M.describe(step))}</button>${step.action==='download'?'<span class="recording-badge">Download</span>':step.action==='select_range'?'<span class="recording-badge">Range</span>':step.action==='set_range'?'<span class="recording-badge">Date range</span>':''}<span class="recording-outcome" role="status"></span><button type="button" class="recording-drag" draggable="true" data-drag="${h(step.id)}" aria-label="Drag step ${i+1}">⠿</button></article>`).join('');
         }
         function bindCards() {
             body.querySelectorAll('[data-select]').forEach(b=>b.onclick=()=>{selected=selected===b.dataset.select?null:b.dataset.select;renderDetails();updateCards();});
@@ -257,6 +257,23 @@ window.RecordedFlowEditor = (() => {
             const editableTarget=action.action==='click'&&!action.bookmark_target?M.editableTarget(action):null;
             const inlineRepair=action.action==='click'&&!action.bookmark_target&&action.locator?.length&&!editableTarget;
             const rangeCandidate=step===root?M.rangeCandidate(draft,step.id):null;
+            const sliderCandidate=step===root?M.sliderCandidate(draft,step.id):null,rangeParams=action.action==='set_range'?M.rangeParameters(draft,action.id):null;
+            const sliderOptions=()=>{
+                if(action.action!=='set_range'||!rangeParams?.start||!rangeParams?.end)return '';
+                const contract=action.range||{};
+                const block=role=>{const {name,parameter}=rangeParams[role],behavior=parameter.mode==='calculated'?parameter.expression:parameter.mode,fmt=parameter.format||'%G-W%V';
+                    return `<fieldset class="recording-range-parameter" data-slider-role="${role}"><legend>${role==='start'?'Start':'End'} of range</legend>
+                    <label>${role==='start'?'Start':'End'} behavior <select data-slider-mode>${option('portal_default','Portal default — leave untouched',behavior)}${option('fixed','Fixed week',behavior)}${option('latest_selectable','Newest selectable week',behavior)}${option('current_week','Current week',behavior)}${option('previous_week','Previous week',behavior)}</select></label>
+                    ${parameter.mode==='fixed'?`<label>${role==='start'?'Start':'End'} week <input data-slider-value required pattern="${fmt==='%G%V'?'20[0-9]{2}(?:0[1-9]|[1-4][0-9]|5[0-3])':'20[0-9]{2}-W(?:0[1-9]|[1-4][0-9]|5[0-3])'}" placeholder="${fmt==='%G%V'?'202601':'2026-W01'}" value="${h(parameter.value||'')}"></label>`:''}
+                    ${parameter.mode==='calculated'?`<label>Weeks to add to the ${role} (negative for earlier) <input data-slider-offset type="number" min="-520" max="520" step="1" value="${h(Number.isInteger(parameter.offset_weeks)?parameter.offset_weeks:0)}"></label>`:''}
+                    <label>${role==='start'?'Start':'End'} parameter name <input data-slider-name value="${h(name)}"></label>
+                    <label>${role==='start'?'Start':'End'} format <select data-slider-format>${option('%G-W%V','YYYY-Www',fmt)}${option('%G%V','YYYYWW',fmt)}</select></label></fieldset>`;};
+                return `<label>Control values <select data-slider-kind>${option('week','Week numbers (YYYYWW)',contract.kind||'week')}${option('date','Dates (YYYYMMDD)',contract.kind||'week')}</select></label>
+                <label>Week starts on <select data-slider-week-days>${option('sunday','Sunday (ASAP)',contract.week_days||'sunday')}${option('monday','Monday (ISO)',contract.week_days||'sunday')}</select></label>
+                <p class="hint">Decides which week a Sunday belongs to for the current and previous week, and which calendar days a week covers on a date control.</p>
+                <label>Element box <select data-range-ancestor>${[1,2,3,4,5,6].map(level=>option(level,level===1?'Parent of the recorded handle':`${level} parent levels above the handle`,contract.container_ancestor_levels||1)).join('')}</select></label>
+                <p class="hint">Playback finds the two slider handles inside this box, moves each with the keyboard and reads the values back. It stops before any download when the control does not show the requested range.</p>${block('start')}${block('end')}`;
+            };
             const repairEditor=`<label>Repair target <select data-repair-kind>${option('','Keep recorded target','')}${option('text','Exact visible text','')}${option('label','Exact input label','')}${option('css','Stable CSS selector','')}</select></label><input data-repair-value aria-label="Replacement target"><button class="btn-secondary" data-repair>Apply target repair</button>`;
             panel.innerHTML=`<div class="recording-detail-heading"><h3>Step ${index+1}</h3>${undo.length?'<button class="btn-secondary" data-undo>Undo</button>':''}<button class="btn-secondary" data-done>Done</button>${step===root?`<button class="btn-secondary" data-up aria-label="Move up" ${index===0?'disabled':''}>↑</button><button class="btn-secondary" data-down aria-label="Move down" ${index===draft.steps.length-1?'disabled':''}>↓</button><button class="btn-secondary" data-duplicate ${M.canDuplicate(root)?'':'disabled title="Page open, popup and close steps cannot be duplicated."'}>Duplicate</button><button class="btn-secondary" data-remove>Remove</button>`:'<button class="btn-secondary" data-parent>Back to group</button>'}</div>
                 <p data-step-failure role="alert">${outcome?.outcome==='failed'?h(outcome.message):''}</p>
@@ -269,13 +286,16 @@ window.RecordedFlowEditor = (() => {
                 ${M.canDelay(action)?`<label>Wait before this step <select data-delay-mode>${option('default',`Use default · ${defaultWait()} seconds`,action.delay_before_seconds===undefined?'default':'custom')}${option('custom','Custom',action.delay_before_seconds===undefined?'default':'custom')}</select></label>${action.delay_before_seconds===undefined?'':`<label>Wait in seconds <input data-delay-seconds type="number" min="1" max="600" step="1" required value="${action.delay_before_seconds}"></label>`}`:''}
                 ${action.action==='wait'?`<label>Wait in seconds <input data-seconds type="number" min="1" max="600" step="1" value="${action.seconds}"></label>`:''}
                 ${action.action==='select_range'?`<label>Start week <input data-range-start required pattern="20[0-9]{2}-W(?:0[1-9]|[1-4][0-9]|5[0-3])" value="${h(action.range.start)}"></label><label>End <select disabled><option>Newest selectable week</option></select></label><label>Element box <select data-range-ancestor>${[1,2,3,4,5,6].map(level=>option(level,level===1?'Parent of the recorded week cell':`${level} parent levels above the week cell`,action.range.container_ancestor_levels||1)).join('')}</select></label><label>Week cells inside the box <input data-range-selector required maxlength="500" value="${h(action.range.cell_selector)}"></label><p class="hint">Playback reads every matching cell inside this box, clicks only unselected weeks, and verifies the full range before downloading.</p>`:''}
+                ${sliderOptions()}
                 ${downloadActions.includes(action.action)||output?`<label><input data-download type="checkbox" ${output||associated?'checked':''} ${(output&&action===step)||associated?'disabled':''}> This action produces a download</label>${associated?`<button class="btn-secondary" data-associated="${h(associated.id)}">Edit download group</button>`:''}`:''}
                 ${output?`<label>Output format <select data-format>${['xlsx','csv','html','txt'].map(v=>option(v,v,output.format)).join('')}</select></label>
                 ${hasDataCheck?`<section data-data-check><h4>Data check</h4>${tabularOutput?`${output.min_rows>0?`<label>Minimum data rows <input data-min-rows type="number" min="1" step="1" value="${h(output.min_rows)}"></label><p>Excludes the header and blank rows.</p>`:'<button class="btn-secondary" data-add-row-check>Add row count check</button>'}<details data-section="data-columns" ${expanded.has('data-columns')?'open':''}><summary>Columns and dates</summary><label>Expected columns, in order <input data-headers value="${h((output.headers||[]).join(', '))}"></label><label>Period column <input data-period-column value="${h(output.period_checks?.[0]?.column)}"></label><label>Period parameter <input data-period-parameter value="${h(output.period_checks?.[0]?.parameter)}"></label></details>`:'<p>Data checks require XLSX or CSV. Change the format or remove this check.</p>'}<button class="btn-secondary" data-remove-data-check>Remove data check</button></section>`:tabularOutput?'<button class="btn-secondary" data-add-data-check>Add data check</button>':''}`:''}
                 ${valueActions.includes(action.action)?`<label>Date behavior <select data-date-mode>${option('','Use recorded value',parameter.mode||'')}${option('fixed','Fixed date',parameter.mode)}${option('portal_default','Portal default — leave untouched',parameter.mode)}${option('calculated','Calculated date',parameter.mode)}</select></label><div data-date-options ${parameter.mode?'':'hidden'}><label>Parameter name <input data-date-name value="${h(parameterName || action.id.replaceAll('-','_'))}"></label><label ${parameter.mode==='fixed'?'':'hidden'}>Fixed date <input data-date-value value="${h(parameter.value??action.args?.[0])}"></label><label ${parameter.mode==='calculated'?'':'hidden'}>Calculation <select data-date-expression>${['today','yesterday','month_start','previous_month_start','previous_month_end','year_start','week_start'].map(v=>option(v,v.replaceAll('_',' '),parameter.expression)).join('')}</select></label><label>Date format <select data-date-format>${['%Y-%m-%d','%d/%m/%Y','%m/%d/%Y','%Y%m%d'].map(v=>option(v,v,parameter.format||'%Y-%m-%d')).join('')}</select></label></div>`:''}
                 </section><details data-section="advanced" ${expanded.has('advanced')?'open':''}><summary>Advanced</summary>
                 <label><input data-range-step type="checkbox" ${action.action==='select_range'?'checked':''} ${action.action!=='select_range'&&!rangeCandidate?'disabled':''}> This is a range step</label>
-                ${action.action==='select_range'?'<p class="hint">This single recorded step defines the range. No second week click is required.</p>':rangeCandidate?'<p class="hint">Enable this using only the selected recorded step.</p>':'<p class="hint">A range step needs an element target.</p>'}
+                ${action.action==='select_range'?'<p class="hint">This single recorded step defines the range. No second week click is required.</p>':rangeCandidate?'<p class="hint">Enable this using only the selected recorded step.</p>':action.action==='set_range'?'<p class="hint">This step is a date range control.</p>':'<p class="hint">A range step needs an element target.</p>'}
+                <label><input data-slider-step type="checkbox" ${action.action==='set_range'?'checked':''} ${action.action!=='set_range'&&!sliderCandidate?'disabled':''}> This is a date range control</label>
+                ${action.action==='set_range'?'<p class="hint">This recorded step now moves both slider handles to its start and end weeks.</p>':sliderCandidate?'<p class="hint">Enable this when the recorded click landed on a two-handle date or week slider. Playback moves the handles with the keyboard instead of replaying the click.</p>':action.action==='select_range'?'<p class="hint">This step is a range step.</p>':'<p class="hint">A date range control needs an element target.</p>'}
                 ${action.repair_reason?`<p role="alert">${h(action.repair_reason)}</p>`:''}<p>Page: ${h(action.page)}</p><code class="recording-locator">${h(JSON.stringify(action.locator || []))}</code>
                 ${action.locator?.length?`${inlineRepair?'':repairEditor}<label>Expected element text <input data-expected value="${h(action.expected_text)}"></label>`:''}
                 ${output?`<label>Download completion <select data-completion>${option('native','Browser download',output.completion||'native')}${option('staging','Verified staging fallback',output.completion)}</select></label>`:''}
@@ -299,13 +319,31 @@ window.RecordedFlowEditor = (() => {
                 const changed=next.steps.find(item=>item.id===root.id);
                 edit(next,changed.id);
             }));
+            panel.querySelector('[data-slider-step]')?.addEventListener('change',event=>guarded(()=>{
+                const next=event.target.checked?M.makeSlider(draft,root.id):M.restoreSlider(draft,root.id);
+                edit(next,root.id);
+            }));
+            bind('[data-slider-kind]',n=>change(d=>{const contract=get(d).range;contract.kind=n.value;contract.week_days=contract.week_days||'sunday';},true));
+            bind('[data-slider-week-days]',n=>change(d=>get(d).range.week_days=n.value));
+            const sliderParams=action.action==='set_range'?M.rangeParameters(draft,action.id):{};
+            panel.querySelectorAll('[data-slider-role]').forEach(block=>{
+                const role=block.dataset.sliderRole,current=sliderParams[role]?.name,format=sliderParams[role]?.parameter?.format||'%G-W%V';
+                const param=d=>Object.values(d.parameters||{}).find(p=>p.step_id===action.id&&p.role===role);
+                const bindIn=(selector,fn,event='change')=>{const node=block.querySelector(selector);if(node)node.addEventListener(event,e=>guarded(()=>fn(e.target)));};
+                bindIn('[data-slider-mode]',n=>change(d=>{const p=param(d);if(n.value==='fixed'||n.value==='portal_default'){p.mode=n.value;delete p.expression;delete p.offset_weeks;if(n.value!=='fixed')delete p.value;}else{p.mode='calculated';p.expression=n.value;p.offset_weeks=Number.isInteger(p.offset_weeks)?p.offset_weeks:0;delete p.value;}},true));
+                bindIn('[data-slider-value]',n=>{if(!M.validWeek(n.value,format))throw Error(format==='%G%V'?'Enter a week such as 202601.':'Enter an ISO week such as 2026-W01.');change(d=>param(d).value=n.value.trim());});
+                bindIn('[data-slider-offset]',n=>{const v=Number(n.value);if(!Number.isInteger(v)||Math.abs(v)>520)throw Error('Enter a whole number of weeks within ten years.');change(d=>param(d).offset_weeks=v);});
+                bindIn('[data-slider-format]',n=>change(d=>{const p=param(d);if(p.value)p.value=M.weekText(p.value,n.value);p.format=n.value;},true));
+                bindIn('[data-slider-name]',n=>{const name=n.value.trim();if(!/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(name))throw Error('Use a simple parameter name: letters, digits and underscores.');edit(M.renameParameter(draft,current,name),selected,true);});
+            });
             panel.querySelector('[data-associated]')?.addEventListener('click',e=>{selected=e.target.dataset.associated;renderDetails();});
             panel.querySelector('[data-parent]')?.addEventListener('click',()=>{selected=root.id;renderDetails();});
             panel.querySelectorAll('[data-child]').forEach(b=>b.onclick=()=>{selected=b.dataset.child;renderDetails();updateCards();});
             panel.querySelectorAll('[data-section]').forEach(d=>d.ontoggle=()=>{if(d.open)expanded.add(d.dataset.section);else expanded.delete(d.dataset.section);});
             bind('[data-label]',n=>change(d=>getStep(d).label=n.value),'input');
             bind('[data-target-name]',n=>change(d=>M.renameTarget(get(d),n.value)),'input');
-            bind('[data-value]',n=>change(d=>get(d).args=[n.value]),'input');
+            // A fixed date parameter replays its own value, so an edited entered value must reach it too.
+            bind('[data-value]',n=>{change(d=>{const node=get(d);node.args=[n.value];for(const p of Object.values(d.parameters||{}))if(p.step_id===node.id&&p.mode==='fixed')p.value=n.value;});const fixed=panel.querySelector('[data-date-value]');if(fixed&&panel.querySelector('[data-date-mode]')?.value==='fixed')fixed.value=n.value;},'input');
             bind('[data-delay-mode]',n=>change(d=>{const action=get(d);if(n.value==='custom')action.delay_before_seconds=defaultWait();else delete action.delay_before_seconds;},true));
             bind('[data-delay-seconds]',n=>{const v=Number(n.value);if(!Number.isInteger(v)||v<1||v>600)throw Error('Choose 1–600 whole seconds.');change(d=>get(d).delay_before_seconds=v);});
             bind('[data-seconds]',n=>{const v=Number(n.value);if(!Number.isInteger(v)||v<1||v>600)throw Error('Choose 1–600 whole seconds.');change(d=>get(d).seconds=v);});
@@ -336,9 +374,11 @@ window.RecordedFlowEditor = (() => {
                     if(name!==old&&d.parameters[name])throw Error('Date parameter names must be unique.');
                     const previous=old?d.parameters[old]:{};if(old)delete d.parameters[old];
                     if(mode)d.parameters[name]={...previous,step_id:action.id,mode,value:read('date-value'),expression:read('date-expression'),format:read('date-format'),not_after:read('not-after')||undefined};
+                    if(mode==='fixed'&&typeof read('date-value')==='string')get(d).args=[read('date-value')];
                     if(old&&!mode){for(const p of Object.values(d.parameters))if(p.not_after===old)delete p.not_after;for(const s of M.all(d.steps))if(s.output?.period_checks)s.output.period_checks=s.output.period_checks.filter(c=>c.parameter!==old);}
                     if(old&&old!==name){for(const p of Object.values(d.parameters))if(p.not_after===old)p.not_after=name;for(const s of M.all(d.steps))for(const c of s.output?.period_checks||[])if(c.parameter===old)c.parameter=name;}
                 },field==='date-mode');
+                const entered=panel.querySelector('[data-value]');if(entered&&field==='date-value'&&mode==='fixed')entered.value=read('date-value');
             });
         }
         function updateButtons() {

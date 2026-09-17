@@ -151,7 +151,8 @@ def action_label(step):
              'select_option': 'Select in', 'check': 'Check', 'uncheck': 'Uncheck', 'set_checked': 'Set',
              'hover': 'Hover over', 'clear': 'Clear', 'press': 'Press key in', 'assert': 'Check',
              'goto': 'Open page', 'new_page': 'Open page', 'close': 'Close page', 'wait': 'Wait',
-             'download': 'Download', 'popup': 'Open popup', 'select_range': 'Select week range in'}
+             'download': 'Download', 'popup': 'Open popup', 'select_range': 'Select week range in',
+             'set_range': 'Set date range in'}
     return safe_text(verbs.get(action, 'Action') + (' ' + name if name else ''), limit=160)
 
 
