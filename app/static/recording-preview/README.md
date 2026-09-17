@@ -7,7 +7,21 @@ between a display-only step name and the target used during playback, Undo,
 saved versions and immediate replacement recording. Serve `app` locally and
 open `/static/recording-preview/retarget.html`.
 
-The current preview is [python-scripts.html](python-scripts.html): the
+The current preview is [slider.html](slider.html): a date range control. One
+recorded click on a week slider handle (`Click “Week end”`) becomes, through
+**Advanced → This is a date range control**, a `set_range` step with its
+**Start** and **End** week parameters (portal default, fixed week, newest
+selectable week, current or previous week, with a weeks-to-add offset), the
+control's value kind (week numbers or dates with a Sunday or Monday week) and
+the element box. Production `flow_recording_model.js` and
+`flow_recording_editor.js` render it; only the API layer is fictional
+(`slider.js`). Serve `app` as below and open
+`http://127.0.0.1:8769/static/recording-preview/slider.html`.
+`tests/test_recording_slider_editor.py` walks the journey at 1400×1000 and
+390×844 and skips when neither the Chrome channel nor the bundled Chromium can
+launch.
+
+The previous preview is [python-scripts.html](python-scripts.html): the
 **Python scripts** source. It shows the source picker with the new card, the
 Python builder (ordered script rows with Add / Remove / Browse, the Output
 choice between a final CSV or Excel file and a SQL table with the shared SQL

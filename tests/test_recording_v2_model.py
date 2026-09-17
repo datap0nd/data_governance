@@ -81,6 +81,10 @@ def test_v2_only_worker_cannot_claim_v3_work(flow_db,monkeypatch,operation):
     capabilities['recorded_flows_v3']=True
     flows.register_worker(flows.WorkerRegister(worker_id='worker',display_name='Worker',capabilities=capabilities))
     claimed=flows.claim_run('worker')
+    assert claimed.get('run') is None and claimed.get('scan') is None
+    capabilities['recorded_flows_v4']=True
+    flows.register_worker(flows.WorkerRegister(worker_id='worker',display_name='Worker',capabilities=capabilities))
+    claimed=flows.claim_run('worker')
     assert (claimed.get('run') or claimed.get('scan'))['id']==identifier
 
 
@@ -122,7 +126,7 @@ def test_validation_requires_worker_engine_check_capability(flow_db):
     revision=routes.save_revision(saved['id'],routes.RevisionWrite(definition=job['recording']['definition']))['revision_id']
     with database.get_db() as db:
         scan=flow_recordings.queue_operation(db,saved['id'],'validate','test',revision_id=revision)
-    caps={'headed':True,'recorded_flows_v2':True,'recorded_flows_v3':True,'browser_switch_v1':True,'flow_recorder_v1':True,'flow_recorder_controls_v1':True}
+    caps={'headed':True,'recorded_flows_v2':True,'recorded_flows_v3':True,'recorded_flows_v4':True,'browser_switch_v1':True,'flow_recorder_v1':True,'flow_recorder_controls_v1':True}
     flows.register_worker(flows.WorkerRegister(worker_id='old-review',display_name='Old review',capabilities=caps))
     assert flows.claim_run('old-review').get('scan') is None
     caps['recorded_validation_engine_v1']=True

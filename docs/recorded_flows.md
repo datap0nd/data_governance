@@ -98,11 +98,49 @@ before allowing the download. Disabled future weeks are ignored. Ambiguous
 dates, missing weeks, unexpected selections, unreadable selected state, or
 stalled navigation fail before download.
 
+### Date range controls (two-handle sliders)
+
+Playwright's recorder captures a slider move as a plain click on the handle,
+and replaying that click only focuses the handle: the portal keeps its default
+period and nothing checks the result. Definition version 4 therefore adds the
+`set_range` step. In **Review recording**, select the recorded click on a
+slider handle, open **Advanced**, and enable **This is a date range control**.
+The click becomes a step that identifies the control's containing element box
+(**Element box** chooses how many parent levels above the recorded handle) and
+owns two week parameters, **Start** and **End**, shown under Options:
+
+- **Behavior**: *Portal default* leaves that handle where the portal put it and
+  records the value; *Fixed week* takes an ISO week such as `2026-W01`;
+  *Newest selectable week* sends the upper handle to its end and reads the
+  control's own maximum at run time; *Current week* and *Previous week* are
+  Dubai-calendar weeks resolved when the run is queued. Calculated behaviors
+  take **Weeks to add** (negative for earlier), so *Newest selectable week*
+  with `-7` on the start and `0` on the end is an eight-week rolling window,
+  and a fixed start with a newest-selectable end is "start to latest".
+- **Control values**: *Week numbers* for controls whose handles show `YYYYWW`;
+  *Dates* for controls showing `YYYYMMDD`, where the week parameters are
+  translated to calendar days by **Week starts on** (Sunday for ASAP's
+  Sunday-to-Saturday weeks, Monday for ISO weeks). An ASAP report with a
+  coupled Week and Date slider needs one control step for each.
+- **Parameter name** and **format** (`YYYY-Www` or `YYYYWW`) name the values
+  for `--parameter` overrides, run evidence and period checks.
+
+Playback finds exactly two visible slider handles inside the box, moves each
+one with the keyboard by the difference between its own value and the target,
+upper handle first when the range advances, and reads the control's value back
+until it matches exactly. This is the same driver the catalog method uses for
+ASAP's Week and Date sliders, and it never trusts screen coordinates. A control
+that does not show the requested range, a missing or unreadable handle, an end
+before its start, or a target beyond the control fails the run before any
+download. Live values (portal defaults and the newest selectable week) are kept
+with the run's evidence; a resumed run that reads different ones starts over.
+
 Version 2 continues to support readable labels and cancellable Wait actions of
-1-600 whole seconds. Workers advertise `recorded_flows_v3` before claiming new
-recording or validation jobs. Existing non-batched version 1 and version 2
-definitions remain readable and unchanged. New recordings use version 3; an
-existing draft is upgraded when a range step is saved.
+1-600 whole seconds. Workers advertise `recorded_flows_v3` and
+`recorded_flows_v4` before claiming new recording or validation jobs. Existing
+non-batched version 1, 2 and 3 definitions remain readable and unchanged. New
+recordings use version 4; an existing draft is upgraded when a range step
+(version 3) or a date range control (version 4) is saved.
 
 Recorded outputs keep `output.format: "xlsx"` as the semantic Excel-family
 choice. Metronome recognizes `.xls`, `.xlsx`, `.xlsm`, `.xlsb`, `.xlt`, `.xltx`
@@ -197,6 +235,7 @@ access and the executing account's credentials are required.
 python run_flow.py --dry-run
 python run_flow.py --headed
 python run_flow.py --headless --parameter start=2026-01-01
+python run_flow.py --headless --parameter start=2026-W01 --parameter end=2026-W12
 python run_flow.py --output-root D:\PortableFlows --profile-dir D:\PrivateFlowProfile
 python run_flow.py --no-transform --no-sql
 ```
