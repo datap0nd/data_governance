@@ -96,7 +96,7 @@ SUPPORTED_LOCAL_FILE_EXTENSIONS = frozenset({
 DISCOVERY_ADAPTERS = {ASAP_PORTAL_ADAPTER, GSCM_PORTAL_ADAPTER}
 DISCOVERY_LABELS = {ASAP_PORTAL_ADAPTER: "reports", GSCM_PORTAL_ADAPTER: "bookmarks"}
 WEEK_RE = re.compile(r"^(?P<year>\d{4})-W(?P<week>0[1-9]|[1-4]\d|5[0-3])$")
-FILENAME_TOKEN_RE = re.compile(r"\{(flow|report|export|week|start_period|end_period|year|week_number|index|date)\}")
+FILENAME_TOKEN_RE = re.compile(r"\{(flow|report|export|week|start_period|end_period|year|week_number|index|date|value)\}")
 SAFE_NAME_RE = re.compile(r"^[^<>:\"/\\|?*\x00-\x1f]+$")
 
 
@@ -162,6 +162,7 @@ def _flow_failure_context(db, run_id: int) -> dict | None:
                   r.error, r.created_at, r.started_at, r.finished_at,
                   f.name AS flow_name, f.target_folder, f.source_type,
                    f.outlook_subject_contains, f.local_file_path, f.python_scripts_json,
+                   f.python_script_arguments_json, f.python_script_values_json,
                   s.name AS site_name, rep.name AS report_name,
                   p.name AS owner_name, p.email AS owner_email
            FROM flow_runs r
@@ -213,7 +214,11 @@ def _flow_failure_message(context: dict) -> dict:
         if context.get("source_type") == "outlook"
         else f"Configured file {context.get('local_file_path')}"
         if context.get("source_type") == "file"
-        else "Python scripts: " + flow_python.describe(_loads(context.get("python_scripts_json"), []))
+        else "Python scripts: " + flow_python.describe(
+            _loads(context.get("python_scripts_json"), []),
+            _loads(context.get("python_script_arguments_json"), []),
+            _loads(context.get("python_script_values_json"), []),
+        )
         if context.get("source_type") == "python"
         else f'{context["site_name"]} / {context["report_name"]}'
     )
@@ -693,6 +698,10 @@ class FlowWrite(BaseModel):
     local_file_path: str | None = Field(default=None, max_length=2000)
     local_file_worksheet: str | None = Field(default=None, max_length=500)
     python_scripts: list[str] = Field(default_factory=list, max_length=flow_python.MAX_SCRIPTS)
+    # Aligned index-by-index with python_scripts: one argument line and one
+    # value list per script (the script runs once per value).
+    python_script_arguments: list[str] = Field(default_factory=list, max_length=flow_python.MAX_SCRIPTS)
+    python_script_values: list[list[str]] = Field(default_factory=list, max_length=flow_python.MAX_SCRIPTS)
     export_views: list[str] = Field(default_factory=list, max_length=20)
     download_links: list[str] = Field(default_factory=list, max_length=50)
     enabled: bool = False
@@ -787,7 +796,7 @@ class FlowWrite(BaseModel):
             str(value).strip() for value in self.download_links if str(value).strip()
         ))
         if self.source_type == "file":
-            self.python_scripts = []
+            self.python_scripts, self.python_script_arguments, self.python_script_values = [], [], []
             self.local_file_path = (self.local_file_path or "").strip().strip('"')
             if not self.local_file_path:
                 raise ValueError("Enter the full path and filename to read.")
@@ -832,7 +841,7 @@ class FlowWrite(BaseModel):
             self.filename_template = "{original}"
             self.output_mode = "private_snapshot"
         elif self.source_type == "outlook":
-            self.python_scripts = []
+            self.python_scripts, self.python_script_arguments, self.python_script_values = [], [], []
             self.local_file_path = None
             self.local_file_worksheet = None
             self.outlook_subject_contains = (self.outlook_subject_contains or "").strip()
@@ -861,7 +870,11 @@ class FlowWrite(BaseModel):
         elif self.source_type == "python":
             # The scripts are the transformation; the last one writes the
             # final CSV/XLSX that is kept or inserted into SQL.
-            self.python_scripts = flow_python.normalize_scripts(self.python_scripts)
+            self.python_scripts, self.python_script_arguments, self.python_script_values = (
+                flow_python.normalize_steps(
+                    self.python_scripts, self.python_script_arguments, self.python_script_values,
+                )
+            )
             self.outlook_subject_contains = None
             self.local_file_path = None
             self.local_file_worksheet = None
@@ -892,10 +905,20 @@ class FlowWrite(BaseModel):
             self.filename_template = _clean_filename_template(
                 self.filename_template or f"{{flow}}.{self.file_format}", self.file_format,
             )
+            if (
+                not self.sql_handoff_enabled
+                and len(self.python_script_values[-1]) > 1
+                and not any(token in self.filename_template for token in ("{value}", "{index}"))
+            ):
+                # Each value of the last script writes its own final file; the
+                # names must differ or direct publication would collide.
+                raise ValueError(
+                    "Several values produce several files: add {value} or {index} to the filename template."
+                )
             self.transform_enabled = False
             self.transform_script_path = None
         else:
-            self.python_scripts = []
+            self.python_scripts, self.python_script_arguments, self.python_script_values = [], [], []
             self.outlook_subject_contains = None
             self.local_file_path = None
             self.local_file_worksheet = None
@@ -1255,6 +1278,12 @@ def _flow_out(db, flow_id: int, *, include_private_storage: bool = False) -> dic
     result["export_views"] = _loads(result.pop("export_views_json", None), [])
     result["download_links"] = _loads(result.pop("download_links_json", None), [])
     result["python_scripts"] = _loads(result.pop("python_scripts_json", None), [])
+    result["python_script_arguments"] = flow_python.aligned_arguments(
+        _loads(result.pop("python_script_arguments_json", None), []), len(result["python_scripts"]),
+    )
+    result["python_script_values"] = flow_python.aligned_values(
+        _loads(result.pop("python_script_values_json", None), []), len(result["python_scripts"]),
+    )
     result["schedule_days"] = _loads(result.pop("schedule_days"), [])
     freshness_rule, freshness_health = flow_freshness(row)
     result["freshness_rule"] = freshness_rule
@@ -3319,6 +3348,10 @@ def create_flow(body: FlowWrite, request: Request):
             db.execute("UPDATE flows SET email_delivery_json=? WHERE id=?",
                        (_json(body.email_delivery or flow_email_delivery.default_config()), flow_id))
             db.execute("UPDATE flows SET python_scripts_json=? WHERE id=?", (_json(body.python_scripts), flow_id))
+            db.execute("UPDATE flows SET python_script_arguments_json=? WHERE id=?",
+                       (_json(body.python_script_arguments), flow_id))
+            db.execute("UPDATE flows SET python_script_values_json=? WHERE id=?",
+                       (_json(body.python_script_values), flow_id))
             if managed:
                 adapter = db.execute("SELECT adapter FROM flow_sites WHERE id=?", (body.site_id,)).fetchone()[0]
                 allocated = flow_layout.create_flow_folder(flow_paths.get_flows_root(db), adapter, body.name, flow_id)
@@ -3701,6 +3734,10 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
         db.execute("UPDATE flows SET post_sql_refresh_json=? WHERE id=?", (_json(body.post_sql_refresh), flow_id))
         db.execute("UPDATE flows SET email_delivery_json=? WHERE id=?", (_json(body.email_delivery), flow_id))
         db.execute("UPDATE flows SET python_scripts_json=? WHERE id=?", (_json(body.python_scripts), flow_id))
+        db.execute("UPDATE flows SET python_script_arguments_json=? WHERE id=?",
+                   (_json(body.python_script_arguments), flow_id))
+        db.execute("UPDATE flows SET python_script_values_json=? WHERE id=?",
+                   (_json(body.python_script_values), flow_id))
         db.execute('UPDATE flows SET execution_method=? WHERE id=?', (body.execution_method, flow_id))
         if body.recording_revision_id is not None:
             if body.execution_method != 'recorded':

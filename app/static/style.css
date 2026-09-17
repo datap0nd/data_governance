@@ -659,10 +659,19 @@ h2 {
 .flow-file-control button { white-space: nowrap; }
 .flow-form-grid [hidden], .flow-form-section [hidden] { display: none !important; }
 .flow-python-scripts-field { color: var(--text-secondary); display: flex; flex-direction: column; font-size: 0.76rem; font-weight: 600; gap: var(--space-sm); }
-.flow-python-scripts { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-sm); }
-.flow-python-script { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--space-sm); align-items: center; }
-.flow-python-step { font-size: 0.76rem; font-weight: 600; color: var(--text-secondary); min-width: 1.5rem; text-align: right; font-variant-numeric: tabular-nums; }
-.flow-python-script .flow-file-control { grid-template-columns: minmax(0, 1fr) auto auto; }
+.flow-python-scripts { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-md); }
+/* One numbered row = three lines: path + Browse + Remove, Arguments, Values (with its run count and help). */
+.flow-python-script { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; gap: var(--space-sm); align-items: center; }
+.flow-python-step { font-size: 0.76rem; font-weight: 600; color: var(--text-secondary); min-width: 1.5rem; text-align: right; font-variant-numeric: tabular-nums; grid-column: 1; grid-row: 1 / span 4; align-self: start; line-height: 36px; }
+.flow-python-script .flow-file-control { grid-column: 2 / -1; grid-row: 1; grid-template-columns: minmax(0, 1fr) auto auto; }
+.flow-python-row-label { grid-column: 2; color: var(--text-secondary); font-size: 0.76rem; font-weight: 600; white-space: nowrap; }
+.flow-python-row-hint { color: var(--text-muted); font-weight: 400; margin-left: var(--space-xs); }
+.flow-python-arguments-label { grid-row: 2; }
+.flow-python-script-arguments { grid-column: 3 / -1; grid-row: 2; min-width: 0; }
+.flow-python-values-label { grid-row: 3; align-self: start; padding-top: 0.55rem; }
+.flow-python-script-values { grid-column: 3; grid-row: 3; min-width: 0; resize: vertical; line-height: 1.4; }
+.flow-python-values-count { grid-column: 4; grid-row: 3; align-self: start; padding-top: 0.55rem; color: var(--text-secondary); font-size: 0.76rem; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.flow-python-values-help { grid-column: 3 / -1; grid-row: 4; }
 .flow-python-scripts-actions { display: flex; gap: var(--space-sm); }
 .flow-python-scripts-field .flow-dialog-help { font-weight: 400; }
 .flow-python-scripts-field code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: inherit; }
@@ -670,8 +679,17 @@ h2 {
 .flow-python-output legend { color: var(--text-secondary); font-size: 0.76rem; font-weight: 600; margin-bottom: var(--space-sm); padding: 0; }
 .flow-python-output .flow-check { color: var(--text); display: flex; font-size: 0.82rem; font-weight: 500; }
 @media (max-width: 600px) {
-    .flow-python-script .flow-file-control { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .flow-python-script { grid-template-columns: auto minmax(0, 1fr); }
+    .flow-python-step { grid-row: 1 / span 7; }
+    .flow-python-script .flow-file-control { grid-column: 2; grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .flow-python-script .flow-file-control input { grid-column: 1 / -1; }
+    .flow-python-row-label, .flow-python-script-arguments, .flow-python-script-values, .flow-python-values-count, .flow-python-values-help { grid-column: 2; }
+    .flow-python-arguments-label { grid-row: 2; }
+    .flow-python-script-arguments { grid-row: 3; }
+    .flow-python-values-label { grid-row: 4; padding-top: 0; }
+    .flow-python-script-values { grid-row: 5; }
+    .flow-python-values-count { grid-row: 6; padding-top: 0; }
+    .flow-python-values-help { grid-row: 7; }
 }
 .flow-span-2 { grid-column: 1 / -1; }
 .flow-inline-empty { color: var(--text-muted); font-size: 0.8rem; grid-column: 1 / -1; padding: var(--space-md) 0; }

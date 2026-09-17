@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 
+from app import flow_python
+
 
 def _load(value, fallback):
     try:
@@ -27,7 +29,13 @@ def row_progress(db, run):
     downloads = job.get("downloads") or {}
     report = job.get("report") or {}
     exports = (report.get("download_links") if job.get("site", {}).get("adapter") == "asap_portal" else None) or report.get("export_views") or [None]
-    count = len(exports) * len(downloads.get("periods") or [None]) if source == "portal" else 1
+    if source == "portal":
+        count = len(exports) * len(downloads.get("periods") or [None])
+    elif source == "python":
+        # One deliverable per value of the last script row (at least one).
+        count = flow_python.deliverable_count(job.get("python_source") or {}) or 1
+    else:
+        count = 1
     # Old/malformed snapshots cannot support a trustworthy denominator.
     known = bool(job.get("flow") and (sql_only or job.get("downloads") or source in {"file", "outlook", "python"}))
     tasks = [dict(row) for row in db.execute(

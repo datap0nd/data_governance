@@ -5,6 +5,7 @@ in [the testing workflow](../README.md); this file is the complete history.
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-09-17: Python-script arguments and setup fixes | [Test plan](2026-09-17-python-script-arguments/test-plan.md) | [Test report](2026-09-17-python-script-arguments/test-report.md) |
 | 2026-09-16: Python-script Flows | [Test plan](2026-09-16-python-script-flows/test-plan.md) | [Test report](2026-09-16-python-script-flows/test-report.md) |
 | 2026-09-16: legacy Run History artifacts | [Test plan](2026-09-16-run-history-legacy-artifacts/test-plan.md) | [Test report](2026-09-16-run-history-legacy-artifacts/test-report.md) |
 | 2026-09-15: automatic Flow auditor | [Test plan](2026-09-15-automatic-flow-auditor/test-plan.md) | [Test report](2026-09-15-automatic-flow-auditor/test-report.md) |

@@ -16,7 +16,13 @@ with its **Python** group, and run history with a failed run whose error names
 the failing script and step. Production `app.js` renders every screen; only the
 API layer is fictional (`python-scripts.js`). The preview bar switches the save
 outcome (saved, or the validation error "Python scripts must be .py files."
-shown beside the form with every value preserved). Serve `app` as below and
+shown beside the form with every value preserved). Each script row also has
+an optional **Arguments** line (`-sheet`) and a **Values, one per run**
+textarea with a live run count, shown in the list as
+`fetch_orders.py -sheet (3 values) → clean_orders.py`; the third save outcome,
+"Script arguments have an unclosed quote.", focuses the first row's Arguments
+field, and run history shows a run in progress on its second value with the
+single-script Flow's three deliverables. Serve `app` as below and
 open `http://127.0.0.1:8769/static/recording-preview/python-scripts.html`.
 `tests/test_python_scripts_preview.py` walks every control at 1280×900 and
 390×844, saves screenshots when `PREVIEW_EVIDENCE_DIR` is set, and skips when

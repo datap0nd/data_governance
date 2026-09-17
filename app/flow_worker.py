@@ -232,13 +232,15 @@ class _Timings:
         return [*self.items, total]
 
 
-def _api(client: httpx.Client, method: str, path: str, body: dict | None = None) -> dict:
+def _api(client: httpx.Client, method: str, path: str, body: dict | None = None,
+         attempts: int = 5) -> dict:
     # Progress calls are part of the execution record, so a short-lived SQLite
     # write collision or local service restart must not kill the browser run.
     # Terminal updates are idempotent on the server and are therefore safe to
     # retry when the local API returns a transient 5xx response.
     last_error: Exception | None = None
-    for attempt in range(1, 6):
+    attempts = max(1, int(attempts))
+    for attempt in range(1, attempts + 1):
         try:
             response = client.request(method, path, json=body, timeout=60)
             response.raise_for_status()
@@ -248,7 +250,7 @@ def _api(client: httpx.Client, method: str, path: str, body: dict | None = None)
             retryable = isinstance(exc, httpx.TransportError) or (
                 exc.response is not None and exc.response.status_code >= 500
             )
-            if not retryable or attempt == 5:
+            if not retryable or attempt == attempts:
                 # A 4xx body names the exact field the server rejected.
                 # Without it a validation failure surfaces as an opaque
                 # "422 Unprocessable Content" with no way to diagnose.
@@ -7237,17 +7239,27 @@ def execute_local_file_job(
     }
 
 
+def _python_step_label(record: dict) -> str:
+    """``clean.py -sheet T``: the script name plus the rendered arguments it ran with."""
+    text = str(record.get("arguments_text") or "")
+    return f"{record.get('script_name')}{' ' + text if text else ''}"
+
+
 def _python_step_event(record: dict) -> dict:
-    """One structured event per finished script, success or failure."""
-    index, total, name = record.get("index"), record.get("steps"), record.get("script_name")
+    """One structured event per finished script run, success or failure."""
+    index, total = record.get("index"), record.get("steps")
     error = record.get("error")
     return {
         "stage": "python_step_failed" if error else "python_step_complete",
-        "message": f"Script {index} of {total}: {name} " + (
+        "message": f"Script {index} of {total}: {_python_step_label(record)} " + (
             f"failed: {error}" if error
             else f"finished in {record.get('duration_ms')} ms (exit 0, {record.get('output_size')} bytes)."
         ),
-        "step": index, "steps": total, "script": name, "checksum": record.get("script_checksum"),
+        "step": index, "steps": total, "row": record.get("row"), "script": record.get("script_name"),
+        "checksum": record.get("script_checksum"),
+        "arguments": list(record.get("arguments") or []),
+        "arguments_text": str(record.get("arguments_text") or ""),
+        "value": record.get("value"),
         "exit_code": record.get("exit_code"), "duration_ms": record.get("duration_ms"),
         "output": record.get("output_path"), "stdout": record.get("stdout"), "stderr": record.get("stderr"),
         "error": error,
@@ -7257,13 +7269,17 @@ def _python_step_event(record: dict) -> dict:
 def execute_python_job(
     job: dict, report_progress, profile_dir: Path, *, run_id: int, register_folder,
 ) -> tuple[list[dict], list[dict], dict]:
-    """Run the saved Python scripts in order; the last one writes the deliverable."""
+    """Run the saved Python scripts in order, once per value; the last row writes the deliverables."""
     assert_job_paths(job)
     source = job.get("python_source") or {}
     # Fail closed before any script runs or a run folder exists.
     scripts = flow_python.check_scripts(
         [Path(str(item)) for item in (source.get("scripts") or [])]
     )
+    arguments = flow_python.aligned_arguments(source.get("arguments"), len(scripts))
+    values = flow_python.aligned_values(source.get("values"), len(scripts))
+    plan = flow_python.run_plan(scripts, arguments, values)
+    last_values = values[-1] or [None]
     output_format = str(
         source.get("output_format") or job.get("downloads", {}).get("file_format") or "csv"
     ).strip().casefold()
@@ -7274,10 +7290,12 @@ def execute_python_job(
         raise RuntimeError("SQL insertion requires the final Python-script file to be CSV.")
     timeout_seconds = int(source.get("timeout_seconds") or flow_python.SCRIPT_TIMEOUT_SECONDS)
     timings = _Timings()
-    names = flow_python.describe([str(item) for item in scripts])
+    names = flow_python.describe([str(item) for item in scripts], arguments, values)
+    runs_note = f", {len(plan)} run(s) in total" if len(plan) != len(scripts) else ""
     report_progress("running", {
         "stage": "python_scripts",
-        "message": f"Running {len(scripts)} Python script(s) in order: {names}.",
+        "message": f"Running {len(scripts)} Python script(s) in order{runs_note}: {names}.",
+        "runs": len(plan), "deliverables": len(last_values),
     })
     run_folder = _prepare_run_folder(
         job, profile_dir, run_id=run_id, register_folder=register_folder,
@@ -7285,64 +7303,96 @@ def execute_python_job(
     )
     job["_runtime_artifact_store_id"] = _job_store_id(job, profile_dir)
     job["_runtime_artifact_store_ids"] = list(_runtime_store_ids(job, profile_dir))
-    job["_runtime_bundle_count"] = 1
+    job["_runtime_bundle_count"] = len(last_values)
     steps_folder = run_folder / "steps"
     steps_folder.mkdir()
     if steps_folder.is_symlink() or not steps_folder.is_dir():
         raise RuntimeError(f"Python step folder is not a regular directory: {steps_folder}")
-    final = _safe_output_path(
-        run_folder, _render_filename(job["downloads"]["filename_template"], job, None, 1),
-    )
+    # Reserve one distinct final path per run of the last script before any
+    # script runs: {value} is substituted here, {index} is the run's position
+    # within the last row, and a name that repeats gets a numbered suffix.
+    template = str(job["downloads"]["filename_template"])
+    finals: list[Path] = []
+    reserved: set[str] = set()
+    for position, value in enumerate(last_values, start=1):
+        rendered = template.replace(flow_python.VALUE_TOKEN, flow_python.filename_token(value))
+        candidate = _safe_output_path(run_folder, _render_filename(rendered, job, None, position))
+        stem, suffix, attempt = candidate.stem, candidate.suffix, 2
+        while str(candidate).casefold() in reserved:
+            candidate = run_folder / f"{stem} ({attempt}){suffix}"
+            attempt += 1
+        reserved.add(str(candidate).casefold())
+        finals.append(candidate)
     with timings.measure("python_scripts", report_id=job.get("report", {}).get("id")):
         steps = flow_python.run_scripts(
-            scripts, final, steps_folder,
+            scripts, finals, steps_folder,
             environment=os.environ.copy(),
             flow_name=job["flow"]["name"], run_id=run_id,
-            output_format=output_format, timeout_seconds=timeout_seconds,
-            progress=lambda index, total, script, checksum: report_progress("running", {
+            output_format=output_format, arguments=arguments, values=values,
+            # The same calendar date the filename template renders.
+            date=job.get('_runtime_task_date') or dubai_today().isoformat(),
+            timeout_seconds=timeout_seconds,
+            progress=lambda record: report_progress("running", {
                 "stage": "python_step",
-                "message": f"Running script {index} of {total}: {script.name}.",
-                "step": index, "steps": total, "script": script.name, "checksum": checksum,
+                "message": f"Running script {record['index']} of {record['steps']}: {_python_step_label(record)}.",
+                "step": record["index"], "steps": record["steps"], "row": record["row"],
+                "script": record["script_name"], "checksum": record["script_checksum"],
+                "arguments": list(record["arguments"]), "arguments_text": record["arguments_text"],
+                "value": record["value"],
             }),
             step_result=lambda record: report_progress("running", _python_step_event(record)),
         )
+    artifacts: list[dict] = []
     with timings.measure("file_normalization", report_id=job.get("report", {}).get("id")):
-        detected = _detect_download_format(final)
-        if detected != output_format:
-            raise RuntimeError(
-                f"The final file {final.name} should be {output_format.upper()} but its content looks like {detected}."
-            )
-        if output_format == "csv":
-            if destination == "sql":
-                # SQL loads the normalized file in place: header row required.
-                normalization = _normalize_csv(final, preamble="none", strict_headers=True)
-                metadata = {**_csv_metadata(final), **normalization}
+        for position, final in enumerate(finals, start=1):
+            detected = _detect_download_format(final)
+            if detected != output_format:
+                raise RuntimeError(
+                    f"The final file {final.name} should be {output_format.upper()} but its content looks like {detected}."
+                )
+            if output_format == "csv":
+                if destination == "sql":
+                    # SQL loads the normalized file in place: header row required.
+                    normalization = _normalize_csv(final, preamble="none", strict_headers=True)
+                    metadata = {**_csv_metadata(final), **normalization}
+                else:
+                    metadata = _csv_metadata(final)
             else:
-                metadata = _csv_metadata(final)
-        else:
-            _validate_excel_container(final, "xlsx")
-            metadata = {**flow_publish.read_size_checksum(final), "row_count": None}
-    artifact = _decorate_artifact_storage({
-        "period_key": None,
-        "export_view": None,
-        "bundle_index": 1,
-        "bundle_count": 1,
-        "status": "saved",
-        "file_path": str(final),
-        "filename": final.name,
-        "detected_format": detected,
-        "python_steps": steps,
-        **metadata,
-    }, job, profile_dir)
+                _validate_excel_container(final, "xlsx")
+                metadata = {**flow_publish.read_size_checksum(final), "row_count": None}
+            # The chain that produced this file: every earlier row plus its own run.
+            own_steps = [
+                item for item in steps
+                if item["row"] < len(scripts) or item["output_path"] == str(final)
+            ]
+            artifacts.append(_decorate_artifact_storage({
+                "period_key": None,
+                # Publish keys are (export_view, period_key): a bundle needs
+                # them distinct, a single deliverable keeps the plain shape.
+                "export_view": None if len(finals) == 1 else f"value:{position}",
+                "bundle_index": position,
+                "bundle_count": len(finals),
+                "status": "saved",
+                "file_path": str(final),
+                "filename": final.name,
+                "detected_format": detected,
+                "python_value": last_values[position - 1],
+                "python_steps": own_steps,
+                **metadata,
+            }, job, profile_dir))
+    listed = ", ".join(f"{item['filename']} ({item['file_size']} bytes)" for item in artifacts[:5])
+    if len(artifacts) > 5:
+        listed += f", … {len(artifacts) - 5} more"
     report_progress("running", {
         "stage": "python_complete",
         "message": (
-            f"Ran {len(steps)} script(s); final {output_format.upper()} {final.name} is "
-            f"{metadata['file_size']} bytes."
+            f"Ran {len(steps)} script run(s); {len(artifacts)} final {output_format.upper()} file(s): {listed}."
         ),
+        "runs": len(steps), "deliverables": len(artifacts),
         "results": [
             {
-                "step": item["index"], "script": item["script_name"], "output": item["output_path"],
+                "step": item["index"], "row": item["row"], "script": item["script_name"],
+                "value": item["value"], "arguments": item["arguments"], "output": item["output_path"],
                 "checksum": item["script_checksum"],
                 "exit_code": item["exit_code"], "duration_ms": item["duration_ms"],
                 "stdout": item["stdout"], "stderr": item["stderr"],
@@ -7350,7 +7400,7 @@ def execute_python_job(
             for item in steps
         ],
     })
-    return [artifact], timings.finish(item_count=1), {"no_op": False, "sql_artifacts": [artifact]}
+    return artifacts, timings.finish(item_count=len(artifacts)), {"no_op": False, "sql_artifacts": list(artifacts)}
 
 
 def execute_job(
@@ -8068,10 +8118,11 @@ def _code_version() -> str:
 
 
 def _python_success_message(job: dict, artifacts: list[dict], sql_result: dict | None) -> str:
-    steps = len((job.get("python_source") or {}).get("scripts") or [])
-    final = artifacts[0] if artifacts else {}
-    filename = final.get("published_filename") or final.get("filename") or "the final file"
-    message = f"Ran {steps} Python script(s) and saved {filename}."
+    section = job.get("python_source") or {}
+    runs = flow_python.run_count(section) or len(section.get("scripts") or [])
+    names = [item.get("published_filename") or item.get("filename") or "the final file" for item in artifacts]
+    listed = ", ".join(names[:5]) + (f", … {len(names) - 5} more" if len(names) > 5 else "")
+    message = f"Ran {runs} Python script run(s) and saved {len(names)} file(s)" + (f": {listed}." if listed else ".")
     if sql_result is not None:
         message += f" Committed {sql_result['rows_written']} row(s) to {sql_result['target']}."
     return message
@@ -8779,6 +8830,36 @@ def authenticate_asap(profile_dir: Path, auth_url: str, timeout_minutes: int = 1
     authenticate_site(profile_dir, auth_url, timeout_minutes, ASAP_PORTAL_ADAPTER)
 
 
+def _bootstrap_browser_channel(server: str) -> str:
+    """The configured browser for the one-time SSO bootstrap.
+
+    setup.ps1 runs the helper while the MXAnalytics service is stopped, so the
+    local API is usually unreachable. The setting lives in the local database
+    the service reads (``DG_DB_PATH``, as for the service), so fall back to it
+    instead of leaving every profile unauthenticated.
+    """
+    from app import database, flow_browser
+    try:
+        with httpx.Client(base_url=server.rstrip('/')) as settings_client:
+            return _api(settings_client, 'GET', '/api/system/flows', attempts=1)['browser_channel']
+    except (httpx.HTTPError, OSError, RuntimeError) as exc:
+        reason = exc
+    if not Path(database.DB_PATH).is_file():
+        # Never create an empty database here; name the one that was expected.
+        raise RuntimeError(
+            f"The Metronome API at {server} is unreachable ({reason}) and no database exists at "
+            f"{database.DB_PATH}. Start the MXAnalytics service or set DG_DB_PATH to its governance.db."
+        )
+    with database.get_db() as db:
+        channel = flow_browser.configured(db)
+    print(
+        f"Browser channel {channel!r} read from the local database {database.DB_PATH} because "
+        f"the Metronome API at {server} is unreachable ({reason}).",
+        file=sys.stderr, flush=True,
+    )
+    return channel
+
+
 def main():
     parser = argparse.ArgumentParser(description="Metronome authenticated download worker")
     parser.add_argument("--server", default=os.environ.get("METRONOME_URL", "http://127.0.0.1:8000"))
@@ -8802,12 +8883,9 @@ def main():
         sys.stdout = sys.stdout or log
         sys.stderr = sys.stderr or log
     if args.authenticate_url:
-        from app import flow_browser
-        with httpx.Client(base_url=args.server.rstrip('/')) as settings_client:
-            browser_channel = _api(settings_client, 'GET', '/api/system/flows')['browser_channel']
         authenticate_site(
             profile_dir, args.authenticate_url, args.authentication_timeout_minutes,
-            args.authenticate_adapter, browser_channel,
+            args.authenticate_adapter, _bootstrap_browser_channel(args.server),
         )
         return
     def _run():
