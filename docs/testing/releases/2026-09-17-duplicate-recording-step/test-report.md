@@ -1,9 +1,9 @@
 # Duplicate step in the recording editor: test report
 
 - Plan: [test-plan.md](test-plan.md).
-- Change/PR: recorded in the PR testing section (link added to this package's index row and the PR once opened).
-- Evidence cutoff (UTC): 2026-09-17 11:49 (local verification of the working tree committed unchanged as the implementation commit of this PR; final-head CI has not finished).
-- Tested code revision: the working tree committed unchanged on top of `origin/main` `bc3418c` (the verifier's `result.json` therefore records revision `bc3418c` plus uncommitted changes).
+- Change/PR: [PR #135](https://github.com/datap0nd/data_governance/pull/135).
+- Evidence cutoff (UTC): 2026-09-17 11:49 (local verification of the working tree committed unchanged as `2b3a43b`; final-head CI has not finished).
+- Tested code revision: the working tree committed unchanged as `2b3a43b7d3ac90bb7501fa6e4fe60e0b01479049` on top of `origin/main` `bc3418c` (the verifier's `result.json` therefore records revision `bc3418c` plus uncommitted changes). This PR-link update is a documentation-only commit on top of that head.
 - Environment: Linux container, Python 3.13.12 in the checkout-owned `.venv` (`requirements-ci.lock`); Node v22.22.2 for the model test; Playwright 1.62.0 with the bundled Chromium (no Chrome channel, so the editor fixture used its Chromium fallback).
 - Overall finding: local synthetic checks PASS. Verifier set 17 passed, 0 skipped, 0 failed; the Node model test and JavaScript syntax checks pass. Final-head CI is pending. No live, work-PC or portal check was requested or performed.
 

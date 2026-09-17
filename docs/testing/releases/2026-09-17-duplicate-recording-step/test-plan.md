@@ -1,6 +1,6 @@
 # Duplicate step in the recording editor: test plan
 
-- Change/PR: PR link recorded in the report once opened. Scope: a **Duplicate** control in Review recording, beside the move arrows and Remove, that inserts an independent copy of the selected step right after it so a missing click, value or download can be added from the nearest recorded step.
+- Change/PR: [PR #135](https://github.com/datap0nd/data_governance/pull/135). Scope: a **Duplicate** control in Review recording, beside the move arrows and Remove, that inserts an independent copy of the selected step right after it so a missing click, value or download can be added from the nearest recorded step.
 - Baseline: `origin/main` `bc3418c` (PR #134 merged).
 - Related report: [test-report.md](test-report.md).
 - Environments: isolated Linux Python 3.13 fixtures (checkout-owned `.venv`, `requirements-ci.lock`), Node model test, production editor scripts driven through Playwright with fictional in-memory data; final PR CI supplies the full Python regression with the Chrome channel. No live, work-PC or portal environment is in scope.
