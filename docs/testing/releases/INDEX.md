@@ -5,6 +5,7 @@ in [the testing workflow](../README.md); this file is the complete history.
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-09-17: Duplicate step in the recording editor | [Test plan](2026-09-17-duplicate-recording-step/test-plan.md) | [Test report](2026-09-17-duplicate-recording-step/test-report.md) |
 | 2026-09-17: Python-script arguments and setup fixes | [Test plan](2026-09-17-python-script-arguments/test-plan.md) | [Test report](2026-09-17-python-script-arguments/test-report.md) |
 | 2026-09-16: Python-script Flows | [Test plan](2026-09-16-python-script-flows/test-plan.md) | [Test report](2026-09-16-python-script-flows/test-report.md) |
 | 2026-09-16: legacy Run History artifacts | [Test plan](2026-09-16-run-history-legacy-artifacts/test-plan.md) | [Test report](2026-09-16-run-history-legacy-artifacts/test-report.md) |

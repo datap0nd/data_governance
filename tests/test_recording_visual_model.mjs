@@ -81,3 +81,51 @@ assert.equal(M.rangeCandidate({version:2,steps:[{id:'open',action:'goto',page:'p
 M.setRangeAncestor(ranged.steps[0],3);
 assert.equal(ranged.steps[0].range.container_ancestor_levels,3);
 assert.deepEqual(ranged.steps[0].locator.slice(-2).map(part=>part.args[0]),['xpath=..','xpath=..']);
+
+// Duplicate copies one root step right after itself with fresh identities.
+// The original definition is untouched; a copied date parameter gets its own name.
+// Objects the model builds with literals belong to the vm realm, so compare plain copies.
+const plain=value=>JSON.parse(JSON.stringify(value));
+const duplicated=M.duplicate(owned,'input');
+assert.deepEqual(duplicated.steps.map(s=>s.id),['input','input-copy','event']);
+assert.deepEqual(duplicated.steps[1].locator,input.locator);
+assert.deepEqual(plain(duplicated.parameters.start_2),{step_id:'input-copy',mode:'fixed'});
+assert.deepEqual(plain(duplicated.parameters.start),{step_id:'input',mode:'fixed'});
+assert.deepEqual(plain(duplicated.parameters.end),owned.parameters.end);
+assert.deepEqual(owned.steps.map(s=>s.id),['input','event']);
+assert.equal(Object.keys(owned.parameters).length,2);
+assert.deepEqual(M.duplicate(duplicated,'input').steps.map(s=>s.id),['input','input-copy-2','input-copy','event']);
+assert.equal(M.duplicate(duplicated,'input').parameters.start_3.step_id,'input-copy-2');
+// An event group copies as one unit; its nested action is renamed with it.
+const groupCopy=M.duplicate(def,'event');
+assert.deepEqual(groupCopy.steps.map(s=>s.id),['open','event','event-copy','wait']);
+assert.equal(groupCopy.steps[2].action,'download');assert.equal(groupCopy.steps[2].steps[0].id,'click-copy');
+assert.deepEqual(plain(groupCopy.steps[2].output),event.output);
+assert.equal(M.owner(groupCopy,'click-copy').id,'event-copy');
+// A caller-supplied identity factory is used when it yields a free id.
+assert.equal(M.duplicate(def,'event',id=>`${id}-x`).steps[2].id,'event-x');
+assert.equal(M.duplicate(def,'event',()=>'event').steps[2].id,'event-copy');
+// Parameters and period checks inside the copied group point at the copy, not the source.
+const groupedFills={steps:[{id:'dl',action:'download',page:'page',output:{format:'csv',period_checks:[{column:'Period',parameter:'start'}]},
+    steps:[{id:'in-start',action:'fill',page:'page',locator:input.locator},{id:'in-end',action:'fill',page:'page',locator:input.locator}]}],
+    parameters:{start:{step_id:'in-start',mode:'fixed',value:'2026-01-01',not_after:'end'},end:{step_id:'in-end',mode:'portal_default'}}};
+const groupedCopy=M.duplicate(groupedFills,'dl');
+assert.deepEqual(groupedCopy.steps[1].steps.map(s=>s.id),['in-start-copy','in-end-copy']);
+assert.deepEqual(plain(groupedCopy.parameters.start_2),{step_id:'in-start-copy',mode:'fixed',value:'2026-01-01',not_after:'end_2'});
+assert.deepEqual(plain(groupedCopy.parameters.end_2),{step_id:'in-end-copy',mode:'portal_default'});
+assert.deepEqual(plain(groupedCopy.steps[1].output.period_checks),[{column:'Period',parameter:'start_2'}]);
+assert.deepEqual(plain(groupedCopy.steps[0].output.period_checks),[{column:'Period',parameter:'start'}]);
+assert.equal(groupedCopy.parameters.start.not_after,'end');
+// A range step keeps its restorable source under the copy's identity.
+const rangeCopy=M.duplicate(ranged,'week-2026-W33');
+assert.equal(rangeCopy.steps[1].id,'week-2026-W33-copy');
+assert.equal(rangeCopy.steps[1].range.source_step.id,'week-2026-W33-copy');
+assert.equal(M.restoreRange(rangeCopy,'week-2026-W33-copy').steps[1].id,'week-2026-W33-copy');
+assert.equal(M.restoreRange(rangeCopy,'week-2026-W33-copy').steps[1].action,'click');
+// Steps that open or close a page cannot exist twice.
+assert.equal(M.canDuplicate(popup),false);assert.equal(M.canDuplicate({action:'new_page'}),false);assert.equal(M.canDuplicate({action:'close'}),false);
+assert.equal(M.canDuplicate(click),true);assert.equal(M.canDuplicate(event),true);assert.equal(M.canDuplicate({action:'wait'}),true);
+assert.throws(()=>M.duplicate(pages,'popup'),/cannot be duplicated/);
+assert.throws(()=>M.duplicate({steps:[{id:'open',action:'new_page',page:'page'}]},'open'),/cannot be duplicated/);
+assert.throws(()=>M.duplicate(def,'click'),/unit/);
+console.log('Duplicate step model tests passed');

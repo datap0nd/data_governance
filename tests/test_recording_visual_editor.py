@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 from playwright.sync_api import sync_playwright
 from test_flow_recordings import definition
+from test_python_scripts_preview import launch
 from app.flow_recording import validate_definition
 
 
@@ -16,7 +17,8 @@ def editor_page():
     data={'flow':{'id':1,'name':'Sales report','source_adapter':'gscm_portal','schedule_type':'daily','enabled':False},'sessions':[],
           'revisions':[{'id':1,'status':'draft','definition':value}]}
     with sync_playwright() as pw:
-        browser=pw.chromium.launch(channel='chrome',headless=True)
+        # Chrome channel first, as in CI; a checkout without it falls back to the bundled Chromium.
+        browser=launch(pw)
         page=browser.new_page(viewport={'width':1400,'height':1000})
         page.set_content('<main>Visual recording fixture</main>')
         page.add_style_tag(path=str(root/'app/static/style.css'))
@@ -134,6 +136,50 @@ def test_wait_undo_move_and_remove_preserve_ids(editor_page):
     saved=page.evaluate('()=>calls[0].body.definition')
     assert saved['steps'][1]['id']==wait_id and saved['steps'][1]['seconds']==8
     assert [s['id'] for s in saved['steps'] if s['action']!='wait']==original_ids
+
+
+def test_duplicate_step_copies_it_after_itself_with_fresh_ids_and_selects_the_copy(editor_page):
+    page,value=editor_page
+    original_ids=[s['id'] for s in value['steps']]
+    start_fill=next(s for s in value['steps'] if s['action']=='fill')
+    page.locator(f'[data-select="{start_fill["id"]}"]').click()
+    assert page.locator('.recording-details h3').inner_text()=='Step 3'
+    page.get_by_role('button',name='Duplicate',exact=True).click()
+    cards=page.locator('[data-card]')
+    assert cards.count()==len(original_ids)+1
+    copy_id=cards.nth(3).get_attribute('data-card')
+    assert copy_id not in original_ids and cards.nth(2).get_attribute('data-card')==start_fill['id']
+    assert page.locator('[data-card].selected').get_attribute('data-card')==copy_id
+    assert page.locator('.recording-details h3').inner_text()=='Step 4'
+    assert page.locator('[data-card].selected [data-select]').inner_text()==page.locator(f'[data-card="{start_fill["id"]}"] [data-select]').inner_text()
+    assert page.get_by_label('Entered value').input_value()==start_fill['args'][0]
+    assert page.get_by_label('Date behavior').input_value()=='fixed'
+    assert page.get_by_label('Parameter name').input_value()=='start_2'
+    assert page.locator('[data-save-state]').inner_text()=='Unsaved changes'
+    assert page.evaluate("()=>document.activeElement.matches('[data-duplicate]')")
+    # The copy is an ordinary step: editing it leaves the source alone.
+    page.get_by_label('Entered value').fill('2026-02-01')
+    assert page.locator(f'[data-card="{start_fill["id"]}"]').count()==1
+    download=next(s for s in value['steps'] if s['action']=='download')
+    page.locator(f'[data-select="{download["id"]}"]').click()
+    page.get_by_role('button',name='Duplicate',exact=True).click()
+    selected=page.locator('[data-card].selected')
+    assert selected.get_attribute('data-card')!=download['id'] and selected.locator('.recording-badge').inner_text()=='Download'
+    assert page.locator('[data-card]').count()==len(original_ids)+2
+    page.get_by_role('button',name='Save draft',exact=True).click()
+    saved=page.evaluate('()=>calls[0].body.definition')
+    ids=[s['id'] for s in saved['steps']]
+    assert ids[:3]==original_ids[:3] and ids[3]==copy_id and ids[4:-1]==original_ids[3:] and ids[-1] not in original_ids
+    assert saved['steps'][2]['args']==[start_fill['args'][0]] and saved['steps'][3]['args']==['2026-02-01']
+    assert saved['parameters']['start']=={**value['parameters']['start']} and saved['parameters']['start_2']=={**value['parameters']['start'],'step_id':copy_id}
+    assert saved['steps'][-1]['action']=='download' and saved['steps'][-1]['steps'][0]['id']!=download['steps'][0]['id'] and saved['steps'][-1]['output']==download['output']
+    validate_definition(saved)
+    # Undo removes the last copy; the page-opening step offers no Duplicate.
+    page.get_by_role('button',name='Undo',exact=True).click()
+    assert page.locator('[data-card]').count()==len(original_ids)+1
+    page.locator(f'[data-select="{original_ids[0]}"]').click()
+    assert page.get_by_role('button',name='Duplicate',exact=True).is_disabled()
+    assert page.get_by_role('button',name='Duplicate',exact=True).get_attribute('title')=='Page open, popup and close steps cannot be duplicated.'
 
 
 def test_polling_preserves_selection_dirty_fields_and_collapsed_details(editor_page):
