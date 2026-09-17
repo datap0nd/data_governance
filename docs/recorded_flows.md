@@ -36,6 +36,12 @@ controls** remains available. Existing flows retain their method.
    button from Country to Main, without changing its selector structure. Raw
    selectors expose their repair controls beside the target. Undo and movement
    controls stay with the selected step; frame diagnostics remain under Advanced.
+   **Duplicate**, beside the move arrows and Remove, inserts an independent copy
+   of the selected step right after it and selects the copy, so a missing click,
+   value or download can be added from the nearest recorded step and then
+   edited. An event group is copied as one unit; every copied action gets a new
+   identity, and a copied date parameter is saved under its own name. Steps that
+   open or close a page cannot be duplicated. Undo removes the copy.
 4. **Save draft** preserves incomplete recordings. **Test recording** is optional
    and never required: it asks only for missing essential report/ready information,
    then saves and tests the exact recording with the pending Edit Flow settings.

@@ -100,6 +100,41 @@ window.RecordedFlowModel = (() => {
         return validatePages(next);
     }
     function owner(definition,id) { return definition.steps.find(s=>all([s]).some(child=>child.id===id)); }
+    const canDuplicate = step => !['new_page','popup','close'].includes(step?.action);
+    function duplicate(definition,id,makeId) {
+        const next=clone(definition), index=next.steps.findIndex(s=>s.id===id);
+        if (index<0) throw Error('Duplicate this event group as a unit.');
+        const source=next.steps[index];
+        if (!canDuplicate(source)) throw Error('Page open, popup and close steps cannot be duplicated.');
+        // Fresh identities for the copy and every nested action; the copy is a
+        // separate step, so nothing keeps pointing at the original by id.
+        const taken=new Set(all(next.steps).map(s=>s.id));
+        const fresh=original=>{
+            const candidates=[...(makeId?[makeId(original)]:[]),`${original}-copy`];
+            for (let n=1;;) {
+                const value=candidates.length?candidates.shift():`${original}-copy-${++n}`;
+                if (typeof value==='string'&&value&&!taken.has(value)) { taken.add(value); return value; }
+            }
+        };
+        const copy=clone(source), renamed=new Map();
+        for (const step of all([copy])) { const value=fresh(step.id); renamed.set(step.id,value); step.id=value; }
+        for (const step of all([copy])) if (step.range?.source_step&&renamed.has(step.range.source_step.id)) step.range.source_step.id=renamed.get(step.range.source_step.id);
+        // Date parameters belong to one step, so the copy gets its own under a new name.
+        const parameters=next.parameters || {}, renamedParameters=new Map();
+        const freshParameter=name=>{
+            for (let n=2;;n++) { const value=`${name.slice(0,64-String(n).length-1)}_${n}`; if (!(value in parameters)) return value; }
+        };
+        for (const [name,parameter] of Object.entries(parameters)) {
+            if (!renamed.has(parameter.step_id)) continue;
+            const value=freshParameter(name); renamedParameters.set(name,value);
+            parameters[value]={...clone(parameter),step_id:renamed.get(parameter.step_id)};
+        }
+        for (const name of renamedParameters.values()) { const parameter=parameters[name]; if (renamedParameters.has(parameter.not_after)) parameter.not_after=renamedParameters.get(parameter.not_after); }
+        for (const step of all([copy])) if (step.output?.period_checks) step.output.period_checks=step.output.period_checks.map(check=>renamedParameters.has(check.parameter)?{...check,parameter:renamedParameters.get(check.parameter)}:check);
+        if (renamedParameters.size) next.parameters=parameters;
+        next.steps.splice(index+1,0,copy);
+        return validatePages(next);
+    }
     function rangeCandidate(definition,id) {
         const index=definition.steps.findIndex(step=>step.id===id);
         if(index<0)return null;
@@ -140,5 +175,5 @@ window.RecordedFlowModel = (() => {
         step.locator=rangeLocator(step.range.anchor_locator,levels);
         return step;
     }
-    return {all,clone,target,frame,name,editableTarget,renameTarget,describe,triggering,canDelay,validatePages,move,remove,owner,rangeCandidate,makeRange,restoreRange,setRangeAncestor};
+    return {all,clone,target,frame,name,editableTarget,renameTarget,describe,triggering,canDelay,validatePages,move,remove,canDuplicate,duplicate,owner,rangeCandidate,makeRange,restoreRange,setRangeAncestor};
 })();
