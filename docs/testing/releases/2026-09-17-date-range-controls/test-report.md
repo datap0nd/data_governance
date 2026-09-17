@@ -5,7 +5,7 @@
 - Evidence cutoff (UTC): 2026-09-17 12:17 (local verification of the working tree committed unchanged as `a4175f1`; final-head CI has not finished).
 - Tested code revision: the working tree committed unchanged as `a4175f1dabadb99abac1f3c219aaa5f378583bd1` on top of `origin/main` `f777f65` (PR #135). The verifier's `result.json` files record revision `e00bf87` plus uncommitted changes because the tree was built on the branch that became `f777f65`; the application content is identical. This PR-link update is a documentation-only commit on top of that head.
 - Environment: Linux container, Python 3.13.12 in the checkout-owned `.venv` (`requirements-ci.lock`); Node v22.22.2; Playwright 1.62.0 with the bundled Chromium `chromium-1194` through the shared Chrome-first launch helper. The container has neither the Chrome channel nor the `chromium_headless_shell-1234` build Playwright's default launch expects, so tests that launch a browser without that helper fail here and rest on CI.
-- Overall finding: local synthetic checks PASS for the change. New suites 36 passed, 0 failed; companions 195 passed, 1 skipped, 18 browser-launch failures (environment) in one run and 104 passed, 9 failures (8 browser-launch, 1 fixture omission fixed and retested) in the other; the Node model test and syntax checks pass. Final-head CI is pending. No live, work-PC or portal check was requested or performed.
+- Overall finding: local synthetic checks PASS for the change. New suites 36 passed, 0 failed; editor companions with the Codex fix 18 passed, 0 failed; companions 195 passed, 1 skipped, 18 browser-launch failures (environment) in one run and 104 passed, 9 failures (8 browser-launch, 1 fixture omission fixed and retested) in the other; the Node model test and syntax checks pass. Final-head CI is pending. No live, work-PC or portal check was requested or performed.
 
 ## Executed checks
 
@@ -15,6 +15,7 @@
 | P-12, C-05 (existing gating), portable and standalone companions | Plan's first companion command (`tests/test_flows.py` slider cases, `tests/test_flow_worker_discovery.py`, `tests/test_recording_ranges.py`, `tests/test_recording_v2_model.py`, `tests/test_flow_portable_script.py`, `tests/test_flow_standalone.py`, worker/router syntax) | Same tree; run root `.test-runs/20260917T121433067Z-6277-2ddf3754` | 195 passed, 1 skipped, 18 failed, 55.7 s. Every failure is in `tests/test_recording_ranges.py` and is `BrowserType.launch: Executable doesn't exist at /opt/pw-browsers/chromium_headless_shell-1234/...` before any test body: that file launches Chromium without the shared helper and cannot run in this container on any revision. All slider, discovery, gating, portable and standalone cases passed. | `.test-runs/20260917T121433067Z-6277-2ddf3754/result.json` |
 | Recording API, worker claims and editor companions | Plan's second companion command (`tests/test_flow_recordings.py`, `tests/test_recording_controls.py`, `tests/test_recording_startup.py`, `tests/test_sql_ownership.py`, `tests/test_recording_visual_editor.py`, `tests/test_recording_pacing_probes.py`) | Same tree before the fixture fix below; run root `.test-runs/20260917T121434195Z-6292-f48c6c17` | 104 passed, 9 failed, 87.0 s. Eight failures are `Chromium distribution 'chrome'/'msedge' is not found` launches (the three GSCM review UI cases, the two real-download portable cases and the mislabeled-workbook case in `test_flow_recordings.py`; both browser cases in `test_recording_controls.py`). One was real: `test_recording_uses_capacity_and_requires_capable_visible_worker` registers its synthetic recorder through a helper whose capability list did not carry `recorded_flows_v4`, so it could no longer claim the version-4 recorder job. | `.test-runs/20260917T121434195Z-6292-f48c6c17/result.json` |
 | Retest of the fixture fix (C-05 companions) | `cd /home/user/data_governance && .venv/bin/python tools/check.py verify --test tests/test_flow_recordings.py::test_recording_uses_capacity_and_requires_capable_visible_worker --test tests/test_flow_recordings.py::test_cancellation_preserves_catalog_status_and_fences_late_worker --test tests/test_recording_v2_model.py::test_v2_only_worker_cannot_claim_v3_work` | Final tree; run root `.test-runs/20260917T121654500Z-7845-324f63b2` | PASS: 4 passed; 4.3 s. | `.test-runs/20260917T121654500Z-7845-324f63b2/result.json` |
+| E-07 and E-06 (editor companions) | `cd /home/user/data_governance && .venv/bin/python tools/check.py verify --test tests/test_recording_visual_editor.py --syntax app/static/flow_recording_editor.js` | Tree with the Codex fix, committed as the second code commit of this PR; run root `.test-runs/20260917T122427740Z-13488-0f93357f` | PASS: 18 passed, 0 failed; 28.1 s. The new `test_fixed_date_and_entered_value_stay_in_sync` and the extended duplicate case save matching `args` and fixed parameter values in both edit directions; a portal-default parameter gains no value. | `.test-runs/20260917T122427740Z-13488-0f93357f/result.json` |
 | E-05 and script syntax | `cd /home/user/data_governance && node tests/test_recording_visual_model.mjs && for f in app/static/*.js app/static/recording-preview/slider.js; do node --check "$f"; done; git diff --check` | Final tree; Node v22.22.2 | PASS: prints the three "tests passed" lines including "Date range control model tests passed"; every `node --check` clean; `git diff --check` clean. | Terminal output, 12:17 UTC |
 
 ## Unperformed or blocked in-scope checks
@@ -71,6 +72,19 @@ specified in the task, so no further owner pause was taken.
   date control need a headed recording on the work PC, which is opt-in and
   was not requested. The catalog method's slider behavior is covered by its
   existing synthetic cases through the worker's aliases.
+
+- Codex review of PR #135 (delivered after that PR merged) found a real
+  defect in the step editor, older than the Duplicate control but made
+  visible by it: editing **Entered value** on a step whose date behavior is
+  *Fixed date* changed only the recorded argument, while playback replays the
+  parameter's fixed value, so the draft showed one date and ran another. The
+  editor now keeps the two in step in both directions (entered value to fixed
+  value, fixed value to entered value, including the visible fields), a
+  portal-default or calculated parameter is untouched, and the editor tests
+  cover both directions and the duplicated copy (E-07). The first version of
+  the new assertions matched the "Fixed date" label against the Date behavior
+  select as well and expected the unsynchronized display; both were test
+  mistakes corrected before the passing run above.
 
 ## Merge evidence
 

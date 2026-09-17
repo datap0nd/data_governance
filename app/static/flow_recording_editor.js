@@ -341,7 +341,8 @@ window.RecordedFlowEditor = (() => {
             panel.querySelectorAll('[data-section]').forEach(d=>d.ontoggle=()=>{if(d.open)expanded.add(d.dataset.section);else expanded.delete(d.dataset.section);});
             bind('[data-label]',n=>change(d=>getStep(d).label=n.value),'input');
             bind('[data-target-name]',n=>change(d=>M.renameTarget(get(d),n.value)),'input');
-            bind('[data-value]',n=>change(d=>get(d).args=[n.value]),'input');
+            // A fixed date parameter replays its own value, so an edited entered value must reach it too.
+            bind('[data-value]',n=>{change(d=>{const node=get(d);node.args=[n.value];for(const p of Object.values(d.parameters||{}))if(p.step_id===node.id&&p.mode==='fixed')p.value=n.value;});const fixed=panel.querySelector('[data-date-value]');if(fixed&&panel.querySelector('[data-date-mode]')?.value==='fixed')fixed.value=n.value;},'input');
             bind('[data-delay-mode]',n=>change(d=>{const action=get(d);if(n.value==='custom')action.delay_before_seconds=defaultWait();else delete action.delay_before_seconds;},true));
             bind('[data-delay-seconds]',n=>{const v=Number(n.value);if(!Number.isInteger(v)||v<1||v>600)throw Error('Choose 1–600 whole seconds.');change(d=>get(d).delay_before_seconds=v);});
             bind('[data-seconds]',n=>{const v=Number(n.value);if(!Number.isInteger(v)||v<1||v>600)throw Error('Choose 1–600 whole seconds.');change(d=>get(d).seconds=v);});
@@ -372,9 +373,11 @@ window.RecordedFlowEditor = (() => {
                     if(name!==old&&d.parameters[name])throw Error('Date parameter names must be unique.');
                     const previous=old?d.parameters[old]:{};if(old)delete d.parameters[old];
                     if(mode)d.parameters[name]={...previous,step_id:action.id,mode,value:read('date-value'),expression:read('date-expression'),format:read('date-format'),not_after:read('not-after')||undefined};
+                    if(mode==='fixed'&&typeof read('date-value')==='string')get(d).args=[read('date-value')];
                     if(old&&!mode){for(const p of Object.values(d.parameters))if(p.not_after===old)delete p.not_after;for(const s of M.all(d.steps))if(s.output?.period_checks)s.output.period_checks=s.output.period_checks.filter(c=>c.parameter!==old);}
                     if(old&&old!==name){for(const p of Object.values(d.parameters))if(p.not_after===old)p.not_after=name;for(const s of M.all(d.steps))for(const c of s.output?.period_checks||[])if(c.parameter===old)c.parameter=name;}
                 },field==='date-mode');
+                const entered=panel.querySelector('[data-value]');if(entered&&field==='date-value'&&mode==='fixed')entered.value=read('date-value');
             });
         }
         function updateButtons() {
