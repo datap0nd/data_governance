@@ -118,9 +118,10 @@ owns two week parameters, **Start** and **End**, shown under Options:
   with `-7` on the start and `0` on the end is an eight-week rolling window,
   and a fixed start with a newest-selectable end is "start to latest".
 - **Control values**: *Week numbers* for controls whose handles show `YYYYWW`;
-  *Dates* for controls showing `YYYYMMDD`, where the week parameters are
-  translated to calendar days by **Week starts on** (Sunday for ASAP's
-  Sunday-to-Saturday weeks, Monday for ISO weeks). An ASAP report with a
+  *Dates* for controls showing `YYYYMMDD`. **Week starts on** (Sunday for
+  ASAP's Sunday-to-Saturday weeks, Monday for ISO weeks) decides which week a
+  Sunday belongs to when the current or previous week is calculated, and
+  which calendar days a week covers on a date control. An ASAP report with a
   coupled Week and Date slider needs one control step for each.
 - **Parameter name** and **format** (`YYYY-Www` or `YYYYWW`) name the values
   for `--parameter` overrides, run evidence and period checks.
@@ -128,7 +129,10 @@ owns two week parameters, **Start** and **End**, shown under Options:
 Playback finds exactly two visible slider handles inside the box, moves each
 one with the keyboard by the difference between its own value and the target,
 upper handle first when the range advances, and reads the control's value back
-until it matches exactly. This is the same driver the catalog method uses for
+until it matches exactly. The newest selectable week is read after sending the
+upper handle to its end: the value must hold still, a second End press must
+leave it unchanged, and a declared maximum must agree, so a slowly updating
+control never passes off a stale value as its limit. This is the same driver the catalog method uses for
 ASAP's Week and Date sliders, and it never trusts screen coordinates. A control
 that does not show the requested range, a missing or unreadable handle, an end
 before its start, or a target beyond the control fails the run before any

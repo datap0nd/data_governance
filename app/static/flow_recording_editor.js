@@ -269,7 +269,8 @@ window.RecordedFlowEditor = (() => {
                     <label>${role==='start'?'Start':'End'} parameter name <input data-slider-name value="${h(name)}"></label>
                     <label>${role==='start'?'Start':'End'} format <select data-slider-format>${option('%G-W%V','YYYY-Www',fmt)}${option('%G%V','YYYYWW',fmt)}</select></label></fieldset>`;};
                 return `<label>Control values <select data-slider-kind>${option('week','Week numbers (YYYYWW)',contract.kind||'week')}${option('date','Dates (YYYYMMDD)',contract.kind||'week')}</select></label>
-                ${contract.kind==='date'?`<label>Week starts on <select data-slider-week-days>${option('sunday','Sunday (ASAP)',contract.week_days||'sunday')}${option('monday','Monday (ISO)',contract.week_days||'sunday')}</select></label>`:''}
+                <label>Week starts on <select data-slider-week-days>${option('sunday','Sunday (ASAP)',contract.week_days||'sunday')}${option('monday','Monday (ISO)',contract.week_days||'sunday')}</select></label>
+                <p class="hint">Decides which week a Sunday belongs to for the current and previous week, and which calendar days a week covers on a date control.</p>
                 <label>Element box <select data-range-ancestor>${[1,2,3,4,5,6].map(level=>option(level,level===1?'Parent of the recorded handle':`${level} parent levels above the handle`,contract.container_ancestor_levels||1)).join('')}</select></label>
                 <p class="hint">Playback finds the two slider handles inside this box, moves each with the keyboard and reads the values back. It stops before any download when the control does not show the requested range.</p>${block('start')}${block('end')}`;
             };
@@ -322,7 +323,7 @@ window.RecordedFlowEditor = (() => {
                 const next=event.target.checked?M.makeSlider(draft,root.id):M.restoreSlider(draft,root.id);
                 edit(next,root.id);
             }));
-            bind('[data-slider-kind]',n=>change(d=>{const contract=get(d).range;contract.kind=n.value;if(n.value==='date')contract.week_days=contract.week_days||'sunday';else delete contract.week_days;},true));
+            bind('[data-slider-kind]',n=>change(d=>{const contract=get(d).range;contract.kind=n.value;contract.week_days=contract.week_days||'sunday';},true));
             bind('[data-slider-week-days]',n=>change(d=>get(d).range.week_days=n.value));
             const sliderParams=action.action==='set_range'?M.rangeParameters(draft,action.id):{};
             panel.querySelectorAll('[data-slider-role]').forEach(block=>{

@@ -217,7 +217,7 @@ window.RecordedFlowModel = (() => {
         if(!candidate)throw Error('This step needs a recorded element target before it can become a date range control.');
         const next=clone(definition),source=clone(candidate.anchor),anchor=clone(source.locator||[]);
         const replacement={id:source.id,action:'set_range',page:source.page,locator:rangeLocator(anchor,levels),
-            range:{kind:'week',anchor_locator:anchor,container_ancestor_levels:levels,source_step:source}};
+            range:{kind:'week',week_days:'sunday',anchor_locator:anchor,container_ancestor_levels:levels,source_step:source}};
         next.steps.splice(candidate.index,1,replacement);
         next.parameters=next.parameters||{};
         dropParameters(next,Object.keys(next.parameters).filter(name=>next.parameters[name].step_id===id));

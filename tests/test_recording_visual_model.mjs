@@ -138,7 +138,7 @@ assert.equal(M.sliderCandidate(sliderDef,'week-handle').index,1);
 assert.equal(M.sliderCandidate(sliderDef,'open'),null);
 assert.equal(M.sliderCandidate(sliderDef,'event'),null);
 const slid=M.makeSlider(sliderDef,'week-handle');
-assert.equal(slid.version,4);assert.equal(slid.steps[1].action,'set_range');assert.equal(slid.steps[1].range.kind,'week');
+assert.equal(slid.version,4);assert.equal(slid.steps[1].action,'set_range');assert.equal(slid.steps[1].range.kind,'week');assert.equal(slid.steps[1].range.week_days,'sunday');
 assert.deepEqual(plain(slid.steps[1].locator),[{method:'locator',args:['#week-prompt'],kwargs:{}}]);
 assert.equal(slid.steps[1].range.source_step.action,'click');
 assert.deepEqual(plain(slid.parameters.start),{step_id:'week-handle',role:'start',unit:'week',mode:'portal_default',format:'%G-W%V'});

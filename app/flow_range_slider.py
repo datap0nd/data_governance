@@ -12,8 +12,15 @@ import re
 import time
 from datetime import date, datetime, timedelta
 
+from app import flow_recording
+
 PATTERNS = {'week': r'20\d{4}', 'date': r'20\d{6}'}
 MAX_KEY_PRESSES = 1_000
+# A control may publish its value some time after a key press; a value counts
+# as settled only after it has held still for this many consecutive reads.
+SETTLE_READS = 4
+SETTLE_INTERVAL_SECONDS = 0.05
+SETTLE_ATTEMPTS = 60
 VALUE_ATTRIBUTES = ('aria-valuetext', 'aria-valuenow', 'value', 'data-value', 'data-val', 'data-current-value')
 HANDLE_SELECTOR = '[role=slider],input[type=range]'
 
@@ -180,19 +187,56 @@ def week_options(start: str, end: str) -> list[str]:
 
 
 def week_of(day: date, week_days: str = 'sunday') -> date:
-    """Monday of the ISO week that owns ``day`` under the control's week convention.
-
-    ASAP weeks run Sunday to Saturday: a Sunday belongs to the ISO week that
-    starts the next day. ISO weeks run Monday to Sunday.
-    """
-    anchor = day + timedelta(days=1) if week_days == 'sunday' else day
-    return anchor - timedelta(days=anchor.weekday())
+    """Monday of the ISO week that owns ``day`` under the control's week convention."""
+    return flow_recording.week_monday(day, week_days)
 
 
 def week_bounds(monday: date, week_days: str = 'sunday') -> tuple[date, date]:
     """First and last calendar day of the week that ISO-starts on ``monday``."""
-    first = monday - timedelta(days=1) if week_days == 'sunday' else monday
-    return first, first + timedelta(days=6)
+    return flow_recording.week_bounds(monday, week_days)
+
+
+def settled_value(read):
+    """A value that held still for SETTLE_READS consecutive reads after a key press."""
+    previous, held = read(), 1
+    for _attempt in range(SETTLE_ATTEMPTS):
+        time.sleep(SETTLE_INTERVAL_SECONDS)
+        current = read()
+        held = held + 1 if current == previous else 1
+        previous = current
+        if held >= SETTLE_READS:
+            return current
+    raise RuntimeError('The range control value did not settle after a key press.')
+
+
+def read_extreme(scope, handles: list, kind: str, *, end: bool = True) -> str:
+    """Send a handle to its End (or Home) and return the control's proven limit.
+
+    The value is read until it holds still, a second press must leave it
+    unchanged, and a declared aria-valuemax/aria-valuemin must agree, so a
+    slowly updating control can never hand back a stale value as its limit.
+    """
+    index, key, side = (1, 'End', 'newest') if end else (0, 'Home', 'oldest')
+    handle = handles[index]
+
+    def read():
+        return range_values(scope, handles, kind)[index]
+
+    handle.press(key)
+    value = settled_value(read)
+    handle.press(key)
+    if value is None or settled_value(read) != value:
+        raise RuntimeError(f'The range control did not settle on its {side} value.')
+    try:
+        declared = clean_text(handle.get_attribute('aria-valuemax' if end else 'aria-valuemin'))
+    except Exception:
+        declared = ''
+    match = re.search(pattern(kind), declared)
+    if match and match.group(0) != value:
+        raise RuntimeError(
+            f'The range control shows {value} as its {side} value but declares {match.group(0)}.'
+        )
+    return value
 
 
 def week_dates(value: str) -> tuple[str, str]:

@@ -426,11 +426,9 @@ def _set_slider_range(container, step, definition, parameters, update) -> dict:
             live[name] = True
         else:
             if latest is None:
-                handles[1].press('End')
-                newest = flow_range_slider.range_values(container, handles, kind)[1]
-                if newest is None:
-                    raise RuntimeError('The date range control does not expose its newest selectable value.')
-                latest = week_of(newest)
+                # The upper handle's proven limit: settled, confirmed by a second
+                # press and checked against a declared maximum.
+                latest = week_of(flow_range_slider.read_extreme(container, handles, kind, end=True))
                 update(f'newest selectable week is {flow_recording.format_week(latest)}.',
                        {'phase': 'range_latest', 'latest_selectable': flow_recording.format_week(latest)})
             monday = latest + timedelta(weeks=parameter.get('offset_weeks', 0))

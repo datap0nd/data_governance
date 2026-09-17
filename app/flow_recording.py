@@ -81,6 +81,22 @@ def parse_week(text, fmt='%G-W%V'):
         raise ValueError(f'The week {text} does not exist in that year.') from None
 
 
+def week_monday(day, week_days='sunday'):
+    """Monday of the ISO week that owns ``day`` under a control's week convention.
+
+    ASAP weeks run Sunday to Saturday: a Sunday belongs to the ISO week that
+    starts the next day. ISO weeks run Monday to Sunday.
+    """
+    anchor = day + timedelta(days=1) if week_days == 'sunday' else day
+    return anchor - timedelta(days=anchor.weekday())
+
+
+def week_bounds(monday, week_days='sunday'):
+    """First and last calendar day of the week that ISO-starts on ``monday``."""
+    first = monday - timedelta(days=1) if week_days == 'sunday' else monday
+    return first, first + timedelta(days=6)
+
+
 def format_week(day, fmt='%G-W%V'):
     iso = day.isocalendar()
     return f'{iso[0]:04d}{iso[1]:02d}' if fmt == '%G%V' else f'{iso[0]:04d}-W{iso[1]:02d}'
@@ -507,7 +523,7 @@ def resolve_parameters(definition, overrides=None, *, now=None):
     unknown = set(overrides) - set(definition.get('parameters', {}))
     if unknown:
         raise ValueError('Unknown parameter: ' + sorted(unknown)[0])
-    week_values = {'current_week': values['week_start'], 'previous_week': values['week_start'] - timedelta(days=7)}
+    steps = {step['id']: step for step in walk_steps(definition.get('steps', []))}
     result = {}
     for name, parameter in definition.get('parameters', {}).items():
         mode, fmt = parameter['mode'], parameter_format(parameter)
@@ -516,10 +532,15 @@ def resolve_parameters(definition, overrides=None, *, now=None):
             value = parameter.get('value')
         elif value is None and mode == 'calculated':
             if parameter_unit(parameter) == 'week':
-                # The newest selectable week exists only on the live control.
-                monday = week_values.get(parameter['expression'])
-                if monday is not None:
-                    value = format_week(monday + timedelta(weeks=parameter.get('offset_weeks', 0)), fmt)
+                # Calendar weeks follow the control's own week convention, so a
+                # Sunday already belongs to the new week on an ASAP control. The
+                # newest selectable week exists only on the live control.
+                contract = steps.get(parameter.get('step_id'), {}).get('range') or {}
+                monday = week_monday(day, contract.get('week_days', 'sunday'))
+                anchors = {'current_week': monday, 'previous_week': monday - timedelta(days=7)}
+                anchor = anchors.get(parameter['expression'])
+                if anchor is not None:
+                    value = format_week(anchor + timedelta(weeks=parameter.get('offset_weeks', 0)), fmt)
             else:
                 value = values[parameter['expression']].strftime(fmt)
         if value is not None:

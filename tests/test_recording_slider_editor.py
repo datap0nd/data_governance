@@ -46,6 +46,7 @@ def test_advanced_setting_converts_one_recorded_handle_click_to_a_date_range_con
             assert page.get_by_label("Start parameter name").input_value() == "start"
             assert page.get_by_label("End parameter name").input_value() == "end"
             assert page.get_by_label("Weeks to add to the end").input_value() == "0"
+            assert page.get_by_label("Week starts on").input_value() == "sunday"
 
             page.get_by_label("Start behavior").select_option("fixed")
             start_week = page.get_by_label("Start week")
@@ -58,8 +59,9 @@ def test_advanced_setting_converts_one_recorded_handle_click_to_a_date_range_con
             page.get_by_label("Weeks to add to the end").fill("-1")
             page.get_by_label("Weeks to add to the end").press("Tab")
             page.get_by_label("Element box").select_option("2")
+            page.get_by_label("Week starts on").select_option("monday")
             page.get_by_label("Control values").select_option("date")
-            assert page.get_by_label("Week starts on").input_value() == "sunday"
+            assert page.get_by_label("Week starts on").input_value() == "monday"
             page.get_by_label("Start format").select_option("%G%V")
             assert page.get_by_label("Start week").input_value() == "202601"
             page.get_by_label("End parameter name").fill("last_week")
@@ -88,6 +90,7 @@ def test_advanced_setting_converts_one_recorded_handle_click_to_a_date_range_con
             assert [step["action"] for step in definition["steps"]] == ["goto", "set_range", "download"]
             contract = definition["steps"][1]["range"]
             assert contract["kind"] == "week"
+            assert contract["week_days"] == "sunday"
             assert contract["container_ancestor_levels"] == 1
             assert contract["source_step"]["action"] == "click"
             assert definition["parameters"]["start"] == {
