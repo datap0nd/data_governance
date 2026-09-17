@@ -21,6 +21,9 @@ MODULE = "Python"
 OUTPUT_FORMATS = ("csv", "xlsx")
 MAX_SCRIPTS = 20
 SCRIPT_TIMEOUT_SECONDS = 3600
+# Workers advertise this capability once they honour per-script arguments and
+# values; a job that uses either is never claimed by an older worker.
+ARGUMENTS_CAPABILITY = "python_script_arguments_v1"
 # Per-script arguments are one line typed by the owner; values are one short
 # line each and the same script runs once per value.
 MAX_ARGUMENT_CHARS = 2000
@@ -508,3 +511,13 @@ def run_scripts(scripts: list[Path], final_outputs, steps_folder: Path, *, envir
         row_outputs.setdefault(run["row"], []).append(output)
         previous_output = output
     return records
+
+
+def requires_arguments_capability(section: dict) -> bool:
+    """True when a job uses arguments or values an older worker would ignore."""
+    section = section or {}
+    if not section.get("enabled"):
+        return False
+    if any(str(item or "").strip() for item in section.get("arguments") or []):
+        return True
+    return any(row for row in section.get("values") or [] if isinstance(row, list) and row)

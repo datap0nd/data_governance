@@ -13,6 +13,7 @@
 | --- | --- | --- | --- | --- |
 | A-01 to A-17, S-01 to S-04, U-01 to U-07 (verifier set) | `cd /home/user/data_governance && .venv/bin/python tools/check.py verify --test tests/test_flow_python.py --test tests/test_flow_email_delivery.py --test tests/test_flow_layout.py --test tests/test_flow_worker_startup.py --test tests/test_python_scripts_preview.py --test tests/test_flows.py --test tests/test_flow_standalone.py --test tests/test_flow_activity.py --test tests/test_flow_folder_rename.py --test tests/test_flow_local_file.py --syntax app/flow_python.py --syntax app/flow_worker.py --syntax app/routers/flows.py --syntax app/database.py --syntax app/flow_activity.py --syntax app/flow_email_delivery.py --syntax app/static/app.js --syntax app/static/recording-preview/python-scripts.js` (the plan's backend set plus the standalone, activity, folder-rename and local-file companions; `--syntax setup.ps1` omitted because the verifier refuses the whole run without PowerShell) | Tree of `80efba5` before commit; Linux, Python 3.13.12, checkout-owned `.venv`; isolated run root `.test-runs/20260917T101515609Z-2476-07339029` | PASS: 345 passed, 0 skipped, 0 failed, 0 errors; 168 s pytest, 169.1 s total. Warnings: the two pre-existing dependency deprecation warnings. `tests/test_python_scripts_preview.py` executed (not skipped) at 1280×900 and 390×844 through the headless-shell fallback. | `.test-runs/20260917T101515609Z-2476-07339029/result.json` (earlier runs on the same tree by the implementers: the plan's set minus `--syntax setup.ps1`, 261 passed, `.test-runs/20260917T101025356Z-2262-caba46d0/result.json`; companions 64 passed, `.test-runs/20260917T101227542Z-2416-c7003daf/result.json`) |
 | U-01 to U-07 (payload contract) and script syntax | `cd /home/user/data_governance && node tests/test_flow_builder_contract.mjs && for f in app/static/*.js app/static/recording-preview/python-scripts.js; do node --check "$f"; done; git diff --check` | Same tree; Node v22.22.2 | PASS: the contract test prints its five sections including "flow builder python arguments and values tests passed"; every `node --check` clean; `git diff --check` clean. | Terminal output |
+| A-18 retest with A-01 to A-17, S-02, S-03 (Codex capability finding) | `cd /home/user/data_governance && .venv/bin/python tools/check.py verify --test tests/test_flow_python.py --test tests/test_flow_worker_startup.py --syntax app/flow_python.py --syntax app/routers/flows.py --syntax app/flow_worker.py` | Tree committed next as the capability-gate commit on top of `189206b`; same environment | PASS: 33 passed, 0 skipped, 0 failed; 14.4 s. | `.test-runs/20260917T102205981Z-3043-6aaae004/result.json` |
 | `--syntax setup.ps1` | Plan's verifier command with `--syntax setup.ps1` | Same tree | NOT RUN: the verifier exits 2 before any test ("PowerShell is required to check setup.ps1"), `.test-runs/20260917T100955392Z-2140-39669dd0/result.json`; S-01 and S-04 rest on `tests/test_flow_worker_startup.py::test_setup_elevation_window_is_visible_when_interactive_and_the_helper_sees_the_database`, which reads the exact lines and passed in the set above; CI's Windows job runs the script's verifier contracts. | `.test-runs/20260917T100955392Z-2140-39669dd0/result.json` |
 
 ## Unperformed or blocked in-scope checks
@@ -40,6 +41,14 @@ real worker run.
 
 ## Findings, limitations and retests
 
+- Codex review on `80efba5` (two findings): the report placeholders were
+  filled in `189206b`; the second finding was real: a worker from the
+  previous release advertises the `python_script` adapter and would have
+  claimed a job with arguments or values and run each script once without
+  them. Such jobs now also require the `python_script_arguments_v1` worker
+  capability (A-18, `test_worker_claim_requires_the_arguments_capability_only_when_arguments_or_values_are_used`);
+  plain Python jobs stay claimable by the older worker. Result recorded in
+  the executed-checks table (retest row).
 - No failure attributable to the change in the final tree. During
   implementation one new test initially passed an unquoted `{value}` token
   with a value containing a space, which correctly split into two tokens

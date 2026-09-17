@@ -11,7 +11,10 @@ mailbox or source file: the scripts are the acquisition and the transformation.
 The Flow appears in the **Python** group of the Flows list with its managed
 folder under `<Flows root>/Python/<flow name>`. Its source adapter is
 `python_script`; only workers that advertise that adapter claim its runs, so
-an older worker never picks up a Python job.
+an older worker never picks up a Python job. A job that uses arguments or
+values additionally requires the `python_script_arguments_v1` worker
+capability, so a worker from an earlier release never runs such a Flow with
+the arguments silently dropped.
 
 ## Script contract
 

@@ -5674,6 +5674,8 @@ def claim_run(worker_id: str):
                 and (not flow_tasks.enabled(job) or flow_tasks.supported(job, capabilities))
                 and flow_parallel.portal_available(db, job)
                 and (not required_adapter or required_adapter in adapters)
+                and (not flow_python.requires_arguments_capability(job.get("python_source") or {})
+                     or capabilities.get(flow_python.ARGUMENTS_CAPABILITY))
                 and (not (job.get("paths") or {}).get("artifact_store_root") or capabilities.get("shared_flow_artifacts"))
                 and (not flow_view_refresh.plan_views(job) or capabilities.get(flow_view_refresh.CAPABILITY))
                 and flow_excel.worker_supported(job, capabilities)

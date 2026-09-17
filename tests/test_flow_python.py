@@ -1167,3 +1167,42 @@ def test_invalid_rendered_arguments_fail_the_step_with_a_record(tmp_path):
     failed = [detail for detail in events if detail["stage"] == "python_step_failed"]
     assert len(failed) == 1 and failed[0]["value"] == 'a"b' and failed[0]["arguments"] == []
     assert not any(detail["stage"] in ("python_step", "python_complete") for detail in events)
+
+
+def test_worker_claim_requires_the_arguments_capability_only_when_arguments_or_values_are_used(flow_db, tmp_path):
+    scripts = _write_scripts(tmp_path / "scripts")
+    plain = flows.create_flow(_python_flow(scripts, name="Plain chain"), _request())
+    with_values = flows.create_flow(_python_flow(
+        scripts, name="Per sheet", python_script_arguments=["-sheet", ""],
+        python_script_values=[["T", "U"], []],
+    ), _request())
+    with database.get_db() as db:
+        for saved in (plain, with_values):
+            job = flows._build_job(db, saved["id"])
+            db.execute(
+                """INSERT INTO flow_runs(flow_id, trigger_type, status, job_json, created_at)
+                   VALUES (?, 'scheduled', 'queued', ?, ?)""",
+                (saved["id"], json.dumps(job), flows._iso(flows._now())),
+            )
+        plain_job = flows._build_job(db, plain["id"])
+        values_job = flows._build_job(db, with_values["id"])
+    assert flow_python.requires_arguments_capability(plain_job["python_source"]) is False
+    assert flow_python.requires_arguments_capability(values_job["python_source"]) is True
+
+    # A worker from the previous release knows the adapter but not the
+    # arguments contract: it may take the plain chain, never the one with values.
+    flows.register_worker(flows.WorkerRegister(
+        worker_id="adapter-only", display_name="Adapter only",
+        capabilities={"adapters": ["web_export", "python_script"], "headed": False, "shared_flow_artifacts": True},
+    ))
+    first = flows.claim_run("adapter-only")["run"]
+    assert first["flow_id"] == plain["id"]
+    flows.update_run("adapter-only", first["id"], flows.WorkerProgress(status="cancelled", progress={"stage": "cancelled"}))
+    assert flows.claim_run("adapter-only")["run"] is None
+
+    flows.register_worker(flows.WorkerRegister(
+        worker_id="current", display_name="Current worker",
+        capabilities={"adapters": ["web_export", "python_script"], flow_python.ARGUMENTS_CAPABILITY: True,
+                      "headed": False, "shared_flow_artifacts": True},
+    ))
+    assert flows.claim_run("current")["run"]["flow_id"] == with_values["id"]
