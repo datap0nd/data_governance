@@ -17,6 +17,7 @@
 | Retest of the fixture fix (C-05 companions) | `cd /home/user/data_governance && .venv/bin/python tools/check.py verify --test tests/test_flow_recordings.py::test_recording_uses_capacity_and_requires_capable_visible_worker --test tests/test_flow_recordings.py::test_cancellation_preserves_catalog_status_and_fences_late_worker --test tests/test_recording_v2_model.py::test_v2_only_worker_cannot_claim_v3_work` | Final tree; run root `.test-runs/20260917T121654500Z-7845-324f63b2` | PASS: 4 passed; 4.3 s. | `.test-runs/20260917T121654500Z-7845-324f63b2/result.json` |
 | C-09, P-13 to P-15 with the whole new suites after the Codex fixes on this PR | Plan's first verifier command (new suites plus syntax) | Tree with both Codex fixes, committed as the third code commit of this PR; run root `.test-runs/20260917T122901649Z-14840-8a78b384` | PASS: 40 passed, 0 skipped, 0 failed; 22.3 s. Sunday-start resolution, the 120 ms slow control, the declared maximum and the never-settling control all behave as planned; the editor walk now also carries the week convention through a kind change. | `.test-runs/20260917T122901649Z-14840-8a78b384/result.json` |
 | P-12, C-05 and the recording, portable and standalone companions after the Codex fixes | Plan's first companion command with `tests/test_flow_recordings.py` added and the ranges file omitted (it cannot launch here) | Same tree as the run above; run root `.test-runs/20260917T122926780Z-15958-19e5fe2e` | 238 passed, 1 skipped, 6 failed, 80.6 s. The six failures are the same `Chromium distribution 'chrome'/'msedge' is not found` launches in `tests/test_flow_recordings.py` as before; every catalog slider, discovery, gating, portable, standalone and API case passed, including the recorder-capability case fixed earlier. | `.test-runs/20260917T122926780Z-15958-19e5fe2e/result.json` |
+| Direct worker entrypoint (CI finding) and P-12 companions | `cd /home/user/data_governance && .venv/bin/python tools/check.py verify --test tests/test_flow_worker_startup.py --test tests/test_flows.py::test_asap_week_slider_discovery_expands_bounds_and_restores_handles --test tests/test_flows.py::test_asap_collapsed_range_advances_upper_handle_first --test tests/test_flows.py::test_asap_manual_week_definition_infers_visible_range_slider --test tests/test_recording_sliders.py::test_portable_scripts_embed_the_shared_slider_driver --syntax app/flow_worker.py`, after `python -I app/flow_worker.py --help` from another directory | Tree with the worker import moved, committed as the fourth code commit of this PR; run root `.test-runs/20260917T125558663Z-372-88438c48` | PASS: 7 passed, 0 failed; 2.8 s. The isolated direct launch exits 0 again; the catalog slider aliases and the portable bundle are unchanged. | `.test-runs/20260917T125558663Z-372-88438c48/result.json` |
 | E-07 and E-06 (editor companions) | `cd /home/user/data_governance && .venv/bin/python tools/check.py verify --test tests/test_recording_visual_editor.py --syntax app/static/flow_recording_editor.js` | Tree with the Codex fix, committed as the second code commit of this PR; run root `.test-runs/20260917T122427740Z-13488-0f93357f` | PASS: 18 passed, 0 failed; 28.1 s. The new `test_fixed_date_and_entered_value_stay_in_sync` and the extended duplicate case save matching `args` and fixed parameter values in both edit directions; a portal-default parameter gains no value. | `.test-runs/20260917T122427740Z-13488-0f93357f/result.json` |
 | E-05 and script syntax | `cd /home/user/data_governance && node tests/test_recording_visual_model.mjs && for f in app/static/*.js app/static/recording-preview/slider.js; do node --check "$f"; done; git diff --check` | Final tree; Node v22.22.2 | PASS: prints the three "tests passed" lines including "Date range control model tests passed"; every `node --check` clean; `git diff --check` clean. | Terminal output, 12:17 UTC |
 
@@ -99,6 +100,17 @@ specified in the task, so no further owner pause was taken.
   exact-range check would then confirm as the target; the probe now waits for
   the value to hold still, presses End again and requires the same value, and
   compares a declared `aria-valuemax` (P-13 to P-15).
+
+- Final-head CI run 390 on `5126063` failed one case in Python shard 0:
+  `tests/test_flow_worker_startup.py::test_isolated_direct_worker_entrypoint_from_another_directory`
+  launches `app/flow_worker.py` directly with `python -I` from another
+  directory, and the new `from app import flow_range_slider` sat above the
+  block that puts the code folder on `sys.path`, so the deployed direct
+  launch failed with "No module named 'app'". The import now sits with the
+  other application imports below that block; the direct launch and the
+  startup tests pass locally (row above). The other 1130 cases in that shard
+  and all of shard 1, the Windows contracts and the frontend job passed on
+  `5126063`.
 
 ## Merge evidence
 

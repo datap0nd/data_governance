@@ -36,8 +36,6 @@ import httpx
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Frame, Page, TimeoutError as PlaywrightTimeoutError, sync_playwright
 
-from app import flow_range_slider
-
 # Keep direct-file execution compatible with the isolated Windows embedded
 # runtime as well as the preferred ``python -m app.flow_worker`` launcher.
 _CODE_DIR = Path(__file__).resolve().parent.parent
@@ -46,7 +44,7 @@ if str(_CODE_DIR) not in sys.path:
 
 from app.flow_clock import dubai_today
 from app.flow_paths import assert_job_paths
-from app import flow_layout, flow_excel
+from app import flow_layout, flow_excel, flow_range_slider
 
 try:
     from app import flow_gscm, flow_outlook, flow_publish, flow_python, flow_replay, flow_retention
