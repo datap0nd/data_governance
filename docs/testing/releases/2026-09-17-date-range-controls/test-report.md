@@ -1,9 +1,9 @@
 # Date range controls in recorded Flows: test report
 
 - Plan: [test-plan.md](test-plan.md).
-- Change/PR: recorded in the PR testing section (link added to this package once the PR is open).
-- Evidence cutoff (UTC): 2026-09-17 12:17 (local verification of the working tree committed unchanged as the implementation commit of this PR; final-head CI has not finished).
-- Tested code revision: the working tree committed unchanged on top of `origin/main` `f777f65` (PR #135). The verifier's `result.json` files record revision `e00bf87` plus uncommitted changes because the tree was built on the branch that became `f777f65`; the application content is identical.
+- Change/PR: [PR #136](https://github.com/datap0nd/data_governance/pull/136).
+- Evidence cutoff (UTC): 2026-09-17 12:17 (local verification of the working tree committed unchanged as `a4175f1`; final-head CI has not finished).
+- Tested code revision: the working tree committed unchanged as `a4175f1dabadb99abac1f3c219aaa5f378583bd1` on top of `origin/main` `f777f65` (PR #135). The verifier's `result.json` files record revision `e00bf87` plus uncommitted changes because the tree was built on the branch that became `f777f65`; the application content is identical. This PR-link update is a documentation-only commit on top of that head.
 - Environment: Linux container, Python 3.13.12 in the checkout-owned `.venv` (`requirements-ci.lock`); Node v22.22.2; Playwright 1.62.0 with the bundled Chromium `chromium-1194` through the shared Chrome-first launch helper. The container has neither the Chrome channel nor the `chromium_headless_shell-1234` build Playwright's default launch expects, so tests that launch a browser without that helper fail here and rest on CI.
 - Overall finding: local synthetic checks PASS for the change. New suites 36 passed, 0 failed; companions 195 passed, 1 skipped, 18 browser-launch failures (environment) in one run and 104 passed, 9 failures (8 browser-launch, 1 fixture omission fixed and retested) in the other; the Node model test and syntax checks pass. Final-head CI is pending. No live, work-PC or portal check was requested or performed.
 
