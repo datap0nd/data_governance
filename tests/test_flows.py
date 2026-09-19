@@ -3507,6 +3507,7 @@ def test_windows_worker_launcher_uses_direct_script_for_embedded_python():
 
 def test_setup_installs_headless_flow_worker_service():
     source = Path(__file__).parents[1].joinpath("setup.ps1").read_text()
+    health_source = Path(__file__).parents[1].joinpath("tools", "setup_flow_worker_health.ps1").read_text()
     assert '$FlowServiceName = "MXFlowsWorker"' in source
     assert "install $FlowServiceName $PyExe" in source
     assert "start $FlowServiceName" in source
@@ -3514,8 +3515,12 @@ def test_setup_installs_headless_flow_worker_service():
     assert "--name BI-desktop-headless" in source
     assert "flow_worker_error.log" in source
     assert "$WorkerStartedAt = Get-Date" in source
-    assert "$WorkerStartedAt.AddSeconds(-5)" in source
-    assert '/api/flows/workers' in source
+    assert 'setup_flow_worker_health.ps1' in source
+    assert "Get-MetronomeSetupFlowWorkers" in source
+    assert "Test-MetronomeSetupWorkerFresh" in source
+    assert "[datetime]$_.last_seen_at" not in source
+    assert "AddSeconds(-5)" in health_source
+    assert '/api/flows/workers' in health_source
     assert "Flows worker registered with Metronome." in source
 
 
