@@ -494,6 +494,40 @@ $AuditorHostConfig = Join-Path $AuditorRoot 'host\host.json'
 $AuditorReaderConfig = Join-Path $AuditorRoot 'reader\reader.json'
 $AuditorExchange = Join-Path $AuditorRoot 'exchange'
 $AuditorIdentity = "NT SERVICE\$AuditorServiceName"
+$AuditorSystemPrincipal = '*S-1-5-18'
+$AuditorAdministratorsPrincipal = '*S-1-5-32-544'
+$AuditorInstallerSid = ([Security.Principal.WindowsIdentity]::GetCurrent()).User.Value
+$AuditorInstallerPrincipal = "*$AuditorInstallerSid"
+
+# A previous setup protects these managed directories from the restricted
+# reader. Repair their inherited and file-specific ACLs before reading the
+# existing secrets so every later setup remains idempotent. The reader service
+# was stopped above; only SYSTEM, Administrators, and this elevated installer
+# receive access during the short provisioning window. If provisioning fails,
+# the reader remains stopped and does not gain access to the host credential.
+$AuditorProvisioningPaths = @(
+    (Join-Path $AuditorRoot 'host'),
+    (Join-Path $AuditorRoot 'reader'),
+    $AuditorExchange
+)
+foreach ($AuditorProvisioningPath in $AuditorProvisioningPaths) {
+    New-Item -ItemType Directory -Path $AuditorProvisioningPath -Force | Out-Null
+    & icacls.exe $AuditorProvisioningPath /reset /T /C /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not repair managed auditor permissions at $AuditorProvisioningPath."
+    }
+    & icacls.exe $AuditorProvisioningPath /inheritance:r /T /C /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not disable inherited access to managed auditor files at $AuditorProvisioningPath."
+    }
+    & icacls.exe $AuditorProvisioningPath /grant:r `
+        "${AuditorSystemPrincipal}:(OI)(CI)F" `
+        "${AuditorAdministratorsPrincipal}:(OI)(CI)F" `
+        "${AuditorInstallerPrincipal}:(OI)(CI)F" /T /C /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not grant setup access to managed auditor files at $AuditorProvisioningPath."
+    }
+}
 & $PyExe "$CodeDir\tools\provision_auditor.py" --root $AuditorRoot --reader-url "http://127.0.0.1:$AuditorPort" | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Could not provision the managed auditor configuration.' }
 if (-not (Test-Path $DbPath -PathType Leaf)) {
@@ -510,16 +544,27 @@ if (-not $ExistingAuditorService) {
 # Lock the reader out of the app database and host credential, while granting
 # read/execute only to code, its own config, the exchange, and the dedicated
 # Flow output root. The reader still validates exact registered file identities.
-& icacls.exe (Join-Path $AuditorRoot 'host') /inheritance:r /grant:r `
-    'SYSTEM:(OI)(CI)F' 'BUILTIN\Administrators:(OI)(CI)F' "$env:USERDOMAIN\$env:USERNAME`:(OI)(CI)F" `
-    /deny "${AuditorIdentity}:(OI)(CI)F" /T /Q | Out-Null
+$AuditorHostDirectory = Join-Path $AuditorRoot 'host'
+$AuditorReaderDirectory = Join-Path $AuditorRoot 'reader'
+& icacls.exe $AuditorHostDirectory /inheritance:r /T /C /Q | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Could not remove inherited access from the auditor host credential.' }
+& icacls.exe $AuditorHostDirectory /grant:r `
+    "${AuditorSystemPrincipal}:(OI)(CI)F" "${AuditorAdministratorsPrincipal}:(OI)(CI)F" "${AuditorInstallerPrincipal}:(OI)(CI)F" /T /C /Q | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Could not protect the auditor host credential.' }
-& icacls.exe (Join-Path $AuditorRoot 'reader') /inheritance:r /grant:r `
-    'SYSTEM:(OI)(CI)F' 'BUILTIN\Administrators:(OI)(CI)F' "${AuditorIdentity}:(OI)(CI)RX" /T /Q | Out-Null
+& icacls.exe $AuditorHostDirectory /deny "${AuditorIdentity}:(OI)(CI)F" /T /C /Q | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Could not deny reader access to the auditor host credential.' }
+& icacls.exe $AuditorReaderDirectory /inheritance:r /T /C /Q | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Could not remove inherited access from the auditor reader configuration.' }
+& icacls.exe $AuditorReaderDirectory /grant:r `
+    "${AuditorSystemPrincipal}:(OI)(CI)F" "${AuditorAdministratorsPrincipal}:(OI)(CI)F" "${AuditorIdentity}:(OI)(CI)RX" /T /C /Q | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Could not protect the auditor reader configuration.' }
-& icacls.exe $AuditorExchange /inheritance:r /grant:r `
-    'SYSTEM:(OI)(CI)F' 'BUILTIN\Administrators:(OI)(CI)F' "$env:USERDOMAIN\$env:USERNAME`:(OI)(CI)M" `
-    "${AuditorIdentity}:(OI)(CI)RX" /T /Q | Out-Null
+& icacls.exe $AuditorReaderDirectory /remove:g $AuditorInstallerPrincipal /T /C /Q | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Could not remove temporary setup access from the auditor reader configuration.' }
+& icacls.exe $AuditorExchange /inheritance:r /T /C /Q | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Could not remove inherited access from the auditor exchange.' }
+& icacls.exe $AuditorExchange /grant:r `
+    "${AuditorSystemPrincipal}:(OI)(CI)F" "${AuditorAdministratorsPrincipal}:(OI)(CI)F" "${AuditorInstallerPrincipal}:(OI)(CI)M" `
+    "${AuditorIdentity}:(OI)(CI)RX" /T /C /Q | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Could not protect the auditor exchange.' }
 & icacls.exe $CodeDir /grant "${AuditorIdentity}:(OI)(CI)RX" /Q | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Could not grant the auditor reader access to its runtime.' }

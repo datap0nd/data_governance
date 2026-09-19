@@ -8,6 +8,7 @@ templates and the result vocabulary.
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-09-19: managed auditor ACL recovery | [Test plan](releases/2026-09-19-auditor-acl-recovery/test-plan.md) | [Test report](releases/2026-09-19-auditor-acl-recovery/test-report.md) |
 | 2026-09-19: monthly range controls in recorded Flows | [Test plan](releases/2026-09-19-month-range-controls/test-plan.md) | [Test report](releases/2026-09-19-month-range-controls/test-report.md) |
 | 2026-09-17: date range controls in recorded Flows | [Test plan](releases/2026-09-17-date-range-controls/test-plan.md) | [Test report](releases/2026-09-17-date-range-controls/test-report.md) |
 | 2026-09-17: Duplicate step in the recording editor | [Test plan](releases/2026-09-17-duplicate-recording-step/test-plan.md) | [Test report](releases/2026-09-17-duplicate-recording-step/test-report.md) |

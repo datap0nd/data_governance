@@ -15,6 +15,7 @@ from tools.provision_auditor import provision
 from test_data_auditor import tmp_path  # Stable non-symlink Windows fixture.
 
 ROOT = Path(__file__).resolve().parents[1]
+windows_only = pytest.mark.skipif(os.name != "nt", reason="Windows ACL contract")
 
 
 def test_provision_preserves_generated_secrets_and_separates_host_reader(tmp_path):
@@ -31,6 +32,80 @@ def test_provision_preserves_generated_secrets_and_separates_host_reader(tmp_pat
     host = json.loads(host_path.read_text(encoding="utf-8"))
     reader = json.loads(reader_path.read_text(encoding="utf-8"))
     assert (host["reader_token"], reader["category_key"], reader["reader_dsn"]) == original
+
+
+def test_provision_recovers_from_unreadable_host_using_reader_secret(tmp_path, monkeypatch):
+    root = tmp_path / "auditor"
+    host_path, reader_path = provision(root, "http://127.0.0.1:8766")
+    original_host = json.loads(host_path.read_text(encoding="utf-8"))
+    original_reader = json.loads(reader_path.read_text(encoding="utf-8"))
+    real_read_text = Path.read_text
+
+    def read_with_stale_acl(path, *args, **kwargs):
+        if path == host_path:
+            raise PermissionError(13, "synthetic stale ACL", str(path))
+        return real_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_with_stale_acl)
+    provision(root, "http://127.0.0.1:8766")
+    monkeypatch.setattr(Path, "read_text", real_read_text)
+
+    repaired_host = json.loads(host_path.read_text(encoding="utf-8"))
+    repaired_reader = json.loads(reader_path.read_text(encoding="utf-8"))
+    assert repaired_host["reader_token"] == original_host["reader_token"]
+    assert repaired_reader["reader_token"] == original_reader["reader_token"]
+    assert repaired_reader["category_key"] == original_reader["category_key"]
+
+
+@windows_only
+def test_setup_acl_repair_pattern_restores_managed_config_access(tmp_path):
+    root = tmp_path / "auditor"
+    host_path, reader_path = provision(root, "http://127.0.0.1:8766")
+    expected = json.loads(reader_path.read_text(encoding="utf-8"))
+    everyone = "*S-1-1-0"
+    denied = subprocess.run(
+        ["icacls.exe", str(host_path), "/deny", f"{everyone}:W", "/Q"],
+        text=True, capture_output=True, check=False,
+    )
+    assert denied.returncode == 0, denied.stderr
+    with pytest.raises(PermissionError):
+        host_path.read_text(encoding="utf-8")
+
+    current_sid = subprocess.check_output(
+        ["powershell.exe", "-NoProfile", "-Command",
+         "([Security.Principal.WindowsIdentity]::GetCurrent()).User.Value"],
+        text=True,
+    ).strip()
+    for managed in (root / "host", root / "reader", root / "exchange"):
+        reset = subprocess.run(
+            ["icacls.exe", str(managed), "/reset", "/T", "/C", "/Q"],
+            text=True, capture_output=True, check=False,
+        )
+        assert reset.returncode == 0, reset.stderr
+        inheritance = subprocess.run(
+            ["icacls.exe", str(managed), "/inheritance:r", "/T", "/C", "/Q"],
+            text=True, capture_output=True, check=False,
+        )
+        assert inheritance.returncode == 0, inheritance.stderr
+        grant = subprocess.run(
+            ["icacls.exe", str(managed), "/grant:r",
+             "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F",
+             f"*{current_sid}:(OI)(CI)F", "/T", "/C", "/Q"],
+            text=True, capture_output=True, check=False,
+        )
+        assert grant.returncode == 0, grant.stderr
+
+    try:
+        repaired_host = json.loads(host_path.read_text(encoding="utf-8"))
+    except PermissionError:
+        acl = subprocess.run(["icacls.exe", str(host_path)], text=True,
+                             capture_output=True, check=False)
+        pytest.fail(f"host config remained unreadable after repair:\n{acl.stdout}\n{acl.stderr}")
+    assert repaired_host["reader_token"] == expected["reader_token"]
+    assert json.loads(reader_path.read_text(encoding="utf-8"))["category_key"] == expected["category_key"]
+    provision(root, "http://127.0.0.1:8766")
+    assert json.loads(host_path.read_text(encoding="utf-8"))["reader_token"] == expected["reader_token"]
+    assert json.loads(reader_path.read_text(encoding="utf-8"))["category_key"] == expected["category_key"]
 
 
 def test_provision_cli_reuses_probe_identity_but_never_uploader_credentials(tmp_path):
@@ -68,6 +143,12 @@ def test_setup_installs_loopback_virtual_reader_and_denies_app_database():
     assert "icacls.exe $AuditorDeniedDatabaseFile /deny" in source
     assert "DG_AUDITOR_READER_CONFIG=$AuditorReaderConfig" in source
     assert "DG_AUDITOR_HOST_CONFIG=$AuditorHostConfig" in source
+    assert "'*S-1-5-18'" in source
+    assert "'*S-1-5-32-544'" in source
+    assert "/reset /T /C /Q" in source
+    assert "/inheritance:r /grant:r" not in source
+    assert "/remove:g $AuditorInstallerPrincipal" in source
+    assert source.index("$AuditorProvisioningPaths") < source.index("provision_auditor.py")
     assert "DG_UPLOAD_PGUSER" not in (ROOT / "tools/provision_auditor.py").read_text(encoding="utf-8")
 
 
