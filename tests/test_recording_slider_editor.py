@@ -47,6 +47,7 @@ def test_advanced_setting_converts_one_recorded_handle_click_to_a_date_range_con
             assert page.get_by_label("End parameter name").input_value() == "end"
             assert page.get_by_label("Weeks to add to the end").input_value() == "0"
             assert page.get_by_label("Week starts on").input_value() == "sunday"
+            assert page.get_by_label("Element box").input_value() == "0"
 
             page.get_by_label("Start behavior").select_option("fixed")
             start_week = page.get_by_label("Start week")
@@ -77,34 +78,39 @@ def test_advanced_setting_converts_one_recorded_handle_click_to_a_date_range_con
             assert page.get_by_label("This is a range step", exact=True).is_enabled()
             page.get_by_label("This is a date range control", exact=True).check()
             assert page.get_by_label("Start behavior").input_value() == "portal_default"
-            page.get_by_label("Start behavior").select_option("fixed")
-            page.get_by_label("Start week").fill("2026-W01")
-            page.get_by_label("Start week").press("Tab")
-            page.get_by_label("Weeks to add to the end").fill("-1")
-            page.get_by_label("Weeks to add to the end").press("Tab")
+            assert page.get_by_label("Element box").input_value() == "0"
+            page.get_by_label("Control values").select_option("month")
+            assert page.get_by_role("button", name="Set month range", exact=True).is_visible()
+            assert page.get_by_text("Month range", exact=True).is_visible()
+            assert page.get_by_label("Start behavior").input_value() == "oldest_selectable"
+            assert page.get_by_label("End behavior").input_value() == "latest_selectable"
+            assert page.get_by_label("Months to add to the start").input_value() == "0"
+            assert page.get_by_label("Months to add to the end").input_value() == "0"
+            assert page.get_by_label("Start format").input_value() == "%Y%m"
+            assert page.get_by_label("Week starts on").count() == 0
             page.get_by_role("button", name="Save draft", exact=True).click()
             page.get_by_text("Draft saved", exact=True).wait_for()
             definition = page.evaluate("()=>sliderPreview.data.revisions[0].definition")
             validate_definition(definition)
-            assert definition["version"] == 4
+            assert definition["version"] == 5
             assert [step["action"] for step in definition["steps"]] == ["goto", "set_range", "download"]
             contract = definition["steps"][1]["range"]
-            assert contract["kind"] == "week"
-            assert contract["week_days"] == "sunday"
-            assert contract["container_ancestor_levels"] == 1
+            assert contract["kind"] == "month"
+            assert "week_days" not in contract
+            assert contract["container_ancestor_levels"] == 0
             assert contract["source_step"]["action"] == "click"
             assert definition["parameters"]["start"] == {
-                "step_id": "week-handle", "role": "start", "unit": "week", "mode": "fixed",
-                "value": "2026-W01", "format": "%G-W%V"}
+                "step_id": "week-handle", "role": "start", "unit": "month", "mode": "calculated",
+                "expression": "oldest_selectable", "offset_months": 0, "format": "%Y%m"}
             assert definition["parameters"]["end"] == {
-                "step_id": "week-handle", "role": "end", "unit": "week", "mode": "calculated",
-                "expression": "latest_selectable", "offset_weeks": -1, "format": "%G-W%V"}
+                "step_id": "week-handle", "role": "end", "unit": "month", "mode": "calculated",
+                "expression": "latest_selectable", "offset_months": 0, "format": "%Y%m"}
 
             page.get_by_role("button", name="Open asap.example.test", exact=True).click()
             assert page.get_by_label("This is a date range control", exact=True).is_disabled()
             assert page.get_by_text("A date range control needs an element target.", exact=True).is_visible()
 
-            page.get_by_role("button", name="Set week range", exact=True).click()
+            page.get_by_role("button", name="Set month range", exact=True).click()
             page.set_viewport_size({"width": 390, "height": 844})
             assert page.evaluate("()=>document.documentElement.scrollWidth<=innerWidth")
             browser.close()

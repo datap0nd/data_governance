@@ -8303,6 +8303,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
         registration['capabilities']['recorded_flows_v2'] = True
         registration['capabilities']['recorded_flows_v3'] = True
         registration['capabilities']['recorded_flows_v4'] = True
+        registration['capabilities']['recorded_flows_v5'] = True
         registration['capabilities']['gscm_bookmark_targets_v1'] = True
         registration['capabilities']['recorded_validation_engine_v1'] = True
         # Older workers lack this key and are never given a job whose frozen

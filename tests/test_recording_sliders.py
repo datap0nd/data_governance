@@ -1,9 +1,12 @@
 """Date range controls: recorded ``set_range`` steps driven by week parameters."""
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -38,6 +41,13 @@ def _parameters(start=None, end=None):
             "end": {"step_id": "week-range", "role": "end", "unit": "week", "format": "%G-W%V", **end}}
 
 
+def _month_parameters(start=None, end=None):
+    start = start or {"mode": "calculated", "expression": "oldest_selectable", "offset_months": 0}
+    end = end or {"mode": "calculated", "expression": "latest_selectable", "offset_months": 0}
+    return {"start": {"step_id": "week-range", "role": "start", "unit": "month", "format": "%Y%m", **start},
+            "end": {"step_id": "week-range", "role": "end", "unit": "month", "format": "%Y%m", **end}}
+
+
 def _definition(step=None, parameters=None, version=4):
     return {"version": version, "timezone": "Asia/Dubai",
             "parameters": _parameters() if parameters is None else parameters,
@@ -48,28 +58,35 @@ def _definition(step=None, parameters=None, version=4):
                        "output": {"format": "xlsx"}}]}
 
 
+def _isolate_flow_root(flow_db):
+    from app import database
+    root = Path(os.environ["DG_FLOWS_ROOT"]) / (
+        "recording-slider-" + hashlib.sha256(str(flow_db).encode()).hexdigest()[:12])
+    with database.get_db() as db:
+        db.execute("INSERT OR REPLACE INTO app_settings(key,value) VALUES ('flows_root',?)", (str(root),))
+
+
 # --- contract -----------------------------------------------------------------
 
 def test_definition_with_date_range_control_validates_at_version_four():
     assert flow_recording.validate_definition(_definition())["version"] == 4
     with pytest.raises(ValueError, match="version 4"):
         flow_recording.validate_definition(_definition(version=3))
-    assert flow_recording.VERSION == 4
+    assert flow_recording.VERSION == 5
     assert flow_recording.import_codegen(__import__("test_flow_recordings").CODEGEN)["version"] == 4
 
 
 @pytest.mark.parametrize(("mutate", "message"), [
     (lambda d: d["parameters"].pop("end"), "exactly one start and one end"),
     (lambda d: d["parameters"]["start"].update(role="end"), "exactly one start and one end"),
-    (lambda d: d["parameters"]["start"].update(unit="day", format="%Y-%m-%d"), "needs week parameters"),
+    (lambda d: d["parameters"]["start"].update(unit="day", format="%Y-%m-%d"), "matching week or month parameters"),
     (lambda d: d["parameters"]["end"].update(expression="latest_week"), "Unsupported week calculation"),
     (lambda d: d["parameters"]["end"].update(offset_weeks=521), "within ten years"),
     (lambda d: d["parameters"]["end"].update(offset_weeks="2"), "within ten years"),
     (lambda d: d["parameters"]["start"].update(mode="fixed", value="2025-W53"), "does not exist"),
     (lambda d: d["parameters"]["start"].update(mode="fixed", value="202601"), "YYYY-Www"),
     (lambda d: d["parameters"]["start"].update(format="%Y-%m-%d"), "Unsupported week format"),
-    (lambda d: d["parameters"]["start"].update(unit="month"), "Unsupported date parameter unit"),
-    (lambda d: d["steps"][1]["range"].update(kind="month"), "week numbers or dates"),
+    (lambda d: d["steps"][1]["range"].update(kind="quarter"), "weeks, dates or months"),
     (lambda d: d["steps"][1]["range"].update(week_days="friday"), "Sunday or Monday"),
     (lambda d: d["steps"][1]["range"].update(container_ancestor_levels=7), "1–6 parent levels"),
     (lambda d: d["steps"][1].update(locator=[]), "element box"),
@@ -92,11 +109,36 @@ def test_day_parameters_keep_their_existing_rules():
         flow_recording.validate_definition(value)
 
 
+def test_month_range_contract_requires_version_five_and_month_parameters():
+    definition = _definition(
+        step=_slider_step(kind="month", levels=0), parameters=_month_parameters(), version=5)
+    assert flow_recording.validate_definition(definition)["version"] == 5
+    assert flow_recording.resolve_parameters(definition) == {"start": None, "end": None}
+    with pytest.raises(ValueError, match="version 5"):
+        flow_recording.validate_definition({**definition, "version": 4})
+    wrong = _definition(step=_slider_step(kind="month", levels=0), version=5)
+    with pytest.raises(ValueError, match="needs month parameters"):
+        flow_recording.validate_definition(wrong)
+    fixed = _definition(step=_slider_step(kind="month", levels=0), parameters=_month_parameters(
+        start={"mode": "fixed", "value": "202601"},
+        end={"mode": "fixed", "value": "202612"}), version=5)
+    assert flow_recording.resolve_parameters(fixed) == {"start": "202601", "end": "202612"}
+    fixed["parameters"]["end"]["value"] = "202613"
+    with pytest.raises(ValueError, match="YYYYMM"):
+        flow_recording.validate_definition(fixed)
+
+
+def test_month_ordinals_cross_year_boundaries_one_month_at_a_time():
+    assert flow_range_slider.slider_ordinal("202701", "month") - flow_range_slider.slider_ordinal("202612", "month") == 1
+    assert flow_recording.add_months(date(2026, 12, 1), 1) == date(2027, 1, 1)
+
+
 def test_revision_save_promotes_date_range_definition_to_version_four(flow_db):
     from app import database
     from app.routers import flow_recordings as routes
     from test_flow_recordings import draft_job
 
+    _isolate_flow_root(flow_db)
     saved, _job = draft_job()
     submitted = {**_definition(version=2)}
     revision_id = routes.save_revision(saved["id"], routes.RevisionWrite(definition=submitted))["revision_id"]
@@ -112,7 +154,9 @@ def test_v3_worker_cannot_claim_version_four_work(flow_db):
     from app.routers import flows
     from test_flow_recordings import draft_job
 
+    _isolate_flow_root(flow_db)
     saved, job = draft_job()
+    job["recording"]["definition"] = _definition(version=4)
     assert job["recording"]["definition"]["version"] == 4
     with database.get_db() as db:
         db.execute("INSERT INTO flow_runs(flow_id,trigger_type,status,job_json,created_at) VALUES (?,'manual','queued',?,'2026-09-17')",
@@ -122,6 +166,28 @@ def test_v3_worker_cannot_claim_version_four_work(flow_db):
     flows.register_worker(flows.WorkerRegister(worker_id="worker", display_name="Worker", capabilities=capabilities))
     assert flows.claim_run("worker").get("run") is None
     capabilities["recorded_flows_v4"] = True
+    flows.register_worker(flows.WorkerRegister(worker_id="worker", display_name="Worker", capabilities=capabilities))
+    assert flows.claim_run("worker").get("run") is not None
+
+
+def test_v4_worker_cannot_claim_month_range_work(flow_db):
+    from app import database
+    from app.routers import flows
+    from test_flow_recordings import draft_job
+
+    _isolate_flow_root(flow_db)
+    saved, job = draft_job()
+    job["recording"]["definition"] = _definition(
+        step=_slider_step(kind="month", levels=0), parameters=_month_parameters(), version=5)
+    with database.get_db() as db:
+        db.execute("INSERT INTO flow_runs(flow_id,trigger_type,status,job_json,created_at) VALUES (?,'manual','queued',?,'2026-09-19')",
+                   (saved["id"], json.dumps(job)))
+    capabilities = {"headed": True, "recorded_flows_v1": True, "recorded_flows_v2": True,
+                    "recorded_flows_v3": True, "recorded_flows_v4": True,
+                    "browser_switch_v1": True, "shared_flow_artifacts": True}
+    flows.register_worker(flows.WorkerRegister(worker_id="worker", display_name="Worker", capabilities=capabilities))
+    assert flows.claim_run("worker").get("run") is None
+    capabilities["recorded_flows_v5"] = True
     flows.register_worker(flows.WorkerRegister(worker_id="worker", display_name="Worker", capabilities=capabilities))
     assert flows.claim_run("worker").get("run") is not None
 
@@ -234,10 +300,52 @@ def _slider_page(values, current, *, handles=2, delay_ms=0, declared_max=None):
 
 
 WEEKS = flow_range_slider.week_options("202501", "202633")
+MONTHS = [f"2026{month:02d}" for month in range(1, 10)]
 
 
 def _handles(page):
     return page.locator("[role=slider]").evaluate_all("nodes => nodes.map(n => n.getAttribute('aria-valuetext'))")
+
+
+def test_month_range_expands_fully_and_auto_detects_the_two_handle_container():
+    definition = _definition(
+        step=_slider_step(kind="month", levels=0), parameters=_month_parameters(), version=5)
+    # Model a noUi slider: the recording lands on the touch area inside one
+    # handle, while the smallest shared ancestor containing both handles is
+    # several levels above it.
+    markup = _slider_page(MONTHS, ["202608", "202609"]).replace(
+        '<div id="week-prompt"><span>Week:</span>',
+        '<div id="week-prompt"><span>Month:</span><div class="recorded"><span class="touch" '
+        'style="display:inline-block;width:8px;height:8px"></span></div>')
+    updates = []
+    with _page(markup) as page:
+        # Put the recorded touch target into the first handle before playback.
+        page.locator("[role=slider]").first.evaluate(
+            "(handle)=>handle.append(document.querySelector('.recorded'))")
+        result = _set_slider_range(
+            page.locator(".touch"), definition["steps"][1], definition,
+            flow_recording.resolve_parameters(definition),
+            lambda message, detail: updates.append((message, detail)),
+        )
+        assert _handles(page) == ["202601", "202609"]
+    assert result["control_values"] == ["202601", "202609"]
+    assert result["actual"] == {"start": "202601", "end": "202609"}
+    assert result["oldest_selectable"] == "202601"
+    assert result["latest_selectable"] == "202609"
+    assert result["container_ancestor_levels"] >= 2
+    phases = [detail["phase"] for _, detail in updates]
+    assert phases[:4] == ["range_container", "range_read", "range_oldest", "range_latest"]
+
+
+def test_auto_detection_fails_closed_without_one_two_handle_ancestor():
+    definition = _definition(
+        step=_slider_step(kind="month", levels=0), parameters=_month_parameters(), version=5)
+    with _page(_slider_page(MONTHS, ["202608"], handles=1)) as page, \
+            pytest.raises(RuntimeError, match="Could not find one range control"):
+        _set_slider_range(
+            page.locator("[role=slider]"), definition["steps"][1], definition,
+            flow_recording.resolve_parameters(definition), lambda *_args: None,
+        )
 
 
 def test_fixed_start_and_newest_selectable_end_move_and_verify_the_handles():

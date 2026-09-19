@@ -18,7 +18,7 @@ window.RecordedFlowModel = (() => {
     const WEEK_ISO=/^(20\d{2})-W(0[1-9]|[1-4]\d|5[0-3])$/,WEEK_COMPACT=/^(20\d{2})(0[1-9]|[1-4]\d|5[0-3])$/;
     const weekText=(value,fmt)=>{const text=String(value||'').trim(),match=text.match(WEEK_ISO)||text.match(WEEK_COMPACT);if(!match)return text;return fmt==='%G%V'?`${match[1]}${match[2]}`:`${match[1]}-W${match[2]}`;};
     const validWeek=(value,fmt)=>(fmt==='%G%V'?WEEK_COMPACT:WEEK_ISO).test(String(value||'').trim());
-    const requiredVersion=definition=>{const steps=all(definition.steps||[]),parameters=Object.values(definition.parameters||{});if(steps.some(s=>s.action==='set_range')||parameters.some(p=>p&&p.unit==='week'))return 4;if(steps.some(s=>s.action==='select_range'))return 3;return Math.max(2,Number(definition.version)||1);};
+    const requiredVersion=definition=>{const steps=all(definition.steps||[]),parameters=Object.values(definition.parameters||{});if(steps.some(s=>s.action==='set_range'&&(s.range?.kind==='month'||s.range?.container_ancestor_levels===0))||parameters.some(p=>p&&p.unit==='month'))return 5;if(steps.some(s=>s.action==='set_range')||parameters.some(p=>p&&p.unit==='week'))return 4;if(steps.some(s=>s.action==='select_range'))return 3;return Math.max(2,Number(definition.version)||1);};
     const isoWeek = value => {
         const text=String(value??'');
         const match=text.match(/(?:^|\D)(20\d{2})\s*[-/ ]?\s*[Ww]?\s*(0?[1-9]|[1-4]\d|5[0-3])(?:\D|$)/);
@@ -48,7 +48,7 @@ window.RecordedFlowModel = (() => {
         if (action.action === 'assert' && typeof action.args?.[0] === 'string') return `Check “${action.args[0]}”`;
         if (action.action === 'wait') return `Wait ${action.seconds} seconds`;
         if (action.action === 'select_range') return `Select week range from ${action.range?.start || 'recorded start'}`;
-        if (action.action === 'set_range') return `Set ${action.range?.kind === 'date' ? 'date' : 'week'} range`;
+        if (action.action === 'set_range') return `Set ${action.range?.kind === 'date' ? 'date' : action.range?.kind === 'month' ? 'month' : 'week'} range`;
         if (action.action === 'goto') { try { return `Open ${new URL(action.args[0]).hostname}`; } catch { return 'Open report page'; } }
         const verbs = {new_page:'Open browser page',click:'Click',dblclick:'Double click',fill:'Enter value in',press:'Press key in',select_option:'Select value in',check:'Check',uncheck:'Uncheck',set_checked:'Set checkbox',hover:'Hover over',clear:'Clear',press_sequentially:'Type in',assert:'Check',popup:'Open popup',download:'Download files',close:'Close page'};
         const text = name(action);
@@ -149,6 +149,7 @@ window.RecordedFlowModel = (() => {
         return {first:index,last:index,steps:[step],weeks:start?[start]:[],start,anchor:action};
     }
     function rangeLocator(anchor,levels) {
+        if(levels===0)return clone(anchor);
         const prefix=anchor.slice(0,-1);
         const usablePrefix=prefix.length&&prefix[prefix.length-1].method!=='frame_locator';
         const locator=clone(usablePrefix?prefix:anchor);
@@ -175,7 +176,8 @@ window.RecordedFlowModel = (() => {
         return validatePages(next);
     }
     function setRangeAncestor(step,levels) {
-        if(!['select_range','set_range'].includes(step.action)||!Number.isInteger(levels)||levels<1||levels>6)throw Error('Choose 1–6 parent levels for the element box.');
+        const minimum=step.action==='set_range'?0:1;
+        if(!['select_range','set_range'].includes(step.action)||!Number.isInteger(levels)||levels<minimum||levels>6)throw Error('Choose automatic detection or 1–6 parent levels for the element box.');
         step.range.container_ancestor_levels=levels;
         step.locator=rangeLocator(step.range.anchor_locator,levels);
         return step;
@@ -212,7 +214,7 @@ window.RecordedFlowModel = (() => {
         for (const [name,parameter] of Object.entries(definition.parameters||{})) if (parameter.step_id===id&&['start','end'].includes(parameter.role)) result[parameter.role]={name,parameter};
         return result;
     }
-    function makeSlider(definition,id,levels=1) {
+    function makeSlider(definition,id,levels=0) {
         const candidate=sliderCandidate(definition,id);
         if(!candidate)throw Error('This step needs a recorded element target before it can become a date range control.');
         const next=clone(definition),source=clone(candidate.anchor),anchor=clone(source.locator||[]);
@@ -224,7 +226,32 @@ window.RecordedFlowModel = (() => {
         const start=freshName(next.parameters,'start'),end=freshName(next.parameters,'end');
         next.parameters[start]={step_id:source.id,role:'start',unit:'week',mode:'portal_default',format:'%G-W%V'};
         next.parameters[end]={step_id:source.id,role:'end',unit:'week',mode:'calculated',expression:'latest_selectable',offset_weeks:0,format:'%G-W%V'};
-        next.version=4;
+        next.version=requiredVersion(next);
+        return validatePages(next);
+    }
+    function setSliderKind(definition,id,kind) {
+        if(!['week','date','month'].includes(kind))throw Error('Choose week numbers, dates or months.');
+        const next=clone(definition),step=all(next.steps).find(item=>item.id===id);
+        if(!step||step.action!=='set_range')throw Error('This step is not a date range control.');
+        const previous=step.range.kind;
+        step.range.kind=kind;
+        if(kind==='month')delete step.range.week_days;else step.range.week_days=step.range.week_days||'sunday';
+        if((kind==='month')!==(previous==='month')){
+            const parameters=rangeParameters(next,id);
+            for(const role of ['start','end']){
+                const parameter=parameters[role]?.parameter;
+                if(!parameter)continue;
+                delete parameter.value;delete parameter.expression;delete parameter.offset_weeks;delete parameter.offset_months;
+                if(kind==='month'){
+                    Object.assign(parameter,{unit:'month',mode:'calculated',
+                        expression:role==='start'?'oldest_selectable':'latest_selectable',offset_months:0,format:'%Y%m'});
+                }else{
+                    Object.assign(parameter,{unit:'week',mode:role==='start'?'portal_default':'calculated',format:'%G-W%V'});
+                    if(role==='end')Object.assign(parameter,{expression:'latest_selectable',offset_weeks:0});
+                }
+            }
+        }
+        next.version=requiredVersion(next);
         return validatePages(next);
     }
     function restoreSlider(definition,id) {
@@ -235,5 +262,5 @@ window.RecordedFlowModel = (() => {
         return validatePages(next);
     }
     return {all,clone,target,frame,name,editableTarget,renameTarget,describe,triggering,canDelay,validatePages,move,remove,canDuplicate,duplicate,owner,rangeCandidate,makeRange,restoreRange,setRangeAncestor,
-        weekText,validWeek,requiredVersion,renameParameter,sliderCandidate,rangeParameters,makeSlider,restoreSlider};
+        weekText,validWeek,requiredVersion,renameParameter,sliderCandidate,rangeParameters,makeSlider,setSliderKind,restoreSlider};
 })();
