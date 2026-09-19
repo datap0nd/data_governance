@@ -183,6 +183,82 @@ def walk_steps(steps, _depth=0):
         yield from walk_steps(step.get('steps', []), _depth + 1)
 
 
+def _recorded_text(step):
+    """Human-facing text captured in one action's locator."""
+    values = []
+    for part in step.get('locator', []):
+        values.extend(value for value in part.get('args', []) if isinstance(value, str))
+        values.extend(value for value in part.get('kwargs', {}).values() if isinstance(value, str))
+    return ' '.join(values)
+
+
+def _nearest_recorded_period(steps, index):
+    """Return the closest unambiguous month/week wording before a step."""
+    for prior in reversed(steps[max(0, index - 12):index]):
+        text = _recorded_text(prior)
+        month = bool(re.search(r'\b(?:month|monthly)\b', text, re.I))
+        week = bool(re.search(r'\b(?:week|weekly)\b', text, re.I))
+        if month != week:
+            return 'month' if month else 'week'
+    return None
+
+
+def _is_no_ui_touch_click(step):
+    if step.get('action') not in {'click', 'dblclick'}:
+        return False
+    for part in step.get('locator', []):
+        if part.get('method') != 'locator':
+            continue
+        for value in part.get('args', []):
+            if isinstance(value, str) and re.search(r'(?<![\w-])noUi-touch-area(?![\w-])', value, re.I):
+                return True
+    return False
+
+
+def _promote_recorded_month_slider(definition):
+    """Recognize the one clear noUi month handle emitted by Playwright codegen.
+
+    Multiple handles/clicks or missing period wording are intentionally left for
+    the editor: import must not guess which of several sliders owns a report.
+    """
+    steps = list(walk_steps(definition.get('steps', [])))
+    candidates = [(index, step) for index, step in enumerate(steps)
+                  if _is_no_ui_touch_click(step)]
+    if len(candidates) != 1 or _nearest_recorded_period(steps, candidates[0][0]) != 'month':
+        return definition
+    _, source = candidates[0]
+    anchor = copy.deepcopy(source['locator'])
+    replacement = {
+        'id': source['id'], 'action': 'set_range', 'page': source['page'],
+        'locator': copy.deepcopy(anchor),
+        'range': {'kind': 'month', 'anchor_locator': anchor,
+                  'container_ancestor_levels': 0, 'source_step': copy.deepcopy(source)},
+    }
+
+    def replace(items):
+        for position, step in enumerate(items):
+            if step is source:
+                items[position] = replacement
+                return True
+            if replace(step.get('steps', [])):
+                return True
+        return False
+
+    replace(definition['steps'])
+    definition['parameters']['start'] = {
+        'step_id': source['id'], 'role': 'start', 'unit': 'month',
+        'mode': 'calculated', 'expression': 'oldest_selectable',
+        'offset_months': 0, 'format': '%Y%m',
+    }
+    definition['parameters']['end'] = {
+        'step_id': source['id'], 'role': 'end', 'unit': 'month',
+        'mode': 'calculated', 'expression': 'latest_selectable',
+        'offset_months': 0, 'format': '%Y%m',
+    }
+    definition['version'] = 5
+    return definition
+
+
 def _validate_target(target, *, activation):
     if not isinstance(target, dict) or not isinstance(target.get('locator', []), list):
         raise ValueError('Invalid recorded locator.')
@@ -347,9 +423,10 @@ def import_codegen(source, *, timezone=TIMEZONE):
         return steps
 
     steps = parse(functions[0].body)
-    # Plain codegen still uses the v4 contract. Version 5 is promoted only
-    # when the editor adds automatic slider discovery or month parameters.
+    # Plain codegen uses the v4 contract unless import or the editor recognizes
+    # automatic slider discovery or month parameters.
     definition = {'version': 4, 'timezone': timezone, 'steps': steps, 'parameters': {}}
+    _promote_recorded_month_slider(definition)
     validate_definition(definition, activation=False)
     return suggest_review(definition)
 
