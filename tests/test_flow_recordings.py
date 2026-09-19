@@ -78,6 +78,57 @@ def test_import_preserves_events_and_dates_without_running_source():
     assert flow_recording.resolve_parameters(value) == {'start':'2026-01-01','end':None}
 
 
+def test_import_promotes_one_recorded_no_ui_month_handle_to_a_full_range():
+    source = CODEGEN.replace(
+        '    page.get_by_role("button", name="Generate").click()',
+        '    page.get_by_text("Monthly performance").click()\n'
+        '    page.locator(".noUi-touch-area").first.click()\n'
+        '    page.get_by_role("button", name="Generate").click()',
+    )
+    value = flow_recording.import_codegen(source)
+    sliders = [step for step in flow_recording.walk_steps(value['steps'])
+               if step['action'] == 'set_range']
+
+    assert value['version'] == 5
+    assert len(sliders) == 1
+    slider = sliders[0]
+    assert slider['range']['kind'] == 'month'
+    assert slider['range']['container_ancestor_levels'] == 0
+    assert slider['range']['anchor_locator'] == slider['locator']
+    assert slider['range']['source_step']['action'] == 'click'
+    assert slider['range']['source_step']['locator'][-1]['method'] == 'first'
+    assert value['parameters'] == {
+        'start': {'step_id': slider['id'], 'role': 'start', 'unit': 'month',
+                  'mode': 'calculated', 'expression': 'oldest_selectable',
+                  'offset_months': 0, 'format': '%Y%m'},
+        'end': {'step_id': slider['id'], 'role': 'end', 'unit': 'month',
+                'mode': 'calculated', 'expression': 'latest_selectable',
+                'offset_months': 0, 'format': '%Y%m'},
+    }
+    flow_recording.validate_definition(value)
+
+
+@pytest.mark.parametrize('recorded_steps', [
+    '    page.get_by_text("Weekly performance").click()\n'
+    '    page.locator(".noUi-touch-area").first.click()',
+    '    page.locator(".noUi-touch-area").first.click()',
+    '    page.get_by_text("Monthly performance").click()\n'
+    '    page.locator(".noUi-touch-area").first.click()\n'
+    '    page.locator(".noUi-touch-area").last.click()',
+])
+def test_import_leaves_ambiguous_no_ui_sliders_for_manual_review(recorded_steps):
+    source = CODEGEN.replace(
+        '    page.get_by_role("button", name="Generate").click()',
+        recorded_steps + '\n    page.get_by_role("button", name="Generate").click()',
+    )
+    value = flow_recording.import_codegen(source)
+
+    assert value['version'] == 4
+    assert not value['parameters']
+    assert not [step for step in flow_recording.walk_steps(value['steps'])
+                if step['action'] == 'set_range']
+
+
 @pytest.mark.parametrize('statement', ['__import__("os").system("anything")', 'page.evaluate("alert(1)")',
     'page.get_by_text("Delete").click(force=True)', 'page.mouse.click(100, 100)', 'exec("anything")'])
 def test_unsafe_or_unsupported_recording_is_never_imported(statement):
