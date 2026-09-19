@@ -60,7 +60,13 @@ def _definition(step=None, parameters=None, version=4):
 
 def _isolate_flow_root(flow_db):
     from app import database
-    root = Path(os.environ["DG_FLOWS_ROOT"]) / (
+    # The PowerShell verifier supplies one shared external root for the run;
+    # split it per test. CI leaves it unset and already derives a unique root
+    # from each pytest tmp_path, so no override is needed there.
+    base = os.environ.get("DG_FLOWS_ROOT")
+    if not base:
+        return
+    root = Path(base) / (
         "recording-slider-" + hashlib.sha256(str(flow_db).encode()).hexdigest()[:12])
     with database.get_db() as db:
         db.execute("INSERT OR REPLACE INTO app_settings(key,value) VALUES ('flows_root',?)", (str(root),))
