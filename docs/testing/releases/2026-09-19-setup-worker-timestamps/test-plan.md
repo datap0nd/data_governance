@@ -20,6 +20,7 @@ external endpoint.
 | W-02 | Check a recent scalar ISO timestamp through `Test-MetronomeSetupWorkerFresh`. | The worker is considered fresh without a conversion error. | Focused verifier result. |
 | W-03 | Pass an array-valued malformed timestamp to the same helper. | The helper returns false; setup can report the worker as stale instead of terminating. | Focused verifier result. |
 | W-04 | Review every worker-registration poll and diagnostic path in `setup.ps1`. | All paths use the common flattening and safe timestamp helpers; no direct `[datetime]` cast remains. | Diff review. |
+| C-01 | Exercise the synthetic Flow topic-group activity poll after committing completed run state, allowing for one stale in-flight response and the following five-second poll cycle. | The execution pane closes, editor work is preserved, and the check has sufficient loaded-runner scheduling margin. | Focused CI-recovery verifier result. |
 | R-01 | Run required final-head CI on the PR. | `Merge ready` passes for the exact recorded head SHA. | PR testing section and CI run. |
 
 ## Automated checks
@@ -29,6 +30,10 @@ external endpoint.
 .\tools\check.ps1 -Mode Verify `
   -TestPath tests/test_setup_worker_health.py::test_worker_health_flattens_rest_array_and_rejects_bad_timestamps,tests/test_flows.py::test_setup_installs_headless_flow_worker_service `
   -SyntaxPath setup.ps1,tools/setup_flow_worker_health.ps1
+
+# Only if the synthetic activity-poll case fails in final-head CI:
+.\tools\check.ps1 -Mode Verify `
+  -TestPath tests/test_flow_topic_groups_browser.py::test_actual_group_queue_polling_completion_failure_and_individual_recovery
 ```
 
 Run one bounded diff review covering response flattening, valid and malformed

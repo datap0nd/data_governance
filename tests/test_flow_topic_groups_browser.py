@@ -117,7 +117,10 @@ def test_actual_group_queue_polling_completion_failure_and_individual_recovery(u
     page.get_by_label('Photo', exact=True).check()
     with database.get_db() as db:
         db.execute("UPDATE flow_runs SET status='succeeded',finished_at=CURRENT_TIMESTAMP")
-    expect(page.locator('#flow-execution-pane')).to_be_hidden(timeout=10000)
+    # The activity loop runs every five seconds. A response already in flight
+    # can still contain the pre-commit snapshot, so allow the following full
+    # poll cycle plus normal loaded-runner scheduling margin.
+    expect(page.locator('#flow-execution-pane')).to_be_hidden(timeout=20000)
     expect(page.get_by_label('Group name', exact=True)).to_have_value('Unsaved work')
     expect(page.get_by_label('Photo', exact=True)).to_be_checked()
     page.get_by_role('button', name='Cancel', exact=True).click()
