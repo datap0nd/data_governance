@@ -8,6 +8,7 @@ templates and the result vocabulary.
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-09-19: setup worker timestamp recovery | [Test plan](releases/2026-09-19-setup-worker-timestamps/test-plan.md) | [Test report](releases/2026-09-19-setup-worker-timestamps/test-report.md) |
 | 2026-09-19: cross-platform Flow builder contract | [Test plan](releases/2026-09-19-windows-contract-newlines/test-plan.md) | [Test report](releases/2026-09-19-windows-contract-newlines/test-report.md) |
 | 2026-09-19: managed auditor ACL recovery | [Test plan](releases/2026-09-19-auditor-acl-recovery/test-plan.md) | [Test report](releases/2026-09-19-auditor-acl-recovery/test-report.md) |
 | 2026-09-19: monthly range controls in recorded Flows | [Test plan](releases/2026-09-19-month-range-controls/test-plan.md) | [Test report](releases/2026-09-19-month-range-controls/test-report.md) |

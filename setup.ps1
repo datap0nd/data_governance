@@ -866,6 +866,11 @@ if ((Test-Path $DbPath) -and (Test-Path $FlowCredentialPath)) {
 # running".
 Write-Host "Starting headless Flows worker service..." -ForegroundColor Yellow
 $WorkerStartedAt = Get-Date
+$FlowWorkerHealthHelpers = "$CodeDir\tools\setup_flow_worker_health.ps1"
+if (-not (Test-Path $FlowWorkerHealthHelpers)) {
+    throw "Flows worker health helpers are missing after the update: $FlowWorkerHealthHelpers"
+}
+. $FlowWorkerHealthHelpers
 $WorkerStartOutput = (& $NssmExe start $FlowServiceName 2>&1 | Out-String)
 if ($WorkerStartOutput -match 'already running') {
     Write-Host "  Flows worker service was already running - OK." -ForegroundColor DarkGray
@@ -901,13 +906,16 @@ if (-not $MetronomeHealthy -and $Unattended) {
 function Describe-WorkerRegistrationFailure {
     param($Port, $CodeDir, $LogDir, $WorkerStartedAt, $ExpectedWorkerIds = @('bi-desktop-headless'))
     try {
-        $Workers = @(Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/flows/workers" -TimeoutSec 5)
+        $Workers = @(Get-MetronomeSetupFlowWorkers -Port $Port)
     } catch {
         return "Metronome is not answering on port $Port, so the worker cannot register. Check $LogDir\mx_analytics_error.log."
     }
     $MissingWorkers = @($ExpectedWorkerIds | Where-Object {
         $ExpectedId = $_
-        -not @($Workers | Where-Object { $_.worker_id -eq $ExpectedId -and $_.status -ne 'offline' -and $_.last_seen_at -and ([datetime]$_.last_seen_at) -ge $WorkerStartedAt.AddSeconds(-5) }).Count
+        -not @($Workers | Where-Object {
+            $_.worker_id -eq $ExpectedId -and
+            (Test-MetronomeSetupWorkerFresh -Worker $_ -WorkerStartedAt $WorkerStartedAt)
+        }).Count
     })
     if ($MissingWorkers.Count -and $MissingWorkers -notcontains 'bi-desktop-headless') {
         return "Background slots not registered after update: $($MissingWorkers -join ', '). Check their flow_worker<N>_error.log files and Flows > Settings."
@@ -924,8 +932,7 @@ function Describe-WorkerRegistrationFailure {
     }
     # Freshness FIRST: a dead worker's database row keeps its old
     # code_version forever, so version can only be judged on a live row.
-    $RowFresh = $Row.status -ne "offline" -and $Row.last_seen_at -and
-        ([datetime]$Row.last_seen_at) -ge $WorkerStartedAt.AddSeconds(-5)
+    $RowFresh = Test-MetronomeSetupWorkerFresh -Worker $Row -WorkerStartedAt $WorkerStartedAt
     if (-not $RowFresh) {
         if ($LiveWorkers.Count -gt 0) {
             return "STILL STARTING: the registered row is from before the update, and the new worker process (PID $($LiveWorkers[0].ProcessId)) retries registration for up to 10 minutes while Metronome boots. Verify in the app (Flows) in a few minutes; if it stays offline, check $LogDir\flow_worker_error.log."
@@ -945,20 +952,20 @@ function Describe-WorkerRegistrationFailure {
     # poll allows the same window.
     $WorkerOnline = $false
     try {
-        $ExistingWorkers = @(Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/flows/workers" -TimeoutSec 5)
+        $ExistingWorkers = @(Get-MetronomeSetupFlowWorkers -Port $Port)
         $WorkerOnline = @($ExistingWorkers | Where-Object {
-            $ExpectedWorkerIds -contains $_.worker_id -and $_.status -ne "offline" -and
-            $_.last_seen_at -and ([datetime]$_.last_seen_at) -ge $WorkerStartedAt.AddSeconds(-5)
+            $ExpectedWorkerIds -contains $_.worker_id -and
+            (Test-MetronomeSetupWorkerFresh -Worker $_ -WorkerStartedAt $WorkerStartedAt)
         }).Count -eq $ExpectedWorkerIds.Count
     } catch {}
     if (-not $WorkerOnline) {
         for ($attempt = 0; $attempt -lt 60; $attempt++) {
             Start-Sleep -Seconds 2
             try {
-                $RegisteredWorkers = @(Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/flows/workers" -TimeoutSec 5)
+                $RegisteredWorkers = @(Get-MetronomeSetupFlowWorkers -Port $Port)
                 if (@($RegisteredWorkers | Where-Object {
-                    $ExpectedWorkerIds -contains $_.worker_id -and $_.status -ne "offline" -and
-                    $_.last_seen_at -and ([datetime]$_.last_seen_at) -ge $WorkerStartedAt.AddSeconds(-5)
+                    $ExpectedWorkerIds -contains $_.worker_id -and
+                    (Test-MetronomeSetupWorkerFresh -Worker $_ -WorkerStartedAt $WorkerStartedAt)
                 }).Count -eq $ExpectedWorkerIds.Count) {
                     $WorkerOnline = $true
                     break

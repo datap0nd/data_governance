@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "run_id": "20260919T164419470Z-34300-fe5d5611",
+  "mode": "verify",
+  "status": "passed",
+  "revision": "92ed759692e3be1822a40e27790018a8f0ec3f85",
+  "source_fingerprint": "081bd4c4852a47a18e7c5142181d0206269bb2de571cb9693fe40c92eb4402ff",
+  "environment": {
+    "os": "Microsoft Windows 10.0.26200",
+    "powershell": "7.6.5",
+    "python": "3.13.15"
+  },
+  "selection": {
+    "full_suite": false,
+    "diagnostic_reason": "",
+    "tests": [
+      "tests/test_flow_topic_groups_browser.py::test_actual_group_queue_polling_completion_failure_and_individual_recovery"
+    ],
+    "syntax": []
+  },
+  "started_utc": "2026-09-19T16:44:19.4785707+00:00",
+  "finished_utc": "2026-09-19T16:44:42.5542884+00:00",
+  "duration_seconds": 23.076,
+  "exit_code": 0,
+  "reused_from": null,
+  "test_summary": {
+    "tests": 1,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "diagnostic": ""
+}
