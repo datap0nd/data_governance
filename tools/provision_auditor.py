@@ -24,14 +24,31 @@ def _write(path: Path, value: dict) -> None:
             os.unlink(temporary)
 
 
+def _read_existing(path: Path) -> dict:
+    """Read a managed config, treating an unreadable stale ACL as recoverable.
+
+    Setup stops the reader and repairs the managed directory ACLs before this
+    helper runs.  Keeping this fallback here makes provisioning resilient when
+    one old file still carries a file-specific deny ACE: the matching secret is
+    recovered from the other config when available, and both files are replaced
+    atomically below.
+    """
+    if not path.is_file():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except PermissionError:
+        return {}
+
+
 def provision(root: Path, reader_url: str, dsn: str = ""):
     root = root.resolve()
     host_path = root / "host" / "host.json"
     reader_path = root / "reader" / "reader.json"
     exchange = root / "exchange"
     exchange.mkdir(parents=True, exist_ok=True)
-    old_host = json.loads(host_path.read_text(encoding="utf-8")) if host_path.is_file() else {}
-    old_reader = json.loads(reader_path.read_text(encoding="utf-8")) if reader_path.is_file() else {}
+    old_host = _read_existing(host_path)
+    old_reader = _read_existing(reader_path)
     token = old_host.get("reader_token") or old_reader.get("reader_token") or secrets.token_urlsafe(48)
     category_key = old_reader.get("category_key") or secrets.token_urlsafe(48)
     manifest = str(exchange / "manifest.sqlite")

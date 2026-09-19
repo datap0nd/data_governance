@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "run_id": "20260919T125202466Z-13664-28518bb6",
+  "mode": "verify",
+  "status": "passed",
+  "revision": "95cbe04722c0a19a8d1cf554f3b78fab6ce19461",
+  "source_fingerprint": "1929e33c5e2e9fa2059300cadbc93761a51a63072270eb0bb08bd9f528f84c24",
+  "environment": {
+    "os": "Microsoft Windows 10.0.26200",
+    "powershell": "7.6.5",
+    "python": "3.13.15"
+  },
+  "selection": {
+    "full_suite": false,
+    "diagnostic_reason": "",
+    "tests": [
+      "tests/test_auditor_managed.py"
+    ],
+    "syntax": [
+      "tools/provision_auditor.py",
+      "setup.ps1"
+    ]
+  },
+  "started_utc": "2026-09-19T12:52:02.4745573+00:00",
+  "finished_utc": "2026-09-19T12:52:05.3983425+00:00",
+  "duration_seconds": 2.924,
+  "exit_code": 0,
+  "reused_from": null,
+  "test_summary": {
+    "tests": 7,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "diagnostic": ""
+}
