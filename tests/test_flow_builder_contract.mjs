@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-const source = fs.readFileSync(new URL('../app/static/app.js', import.meta.url), 'utf8');
+const source = fs.readFileSync(new URL('../app/static/app.js', import.meta.url), 'utf8')
+    .replace(/\r\n?/g, '\n');
 const controls = {};
 const set = (id, value, rest = {}) => controls[`#${id}`] = {value, dataset: {}, ...rest};
 for (const [id, value] of Object.entries({name:' Draft ', 'schedule-type':'manual', 'schedule-time':'09:15', 'schedule-day':'2', 'owner':'', 'sql-mode':'append', 'sql-database':'CaseDB', 'sql-schema':'CaseSchema', 'sql-table':'MyTable', 'local-file-path':' C:\\input.xlsx ', 'local-file-worksheet':' Exact Sheet ', 'outlook-subject':' Daily report ', site:'7', report:'9', 'period-strategy':'none', 'download-mode':'single', 'file-format':'csv_file_format', 'browser-mode':'headless', 'excel-trim':'none', filename:'{flow}_{export}.csv', 'start-week':'2026-W01', 'end-week':'2026-W05'})) set(`flow-${id}`,value);
