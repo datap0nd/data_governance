@@ -259,33 +259,6 @@ def _promote_recorded_month_slider(definition):
     return definition
 
 
-def _plain_click_signature(step):
-    """Comparable behavior for one ordinary left click, excluding its ID."""
-    if step.get('action') != 'click' or step.get('args', []):
-        return None
-    kwargs = step.get('kwargs', {})
-    if set(kwargs) - {'timeout'}:
-        return None
-    return canonical({'action': 'click', 'page': step.get('page'),
-                      'locator': step.get('locator', []), 'kwargs': kwargs})
-
-
-def _collapse_recorded_click_retries(steps):
-    """Drop adjacent identical plain clicks produced by remote-input retries."""
-    result = []
-    previous = None
-    for step in steps:
-        if step.get('steps'):
-            _collapse_recorded_click_retries(step['steps'])
-        signature = _plain_click_signature(step)
-        if signature is not None and signature == previous:
-            continue
-        result.append(step)
-        previous = signature
-    steps[:] = result
-    return steps
-
-
 def _validate_target(target, *, activation):
     if not isinstance(target, dict) or not isinstance(target.get('locator', []), list):
         raise ValueError('Invalid recorded locator.')
@@ -450,7 +423,6 @@ def import_codegen(source, *, timezone=TIMEZONE):
         return steps
 
     steps = parse(functions[0].body)
-    _collapse_recorded_click_retries(steps)
     # Plain codegen uses the v4 contract unless import or the editor recognizes
     # automatic slider discovery or month parameters.
     definition = {'version': 4, 'timezone': timezone, 'steps': steps, 'parameters': {}}

@@ -1,6 +1,6 @@
 # Automatic recorded month ranges: test plan
 
-- Change/PR: [#141](https://github.com/datap0nd/data_governance/pull/141); remove adjacent remote-input click retries and import one clear Playwright-recorded noUi month handle as a complete month-range action.
+- Change/PR: [#141](https://github.com/datap0nd/data_governance/pull/141); import one clear Playwright-recorded noUi month handle as a complete month-range action.
 - Code baseline: `origin/main` `d114ef5c3966096bddd63d7e0a895150b44ef130`.
 - Related report: [test-report.md](test-report.md).
 - Intended environments: Windows with the checkout-owned Python 3.13 environment; isolated parser fixtures; final-head GitHub CI. The owner also explicitly requested one work-PC live pre-fix recording attempt.
@@ -14,8 +14,7 @@ Create the checkout-owned environment with `tools/check.ps1 -Mode Setup`. Parser
 | ID | Prerequisites and exact actions | Expected result | Evidence |
 | --- | --- | --- | --- |
 | I-01 | Import codegen whose nearest period wording is **Monthly performance** and whose only noUi interaction is `locator(".noUi-touch-area").first.click()`. | Import replaces the click with one version-5 `set_range` action, automatically discovers the two-handle container, and creates `YYYYMM` start/end parameters from oldest selectable through latest selectable. | Focused verifier result. |
-| I-02 | Import three adjacent identical plain `MX` clicks, another `MX` click after a different target, and two right-clicks. | The adjacent plain retry run becomes one step. Nonconsecutive clicks and right-clicks remain in their original order. | Focused verifier assertions. |
-| I-03 | Inspect the promoted definition and restore metadata. | The original click and exact locator remain in `source_step`; the editor can reverse the automatic conversion. | Focused verifier assertions. |
+| I-02 | Inspect the promoted definition and restore metadata. | The original click and exact locator remain in `source_step`; the editor can reverse the automatic conversion. | Focused verifier assertions. |
 | N-01 | Import the same noUi click with weekly wording, with no period wording, and with two recorded noUi handle clicks. | Import stays version 4 with the original clicks and no parameters. Ambiguous recordings remain available for manual review rather than being guessed. | Parameterized focused verifier result. |
 | R-01 | Import an ordinary date/download recording with no slider. | Existing import behavior and resolved parameters remain unchanged. | Focused verifier result. |
 | L-01 | In the owner-requested Retail SMS monthly report, record the real flow and inspect the imported step and test gate. | Pre-fix evidence identifies whether the month handle is semantic and whether a real download was captured; no draft is activated. | Protected evidence `LIVE-SMS-20260920-01`. |
@@ -27,7 +26,6 @@ Create the checkout-owned environment with `tools/check.ps1 -Mode Setup`. Parser
 .\tools\check.ps1 -Mode Verify `
   -TestPath @(
     'tests/test_flow_recordings.py::test_import_promotes_one_recorded_no_ui_month_handle_to_a_full_range',
-    'tests/test_flow_recordings.py::test_import_collapses_only_consecutive_identical_plain_click_retries',
     'tests/test_flow_recordings.py::test_import_leaves_ambiguous_no_ui_sliders_for_manual_review',
     'tests/test_flow_recordings.py::test_import_preserves_events_and_dates_without_running_source'
   ) `
@@ -38,4 +36,4 @@ Final-head `Merge ready` is the authoritative full regression. This focused set 
 
 ## Acceptance and cleanup
 
-Accept when the focused checks pass, the bounded diff review finds no unsafe inference path, and final-head CI passes. Retry cleanup must apply only to adjacent identical plain left clicks; explicit double-clicks, right-clicks, nonconsecutive clicks and changed targets must survive. Month detection must require exactly one noUi touch-area click plus nearby unambiguous month wording. Missing wording, weekly wording or multiple distinct noUi clicks must remain available for manual review. Rollback is a PR revert; existing saved recordings are not rewritten. Isolated verifier artifacts remain ignored, and no protected live evidence is committed.
+Accept when the focused checks pass, the bounded diff review finds no unsafe inference path, and final-head CI passes. Month detection must require exactly one noUi touch-area click plus nearby unambiguous month wording. Missing wording, weekly wording or multiple distinct noUi clicks must remain available for manual review. Recorded clicks are otherwise preserved exactly; the application must not infer that repeated clicks are accidental. Rollback is a PR revert; existing saved recordings are not rewritten. Isolated verifier artifacts remain ignored, and no protected live evidence is committed.
