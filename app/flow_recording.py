@@ -16,10 +16,11 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 from app.flow_clock import TIMEZONE
 
-VERSION = 4
+VERSION = 5
 V2_CAPABILITY = 'recorded_flows_v2'
 V3_CAPABILITY = 'recorded_flows_v3'
 V4_CAPABILITY = 'recorded_flows_v4'
+V5_CAPABILITY = 'recorded_flows_v5'
 CAPABILITY = 'recorded_flows_v1'
 GSCM_BOOKMARK_CAPABILITY = 'gscm_bookmark_targets_v1'
 RECORD_CAPABILITY = 'flow_recorder_v1'
@@ -38,6 +39,9 @@ WEEK_FORMATS = {'%G-W%V': re.compile(r'(20\d{2})-W(0[1-9]|[1-4]\d|5[0-3])'),
                 '%G%V': re.compile(r'(20\d{2})(0[1-9]|[1-4]\d|5[0-3])')}
 DAY_FORMATS = {'%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y', '%Y%m%d'}
 MAX_WEEK_OFFSET = 520
+MONTH_CALCULATIONS = {'oldest_selectable', 'latest_selectable', 'current_month', 'previous_month'}
+MONTH_FORMATS = {'%Y%m': re.compile(r'(20\d{2})(0[1-9]|1[0-2])')}
+MAX_MONTH_OFFSET = 120
 SENSITIVE = re.compile(r'password|passwd|authorization|cookie|token|secret|otp|verification.?code', re.I)
 
 
@@ -64,7 +68,8 @@ def parameter_unit(parameter):
 
 
 def parameter_format(parameter):
-    return parameter.get('format', '%Y-%m-%d' if parameter_unit(parameter) == 'day' else '%G-W%V')
+    defaults = {'day': '%Y-%m-%d', 'week': '%G-W%V', 'month': '%Y%m'}
+    return parameter.get('format', defaults.get(parameter_unit(parameter), '%Y-%m-%d'))
 
 
 def parse_week(text, fmt='%G-W%V'):
@@ -102,12 +107,37 @@ def format_week(day, fmt='%G-W%V'):
     return f'{iso[0]:04d}{iso[1]:02d}' if fmt == '%G%V' else f'{iso[0]:04d}-W{iso[1]:02d}'
 
 
+def parse_month(text, fmt='%Y%m'):
+    """The first day of a month written as YYYYMM."""
+    pattern = MONTH_FORMATS.get(fmt)
+    if pattern is None:
+        raise ValueError('Unsupported month format.')
+    match = pattern.fullmatch(str(text or '').strip())
+    if not match:
+        raise ValueError('Month values must use YYYYMM.')
+    return date(int(match.group(1)), int(match.group(2)), 1)
+
+
+def format_month(day, fmt='%Y%m'):
+    if fmt not in MONTH_FORMATS:
+        raise ValueError('Unsupported month format.')
+    return day.strftime('%Y%m')
+
+
+def add_months(day, offset):
+    ordinal = day.year * 12 + day.month - 1 + offset
+    return date(ordinal // 12, ordinal % 12 + 1, 1)
+
+
 def parse_parameter_value(parameter, value):
     """A date parameter's text as a datetime; weeks resolve to their Monday."""
     fmt = parameter_format(parameter)
     if parameter_unit(parameter) == 'week':
         monday = parse_week(value, fmt)
         return datetime(monday.year, monday.month, monday.day)
+    if parameter_unit(parameter) == 'month':
+        month = parse_month(value, fmt)
+        return datetime(month.year, month.month, 1)
     return datetime.strptime(value, fmt)
 
 
@@ -317,13 +347,15 @@ def import_codegen(source, *, timezone=TIMEZONE):
         return steps
 
     steps = parse(functions[0].body)
-    definition = {'version': VERSION, 'timezone': timezone, 'steps': steps, 'parameters': {}}
+    # Plain codegen still uses the v4 contract. Version 5 is promoted only
+    # when the editor adds automatic slider discovery or month parameters.
+    definition = {'version': 4, 'timezone': timezone, 'steps': steps, 'parameters': {}}
     validate_definition(definition, activation=False)
     return suggest_review(definition)
 
 
 def validate_definition(definition, *, activation=True):
-    if not isinstance(definition, dict) or definition.get('version') not in {1, 2, 3, VERSION}:
+    if not isinstance(definition, dict) or definition.get('version') not in set(range(1, VERSION + 1)):
         raise ValueError('Unsupported recording version.')
     if 'date_batch' in definition:
         raise ValueError('Date batching has been removed. Convert this recording to a single range and test it.')
@@ -403,18 +435,21 @@ def validate_definition(definition, *, activation=True):
             if definition['version'] < 4:
                 raise ValueError('Date range control steps require recording version 4.')
             contract = step.get('range')
-            if not isinstance(contract, dict) or contract.get('kind') not in {'week', 'date'}:
-                raise ValueError('A date range control shows week numbers or dates.')
-            if contract.get('week_days', 'sunday') not in {'sunday', 'monday'}:
+            if not isinstance(contract, dict) or contract.get('kind') not in {'week', 'date', 'month'}:
+                raise ValueError('A date range control shows weeks, dates or months.')
+            if contract.get('kind') == 'month' and definition['version'] < 5:
+                raise ValueError('Month range controls require recording version 5.')
+            if contract.get('kind') != 'month' and contract.get('week_days', 'sunday') not in {'sunday', 'monday'}:
                 raise ValueError('A date range control week starts on Sunday or Monday.')
             levels = contract.get('container_ancestor_levels', 1)
-            if type(levels) is not int or not 1 <= levels <= 6:
-                raise ValueError('Choose 1–6 parent levels for the element box.')
+            minimum = 0 if definition['version'] >= 5 else 1
+            if type(levels) is not int or not minimum <= levels <= 6:
+                raise ValueError('Choose automatic detection or 1–6 parent levels for the element box.')
             if not step.get('locator'):
                 raise ValueError('A date range control must identify its containing element box.')
             roles = sorted(str(p.get('role')) for p in parameters.values() if p.get('step_id') == step['id'])
             if roles != ['end', 'start']:
-                raise ValueError('A date range control needs exactly one start and one end week parameter.')
+                raise ValueError('A date range control needs exactly one start and one end parameter.')
         if action == 'assert' and step.get('assertion') not in ASSERTIONS:
             raise ValueError('Unsupported assertion.')
         if step.get('kwargs', {}).get('force') or step.get('kwargs', {}).get('position') or step.get('kwargs', {}).get('trial'):
@@ -474,15 +509,19 @@ def validate_definition(definition, *, activation=True):
         if parameter.get('not_after') and parameter['not_after'] not in definition.get('parameters', {}):
             raise ValueError('Date range references an unknown parameter.')
         unit = parameter_unit(parameter)
-        if unit not in {'day', 'week'}:
+        if unit not in {'day', 'week', 'month'}:
             raise ValueError('Unsupported date parameter unit.')
         action = next((step['action'] for step in steps if step['id'] == parameter.get('step_id')), None)
+        range_kind = next((step.get('range', {}).get('kind') for step in steps
+                           if step['id'] == parameter.get('step_id')), None)
         fmt = parameter_format(parameter)
         if unit == 'week':
             if definition['version'] < 4:
                 raise ValueError('Week parameters require recording version 4.')
             if action != 'set_range' or parameter.get('role') not in {'start', 'end'}:
                 raise ValueError('Week parameters belong to a date range control as its start or end.')
+            if range_kind == 'month':
+                raise ValueError('A month range control needs month parameters.')
             if fmt not in WEEK_FORMATS:
                 raise ValueError('Unsupported week format.')
             if parameter.get('mode') == 'calculated' and parameter.get('expression') not in WEEK_CALCULATIONS:
@@ -493,8 +532,23 @@ def validate_definition(definition, *, activation=True):
             if parameter.get('mode') == 'fixed':
                 parse_week(parameter.get('value', ''), fmt)
             continue
+        if unit == 'month':
+            if definition['version'] < 5:
+                raise ValueError('Month parameters require recording version 5.')
+            if action != 'set_range' or range_kind != 'month' or parameter.get('role') not in {'start', 'end'}:
+                raise ValueError('Month parameters belong to a month range control as its start or end.')
+            if fmt not in MONTH_FORMATS:
+                raise ValueError('Unsupported month format.')
+            if parameter.get('mode') == 'calculated' and parameter.get('expression') not in MONTH_CALCULATIONS:
+                raise ValueError('Unsupported month calculation.')
+            offset = parameter.get('offset_months', 0)
+            if type(offset) is not int or abs(offset) > MAX_MONTH_OFFSET:
+                raise ValueError('Month offsets must be whole months within ten years.')
+            if parameter.get('mode') == 'fixed':
+                parse_month(parameter.get('value', ''), fmt)
+            continue
         if action == 'set_range':
-            raise ValueError('A date range control needs week parameters.')
+            raise ValueError('A date range control needs matching week or month parameters.')
         if parameter.get('step_id'):
             if action not in {'fill', 'select_option', 'press_sequentially'}:
                 raise ValueError('Date parameters must reference value-setting steps.')
@@ -531,7 +585,8 @@ def resolve_parameters(definition, overrides=None, *, now=None):
         if value is None and mode == 'fixed':
             value = parameter.get('value')
         elif value is None and mode == 'calculated':
-            if parameter_unit(parameter) == 'week':
+            unit = parameter_unit(parameter)
+            if unit == 'week':
                 # Calendar weeks follow the control's own week convention, so a
                 # Sunday already belongs to the new week on an ASAP control. The
                 # newest selectable week exists only on the live control.
@@ -541,6 +596,11 @@ def resolve_parameters(definition, overrides=None, *, now=None):
                 anchor = anchors.get(parameter['expression'])
                 if anchor is not None:
                     value = format_week(anchor + timedelta(weeks=parameter.get('offset_weeks', 0)), fmt)
+            elif unit == 'month':
+                anchors = {'current_month': month_start, 'previous_month': previous_end.replace(day=1)}
+                anchor = anchors.get(parameter['expression'])
+                if anchor is not None:
+                    value = format_month(add_months(anchor, parameter.get('offset_months', 0)), fmt)
             else:
                 value = values[parameter['expression']].strftime(fmt)
         if value is not None:

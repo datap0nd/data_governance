@@ -14,7 +14,11 @@ from datetime import date, datetime, timedelta
 
 from app import flow_recording
 
-PATTERNS = {'week': r'20\d{4}', 'date': r'20\d{6}'}
+PATTERNS = {
+    'week': r'20\d{4}',
+    'date': r'20\d{6}',
+    'month': r'20\d{2}(?:0[1-9]|1[0-2])',
+}
 MAX_KEY_PRESSES = 1_000
 # A control may publish its value some time after a key press; a value counts
 # as settled only after it has held still for this many consecutive reads.
@@ -67,6 +71,11 @@ def slider_ordinal(value: str, kind: str) -> int:
             return datetime.strptime(value or '', '%Y%m%d').date().toordinal()
         except ValueError as exc:
             raise RuntimeError(f'Date slider exposed an invalid value: {value}') from exc
+    if kind == 'month':
+        match = re.fullmatch(r'(20\d{2})(0[1-9]|1[0-2])', value or '')
+        if not match:
+            raise RuntimeError(f'Month slider exposed an invalid value: {value}')
+        return int(match.group(1)) * 12 + int(match.group(2)) - 1
     raise RuntimeError(f'Unsupported range control kind: {kind}')
 
 
@@ -133,6 +142,30 @@ def find_handles(container) -> list:
             f'found {len(visible)}.'
         )
     return visible
+
+
+def find_range_container(anchor, *, max_ancestor_levels: int = 6):
+    """Find the smallest recorded element/ancestor containing exactly two handles."""
+    candidate = anchor
+    observed = []
+    for levels in range(max_ancestor_levels + 1):
+        handles = candidate.locator(HANDLE_SELECTOR)
+        visible = []
+        for index in range(handles.count()):
+            handle = handles.nth(index)
+            try:
+                if handle.is_visible():
+                    visible.append(handle)
+            except Exception:
+                continue
+        observed.append(len(visible))
+        if len(visible) == 2:
+            return candidate, visible, levels
+        candidate = candidate.locator('xpath=..')
+    raise RuntimeError(
+        'Could not find one range control with exactly two visible slider handles '
+        f'within {max_ancestor_levels} parent levels (visible handles: {observed}).'
+    )
 
 
 def set_range_values(scope, handles: list, start: str, end: str, kind: str, *,
