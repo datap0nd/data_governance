@@ -108,6 +108,33 @@ def test_import_promotes_one_recorded_no_ui_month_handle_to_a_full_range():
     flow_recording.validate_definition(value)
 
 
+def test_import_collapses_only_consecutive_identical_plain_click_retries():
+    source = CODEGEN.replace(
+        '    page.get_by_role("button", name="Generate").click()',
+        '    page.get_by_text("MX").click()\n'
+        '    page.get_by_text("MX").click()\n'
+        '    page.get_by_text("MX").click()\n'
+        '    page.get_by_text("Other").click()\n'
+        '    page.get_by_text("MX").click()\n'
+        '    page.get_by_text("MX").click(button="right")\n'
+        '    page.get_by_text("MX").click(button="right")\n'
+        '    page.get_by_text("MX").dblclick()\n'
+        '    page.get_by_role("button", name="Generate").click()',
+    )
+    value = flow_recording.import_codegen(source)
+    clicks = [step for step in flow_recording.walk_steps(value['steps'])
+              if step['action'] == 'click']
+    mx = [step for step in clicks if any('MX' in part.get('args', [])
+          for part in step['locator'])]
+
+    assert len(mx) == 4
+    assert [step['kwargs'] for step in mx] == [{}, {}, {'button': 'right'}, {'button': 'right'}]
+    assert len([step for step in flow_recording.walk_steps(value['steps'])
+                if step['action'] == 'dblclick']) == 1
+    assert any(any('Other' in part.get('args', []) for part in step['locator'])
+               for step in clicks)
+
+
 @pytest.mark.parametrize('recorded_steps', [
     '    page.get_by_text("Weekly performance").click()\n'
     '    page.locator(".noUi-touch-area").first.click()',
