@@ -622,6 +622,7 @@ CREATE TABLE IF NOT EXISTS flows (
     transform_enabled   INTEGER NOT NULL DEFAULT 0,
     transform_script_path TEXT,
     sql_handoff_enabled INTEGER NOT NULL DEFAULT 0,
+    sql_assign_owner   INTEGER NOT NULL DEFAULT 1,
     sql_mode            TEXT,
     sql_database        TEXT,
     sql_schema          TEXT,
@@ -1408,6 +1409,8 @@ MIGRATIONS = [
          )""",
     # Flow ownership and failure notification routing
     "ALTER TABLE flows ADD COLUMN owner_person_id INTEGER REFERENCES people(id) ON DELETE SET NULL",
+    # Preserve the existing SQL ownership behavior for saved Flows.
+    "ALTER TABLE flows ADD COLUMN sql_assign_owner INTEGER NOT NULL DEFAULT 1",
     # Live catalog-scan log: one row per worker progress post
     """CREATE TABLE IF NOT EXISTS flow_scan_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,

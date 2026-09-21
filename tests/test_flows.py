@@ -1795,12 +1795,56 @@ def test_sql_handoff_target_is_persisted_without_executing_insert(flow_db):
         ),
         _request(),
     )
+    assert saved["sql_assign_owner"] is True
     job = flows.queue_run(saved["id"], _request())["job"]
     assert job["sql_handoff"] == {
         "enabled": True, "server": flows.normalize_server(flows.UPLOAD_PGHOST),
         "mode": "replace", "uppercase": False,
         "database": "warehouse", "schema": "reporting", "table": "inflow",
     }
+
+
+def test_flow_owner_can_receive_alerts_without_becoming_sql_table_owner(flow_db):
+    from app.models import PersonCreate
+    from app.routers import people
+
+    person = people.create_person(
+        PersonCreate(name="Dana", role="BI", email="dana@example.test", sql_username="dana_sql"),
+        _request(),
+    ).model_dump()
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    with database.get_db() as db:
+        db.execute(
+            """INSERT INTO flow_sql_catalog
+               (database_name, schema_name, table_name, last_seen_at, stale)
+               VALUES ('warehouse', 'reporting', 'inflow', CURRENT_TIMESTAMP, 0)"""
+        )
+    settings = dict(
+        sql_handoff_enabled=True, sql_mode="replace", sql_database="warehouse",
+        sql_schema="reporting", sql_table="inflow", owner_person_id=person["id"],
+    )
+    saved = flows.create_flow(
+        _flow(site["id"], report["id"], **settings, sql_assign_owner=False), _request(),
+    )
+    assert saved["owner_person_id"] == person["id"]
+    assert saved["owner_email"] == "dana@example.test"
+    assert saved["sql_assign_owner"] is False
+    with database.get_db() as db:
+        assert "owner_username" not in flows._build_job(db, saved["id"])["sql_handoff"]
+
+    # An older API client that omits the new setting must preserve Off.
+    saved = flows.update_flow(saved["id"], _flow(site["id"], report["id"], **settings), _request())
+    assert saved["sql_assign_owner"] is False
+    with database.get_db() as db:
+        assert "owner_username" not in flows._build_job(db, saved["id"])["sql_handoff"]
+
+    saved = flows.update_flow(
+        saved["id"], _flow(site["id"], report["id"], **settings, sql_assign_owner=True), _request(),
+    )
+    assert saved["sql_assign_owner"] is True
+    with database.get_db() as db:
+        assert flows._build_job(db, saved["id"])["sql_handoff"]["owner_username"] == "dana_sql"
 
 
 def test_sql_managed_snapshot_allows_new_table_name_in_discovered_schema(flow_db):

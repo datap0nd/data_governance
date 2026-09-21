@@ -37,7 +37,7 @@ EXCEL_ERROR = {
 
 def fixture_server(source_type="outlook", port=0):
     state = {"flow": {**deepcopy(BASE_FLOW), "source_type": source_type},
-             "writes": [], "errors": [], "fail_next": None}
+             "people": [], "writes": [], "errors": [], "fail_next": None}
     state["run"] = {
         "id": 902, "flow_id": 901, "flow_name": "Regional orders", "status": "failed",
         "error": "This Excel has more than one sheet. Please enable the option in Flows.",
@@ -79,7 +79,7 @@ def fixture_server(source_type="outlook", port=0):
                 "/api/flows": [state["flow"]], "/api/flows/runs": [],
                 "/api/flows/groups": [],
                 "/api/flows/workers": [], "/api/flows/scans": [],
-                "/api/flows/estimates": {}, "/api/people": [],
+                "/api/flows/estimates": {}, "/api/people": state["people"],
                 "/api/flows/activity": {"active_runs": [], "latest_runs": [], "workers": {"online": 0}},
                 "/api/flows/sql/catalog": {"configured": True, "targets": [{
                     "database": "FixtureDB", "schema": "reporting", "table": "regional_orders"}], "scan": {}},
@@ -235,6 +235,35 @@ def test_excel_setting_in_each_builder_defaults_off(excel_ui):
     expect(page.locator("#flow-builder-form")).to_have_count(0)
     assert state["flow"]["excel_worksheets"] == {"mode": "single", "names": [" Exact sheet "]}
     assert state["flow"]["sql_mode"] == "replace"
+
+
+@pytest.mark.parametrize("excel_ui", ["outlook", "file", "portal"], indirect=True)
+def test_flow_owner_sql_assignment_is_optional_in_each_builder(excel_ui, tmp_path):
+    page, state, base = excel_ui
+    state["people"] = [{"id": 42, "name": "Dana", "role": "BI",
+                        "email": "dana@example.test", "sql_username": "dana_sql"}]
+    state["flow"].update(owner_person_id=42, sql_assign_owner=True)
+    edit(page, base)
+    setting = page.get_by_role("checkbox", name="Set SQL table owner from Flow owner")
+    expect(setting).to_be_visible()
+    expect(setting).to_be_checked()
+    setting.uncheck()
+    expect(page.locator("#flow-owner-help")).to_contain_text("SQL table ownership is unchanged")
+    evidence = Path(os.environ.get("METRONOME_UI_EVIDENCE_DIR", str(tmp_path)))
+    evidence.mkdir(parents=True, exist_ok=True)
+    page.screenshot(path=str(evidence / f"sql-owner-optional-{state['flow']['source_type']}.png"), full_page=True)
+    if state["flow"]["source_type"] == "outlook":
+        page.set_viewport_size({"width": 390, "height": 844})
+        assert page.locator("#flow-builder-form").evaluate("el => el.scrollWidth <= el.clientWidth")
+        page.screenshot(path=str(evidence / "sql-owner-optional-mobile.png"), full_page=True)
+    page.get_by_role("radio", name="Load one named worksheet").check()
+    page.locator("#flow-excel-names").fill("North")
+    page.get_by_role("button", name="Save changes", exact=True).click()
+    expect(page.locator("#flow-builder-form")).to_have_count(0)
+    assert state["flow"]["owner_person_id"] == 42
+    assert state["flow"]["sql_assign_owner"] is False
+    edit(page, base)
+    expect(page.locator("#flow-sql-assign-owner")).not_to_be_checked()
 
 
 def test_flow_builder_frontend_contract():

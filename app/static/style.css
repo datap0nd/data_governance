@@ -695,6 +695,8 @@ h2 {
 .flow-inline-empty { color: var(--text-muted); font-size: 0.8rem; grid-column: 1 / -1; padding: var(--space-md) 0; }
 .flow-check { align-items: center; flex-direction: row !important; gap: var(--space-sm) !important; }
 .flow-check input { min-height: auto; }
+.flow-sql-owner-check { align-items: flex-start; }
+.flow-sql-owner-copy { display: flex; flex-direction: column; gap: var(--space-xs); }
 .flow-check.disabled { color: var(--text-muted); }
 .flow-check strong { background: var(--surface-2); border-radius: 3px; font-size: 0.66rem; margin-left: 0.35rem; padding: 0.1rem 0.3rem; }
 .flow-weekdays { border: 0; display: flex; flex-wrap: wrap; gap: var(--space-md); padding: 0; }

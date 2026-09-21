@@ -7,6 +7,7 @@ const controls = {};
 const set = (id, value, rest = {}) => controls[`#${id}`] = {value, dataset: {}, ...rest};
 for (const [id, value] of Object.entries({name:' Draft ', 'schedule-type':'manual', 'schedule-time':'09:15', 'schedule-day':'2', 'owner':'', 'sql-mode':'append', 'sql-database':'CaseDB', 'sql-schema':'CaseSchema', 'sql-table':'MyTable', 'local-file-path':' C:\\input.xlsx ', 'local-file-worksheet':' Exact Sheet ', 'outlook-subject':' Daily report ', site:'7', report:'9', 'period-strategy':'none', 'download-mode':'single', 'file-format':'csv_file_format', 'browser-mode':'headless', 'excel-trim':'none', filename:'{flow}_{export}.csv', 'start-week':'2026-W01', 'end-week':'2026-W05'})) set(`flow-${id}`,value);
 set('flow-sql-enabled','',{checked:true}); set('flow-transform-enabled','',{checked:false}); set('flow-sql-uppercase','',{checked:true});
+set('flow-sql-assign-owner','',{checked:false});
 set('flow-excel-enabled', '', {checked:true});
 set('flow-excel-names', ' Exact Sheet ');
 controls['input[name="flow-excel-mode"]:checked'] = {value:'single'};
@@ -21,6 +22,10 @@ assert.equal(body.name,'Draft'); assert.equal(body.local_file_worksheet,' Exact 
 assert.equal(body.target_folder,null); assert.equal(body.output_mode,'private_snapshot');
 assert.equal(body.owner_person_id,null); assert.equal(body.enabled,false);
 assert.equal(body.sql_database,'CaseDB'); assert.equal(body.sql_table,'MyTable'); assert.equal(body.sql_uppercase,true);
+assert.equal(body.sql_assign_owner,false);
+assert.match(source, /_flowSqlOwnerHtml\(existing\)/);
+controls['#flow-sql-assign-owner'].checked = true;
+assert.equal(context._flowCollectBuilder().sql_assign_owner,true);
 set('flow-local-file-path','C:\\input.csv'); set('flow-excel-enabled', '', {checked:true,disabled:true}); assert.equal(context._flowCollectBuilder().local_file_worksheet,null);
 assert.equal(context._flowCollectBuilder().excel_worksheets,null);
 set('flow-excel-enabled', '', {checked:false});
