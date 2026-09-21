@@ -735,6 +735,8 @@ class FlowWrite(BaseModel):
     transform_enabled: bool = False
     transform_script_path: str | None = Field(default=None, max_length=2000)
     sql_handoff_enabled: bool = False
+    # Omitted by an older client: retain the saved choice on edit.
+    sql_assign_owner: bool | None = None
     sql_mode: str | None = None
     sql_uppercase: bool = False
     sql_database: str | None = Field(default=None, max_length=63)
@@ -1265,6 +1267,7 @@ def _flow_out(db, flow_id: int, *, include_private_storage: bool = False) -> dic
     result["category_path"] = category if isinstance(category, list) else []
     result["enabled"] = bool(result["enabled"])
     result["sql_handoff_enabled"] = bool(result["sql_handoff_enabled"])
+    result["sql_assign_owner"] = bool(result["sql_assign_owner"])
     result["sql_uppercase"] = bool(result.get("sql_uppercase"))
     result["transform_enabled"] = bool(result.get("transform_enabled"))
     for key in ("export_report_title", "export_filter_details"):
@@ -1751,6 +1754,8 @@ def _build_job(db, flow_id: int, *, force_reprocess: bool = False, recording_dra
         _validate_flow_selections(db, body)
         _validate_sql_target(db, body)
         _validate_owner(db, body)
+        if body.sql_assign_owner is None:
+            body.sql_assign_owner = bool(flow['sql_assign_owner'])
         flow.update(body.model_dump(exclude={'recording_revision_id', 'post_sql_refresh', 'email_delivery'}))
         if body.post_sql_refresh is not None:
             flow['post_sql_refresh'] = body.post_sql_refresh
@@ -1892,7 +1897,7 @@ def _build_job(db, flow_id: int, *, force_reprocess: bool = False, recording_dra
     }
     # Resolve after pending settings have been applied: the selected owner may
     # differ from the person joined by _flow_out. Freeze it with the run.
-    if job['sql_handoff']['enabled'] and flow.get('owner_person_id'):
+    if job['sql_handoff']['enabled'] and flow.get('sql_assign_owner', True) and flow.get('owner_person_id'):
         owner = db.execute('SELECT sql_username FROM people WHERE id=?', (flow['owner_person_id'],)).fetchone()
         if owner and owner['sql_username']:
             job['sql_handoff']['owner_username'] = owner['sql_username']
@@ -3339,6 +3344,8 @@ def create_flow(body: FlowWrite, request: Request):
                  iso_utc(utc_now()) if body.enabled and body.schedule_type != "manual" else None),
             )
             flow_id = cursor.lastrowid
+            db.execute("UPDATE flows SET sql_assign_owner=? WHERE id=?",
+                       (body.sql_assign_owner is not False, flow_id))
             db.execute("UPDATE flows SET excel_worksheets_json=? WHERE id=?",
                        (_json(body.excel_worksheets), flow_id))
             db.execute('UPDATE flows SET execution_method=? WHERE id=?', (body.execution_method or 'catalog', flow_id))
@@ -3599,7 +3606,7 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
         existing = db.execute(
             """SELECT source_type, enabled, schedule_type, schedule_time, schedule_days,
                       schedule_day, freshness_effective_from_at,
-                      sql_database, sql_schema, sql_table, sql_target_source_id,
+                      sql_database, sql_schema, sql_table, sql_target_source_id, sql_assign_owner,
                       target_folder, local_file_path, local_file_worksheet, flow_folder,
                       local_file_last_identity, local_file_config_revision, download_parallelism, execution_method, recording_revision_id,
                       post_sql_refresh_json, email_delivery_json, excel_worksheets_json
@@ -3608,6 +3615,8 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
         ).fetchone()
         if not existing:
             raise HTTPException(404, "Flow not found.")
+        if body.sql_assign_owner is None:
+            body.sql_assign_owner = bool(existing["sql_assign_owner"])
         if "excel_worksheets" not in body.model_fields_set and body.excel_worksheets is None:
             body.excel_worksheets = flow_excel.saved_config(existing["excel_worksheets_json"])
         if body.execution_method is None:
@@ -3730,6 +3739,7 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
         if not cursor.rowcount:
             raise HTTPException(404, "Flow not found.")
         db.execute("UPDATE flows SET download_parallelism=? WHERE id=?", (body.download_parallelism, flow_id))
+        db.execute("UPDATE flows SET sql_assign_owner=? WHERE id=?", (body.sql_assign_owner, flow_id))
         db.execute("UPDATE flows SET excel_worksheets_json=? WHERE id=?", (_json(body.excel_worksheets), flow_id))
         db.execute("UPDATE flows SET post_sql_refresh_json=? WHERE id=?", (_json(body.post_sql_refresh), flow_id))
         db.execute("UPDATE flows SET email_delivery_json=? WHERE id=?", (_json(body.email_delivery), flow_id))

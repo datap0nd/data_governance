@@ -11111,12 +11111,14 @@ function _flowOwnerOptions(people, selectedId) {
         .join("");
 }
 
-function _flowOwnerHelp(owner) {
+function _flowOwnerHelp(owner, assignSqlOwner = true) {
     if (!owner) return 'Choose a person managed in Users. Without an owner, nobody is emailed when this flow fails and SQL table ownership is unchanged.';
     const email = owner.email
         ? `Failure alerts are sent to ${esc(owner.email)} through Outlook on the app host.`
         : `${esc(owner.name)} has no email in Users. Add one so failure alerts can be delivered.`;
-    const sql = owner.sql_username
+    const sql = !assignSqlOwner
+        ? 'SQL table ownership is unchanged for this Flow.'
+        : owner.sql_username
         ? `SQL table owner: <code>${esc(owner.sql_username)}</code>. When SQL loading is enabled, the next successful load assigns this role to the target table, including an existing table. The role must exist and the Metronome SQL account must have permission. Already queued runs keep their saved owner.`
         : 'No SQL username is linked in Users; SQL table ownership will not be changed.';
     return `${email} ${sql}`;
@@ -11320,6 +11322,10 @@ function _flowBindViewRefresh() {
     showMode();
 }
 
+function _flowSqlOwnerHtml(existing) {
+    return `<label class="flow-check flow-span-2 flow-sql-owner-check"><input id="flow-sql-assign-owner" type="checkbox" ${existing?.sql_assign_owner === false ? "" : "checked"}><span class="flow-sql-owner-copy"><span>Set SQL table owner from Flow owner</span><small>Turn off for a database without the owner's SQL role. The Flow owner still receives failure alerts. Existing tables keep their owner; a new table belongs to the upload account.</small></span></label>`;
+}
+
 function _flowSqlLinkHtml(existing) {
     if (!existing?.sql_handoff_enabled) return "";
     const effectiveSourceId = existing.sql_target_effective_source_id ?? existing.sql_target_source_id;
@@ -11466,7 +11472,7 @@ function _flowOutlookBuilderHtml(existing = null) {
                 </div>
                 <div class="flow-form-section">
                     <div class="flow-section-head"><h2>Ownership and failure alerts</h2></div>
-                    <div class="flow-form-grid"><label class="flow-span-2"><span>Flow owner</span><select id="flow-owner">${_flowOwnerOptions(people, existing?.owner_person_id)}</select><small id="flow-owner-help">${_flowOwnerHelp(owner)}</small></label></div>
+                    <div class="flow-form-grid"><label class="flow-span-2"><span>Flow owner</span><select id="flow-owner">${_flowOwnerOptions(people, existing?.owner_person_id)}</select><small id="flow-owner-help">${_flowOwnerHelp(owner, existing?.sql_assign_owner !== false)}</small></label></div>
                 </div>
                 <div class="flow-form-section">
                     <div class="flow-section-head"><h2>Schedule and SQL handoff</h2></div>
@@ -11482,6 +11488,7 @@ function _flowOutlookBuilderHtml(existing = null) {
                             <label><span>Database</span><select id="flow-sql-database">${sqlDatabases.map(value => `<option ${value === selectedDatabase ? "selected" : ""}>${esc(value)}</option>`).join("")}</select></label>
                             <label><span>Schema</span><select id="flow-sql-schema">${sqlSchemas.map(value => `<option ${value === selectedSchema ? "selected" : ""}>${esc(value)}</option>`).join("")}</select></label>
                             <label><span>Table</span><input id="flow-sql-table" list="flow-sql-table-options" maxlength="63" value="${esc(existing?.sql_table || sqlTables[0] || "")}" placeholder="Existing or new table name"><datalist id="flow-sql-table-options">${sqlTables.map(value => `<option value="${esc(value)}"></option>`).join("")}</datalist><small>New table names are lowercased with spaces converted to underscores automatically; existing tables keep their exact names.</small></label>
+                            ${_flowSqlOwnerHtml(existing)}
                             ${_flowSqlLinkHtml(existing)}
                             ${_flowViewRefreshHtml(existing)}
                             <button type="button" class="btn-secondary" id="flow-sql-refresh">Refresh SQL targets</button>
@@ -11565,6 +11572,7 @@ function _flowPythonBuilderHtml(existing = null) {
                                 <label><span>Database</span><select id="flow-sql-database">${sqlDatabases.map(value => `<option ${value === selectedDatabase ? "selected" : ""}>${esc(value)}</option>`).join("")}</select></label>
                                 <label><span>Schema</span><select id="flow-sql-schema">${sqlSchemas.map(value => `<option ${value === selectedSchema ? "selected" : ""}>${esc(value)}</option>`).join("")}</select></label>
                                 <label><span>Table</span><input id="flow-sql-table" list="flow-sql-table-options" maxlength="63" value="${esc(existing?.sql_table || sqlTables[0] || "")}" placeholder="Existing or new table name"><datalist id="flow-sql-table-options">${sqlTables.map(value => `<option value="${esc(value)}"></option>`).join("")}</datalist><small>New table names are lowercased with spaces converted to underscores automatically; existing tables keep their exact names.</small></label>
+                                ${_flowSqlOwnerHtml(existing)}
                                 ${_flowSqlLinkHtml(existing)}
                                 ${_flowViewRefreshHtml(existing)}
                                 <button type="button" class="btn-secondary" id="flow-sql-refresh">Refresh SQL targets</button>
@@ -11574,7 +11582,7 @@ function _flowPythonBuilderHtml(existing = null) {
                 </div>
                 <div class="flow-form-section">
                     <div class="flow-section-head"><h2>Ownership and failure alerts</h2></div>
-                    <div class="flow-form-grid"><label class="flow-span-2"><span>Flow owner</span><select id="flow-owner">${_flowOwnerOptions(people, existing?.owner_person_id)}</select><small id="flow-owner-help">${_flowOwnerHelp(owner)}</small></label></div>
+                    <div class="flow-form-grid"><label class="flow-span-2"><span>Flow owner</span><select id="flow-owner">${_flowOwnerOptions(people, existing?.owner_person_id)}</select><small id="flow-owner-help">${_flowOwnerHelp(owner, existing?.sql_assign_owner !== false)}</small></label></div>
                 </div>
                 <div class="flow-form-section">
                     <div class="flow-section-head"><h2>Schedule</h2></div>
@@ -11732,7 +11740,7 @@ function _flowBuilderHtml(catalog, existing = null) {
                     <div class="flow-form-section">
                         <div class="flow-section-head"><h2>Ownership and failure alerts</h2></div>
                         <div class="flow-form-grid">
-                            <label class="flow-span-2"><span>Flow owner</span><select id="flow-owner">${_flowOwnerOptions(people, existing?.owner_person_id)}</select><small id="flow-owner-help">${_flowOwnerHelp(owner)}</small></label>
+                            <label class="flow-span-2"><span>Flow owner</span><select id="flow-owner">${_flowOwnerOptions(people, existing?.owner_person_id)}</select><small id="flow-owner-help">${_flowOwnerHelp(owner, existing?.sql_assign_owner !== false)}</small></label>
                         </div>
                     </div>
                     <div class="flow-form-section">
@@ -11749,6 +11757,7 @@ function _flowBuilderHtml(catalog, existing = null) {
                                 <label><span>Database</span><select id="flow-sql-database">${sqlDatabases.map(value => `<option ${value === selectedDatabase ? "selected" : ""}>${esc(value)}</option>`).join("")}</select></label>
                                 <label><span>Schema</span><select id="flow-sql-schema">${sqlSchemas.map(value => `<option ${value === selectedSchema ? "selected" : ""}>${esc(value)}</option>`).join("")}</select></label>
                                 <label><span>Table</span><input id="flow-sql-table" list="flow-sql-table-options" maxlength="63" value="${esc(existing?.sql_table || sqlTables[0] || "")}" placeholder="Existing or new table name"><datalist id="flow-sql-table-options">${sqlTables.map(value => `<option value="${esc(value)}"></option>`).join("")}</datalist><small>Append rows requires an existing table. Replace all rows may create this name in the selected schema. New table names are lowercased with spaces converted to underscores automatically; existing tables keep their exact names.</small></label>
+                                ${_flowSqlOwnerHtml(existing)}
                                 ${_flowSqlLinkHtml(existing)}
                                 ${_flowViewRefreshHtml(existing)}
                             </div>
@@ -12251,6 +12260,7 @@ function _flowCollectBuilder() {
         transform_enabled: transformEnabled,
         transform_script_path: transformEnabled ? $("#flow-transform-script").value.trim() : null,
         sql_handoff_enabled: sqlEnabled,
+        sql_assign_owner: $("#flow-sql-assign-owner")?.checked ?? true,
         sql_mode: sqlEnabled ? $("#flow-sql-mode").value : null,
         sql_uppercase: sqlEnabled ? ($("#flow-sql-uppercase")?.checked || false) : false,
         sql_database: sqlEnabled ? $("#flow-sql-database").value : null,
@@ -13024,7 +13034,7 @@ function _bindFlowWorkspace() {
         const owner = (state.people || []).find(person => person.id === Number(event.target.value));
         const help = $("#flow-owner-help");
         const summary = $("#flow-owner-summary");
-        if (help) help.innerHTML = _flowOwnerHelp(owner);
+        if (help) help.innerHTML = _flowOwnerHelp(owner, $("#flow-sql-assign-owner")?.checked ?? true);
         if (summary) summary.innerHTML = _flowOwnerSummary(owner);
     });
     $("#flow-output-mode")?.addEventListener("change", event => {
@@ -13209,6 +13219,7 @@ function _bindFlowWorkspace() {
         if ($("#flow-sql-mode").value === "append" && !tables.includes($("#flow-sql-table").value)) $("#flow-sql-table").value = tables[0] || "";
     };
     $("#flow-sql-enabled")?.addEventListener("change", updateSqlFields);
+    $("#flow-sql-assign-owner")?.addEventListener("change", () => $("#flow-owner")?.dispatchEvent(new Event("change")));
     $("#flow-sql-uppercase")?.addEventListener("change", updateSqlFields);
     $("#flow-sql-mode")?.addEventListener("change", () => { updateSqlFields(); repopulateSql(); });
     $("#flow-sql-table")?.addEventListener("input", () => {
