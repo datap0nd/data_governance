@@ -108,7 +108,7 @@ def test_users_profile_journey(users_browser, tmp_path):
     evidence.mkdir(parents=True, exist_ok=True)
     expect(page.get_by_role("heading", name="Users", exact=True)).to_be_visible()
     expect(page.get_by_role("region", name="User directory")).to_be_visible()
-    expect(page.locator('#app')).to_contain_text('next successful SQL load, including existing tables')
+    expect(page.locator('#app')).to_contain_text('when that Flow enables SQL table ownership, including existing tables')
     rows = page.locator("#users-list tbody tr")
     expect(rows).to_have_count(3)
     expect(page.locator("#users-count")).to_have_text("3 users · 1 SQL identity linked")
