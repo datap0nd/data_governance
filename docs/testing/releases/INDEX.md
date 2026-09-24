@@ -5,6 +5,7 @@ in [the testing workflow](../README.md); this file is the complete history.
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-09-24: Python scheduler plan set | [Test plan](2026-09-24-python-scheduler-plan/test-plan.md) | [Test report](2026-09-24-python-scheduler-plan/test-report.md) |
 | 2026-09-21: optional Flow SQL table owner | [Test plan](2026-09-21-optional-flow-sql-owner/test-plan.md) | [Test report](2026-09-21-optional-flow-sql-owner/test-report.md) |
 | 2026-09-20: automatic recorded month ranges | [Test plan](2026-09-20-recorded-month-range-import/test-plan.md) | [Test report](2026-09-20-recorded-month-range-import/test-report.md) |
 | 2026-09-19: setup worker timestamp recovery | [Test plan](2026-09-19-setup-worker-timestamps/test-plan.md) | [Test report](2026-09-19-setup-worker-timestamps/test-report.md) |
