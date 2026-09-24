@@ -14,7 +14,7 @@ controls['input[name="flow-excel-mode"]:checked'] = {value:'single'};
 set('flow-export-report-title','',{checked:true,dataset:{inherit:'true'}}); set('flow-export-filter-details','',{checked:false,disabled:true});
 const form = {dataset:{sourceType:'file',id:''}};
 controls['#flow-builder-form'] = form;
-const context = {$: id => controls[id], window:{_flowsState:{flows:[],catalog:{asap_download_types:[{key:'csv_file_format',file_format:'csv'}]}}}, document:{querySelectorAll: selector => selector.includes('export-view') ? [{value:'View A'}, {value:'View B'}] : []}, _flowSiteIsAsap: () => true};
+const context = {$: id => controls[id], window:{_flowsState:{flows:[],catalog:{asap_download_types:[{key:'csv_file_format',file_format:'csv'}]}}}, document:{querySelector: selector => controls[selector], querySelectorAll: selector => selector.includes('export-view') ? [{value:'View A'}, {value:'View B'}] : []}, _flowSiteIsAsap: () => true};
 vm.createContext(context);
 vm.runInContext(source.slice(source.indexOf('function _flowCollectBuilder'),source.indexOf('function _pipelineDuration')),context);
 let body = context._flowCollectBuilder();
@@ -104,6 +104,7 @@ context.document.querySelectorAll = selector => selector.includes('flow-python-s
 const helpersStart = source.indexOf('function _flowPythonValuesList');
 vm.runInContext(source.slice(helpersStart, source.indexOf('function _flowPythonBuilderHtml', helpersStart)), context);
 form.dataset.sourceType = 'python';
+controls['input[name="flow-python-mode"]:checked'] = {value:'outputs'};
 set('flow-file-format', 'xlsx'); set('flow-filename', ' {flow}_{date}.xlsx '); set('flow-output-mode', 'direct_replace');
 set('flow-sql-enabled', '', {checked:false});
 body = context._flowCollectBuilder();
@@ -146,6 +147,22 @@ assert.match(source, /python_scripts: "flow-python-script-1"/);
 assert.match(source, /"Run queued. The worker will run the Python scripts in order."/);
 console.log('flow builder python payload tests passed');
 
+controls['input[name="flow-python-mode"]:checked'] = {value:'run'};
+set('flow-python-interpreter', ' C:\\Python313\\python.exe ');
+set('flow-python-timeout', '25');
+set('flow-file-format', 'xlsx');
+set('flow-sql-enabled', '', {checked:true});
+body = context._flowCollectBuilder();
+assert.equal(body.python_run_mode, 'run');
+assert.equal(body.python_interpreter, 'C:\\Python313\\python.exe');
+assert.equal(body.python_timeout_minutes, 25);
+assert.equal(body.file_format, 'csv');
+assert.equal(body.filename_template, 'run-only.csv');
+assert.equal(body.sql_handoff_enabled, false);
+assert.equal(body.email_delivery.enabled, false);
+assert.equal(body.post_sql_refresh.mode, 'off');
+controls['input[name="flow-python-mode"]:checked'] = {value:'outputs'};
+
 // Per-script arguments and values: the three-line row markup, renumbered ids, the list label,
 // the live run count and the server-error focus for both fields.
 context.esc = value => value == null ? '' : String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -182,6 +199,7 @@ assert.match(source, /python_script_arguments: "flow-python-arguments-1", python
 assert.match(source, /argumentsInput\.id = `flow-python-arguments-\$\{index \+ 1\}`;\n\s+argumentsInput\.setAttribute\("aria-label", `Script \$\{index \+ 1\} arguments`\)/);
 assert.match(source, /valuesInput\.id = `flow-python-values-\$\{index \+ 1\}`;\n\s+valuesInput\.setAttribute\("aria-label", `Script \$\{index \+ 1\} values`\)/);
 assert.match(source, /count\.textContent = _flowPythonRunCountLabel\(_flowPythonValuesList\(textarea\.value\)\)/);
-assert.match(source, /Arguments are added to the command exactly as typed, before Metronome's <code>--input<\/code>\/<code>--output<\/code>; use double quotes around a value with spaces; \{flow\}, \{date\} and \{run_id\} are replaced per run\./);
+assert.match(source, /Scripts run in their own folder with the chosen computer Python and receive only your typed arguments/);
+assert.match(source, /Every script receives <code>--output<\/code>; from the second script on it also receives <code>--input<\/code>/);
 assert.match(source, /scriptArguments\[index\] \|\| "", scriptValues\[index\] \|\| \[\]\)\)\.join\(""\)/);
 console.log('flow builder python arguments and values tests passed');

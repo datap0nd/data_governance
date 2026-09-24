@@ -198,7 +198,8 @@ def test_flow_python_helpers_describe_and_normalize(tmp_path):
         flow_python.normalize_scripts([f"/s/{i}.py" for i in range(21)])
     section = flow_python.job_section({"source_type": "python", "python_scripts_json": '["/s/a.py"]',
                                        "file_format": "xlsx", "sql_handoff_enabled": True})
-    assert section == {"enabled": True, "scripts": ["/s/a.py"], "arguments": [""], "values": [[]],
+    assert section == {"enabled": True, "mode": "outputs", "interpreter": "",
+                       "scripts": ["/s/a.py"], "arguments": [""], "values": [[]],
                        "output_format": "csv", "destination": "sql", "timeout_seconds": 3600}
     assert flow_python.job_section({"source_type": "portal", "python_scripts": ["/s/a.py"]})["enabled"] is False
     assert flow_python.job_section({"source_type": "portal", "python_scripts": ["/s/a.py"]})["scripts"] == []
@@ -238,7 +239,8 @@ def test_python_flow_uses_hidden_anchor_managed_folder_and_v3_job(flow_db, tmp_p
     assert job["execution"]["required_adapter"] == "python_script"
     assert job["execution"]["browser_mode"] == "headless"
     assert job["python_source"] == {
-        "enabled": True, "scripts": [str(item) for item in scripts], "arguments": ["", ""],
+        "enabled": True, "mode": "outputs", "interpreter": "",
+        "scripts": [str(item) for item in scripts], "arguments": ["", ""],
         "values": [[], []], "output_format": "csv", "destination": "file", "timeout_seconds": 3600,
     }
     assert job["transformation"]["enabled"] is False
@@ -471,7 +473,7 @@ def test_interpreter_that_cannot_start_leaves_a_failed_step_record(tmp_path, mon
     def refuse(*_args, **_kwargs):
         raise OSError(11, "Resource temporarily unavailable")
 
-    monkeypatch.setattr(flow_python.subprocess, "run", refuse)
+    monkeypatch.setattr(flow_python.subprocess, "Popen", refuse)
     events = []
     with pytest.raises(RuntimeError, match=r"fetch_orders\.py \(step 1 of 2\) could not be started: .*Resource temporarily unavailable") as failure:
         flow_worker.execute_python_job(

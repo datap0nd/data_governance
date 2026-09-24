@@ -1,12 +1,13 @@
 # Python-script Flows
 
 Choose **Create flow > Python scripts** to run one or more Python scripts in
-order on the Flows worker and keep what the last one writes. The Flow stores
-the ordered list of absolute script paths, the final file type (CSV or Excel
-`.xlsx`), a filename template, the same **Output files** mode as Outlook Flows,
-an optional SQL handoff with the existing **Refresh materialized views** step,
-and the shared owner, schedule and email settings. There is no browser, portal,
-mailbox or source file: the scripts are the acquisition and the transformation.
+order on the Flows worker. New Flows offer **Just run the scripts** by default;
+existing file-producing Flows keep **Produce a file or SQL table**. The Flow stores
+the ordered list of absolute script paths and the shared owner and schedule.
+File-producing Flows also store the final file type (CSV or Excel `.xlsx`), a
+filename template, the same **Output files** mode as Outlook Flows, an optional
+SQL handoff and the shared email settings. There is no browser, portal, mailbox
+or source file: the scripts are the acquisition and the transformation.
 
 The Flow appears in the **Python** group of the Flows list with its managed
 folder under `<Flows root>/Python/<flow name>`. Its source adapter is
@@ -14,9 +15,51 @@ folder under `<Flows root>/Python/<flow name>`. Its source adapter is
 an older worker never picks up a Python job. A job that uses arguments or
 values additionally requires the `python_script_arguments_v1` worker
 capability, so a worker from an earlier release never runs such a Flow with
-the arguments silently dropped.
+the arguments silently dropped. Run-mode Flows also require
+`python_script_run_v1`, which covers process waiting, live output and Stop.
 
 ## Script contract
+
+### Just run the scripts
+
+This mode runs each saved `.py` file once per configured value in its own
+folder. The command is `[interpreter, script, *arguments]` exactly: Metronome
+does not add `--input` or `--output`, create a run folder, require a file, insert
+into SQL or send email. Exit code 0 succeeds; a non-zero code fails with the
+script name, step and a short output tail. `stdin` is closed, so a prompt fails
+immediately instead of hanging. `PYTHONUNBUFFERED=1` and
+`PYTHONIOENCODING=utf-8` support live Unicode output.
+
+**Python to use** may hold an absolute path to a specific `python.exe` (such as
+a virtual environment). Otherwise `DG_PYTHON_EXE` is used, then the computer's
+`py` launcher, then a usable `python` on PATH. A missing configured interpreter
+fails the run; Metronome never silently uses its embedded worker Python. The
+builder's **Check script and Python** checks read access without executing the
+script. Use a UNC path in place of a mapped drive that the service cannot see.
+
+The time limit is 1–1440 minutes (default 60) for the entire Flow. A run waits
+for the main script and the processes it started, even if the main script exits
+first. At the limit, or on **Stop**, the worker ends the tracked process tree
+and remains available. Programs opened through COM or Task Scheduler cannot
+be tracked; GUI programs and `os.startfile` targets can keep a run occupied until
+the time limit. A long script also occupies one headless worker slot.
+
+Run scripts inherit the worker environment (including non-empty project `.env`
+settings) after stale output variables are removed. They receive
+`METRONOME_FLOW_MODE=run`, `METRONOME_FLOW_NAME`, `METRONOME_FLOW_RUN_ID`,
+`METRONOME_FLOW_STEP`, `METRONOME_FLOW_STEPS` and `METRONOME_FLOW_VALUE`.
+Only configure trusted scripts; never print secrets.
+
+The run log streams stdout and stderr and shows tracked child processes with
+state, CPU and memory. Optional lines `::stage::Loading stock`,
+`::progress::3/10` or `::progress::45%` update the stage and progress bar.
+Run history can be filtered by Flow and status. Console lines are capped at
+2000 characters; each run retains its first 500 and latest 4500 lines, and
+console output for older runs is pruned after the newest 50 runs of a Flow.
+Known secret environment values are masked before storage, but scripts should
+still avoid printing secrets.
+
+### Produce a file or SQL table
 
 Every script runs in place, never copied, with the worker's own interpreter
 (`sys.executable`) and the current working directory set to the script's own
@@ -56,8 +99,8 @@ so a broken chain still leaves a structured record for each step that ran.
 ## Arguments and values
 
 Each script row has an optional **Arguments** line and an optional **Values**
-list. The worker adds the arguments to the command exactly as typed, right
-after the script path and before Metronome's own `--input`/`--output` flags:
+list. The worker adds the arguments after the script path. In file-producing
+mode, Metronome's `--input`/`--output` flags follow them:
 
 ```text
 python run_download.py -sheet T --output <reserved-path>                       # first script
@@ -69,8 +112,8 @@ tokens, a double-quoted span keeps its spaces (`-in "C:\data\my file.xlsx"`),
 a doubled quote inside a quoted span (`""`) is a literal quote, and
 backslashes are ordinary characters. An unclosed quote is rejected when the
 Flow is saved. Arguments are one line of at most 2000 characters. Argument
-names must not collide with `--input` and `--output`, which Metronome always
-appends after them. The tokens `{flow}` (the Flow name), `{run_id}` and
+names must not collide with `--input` and `--output` in file-producing mode,
+where Metronome appends them. The tokens `{flow}` (the Flow name), `{run_id}` and
 `{date}` (the run's Dubai calendar date, `YYYY-MM-DD`, the same date the
 filename template renders) are replaced before splitting; quote a token whose
 value may contain spaces (`-n "{flow}"`). Unknown `{...}` spans are passed
@@ -113,7 +156,7 @@ together under **Fixed file path**, inserted into the SQL table together,
 listed in the run's email and counted in the progress bar. The run summary
 reads `Ran 4 Python script run(s) and saved 3 file(s): ...`.
 
-## Environment variables
+## Environment variables for file-producing mode
 
 Every step receives the worker's environment plus the variables below. Scripts
 inherit the whole worker process environment, including any credentials the
@@ -194,6 +237,9 @@ inside `<root>/Python`, and the Flow's target folder must be inside its own
 managed folder; Save and queued jobs reject other locations. Scripts uploaded
 through **Browse...** in the builder are staged under `<root>/Python/.uploads`
 in unique directories, so enforcement accepts them as configured.
+Browse is hidden for run-mode Flows because an uploaded script may depend on
+neighboring files. Paste a full path visible to the worker service instead;
+the service does not have an interactive desktop.
 Scripts kept inside the Flow's own managed folder (for example its `Scripts`
 subfolder) follow that folder when the Flow is renamed; the rename is refused
 while another Flow still uses scripts from it.

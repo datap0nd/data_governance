@@ -2026,6 +2026,23 @@ MIGRATIONS = [
     # both JSON lists aligned index-by-index with python_scripts_json.
     "ALTER TABLE flows ADD COLUMN python_script_arguments_json TEXT",
     "ALTER TABLE flows ADD COLUMN python_script_values_json TEXT",
+    # Run-only Python Flows keep the old output contract for NULL/outputs rows.
+    "ALTER TABLE flows ADD COLUMN python_run_mode TEXT",
+    "ALTER TABLE flows ADD COLUMN python_interpreter TEXT",
+    "ALTER TABLE flows ADD COLUMN python_timeout_minutes INTEGER",
+    # The latest bounded process/marker snapshot; console lines have their own
+    # table so frequent live updates do not rewrite the whole run record.
+    "ALTER TABLE flow_runs ADD COLUMN live_json TEXT",
+    """CREATE TABLE IF NOT EXISTS flow_run_output (
+           id INTEGER PRIMARY KEY AUTOINCREMENT,
+           run_id INTEGER NOT NULL REFERENCES flow_runs(id) ON DELETE CASCADE,
+           line_no INTEGER NOT NULL,
+           stream TEXT NOT NULL,
+           text TEXT NOT NULL,
+           pid INTEGER,
+           emitted_at TEXT NOT NULL,
+           UNIQUE(run_id, line_no))""",
+    "CREATE INDEX IF NOT EXISTS idx_flow_run_output_run ON flow_run_output(run_id, line_no)",
 ]
 
 

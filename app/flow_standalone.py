@@ -237,6 +237,9 @@ def offline_main(job: dict, argv=None) -> int:
         plan = job.get('post_sql_refresh') or {}
         sql = bool(job['sql_handoff']['enabled'] and not args.no_sql)
         print(json.dumps({'flow_id': job['flow']['id'], 'source': job['flow'].get('source_type'),
+                         'python_mode': (job.get('python_source') or {}).get('mode'),
+                         'python_interpreter': (job.get('python_source') or {}).get('interpreter'),
+                         'python_timeout_seconds': (job.get('python_source') or {}).get('timeout_seconds'),
                          'sql': sql,
                          'transform': bool(job['transformation']['enabled'] and not args.no_transform),
                          'refresh_views': [flow_view_refresh.label(view) for view in flow_view_refresh.plan_views(job)] if sql else [],

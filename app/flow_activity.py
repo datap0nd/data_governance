@@ -25,6 +25,7 @@ def row_progress(db, run):
     status = run["status"]
     stage = detail.get("stage") or status
     source = job.get("flow", {}).get("source_type", "portal")
+    python_run_only = source == "python" and (job.get("python_source") or {}).get("mode") == "run"
     sql_only = job.get("job_type") == "sql_retry"
     downloads = job.get("downloads") or {}
     report = job.get("report") or {}
@@ -32,8 +33,8 @@ def row_progress(db, run):
     if source == "portal":
         count = len(exports) * len(downloads.get("periods") or [None])
     elif source == "python":
-        # One deliverable per value of the last script row (at least one).
-        count = flow_python.deliverable_count(job.get("python_source") or {}) or 1
+        count = (flow_python.run_count(job.get("python_source") or {}) if python_run_only
+                 else flow_python.deliverable_count(job.get("python_source") or {})) or 1
     else:
         count = 1
     # Old/malformed snapshots cannot support a trustworthy denominator.
@@ -53,6 +54,11 @@ def row_progress(db, run):
     saved = {str(item.get("bundle_index") or json.dumps([item.get("export_view"), item.get("period_key")]))
              for item in artifacts if isinstance(item, dict) and item.get("status") == "saved"}
     acquired = sum(task["state"] == "succeeded" for task in tasks) if tasks else min(count, len(saved))
+    if python_run_only:
+        acquired = min(count, db.execute(
+            "SELECT COUNT(*) FROM flow_run_events WHERE run_id=? AND stage='python_step_complete'",
+            (run["id"],),
+        ).fetchone()[0])
     if after_download:
         acquired = count
     if source in {"file", "outlook", "python"} and stages & {"file_normalization", "file_validation", "python_complete"}:
@@ -64,7 +70,10 @@ def row_progress(db, run):
     prepared = bool(acquired or after_download or stages & prepare_stages)
     normalized = after_download or (acquired == count and bool(saved or tasks))
     work = []
-    if not sql_only:
+    if python_run_only:
+        work = [("Prepare run", 1, int(prepared)),
+                ("Run scripts", count, acquired)]
+    elif not sql_only:
         work += [("Prepare run", 1, int(prepared)),
                  ("Run scripts" if source == "python" else "Read file" if source == "file" else "Download", count, acquired),
                  ("Prepare files", 1, int(normalized))]

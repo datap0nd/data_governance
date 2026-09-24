@@ -8,10 +8,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import locale
 import os
 import re
+import shutil
 import subprocess
 import sys
+import queue
+import signal
+import threading
 import time
 from pathlib import Path
 
@@ -24,6 +29,7 @@ SCRIPT_TIMEOUT_SECONDS = 3600
 # Workers advertise this capability once they honour per-script arguments and
 # values; a job that uses either is never claimed by an older worker.
 ARGUMENTS_CAPABILITY = "python_script_arguments_v1"
+RUN_CAPABILITY = "python_script_run_v1"
 # Per-script arguments are one line typed by the owner; values are one short
 # line each and the same script runs once per value.
 MAX_ARGUMENT_CHARS = 2000
@@ -265,13 +271,34 @@ def job_section(flow: dict) -> dict:
     scripts, arguments, values = saved_steps(flow) if enabled else ([], [], [])
     return {
         "enabled": enabled,
+        "mode": flow.get("python_run_mode") or "outputs",
+        "interpreter": flow.get("python_interpreter") or "",
         "scripts": scripts,
         "arguments": arguments,
         "values": values,
         "output_format": output_format,
         "destination": destination,
-        "timeout_seconds": SCRIPT_TIMEOUT_SECONDS,
+        "timeout_seconds": int(flow.get("python_timeout_minutes") or 60) * 60,
     }
+
+
+def resolve_interpreter(configured: str | None = None, environment: dict | None = None) -> tuple[str, str]:
+    """Choose the computer's Python, never the embedded worker interpreter."""
+    env = os.environ if environment is None else environment
+    requested = str(configured or env.get("DG_PYTHON_EXE") or "").strip()
+    if requested:
+        if not Path(requested).is_file():
+            raise RuntimeError(f"Configured Python interpreter does not exist: {requested}")
+        return requested, "Flow setting" if configured else "DG_PYTHON_EXE"
+    for candidate, reason in (
+        (shutil.which("py"), "py launcher on PATH"),
+        (r"C:\Windows\py.exe", "Windows py launcher"),
+        (str(Path(env.get("LOCALAPPDATA", "")) / "Programs/Python/Launcher/py.exe") if env.get("LOCALAPPDATA") else None, "user py launcher"),
+        (shutil.which("python"), "python on PATH"),
+    ):
+        if candidate and Path(candidate).is_file() and "windowsapps" not in str(candidate).casefold():
+            return str(candidate), reason
+    raise RuntimeError("No computer Python interpreter was found. Set Python to use on the Flow or DG_PYTHON_EXE.")
 
 
 def run_plan(scripts, arguments=None, values=None) -> list[dict]:
@@ -398,10 +425,137 @@ def _tail(text) -> str:
     return (text or "").strip()[-OUTPUT_TAIL_CHARS:]
 
 
+def _kill_process_tree(process, observer=None) -> None:
+    """End the launched process group and any descendants the worker tracked."""
+    if observer is not None and hasattr(observer, "kill_all"):
+        observer.kill_all()
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                           capture_output=True, timeout=10)
+        else:
+            os.killpg(process.pid, signal.SIGKILL)
+    except (OSError, ProcessLookupError, subprocess.TimeoutExpired):
+        pass
+    if process.poll() is None:
+        process.kill()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def run_process(command: list[str], *, cwd: Path, environment: dict,
+                timeout_seconds: float, wait_descendants: bool = False,
+                observer=None, on_line=None, on_tick=None, stop_requested=None) -> subprocess.CompletedProcess:
+    """Run with live, bounded line draining and a whole-tree timeout/Stop.
+
+    Reader threads never block on the observer or network. Their bounded queue
+    records drops; the worker's live observer publishes the count separately.
+    """
+    process = subprocess.Popen(
+        command, cwd=str(cwd), env=environment, stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
+        creationflags=(getattr(subprocess, "CREATE_NO_WINDOW", 0) |
+                       getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)),
+        start_new_session=os.name != "nt",
+    )
+    if observer is not None and hasattr(observer, "start"):
+        observer.start(process)
+    lines = queue.Queue(maxsize=5000)
+    tails = {"stdout": "", "stderr": ""}
+    finished = {"stdout": False, "stderr": False}
+    root_exited_at = None
+
+    def decode_line(data: bytearray) -> str:
+        try:
+            return data.decode("utf-8")
+        except UnicodeDecodeError:
+            return data.decode(locale.getpreferredencoding(False), errors="replace")
+
+    def reader(stream: str, pipe):
+        pending = bytearray()
+        try:
+            while True:
+                chunk = pipe.read(4096)
+                if not chunk:
+                    break
+                for byte in chunk:
+                    if byte in (10, 13):
+                        if pending:
+                            item = decode_line(pending)
+                            try:
+                                lines.put_nowait((stream, item[:2000]))
+                            except queue.Full:
+                                if observer is not None and hasattr(observer, "note_drop"):
+                                    observer.note_drop()
+                            pending.clear()
+                    elif len(pending) < 8000:
+                        pending.append(byte)
+            if pending:
+                item = decode_line(pending)
+                try:
+                    lines.put_nowait((stream, item[:2000]))
+                except queue.Full:
+                    if observer is not None and hasattr(observer, "note_drop"):
+                        observer.note_drop()
+        finally:
+            finished[stream] = True
+
+    threads = [threading.Thread(target=reader, args=(name, pipe), daemon=True)
+               for name, pipe in (("stdout", process.stdout), ("stderr", process.stderr))]
+    for thread in threads:
+        thread.start()
+    deadline = time.monotonic() + timeout_seconds
+    last_tick = 0.0
+    try:
+        while True:
+            try:
+                stream, line = lines.get(timeout=0.1)
+                if on_line is not None:
+                    sanitized = on_line(stream, line, process.pid)
+                    if isinstance(sanitized, str):
+                        line = sanitized
+                tails[stream] = (tails[stream] + line + "\n")[-OUTPUT_TAIL_CHARS:]
+            except queue.Empty:
+                pass
+            now = time.monotonic()
+            if observer is not None and now - last_tick >= 1:
+                observer.sample()
+            if on_tick is not None and now - last_tick >= 1:
+                on_tick(process, observer)
+            if now - last_tick >= 1:
+                last_tick = now
+            if stop_requested is not None and stop_requested():
+                raise RuntimeError("Python script run was stopped.")
+            if now >= deadline:
+                raise TimeoutError(f"Python script exceeded its {round(timeout_seconds)} second time limit.")
+            if process.poll() is not None and root_exited_at is None:
+                root_exited_at = now
+            descendants = (observer.running_descendants() if observer is not None and
+                           hasattr(observer, "running_descendants") else [])
+            pipes_done = finished["stdout"] and finished["stderr"]
+            if (root_exited_at is not None and not wait_descendants and now - root_exited_at > .5
+                    and lines.empty()):
+                break
+            if (root_exited_at is not None and (not wait_descendants or not descendants)
+                    and pipes_done and lines.empty()):
+                break
+        return subprocess.CompletedProcess(command, process.returncode,
+                                           tails["stdout"], tails["stderr"])
+    except (TimeoutError, RuntimeError):
+        _kill_process_tree(process, observer)
+        raise
+    finally:
+        if observer is not None and hasattr(observer, "sample"):
+            observer.sample()
+
+
 def run_scripts(scripts: list[Path], final_outputs, steps_folder: Path, *, environment: dict,
                 flow_name: str, run_id: int, output_format: str, arguments=None, values=None,
                 date: str | None = None, timeout_seconds: int = SCRIPT_TIMEOUT_SECONDS,
-                progress=None, step_result=None) -> list[dict]:
+                progress=None, step_result=None, observer_factory=None,
+                on_line=None, on_tick=None, stop_requested=None) -> list[dict]:
     """Run every script row in order, once per value; each run must write its ``--output``.
 
     ``final_outputs`` holds one reserved final path per run of the last row (a
@@ -478,15 +632,15 @@ def run_scripts(scripts: list[Path], final_outputs, steps_folder: Path, *, envir
         )
         started = time.perf_counter()
         try:
-            completed = subprocess.run(
-                command, cwd=str(script.parent), env=step_env, capture_output=True, text=True,
-                encoding="utf-8", errors="replace", timeout=timeout_seconds,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            observer = observer_factory() if observer_factory is not None else None
+            completed = run_process(
+                command, cwd=script.parent, environment=step_env,
+                timeout_seconds=timeout_seconds,
+                observer=observer, on_line=on_line, on_tick=on_tick,
+                stop_requested=stop_requested,
             )
-        except subprocess.TimeoutExpired as exc:
+        except TimeoutError as exc:
             record["duration_ms"] = round((time.perf_counter() - started) * 1000)
-            record["stdout"] = _tail(exc.stdout.decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else exc.stdout)
-            record["stderr"] = _tail(exc.stderr.decode("utf-8", "replace") if isinstance(exc.stderr, bytes) else exc.stderr)
             fail(f"{label} timed out after {timeout_seconds} seconds and was stopped.", exc)
         except OSError as exc:
             record["duration_ms"] = round((time.perf_counter() - started) * 1000)
@@ -510,6 +664,82 @@ def run_scripts(scripts: list[Path], final_outputs, steps_folder: Path, *, envir
             step_result(record)
         row_outputs.setdefault(run["row"], []).append(output)
         previous_output = output
+    return records
+
+
+def run_scripts_only(scripts: list[Path], *, environment: dict, flow_name: str,
+                     run_id: int, interpreter: str, arguments=None, values=None,
+                     date: str | None = None, timeout_seconds: int = SCRIPT_TIMEOUT_SECONDS,
+                     progress=None, step_result=None, observer_factory=None,
+                     on_line=None, on_tick=None, stop_requested=None) -> list[dict]:
+    """Run scripts exactly as typed without requiring or producing any file."""
+    scripts = check_scripts(scripts)
+    plan = run_plan(scripts, arguments, values)
+    deadline = time.monotonic() + timeout_seconds
+    records = []
+    for run in plan:
+        script = run["script"]
+        index, total = run["index"], run["steps"]
+        label = f"Python script {script.name} (step {index} of {total})"
+        text = render_arguments(run["arguments_text"], flow_name=flow_name,
+                                run_id=run_id, date=date, value=run["value"])
+        if run["value"] is not None and VALUE_TOKEN not in run["arguments_text"]:
+            text = f"{text} {quote_argument(run['value'])}".strip()
+        split = split_arguments(text)
+        command = [interpreter, str(script), *split]
+        step_env = dict(environment)
+        for key in ("METRONOME_FLOW_OUTPUT", "METRONOME_FLOW_INPUT",
+                    "METRONOME_FLOW_INPUTS", "METRONOME_FLOW_RESULTS_DIR",
+                    "METRONOME_FLOW_OUTPUT_FORMAT"):
+            step_env.pop(key, None)
+        step_env.update({
+            "METRONOME_FLOW_MODE": "run", "METRONOME_FLOW_NAME": str(flow_name),
+            "METRONOME_FLOW_RUN_ID": str(run_id), "METRONOME_FLOW_STEP": str(index),
+            "METRONOME_FLOW_STEPS": str(total),
+            "METRONOME_FLOW_VALUE": "" if run["value"] is None else str(run["value"]),
+            "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8",
+        })
+        record = {"index": index, "steps": total, "row": run["row"],
+                  "script": str(script), "script_name": script.name,
+                  "script_checksum": _checksum(script), "value": run["value"],
+                  "arguments": split, "arguments_text": text,
+                  "output_path": None, "output_size": 0, "exit_code": None,
+                  "duration_ms": 0, "stdout": "", "stderr": ""}
+        if progress is not None:
+            progress(record)
+        observer = observer_factory() if observer_factory is not None else None
+        started = time.perf_counter()
+        try:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("The Flow time limit elapsed before this step started.")
+            completed = run_process(
+                command, cwd=script.parent, environment=step_env,
+                timeout_seconds=remaining,
+                wait_descendants=True, observer=observer,
+                on_line=on_line, on_tick=on_tick, stop_requested=stop_requested,
+            )
+            record["exit_code"] = completed.returncode
+            record["stdout"] = _tail(completed.stdout)
+            record["stderr"] = _tail(completed.stderr)
+            if completed.returncode != 0:
+                raise RuntimeError(f"{label} failed with exit code {completed.returncode}: "
+                                   f"{record['stderr'] or record['stdout'] or 'no output'}")
+        except (OSError, TimeoutError, RuntimeError) as exc:
+            record["duration_ms"] = round((time.perf_counter() - started) * 1000)
+            record["error"] = str(exc) if str(exc).startswith(label) else f"{label}: {exc}"
+            if step_result is not None:
+                step_result(record)
+            if isinstance(exc, TimeoutError):
+                raise TimeoutError(record["error"]) from exc
+            if isinstance(exc, OSError):
+                raise RuntimeError(record["error"]) from exc
+            raise
+        finally:
+            record["duration_ms"] = round((time.perf_counter() - started) * 1000)
+        records.append(record)
+        if step_result is not None:
+            step_result(record)
     return records
 
 

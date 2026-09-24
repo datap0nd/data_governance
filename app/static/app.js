@@ -10664,7 +10664,7 @@ function _flowSourcePickerHtml(catalog) {
                 <button type="button" class="flow-source-card" id="flow-source-file">
                     <strong>From file</strong><span>Read one exact CSV or Excel path on the worker, keep private snapshots, and process it on a schedule.</span>
                 </button>
-                <button type="button" class="flow-source-card" id="flow-source-python"><strong>Python scripts</strong><span>Run one or more Python scripts in order on the worker, then keep the final CSV or Excel file or insert it into a SQL table.</span></button>
+                <button type="button" class="flow-source-card" id="flow-source-python"><strong>Python scripts</strong><span>Run scripts on a schedule, or have them produce a final CSV or Excel file or SQL table.</span></button>
                 <button type="button" class="flow-source-card" id="flow-source-record"><strong>Record a portal flow</strong><span>Record a report in ASAP or GSCM, review its actions, then validate and schedule it.</span></button>
                 <button type="button" class="flow-source-card" id="flow-source-portal" ${portalReady ? "" : "disabled"}>
                     <strong>Website report</strong><span>${portalReady ? "Download a discovered ASAP report or GSCM bookmark." : "Add and scan a website before creating this category."}</span>
@@ -10786,9 +10786,9 @@ function _flowRowModel(flow, runs = [], catalog = {}) {
     const group = flow.source_type === "file" ? "Local" : flow.source_type === "outlook" ? "Outlook" : flow.source_type === "python" ? "Python" : ({asap_portal: "ASAP", gscm_portal: "GSCM"}[flow.source_adapter] || "Web");
     const scripts = _flowPythonScriptNames(flow);
     const source = group === "Local" ? flow.local_file_path : group === "Outlook" ? flow.outlook_subject_contains : group === "Python" ? scripts.join(" → ") : (flow.category_path?.length ? flow.category_path.join(" › ") : flow.report_name || flow.site_name);
-    const type = group === "Python" ? `${scripts.length} script(s) → ${flow.sql_handoff_enabled ? "SQL" : String(flow.file_format || "csv").toUpperCase()}` : ["Local", "Outlook"].includes(group) ? "CSV / Excel" : ((catalog.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase());
+    const type = group === "Python" ? flow.python_run_mode === "run" ? `Runs ${scripts.length} script(s)` : `${scripts.length} script(s) → ${flow.sql_handoff_enabled ? "SQL" : String(flow.file_format || "csv").toUpperCase()}` : ["Local", "Outlook"].includes(group) ? "CSV / Excel" : ((catalog.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase());
     const destination = group === "Local" ? "Private snapshots" : flow.folder_relative ? `${flow.folder_relative} / Downloads` : flow.target_folder;
-    const to = flow.sql_handoff_enabled ? [flow.sql_database, flow.sql_schema, flow.sql_table].filter(Boolean).join(".") : destination;
+    const to = flow.python_run_mode === "run" ? "—" : flow.sql_handoff_enabled ? [flow.sql_database, flow.sql_schema, flow.sql_table].filter(Boolean).join(".") : destination;
     const schedule = _flowScheduleLabel(flow);
     const activeRun = runs.find(run => run.flow_id === flow.id && ["queued", "claimed", "running"].includes(run.status));
     return {flow, group, name: flow.name, source, owner: flow.owner_name, type, to, destination, browser: ["Local", "Outlook", "Python"].includes(group) ? null : flow.browser_mode, schedule, lastRun: flow.last_run_at, active: !!flow.enabled, activeRun};
@@ -10818,16 +10818,16 @@ function _flowRowHtml(row) {
         <td><label class="flow-switch" title="${flow.schedule_type === "manual" ? "Choose a schedule to activate this flow" : "Activate or pause this flow"}"><input class="flow-enabled-switch" data-flow-focus="active-${flow.id}" type="checkbox" aria-label="Active: ${esc(flow.name)}" data-id="${flow.id}" ${flow.enabled ? "checked" : ""} ${flow.schedule_type === "manual" ? "disabled" : ""}><span aria-hidden="true"></span></label></td>
         <td><select class="flow-inline-edit" data-id="${flow.id}" data-field="owner_person_id" data-flow-focus="owner-${flow.id}" aria-label="Owner: ${esc(flow.name)}"><option value="">Unassigned</option>${(window._flowsState?.people || []).map(person => `<option value="${person.id}" ${person.id === flow.owner_person_id ? "selected" : ""}>${esc(person.name)}</option>`).join("")}</select></td>
         <td class="flow-path-cell">${esc(row.source || "—")}</td>
-        <td>${flow.source_type === "python" ? `${_flowPythonScriptNames(flow).length} Python script(s)<small>${flow.sql_handoff_enabled ? "Final CSV → SQL" : `Final ${esc(String(flow.file_format || "csv").toUpperCase())} file`}</small>` : flow.source_type === "outlook" ? `CSV or Excel attachment<small>Original filename · default Inbox</small>` : flow.source_type === "file" ? `CSV or Excel file<small>${flow.local_file_worksheet ? `Worksheet: ${esc(flow.local_file_worksheet)} · ` : ""}Private snapshots · latest 3</small>` : `${esc(flow.download_mode === "one_per_period" || flow.download_mode === "one_per_week" ? `One ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} every ${flow.window_weeks || 1} week(s)` : `${flow.export_views?.length || 1} ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} export(s)`)}<small>${flow.period_strategy === "none" ? "No period prompt" : flow.period_strategy === "latest" ? "Start to latest available" : flow.period_strategy === "rolling" ? "Rolling window" : "Fixed start + end"}</small>`}<small>${flow.output_mode === "direct_replace" ? "Direct files · exact-name replacement" : "Run folders · newest 3"}</small><small>${esc(row.to || "")}${flow.sql_handoff_enabled ? ` · SQL ${esc(flow.sql_mode)}` : ""}${flow.email_delivery?.enabled ? ` · Email ${flow.email_delivery.recipients?.length || 0} recipient(s)` : ""}</small></td>
+        <td>${flow.source_type === "python" ? flow.python_run_mode === "run" ? `Runs ${_flowPythonScriptNames(flow).length} script(s)<small>No output file</small>` : `${_flowPythonScriptNames(flow).length} Python script(s)<small>${flow.sql_handoff_enabled ? "Final CSV → SQL" : `Final ${esc(String(flow.file_format || "csv").toUpperCase())} file`}</small>` : flow.source_type === "outlook" ? `CSV or Excel attachment<small>Original filename · default Inbox</small>` : flow.source_type === "file" ? `CSV or Excel file<small>${flow.local_file_worksheet ? `Worksheet: ${esc(flow.local_file_worksheet)} · ` : ""}Private snapshots · latest 3</small>` : `${esc(flow.download_mode === "one_per_period" || flow.download_mode === "one_per_week" ? `One ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} every ${flow.window_weeks || 1} week(s)` : `${flow.export_views?.length || 1} ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} export(s)`)}<small>${flow.period_strategy === "none" ? "No period prompt" : flow.period_strategy === "latest" ? "Start to latest available" : flow.period_strategy === "rolling" ? "Rolling window" : "Fixed start + end"}</small>`}${flow.source_type === "python" && flow.python_run_mode === "run" ? "" : `<small>${flow.output_mode === "direct_replace" ? "Direct files · exact-name replacement" : "Run folders · newest 3"}</small>`}<small>${esc(row.to || "")}${flow.sql_handoff_enabled ? ` · SQL ${esc(flow.sql_mode)}` : ""}${flow.email_delivery?.enabled ? ` · Email ${flow.email_delivery.recipients?.length || 0} recipient(s)` : ""}</small></td>
         <td>${["outlook", "file", "python"].includes(flow.source_type) ? "—" : `<select class="flow-inline-edit" data-id="${flow.id}" data-field="browser_mode" data-flow-focus="browser-${flow.id}" aria-label="Browser: ${esc(flow.name)}"><option value="headless" ${flow.browser_mode !== "headed" ? "selected" : ""}>Headless</option><option value="headed" ${flow.browser_mode === "headed" ? "selected" : ""}>Headed</option></select>`}</td>
         <td>${esc(_flowScheduleLabel(flow))}</td>
         <td><div class="flow-last-run">${_flowLastRunHtml(activeRun || { status: flow.last_status, created_at: flow.last_run_at })}</div>${flow.sql_reconciliation_required && flow.sql_mode === "append" ? '<small class="flow-error">SQL reconciliation required</small>' : ""}</td>
-        <td class="flow-row-actions">${button("flow-run", activeRun?.status === "queued" ? "Start now" : activeRun ? "Running" : "Run", activeRun && activeRun.status !== "queued" ? "disabled" : "")}<button class="btn-sm btn-outline btn-danger-outline flow-stop" type="button" data-id="${flow.id}" data-flow-focus="flow-stop-${flow.id}" ${activeRun ? "" : "hidden"}>Stop</button>${button("flow-edit", "Edit")}<details class="flow-row-menu"><summary aria-label="More actions: ${esc(flow.name)}" data-flow-focus="more-${flow.id}">More</summary><div>${button("flow-open-folder", "Open folder")}${flow.flow_folder ? button("flow-standalone-status", "Flow files") : ""}${button("flow-classification", (flow.classification || "production") === "draft" ? "Move to Production" : "Move to Draft", `data-classification="${(flow.classification || "production") === "draft" ? "production" : "draft"}"`)}${flow.sql_reconciliation_required && flow.sql_mode === "append" ? button('flow-sql-reconciled', 'Acknowledge SQL reconciliation') : ''}<button class="btn-sm btn-outline btn-danger-outline flow-delete" type="button" data-id="${flow.id}" data-flow-focus="flow-delete-${flow.id}">Delete</button></div></details></td>
+        <td class="flow-row-actions">${button("flow-run", activeRun?.status === "queued" ? "Start now" : activeRun ? "Running" : "Run", activeRun && activeRun.status !== "queued" ? "disabled" : "")}<button class="btn-sm btn-outline btn-danger-outline flow-stop" type="button" data-id="${flow.id}" data-flow-focus="flow-stop-${flow.id}" ${activeRun ? "" : "hidden"}>Stop</button>${button("flow-edit", "Edit")}<details class="flow-row-menu"><summary aria-label="More actions: ${esc(flow.name)}" data-flow-focus="more-${flow.id}">More</summary><div>${button("flow-history", "Run history")}${button("flow-open-folder", "Open folder")}${flow.flow_folder ? button("flow-standalone-status", "Flow files") : ""}${button("flow-classification", (flow.classification || "production") === "draft" ? "Move to Production" : "Move to Draft", `data-classification="${(flow.classification || "production") === "draft" ? "production" : "draft"}"`)}${flow.sql_reconciliation_required && flow.sql_mode === "append" ? button('flow-sql-reconciled', 'Acknowledge SQL reconciliation') : ''}<button class="btn-sm btn-outline btn-danger-outline flow-delete" type="button" data-id="${flow.id}" data-flow-focus="flow-delete-${flow.id}">Delete</button></div></details></td>
     </tr>`;
 }
 
 function _flowSortColumns() {
-    return [["name", "Flow"], ["active", "Active"], ["owner", "Owner"], ["source", "Source"], ["type", "Download"], ["browser", "Browser"], ["schedule", "Schedule"], ["lastRun", "Last run"]];
+    return [["name", "Flow"], ["active", "Active"], ["owner", "Owner"], ["source", "Source"], ["type", "Type"], ["browser", "Browser"], ["schedule", "Schedule"], ["lastRun", "Last run"]];
 }
 
 function _flowValidSort(value) {
@@ -10901,13 +10901,15 @@ function _flowWorkerProgressHtml(runner, index) {
 function _flowRowProgressHtml(run) {
     if (!run || !["queued", "claimed", "running"].includes(run.status)) return "";
     const progress = run.progress || {};
+    const activeProcess = [...(run.live?.processes || [])].reverse().find(item => item.state === "running" && item.pid !== run.live?.processes?.[0]?.pid);
+    const liveMessage = run.live?.stage || activeProcess?.label || null;
     const runners = progress.runners || [];
     const known = Number.isFinite(progress.total) && progress.total > 0;
     const done = known ? Math.max(0, Math.min(progress.total, progress.completed || 0)) : 0;
     const workers = runners.map((runner, index) => `<div class="flow-worker-progress" data-worker-id="${esc(runner.id)}" data-task-id="${esc(runner.task_id || "")}">${_flowWorkerProgressHtml(runner, index)}</div>`).join("");
     return `<div class="flow-progress-heading"><span class="flow-worker-count">${runners.length ? `${runners.length} worker${runners.length === 1 ? "" : "s"}` : run.status === "queued" ? "Queued" : "Starting worker"}</span><span class="flow-progress-count">${known ? `${done} / ${progress.total} steps` : "Preparing steps"}</span></div>
         <div class="flow-worker-list">${workers}</div>
-        <div class="flow-progress-summary">${esc(progress.message || "Waiting for a worker")}</div>`;
+        <div class="flow-progress-summary">${esc(liveMessage || progress.message || "Waiting for a worker")}</div>`;
 }
 
 function _flowPatchRowProgress(container, run) {
@@ -11530,6 +11532,7 @@ function _flowPythonBuilderHtml(existing = null) {
     const scripts = Array.isArray(existing?.python_scripts) && existing.python_scripts.length ? existing.python_scripts : [""];
     const scriptArguments = Array.isArray(existing?.python_script_arguments) ? existing.python_script_arguments : [];
     const scriptValues = Array.isArray(existing?.python_script_values) ? existing.python_script_values : [];
+    const runMode = existing?.id ? existing.python_run_mode === "run" : true;
     const sql = Boolean(existing?.sql_handoff_enabled);
     const format = existing?.file_format === "xlsx" ? "xlsx" : "csv";
     const direct = existing?.output_mode === "direct_replace";
@@ -11540,23 +11543,33 @@ function _flowPythonBuilderHtml(existing = null) {
                     <div class="flow-section-head"><h2>Python scripts</h2></div>
                     <div class="flow-form-grid">
                         <label><span>Flow name</span><input id="flow-name" required maxlength="200" value="${esc(existing?.name || "")}" placeholder="Daily orders extract"></label>
+                        <fieldset class="flow-span-2 flow-python-mode"><legend>What should these scripts do?</legend>
+                            <label class="flow-check"><input type="radio" name="flow-python-mode" value="run" ${runMode ? "checked" : ""}><span>Just run the scripts</span></label>
+                            <label class="flow-check"><input type="radio" name="flow-python-mode" value="outputs" ${runMode ? "" : "checked"}><span>Produce a file or SQL table</span></label>
+                        </fieldset>
                         <div class="flow-span-2 flow-python-scripts-field">
                             <span>Scripts, in run order</span>
                             <ol id="flow-python-scripts" class="flow-python-scripts">${scripts.map((path, index) => _flowPythonScriptRowHtml(index + 1, path, scripts.length === 1, scriptArguments[index] || "", scriptValues[index] || [])).join("")}</ol>
                             <input id="flow-python-file" type="file" accept=".py" hidden>
                             <div class="flow-python-scripts-actions"><button type="button" class="btn-secondary" id="flow-python-add">Add another script</button></div>
-                            <p class="flow-dialog-help">The worker runs each script in place with its own Python, in this order. Every script receives <code>--output</code>, the file it must create; from the second script on it also receives <code>--input</code>, the previous script's output. The same paths, the step number and the run's steps folder are available as <code>METRONOME_FLOW_*</code> environment variables. The last script writes the final CSV or Excel file. Enter absolute paths the worker can see, or upload a script. Arguments are added to the command exactly as typed, before Metronome's <code>--input</code>/<code>--output</code>; use double quotes around a value with spaces; {flow}, {date} and {run_id} are replaced per run.</p>
+                            <p id="flow-python-script-help" class="flow-dialog-help"></p>
+                        </div>
+                        <div id="flow-python-run-options" class="flow-form-grid flow-span-2" ${runMode ? "" : "hidden"}>
+                            <label class="flow-span-2"><span>Python to use (optional)</span><input id="flow-python-interpreter" maxlength="2000" value="${esc(existing?.python_interpreter || "")}" placeholder="Leave blank to use the computer's Python"><small>Set a full path to python.exe for a virtual environment, or leave blank for the computer's py launcher.</small></label>
+                            <label><span>Stop a script after (minutes)</span><input id="flow-python-timeout" type="number" min="1" max="1440" value="${esc(existing?.python_timeout_minutes || 60)}"></label>
+                            <div class="flow-span-2"><button type="button" class="btn-secondary" id="flow-python-inspect">Check script and Python</button><p id="flow-python-inspect-result" class="flow-dialog-help" role="status"></p></div>
+                            <p class="flow-dialog-help flow-span-2">A run ends when the script and everything it started have finished, or at its time limit. Stop ends the script tree while the worker remains available.</p>
                         </div>
                     </div>
                 </div>
-                <div class="flow-form-section">
+                <div class="flow-form-section" id="flow-python-output-section" ${runMode ? "hidden" : ""}>
                     <div class="flow-section-head"><h2>Output</h2></div>
                     <div class="flow-form-grid">
                         <fieldset id="flow-python-output" class="flow-span-2 flow-python-output">
                             <legend>Where the final file goes</legend>
                             <label class="flow-check"><input type="radio" name="flow-python-output" id="flow-python-output-file" value="file" ${sql ? "" : "checked"}><span>Final file · Excel or CSV</span></label>
                             <label class="flow-check ${sqlCatalog.configured ? "" : "disabled"}"><input type="radio" name="flow-python-output" id="flow-python-output-sql" value="sql" ${sql ? "checked" : ""} ${sqlCatalog.configured ? "" : "disabled"}><span>SQL table · the final CSV is inserted into PostgreSQL</span></label>
-                            ${sqlCatalog.configured ? "" : `<p id="flow-python-sql-note" class="flow-dialog-help">SQL insertion needs the PostgreSQL upload connection configured in Settings before it can be chosen.</p>`}
+                            ${sqlCatalog.configured ? "" : `<p id="flow-python-sql-note" class="flow-dialog-help">SQL insertion needs DG_UPLOAD_PGUSER and DG_UPLOAD_PGPASSWORD in the project .env beside governance.db. Fill them in, then restart Metronome.</p>`}
                         </fieldset>
                         <div id="flow-python-file-fields" class="flow-form-grid flow-span-2" ${sql ? "hidden" : ""}>
                             <label><span>File type</span><select id="flow-file-format"><option value="csv" ${format === "csv" ? "selected" : ""}>CSV</option><option value="xlsx" ${format === "xlsx" ? "selected" : ""}>Excel workbook (.xlsx)</option></select></label>
@@ -11593,7 +11606,7 @@ function _flowPythonBuilderHtml(existing = null) {
                         <label id="flow-schedule-day-field"><span>Day of month</span><input id="flow-schedule-day" type="number" min="1" max="31" value="${esc(existing?.schedule_day || 1)}"><small>Months without that day are skipped.</small></label>
                     </div>
                 </div>
-                <div class="flow-form-section">
+                <div class="flow-form-section" id="flow-python-email-section" ${runMode ? "hidden" : ""}>
                     <div class="flow-section-head"><h2>Email</h2></div>
                     <div class="flow-form-grid">
                         ${_flowEmailHtml(existing)}
@@ -11901,7 +11914,10 @@ function _flowCatalogHtml(catalog, scans, estimates, workers = []) {
 }
 
 function _flowRunsHtml(runs) {
-    if (!runs.length) return '<div class="flow-inline-empty">No runs yet.</div>';
+    const state = window._flowsState || {};
+    const filter = state.runFilter || {};
+    const controls = `<div class="flow-panel-head flow-run-filters"><div><h2>Run history</h2><p>Filter by Flow and result.</p></div><label>Flow <select id="flow-runs-flow"><option value="">All Flows</option>${(state.flows || []).map(flow => `<option value="${flow.id}" ${Number(filter.flowId) === flow.id ? "selected" : ""}>${esc(flow.name)}</option>`).join("")}</select></label><label>Status <select id="flow-runs-status"><option value="">All statuses</option>${["queued", "claimed", "running", "succeeded", "failed", "cancelled"].map(value => `<option value="${value}" ${filter.status === value ? "selected" : ""}>${esc(value)}</option>`).join("")}</select></label></div>`;
+    if (!runs.length) return controls + '<div class="flow-inline-empty">No runs match these filters.</div>';
     const rows = runs.map(run => {
         const artifacts = Array.isArray(run.artifacts) ? run.artifacts : [];
         const total = run.timings?.find(item => item.phase === "total");
@@ -11922,9 +11938,24 @@ function _flowRunsHtml(runs) {
         const resumable = sourceType === "portal"
             && ["failed", "cancelled"].includes(run.status)
             && doneFiles > 0 && doneFiles < totalFiles;
-        return `<tr><td>#${run.id}<small>${esc(timeAgo(run.created_at))}</small></td><td>${esc(run.flow_name)}</td><td>${_flowStatusBadge(run.status)}</td><td>${esc(run.requested_by || run.trigger_type)}</td><td>${esc(run.worker_id || "Waiting")}<small>${workerMode}</small></td><td>${duration === null ? "Pending" : _flowDuration(duration)}<small>${_flowTimingSummary(run.timings)}</small></td><td>${run.error ? `<span class="flow-error">${esc(run.error)}</span>` : esc(run.progress?.message || `${artifacts.length} file(s)`)}${run.view_refresh ? `<small>${run.view_refresh.deferred_to_pipeline ? "Materialized views refresh in the parent pipeline" : `Materialized views: ${run.view_refresh.completed} of ${run.view_refresh.total} refreshed${run.view_refresh.sql_committed ? " · SQL insertion committed" : ""}`}</small>` : ""}${run.email ? `<small class="flow-email-status ${esc(run.email.status || "none")}">${esc(_flowEmailStatusText(run.email))}</small>` : ""}</td><td class="flow-row-actions">${resumable ? `<button class="btn-sm flow-resume" data-id="${run.id}" title="Queue a run that skips the ${doneFiles} file(s) already saved">Resume · ${doneFiles} of ${totalFiles} saved</button>` : ""}${run.view_refresh?.retry?.status === "eligible" ? `<button class="btn-sm flow-retry-views" data-id="${run.id}" title="${esc(run.view_refresh.retry.message)}">Retry view refresh</button>` : ""}<a class="btn-sm btn-outline" href="/flow-runs/${run.id}" target="_blank" rel="noopener">Expanded logs</a></td></tr>`;
+        return `<tr><td>#${run.id}<small>${esc(timeAgo(run.created_at))}</small></td><td>${esc(run.flow_name)}</td><td>${_flowStatusBadge(run.status)}</td><td>${esc(run.requested_by || run.trigger_type)}</td><td>${esc(run.worker_id || "Waiting")}<small>${workerMode}</small></td><td>${duration === null ? "Pending" : _flowDuration(duration)}<small>${_flowTimingSummary(run.timings)}</small></td><td>${run.error ? `<span class="flow-error">${esc(run.error)}</span>` : esc(run.progress?.message || `${artifacts.length} file(s)`)}${run.view_refresh ? `<small>${run.view_refresh.deferred_to_pipeline ? "Materialized views refresh in the parent pipeline" : `Materialized views: ${run.view_refresh.completed} of ${run.view_refresh.total} refreshed${run.view_refresh.sql_committed ? " · SQL insertion committed" : ""}`}</small>` : ""}${run.email ? `<small class="flow-email-status ${esc(run.email.status || "none")}">${esc(_flowEmailStatusText(run.email))}</small>` : ""}${sourceType === "python" ? `<small>Exit: ${esc(run.live?.processes?.[0]?.exit_code ?? (run.status === "succeeded" ? 0 : "—"))} · Last stage: ${esc(run.live?.stage || "—")}</small>` : ""}</td><td class="flow-row-actions">${resumable ? `<button class="btn-sm flow-resume" data-id="${run.id}" title="Queue a run that skips the ${doneFiles} file(s) already saved">Resume · ${doneFiles} of ${totalFiles} saved</button>` : ""}${run.view_refresh?.retry?.status === "eligible" ? `<button class="btn-sm flow-retry-views" data-id="${run.id}" title="${esc(run.view_refresh.retry.message)}">Retry view refresh</button>` : ""}<a class="btn-sm btn-outline" href="/flow-runs/${run.id}" target="_blank" rel="noopener">Expanded logs</a></td></tr>`;
     }).join("");
-    return `<div class="flow-table-wrap"><table class="flow-table"><thead><tr><th>Run</th><th>Flow</th><th>Status</th><th>Requested</th><th>Worker</th><th>Duration</th><th>Result</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    return controls + `<div class="flow-table-wrap"><table class="flow-table"><thead><tr><th>Run</th><th>Flow</th><th>Status</th><th>Requested</th><th>Worker</th><th>Duration</th><th>Result</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>${state.runsPageFull ? '<p><button type="button" class="btn-secondary" id="flow-runs-more">Show more</button></p>' : ""}`;
+}
+
+async function _flowLoadRuns(append = false) {
+    const state = window._flowsState;
+    const query = new URLSearchParams({limit: "100"});
+    if (state.runFilter?.flowId) query.set("flow_id", state.runFilter.flowId);
+    if (state.runFilter?.status) query.set("status", state.runFilter.status);
+    if (append && state.runs.length) query.set("before_id", state.runs[state.runs.length - 1].id);
+    const page = await api(`/api/flows/runs?${query}`);
+    state.runs = append ? [...state.runs, ...page] : page;
+    state.runsPageFull = page.length === 100;
+    if (state.view === "runs") {
+        document.getElementById("flow-workspace").innerHTML = _flowRunsHtml(state.runs);
+        _bindFlowWorkspace();
+    }
 }
 
 async function renderFlows() {
@@ -11944,6 +11975,7 @@ async function renderFlows() {
     window._flowsState = {
         catalog, flows, runs, workers, scans, estimates, sqlCatalog, people, scanEvents, groups,
         openCatalogTopics: new Set(), view: "list", classification: "production",
+        runFilter: {}, runsPageFull: runs.length === 100,
     };
     return `
         <div class="page-header flow-page-header"><div><h1>Flows</h1><p class="subtitle">Acquire data from files, Outlook, Python scripts, or website reports on the authenticated BI desktop.</p></div><button class="btn-primary" id="flow-create">Create flow</button></div>
@@ -12293,7 +12325,8 @@ function _flowCollectBuilder() {
         };
     }
     if (form?.dataset.sourceType === "python") {
-        const format = sqlEnabled ? "csv" : (String($("#flow-file-format")?.value || "csv").trim().toLowerCase() === "xlsx" ? "xlsx" : "csv");
+        const runOnly = document.querySelector('input[name="flow-python-mode"]:checked')?.value === "run";
+        const format = runOnly || sqlEnabled ? "csv" : (String($("#flow-file-format")?.value || "csv").trim().toLowerCase() === "xlsx" ? "xlsx" : "csv");
         const filename = ($("#flow-filename")?.value || "").trim() || `{flow}.${format}`;
         // Paths, arguments and values travel together: a row whose path is blank is dropped from all three lists.
         const argumentInputs = [...document.querySelectorAll(".flow-python-script-arguments")];
@@ -12306,9 +12339,15 @@ function _flowCollectBuilder() {
             python_scripts: scriptRows.map(row => row.path),
             python_script_arguments: scriptRows.map(row => row.arguments),
             python_script_values: scriptRows.map(row => row.values),
+            python_run_mode: runOnly ? "run" : "outputs",
+            python_interpreter: ($("#flow-python-interpreter")?.value || "").trim() || null,
+            python_timeout_minutes: Number($("#flow-python-timeout")?.value || 60),
             file_format: format,
-            filename_template: sqlEnabled ? filename.replace(/\.xlsx$/i, ".csv") : filename,
-            output_mode: sqlEnabled ? "run_folders" : ($("#flow-output-mode")?.value || "run_folders"),
+            filename_template: runOnly ? "run-only.csv" : sqlEnabled ? filename.replace(/\.xlsx$/i, ".csv") : filename,
+            output_mode: runOnly || sqlEnabled ? "run_folders" : ($("#flow-output-mode")?.value || "run_folders"),
+            sql_handoff_enabled: runOnly ? false : sqlEnabled,
+            email_delivery: runOnly ? {enabled: false, recipients: []} : shared.email_delivery,
+            post_sql_refresh: runOnly ? {mode: "off", views: []} : shared.post_sql_refresh,
             transform_enabled: false, transform_script_path: null,
             outlook_subject_contains: null, local_file_path: null, local_file_worksheet: null, excel_worksheets: null,
             site_id: null, report_id: null, export_views: [], download_links: [], selections: {},
@@ -12653,7 +12692,10 @@ function _flowBuildSteps(form) {
         for (const existing of sections.filter(Boolean)) body.append(existing);
         if (index < groups.length - 1) {
             const next = document.createElement("button"); next.type = "button"; next.className = "btn-secondary flow-step-next"; next.textContent = "Next";
-            next.addEventListener("click", () => { const target = form.querySelectorAll(".flow-step-toggle")[index + 1]; _flowRevealStep(form, target); target.focus(); });
+            next.addEventListener("click", () => {
+                const target = [...form.querySelectorAll(".flow-step")].slice(index + 1).find(step => !step.hidden)?.querySelector(".flow-step-toggle");
+                if (target) { _flowRevealStep(form, target); target.focus(); }
+            });
             body.append(next);
         }
         step.querySelector(".flow-step-toggle").addEventListener("click", event => {
@@ -12685,6 +12727,35 @@ function _flowBuildSteps(form) {
         queueMicrotask(() => { _flowRevealStep(form, target); target.focus(); form._invalidRevealPending = false; });
     }, true);
     _flowRevealStep(form, form.querySelector(".flow-step-toggle"));
+}
+
+function _flowSyncPythonMode(form) {
+    if (!form || form.dataset.sourceType !== "python") return;
+    const run = form.querySelector('input[name="flow-python-mode"]:checked')?.value === "run";
+    const output = form.querySelector('[data-step="destination"]');
+    const email = form.querySelector('[data-step="after"]');
+    if (output) output.hidden = run;
+    if (email) email.hidden = run;
+    for (const id of ["flow-python-output-section", "flow-python-email-section"]) {
+        const section = form.querySelector(`#${id}`);
+        if (section) section.hidden = run;
+    }
+    const options = form.querySelector("#flow-python-run-options");
+    if (options) options.hidden = !run;
+    for (const button of form.querySelectorAll(".flow-python-browse")) button.hidden = run;
+    const help = form.querySelector("#flow-python-script-help");
+    if (help) help.innerHTML = run
+        ? "Paste the full path to each .py file (Explorer: Copy as path). Scripts run in their own folder with the chosen computer Python and receive only your typed arguments. Upload is unavailable because a script may need neighboring files."
+        : "The worker runs each script in place with its own Python. Every script receives <code>--output</code>; from the second script on it also receives <code>--input</code>. The last script writes the final CSV or Excel file. Enter absolute paths or upload a self-contained script.";
+    const timeout = form.querySelector("#flow-python-timeout");
+    if (timeout) timeout.required = run;
+    const emailRecipients = form.querySelector("#flow-email-recipients");
+    if (emailRecipients) emailRecipients.required = !run && Boolean(form.querySelector("#flow-email-enabled")?.checked);
+    const scheduleNumber = form.querySelector('[data-step="schedule"] .flow-step-number');
+    if (scheduleNumber) scheduleNumber.textContent = run ? "2" : "4";
+    if (run && (output?.querySelector(".flow-step-body")?.hidden === false || email?.querySelector(".flow-step-body")?.hidden === false)) {
+        _flowRevealStep(form, form.querySelector('[data-step="source"] .flow-step-toggle'));
+    }
 }
 
 async function _flowSubmitBuilder(event) {
@@ -12877,6 +12948,22 @@ function _bindFlowWorkspace() {
     }
     document.querySelectorAll(".flow-scan-report").forEach(button => button.onclick = async () => { button.disabled = true; try { await apiPost(`/api/flows/reports/${button.dataset.id}/scan`); toast("Report refresh queued"); await navigate("flows"); } catch (err) { toast("Report refresh not queued: " + err.message); button.disabled = false; } });
     document.querySelectorAll(".flow-edit").forEach(button => button.onclick = () => _flowShowView("builder", state.flows.find(flow => flow.id === Number(button.dataset.id))));
+    document.querySelectorAll(".flow-history").forEach(button => button.onclick = async () => {
+        state.runFilter = {flowId: Number(button.dataset.id), status: ""};
+        _flowShowView("runs");
+        try { await _flowLoadRuns(); } catch (err) { toast("Run history could not load: " + err.message); }
+    });
+    const filterRuns = async () => {
+        state.runFilter = {flowId: Number($("#flow-runs-flow")?.value) || null,
+                           status: $("#flow-runs-status")?.value || ""};
+        try { await _flowLoadRuns(); } catch (err) { toast("Run history could not load: " + err.message); }
+    };
+    $("#flow-runs-flow")?.addEventListener("change", filterRuns);
+    $("#flow-runs-status")?.addEventListener("change", filterRuns);
+    $("#flow-runs-more")?.addEventListener("click", async event => {
+        event.currentTarget.disabled = true;
+        try { await _flowLoadRuns(true); } catch (err) { toast("More runs could not load: " + err.message); event.currentTarget.disabled = false; }
+    });
     document.querySelectorAll(".flow-delete").forEach(button => button.onclick = () => {
         const flow = state.flows.find(item => item.id === Number(button.dataset.id));
         if (flow) _flowDeleteDialog(flow);
@@ -13273,6 +13360,7 @@ function _bindFlowWorkspace() {
             if (pythonScripts.children.length >= 20) { toast("Choose at most 20 Python scripts."); return; }
             pythonScripts.insertAdjacentHTML("beforeend", _flowPythonScriptRowHtml(pythonScripts.children.length + 1));
             renumberPythonScripts();
+            _flowSyncPythonMode($("#flow-builder-form"));
             pythonScripts.lastElementChild.querySelector(".flow-python-script-path").focus();
         });
         pythonScripts.addEventListener("input", event => {
@@ -13291,6 +13379,7 @@ function _bindFlowWorkspace() {
                 renumberPythonScripts();
                 neighbour?.querySelector(".flow-python-script-path")?.focus();
             } else if (event.target.closest(".flow-python-browse")) {
+                if (document.querySelector('input[name="flow-python-mode"]:checked')?.value === "run") return;
                 const picker = $("#flow-python-file");
                 picker.dataset.target = row.querySelector(".flow-python-script-path").id;
                 picker.click();
@@ -13336,7 +13425,7 @@ function _bindFlowWorkspace() {
         const fields = $("#flow-email-fields");
         const input = $("#flow-email-recipients");
         if (fields) fields.hidden = !enabled;
-        if (input) input.required = enabled;
+        if (input) input.required = enabled && document.querySelector('input[name="flow-python-mode"]:checked')?.value !== "run";
     };
     $("#flow-email-enabled")?.addEventListener("change", updateEmailFields);
     if ($("#flow-email-fields")) updateEmailFields();
@@ -13376,6 +13465,31 @@ function _bindFlowWorkspace() {
         }); syncMethod();
     }
     _flowBuildSteps($("#flow-builder-form"));
+    const pythonForm = $("#flow-builder-form")?.dataset.sourceType === "python" ? $("#flow-builder-form") : null;
+    if (pythonForm) {
+        pythonForm.querySelectorAll('input[name="flow-python-mode"]').forEach(radio => radio.addEventListener("change", () => {
+            _flowSyncPythonMode(pythonForm);
+            updateEmailFields();
+        }));
+        _flowSyncPythonMode(pythonForm);
+        $("#flow-python-inspect")?.addEventListener("click", async event => {
+            const button = event.currentTarget;
+            const result = $("#flow-python-inspect-result");
+            const paths = [...pythonForm.querySelectorAll(".flow-python-script-path")].map(input => input.value.trim()).filter(Boolean);
+            if (!paths.length) { result.textContent = "Enter a script path first."; return; }
+            button.disabled = true;
+            result.textContent = "Checking read access and Python…";
+            try {
+                const checks = await Promise.all(paths.map(path => apiPostJson("/api/flows/python/inspect", {
+                    path, interpreter: $("#flow-python-interpreter")?.value.trim() || null,
+                })));
+                const unreadable = checks.filter(check => !check.readable);
+                const python = checks[0].interpreter || checks[0].interpreter_error || "Python unavailable";
+                result.textContent = `${paths.length - unreadable.length} of ${paths.length} script(s) readable. Python: ${python}. ${unreadable.map(check => check.hint || `${check.path} is not readable by the service`).join(" ")}`;
+            } catch (err) { result.textContent = "Check failed: " + err.message; }
+            finally { button.disabled = false; }
+        });
+    }
     $("#flow-builder-form")?.addEventListener("submit", _flowSubmitBuilder);
 }
 

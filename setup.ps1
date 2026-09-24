@@ -499,6 +499,26 @@ $AuditorAdministratorsPrincipal = '*S-1-5-32-544'
 $AuditorInstallerSid = ([Security.Principal.WindowsIdentity]::GetCurrent()).User.Value
 $AuditorInstallerPrincipal = "*$AuditorInstallerSid"
 
+# A local settings file lives beside the database, outside the code updated by
+# robocopy. Never replace an operator's credentials during an update.
+$EnvFile = Join-Path $ProjectDir '.env'
+if (-not (Test-Path $EnvFile -PathType Leaf)) {
+    Copy-Item -LiteralPath (Join-Path $CodeDir '.env.example') -Destination $EnvFile
+}
+& icacls.exe $EnvFile /reset /Q | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Could not reset settings file permissions.' }
+& icacls.exe $EnvFile /inheritance:r /Q | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Could not remove inherited access from the settings file.' }
+& icacls.exe $EnvFile /grant:r "${AuditorSystemPrincipal}:F" /Q | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Could not grant SYSTEM access to the settings file.' }
+& icacls.exe $EnvFile /grant:r "${AuditorAdministratorsPrincipal}:F" /Q | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Could not grant Administrators access to the settings file.' }
+& icacls.exe $EnvFile /grant:r "${AuditorInstallerPrincipal}:F" /Q | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Could not grant installer access to the settings file.' }
+& icacls.exe $EnvFile /deny "${AuditorIdentity}:R" /Q | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Could not deny auditor reader access to the settings file.' }
+Write-Host "  Settings file: $EnvFile (fill in, then restart Metronome)." -ForegroundColor Green
+
 # A previous setup protects these managed directories from the restricted
 # reader. Repair their inherited and file-specific ACLs before reading the
 # existing secrets so every later setup remains idempotent. The reader service

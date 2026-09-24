@@ -6,6 +6,7 @@ tzlocal>=5.0,<6
 httpx
 truststore
 playwright==1.62.0
+psutil==7.2.2
 tzdata>=2025.2
 pbixray
 psycopg2-binary
