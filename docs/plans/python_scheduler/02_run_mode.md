@@ -1,7 +1,8 @@
-# Stage 2 — "Just run it" Python Flows
+# Part 2 — "Just run it" Python Flows
 
 Scope: storage, API, worker, runner and the Python builder. The builder journey
-changes, so implementation follows the owner-approved preview.
+changes: the fictional preview walkthrough is its usability evidence (the owner
+waived the stop for feedback).
 
 ## Behavior
 
@@ -49,7 +50,8 @@ run's first event names the interpreter and why it was chosen.
   inert values; the `{value}`/`{index}` filename rule does not apply. The mode
   can change on edit.
 - `job_section` adds `mode`, `interpreter` and `timeout_seconds`; the claim
-  gate requires the worker capability `python_script_run_v1` for run-mode jobs.
+  gate requires the worker capability `python_script_run_v1` for run-mode jobs
+  (it also covers Part 3's cooperative Stop and live output).
 - `POST /api/flows/python/inspect {path, interpreter}`: a soft builder check —
   whether the service account can read the script, a hint when its drive letter
   is not visible to the service (mapped drives are per sign-in; use
@@ -126,4 +128,4 @@ run's first event names the interpreter and why it was chosen.
 
 ## Rollback
 
-Pause run-mode schedules first, then revert (see [the README](00_README.md)).
+See [the README](00_README.md): pause run-mode schedules before reverting.

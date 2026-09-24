@@ -1,6 +1,6 @@
-# Stage 1 — Flow SQL credentials from a `.env` file
+# Part 1 — Flow SQL credentials from a `.env` file
 
-Scope: backend, installer and wording. No journey change, so no preview pause.
+Scope: backend, installer and wording; no journey change.
 
 ## Location and format
 

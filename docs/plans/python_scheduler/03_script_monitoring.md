@@ -1,8 +1,9 @@
-# Stage 3 — Script monitoring and run history
+# Part 3 — Script monitoring and run history
 
 Scope: live console output, process tree, stage markers, cooperative Stop and
 run-history filters, for Python Flows in both modes. The run log and run
-history change, so implementation follows the owner-approved preview.
+history change: the fictional preview walkthrough is their usability evidence
+(the owner waived the stop for feedback).
 
 ## What the owner will see
 
@@ -54,18 +55,19 @@ markers still show which child script is running.
 
 ## Worker
 
-- New worker-only `app/flow_script_live.py`: `LiveObserver` extends the Stage 2
+- New worker-only `app/flow_script_live.py`: `LiveObserver` extends Part 2's
   process observer. Reader threads never block: at most 5000 lines wait and
   extra lines are counted as dropped. It posts every 2 seconds (sooner at 500
   waiting lines), parses markers, and emits capped events through the existing
   progress endpoint: `python_stage` (200), `python_process_started` and
   `python_process_finished` (100 each, then one summary), `python_stopped`.
   Values of secret environment variables are masked in output lines.
-- Capability `python_script_live_v1`.
+- No separate capability: live posts are accepted from any assigned worker,
+  and cooperative Stop relies on Part 2's `python_script_run_v1`.
 
 ## Stop
 
-For a run-mode Python run on a worker with `python_script_live_v1`, Stop marks
+For a run-mode Python run on a worker with `python_script_run_v1`, Stop marks
 the run cancelled as today but does not kill the worker. The worker sees the
 terminal reply within about 2 seconds, ends every tracked process (orphans
 included), posts the final snapshot and a `python_stopped` event, and keeps
