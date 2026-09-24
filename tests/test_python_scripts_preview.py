@@ -79,7 +79,10 @@ def shot(page, evidence, name):
 
 
 def no_overflow(page):
-    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    overflow = page.evaluate("""() => ({width: innerWidth, scrollWidth: document.documentElement.scrollWidth,
+        elements: [...document.querySelectorAll('*')].filter(el => el.getBoundingClientRect().right > innerWidth + 1)
+            .slice(0, 12).map(el => ({tag: el.tagName, id: el.id, className: typeof el.className === 'string' ? el.className : '', right: Math.round(el.getBoundingClientRect().right)}))})""")
+    assert overflow["scrollWidth"] <= overflow["width"], overflow
 
 
 def open_step(page, key):
@@ -97,6 +100,9 @@ def test_python_builder_list_and_run_history_walkthrough(preview):
     page.locator("#flow-source-python").click()
     form = page.locator("#flow-builder-form")
     expect(form).to_have_attribute("data-source-type", "python")
+    # The new Flow defaults to run-only; this walkthrough covers the existing
+    # file and SQL path, so select it explicitly.
+    page.locator('input[name="flow-python-mode"][value="outputs"]').check()
     expect(page.locator("#flow-step-body-source")).to_be_visible()
     no_overflow(page)
     # Script rows: one empty row to start, Remove disabled until a second row exists, renumbering on remove.
@@ -112,7 +118,7 @@ def test_python_builder_list_and_run_history_walkthrough(preview):
     expect(page.locator("label[for='flow-python-arguments-1']")).to_contain_text("Arguments")
     expect(page.locator("label[for='flow-python-arguments-1']")).to_contain_text("(optional)")
     expect(page.locator("label[for='flow-python-values-1']")).to_contain_text("Values, one per run")
-    expect(page.locator("#flow-step-body-source")).to_contain_text("Arguments are added to the command exactly as typed")
+    expect(page.locator("#flow-python-script-help")).to_contain_text("Every script receives --output")
     expect(rows.first.locator(".flow-python-values-help")).to_contain_text("Paste one value per line; the script runs once per value.")
     arguments_1.fill("-sheet T")
     values_1 = page.locator("#flow-python-values-1")
@@ -297,6 +303,7 @@ def test_python_builder_list_and_run_history_walkthrough(preview):
     # Narrow screen: every step still fits without horizontal scrolling.
     page.set_viewport_size({"width": 390, "height": 844})
     page.evaluate("previewShow('new')")
+    page.locator('input[name="flow-python-mode"][value="outputs"]').check()
     page.locator("#flow-python-script-1").fill(SCRIPT_1)
     page.get_by_role("button", name="Add another script").click()
     page.locator("#flow-python-arguments-2").fill('-sheet "Q 1" --region GCC')

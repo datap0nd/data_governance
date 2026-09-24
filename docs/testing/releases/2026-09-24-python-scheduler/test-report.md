@@ -1,11 +1,11 @@
 # Python scheduler, `.env` credentials and script monitoring: test report
 
 - Plan: [test-plan.md](test-plan.md). Change: [PR #143](https://github.com/datap0nd/data_governance/pull/143).
-- Evidence cutoff: 2026-09-24 08:41 UTC.
+- Evidence cutoff: 2026-09-24 09:09 UTC.
 - Local revision: implementation commit
-  `963023e447908d1de6ba57c6d6afaa15dd0dd34a` plus the two frontend
-  contract corrections in this commit. Each verifier result has a source
-  fingerprint; final-head CI will verify the committed revision.
+  `963023e447908d1de6ba57c6d6afaa15dd0dd34a` plus the frontend and
+  direct-call route corrections on this branch. Each verifier result has a
+  source fingerprint; final-head CI will verify the committed revision.
 - Environment: WSL Ubuntu 24.04 on AArch64, checkout-owned CPython 3.13.15
   `.venv` and locked dependencies; Windows Node.js 24.19.0; local in-app
   browser preview at 1280×900 and 390×844.
@@ -24,6 +24,9 @@
 | M-04 | `node tests/test_flow_builder_contract.mjs`; `node tests/test_flow_run_log_live.mjs`; `node --check app/static/app.js`; `node --check app/static/flow_run_log.js`; `node --check app/static/recording-preview/python-scheduler.js` | PASS: builder payload/recovery and incremental console contracts; syntax clean | Local command output |
 | Frontend regression | `Get-ChildItem tests/test_*.mjs` excluding the Gemini extension test; run each with Node.js | PASS: all 24 frontend test files after updating the column-label contracts from Download to Type | Local command output; the first CI run [35976346057](https://github.com/datap0nd/data_governance/actions/runs/35976346057) found the stale label assertion |
 | Gemini extension and syntax | `npm ci --ignore-scripts --prefix integrations/metronome-gemini`; `node tests/test_gemini_extension.mjs`; `node --check` for each `app/static/*.js` | PASS: 40 Gemini tests, including the synthetic browser fixture; all static JavaScript syntax checks | Local command output |
+| CI route regression | `tools/check.py verify --test tests/test_flow_email_delivery.py::test_succeeded_run_hands_the_final_file_to_outlook --test tests/test_flow_local_file.py::test_private_storage_uri_is_redacted_from_user_run_payloads --test tests/test_flow_live_output.py --syntax app/routers/flows.py` | PASS: 8 tests. The second CI run exposed a `Query` default passed into SQLite by tests that call the route directly. `Annotated` query constraints now leave ordinary Python defaults for direct calls while retaining HTTP validation. | `.test-runs/20260924T090123121Z-380-e0ad7510/result.json`; [run 35977232954](https://github.com/datap0nd/data_governance/actions/runs/35977232954) |
+| Additional CI route regression | `tools/check.py verify --test tests/test_flows.py::test_stop_cancels_assigned_run_and_targets_reported_worker_pid --test tests/test_flows.py::test_run_history_normalizes_legacy_artifact_shapes --syntax app/routers/flows.py` | PASS: both shard-0 direct-call cases after the same route correction | `.test-runs/20260924T090845439Z-609-c6fb312d/result.json` |
+| Existing Python preview | `tools/check.py verify --test tests/test_python_scripts_preview.py::test_python_builder_list_and_run_history_walkthrough` with checkout-owned Playwright Chromium | PASS: old file/SQL journey selects that mode explicitly, then desktop and 390 px mobile checks pass. The test identified preview-only selector overflow, which was fixed without relaxing its assertion. | `.test-runs/20260924T090813762Z-494-beea7ce3/result.json` |
 | U-01–U-03 | Fictional preview browser walkthrough at the two planned viewport sizes | PASS: two-step run journey, save recovery, history filter, activity log, Stop/failure and mobile step switch; no document overflow at 390 px | [Walkthrough](evidence/preview-walkthrough.md) |
 
 The verifier's `result.json` files are ignored local artifacts; the final CI
@@ -47,6 +50,11 @@ browser preview runs entirely against in-memory fictional data.
   former Download column label. Both affected tests now assert the intended
   Type label. The final-head CI run will execute them with its installed
   dependencies.
+- The second CI run passed frontend, Windows, and PostgreSQL checks, then
+  failed four Python cases that called `list_runs` directly without a
+  `before_id` and one existing browser preview whose file-output assumptions
+  were stale. The route and preview are corrected, and all five cases passed
+  locally. A new final-head CI run is still required.
 
 ## Final-head gate
 

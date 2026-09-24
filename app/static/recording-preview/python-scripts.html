@@ -11,7 +11,7 @@ body{padding:24px}
 #preview-status{max-width:1180px;margin:8px auto;color:var(--accent);font-size:.85rem;min-height:1.2em}
 #preview-status:empty{display:none}
 #flow-workspace{max-width:1180px;margin:0 auto}
-@media(max-width:600px){body{padding:12px}.preview-bar h1{width:100%}}
+@media(max-width:600px){body{padding:12px}.preview-bar h1{width:100%}.preview-bar label{width:100%;min-width:0;flex-wrap:wrap}.preview-bar select{max-width:100%;min-width:0}}
 </style>
 <div class="preview-bar"><h1>Fictional preview · Python-script Flows</h1>
 <label>Save outcome <select id="preview-outcome" aria-label="Fictional save outcome"><option value="saved">Flow saved</option><option value="invalid">Validation error: not a .py file</option><option value="unclosed">Validation error: unclosed quote in arguments</option></select></label>

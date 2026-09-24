@@ -13,7 +13,7 @@ import sqlite3
 from app.flow_clock import dubai_now
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
@@ -2409,8 +2409,8 @@ def flow_activity():
 
 @router.get("/runs")
 def list_runs(flow_id: int | None = None, status: str | None = None,
-              before_id: int | None = Query(default=None, ge=1),
-              limit: int = Query(default=100, ge=1, le=500)):
+              before_id: Annotated[int | None, Query(ge=1)] = None,
+              limit: Annotated[int, Query(ge=1, le=500)] = 100):
     if status is not None and status not in RUN_STATUSES:
         raise HTTPException(422, "Choose a valid run status.")
     with get_db() as db:
