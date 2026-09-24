@@ -7142,10 +7142,17 @@ def _python_step_event(record: dict) -> dict:
 
 def execute_python_job(
     job: dict, report_progress, profile_dir: Path, *, run_id: int, register_folder,
+    script_observer_factory=None, live_observer=None,
 ) -> tuple[list[dict], list[dict], dict]:
     """Run the saved Python scripts in order, once per value; the last row writes the deliverables."""
     assert_job_paths(job)
     source = job.get("python_source") or {}
+    if source.get("mode") == "run":
+        return execute_python_run_job(
+            job, report_progress, run_id=run_id,
+            script_observer_factory=script_observer_factory,
+            live_observer=live_observer,
+        )
     # Fail closed before any script runs or a run folder exists.
     scripts = flow_python.check_scripts(
         [Path(str(item)) for item in (source.get("scripts") or [])]
@@ -7206,15 +7213,21 @@ def execute_python_job(
             # The same calendar date the filename template renders.
             date=job.get('_runtime_task_date') or dubai_today().isoformat(),
             timeout_seconds=timeout_seconds,
-            progress=lambda record: report_progress("running", {
+            progress=lambda record: (
+                live_observer.start_step(record) if live_observer is not None else None,
+                report_progress("running", {
                 "stage": "python_step",
                 "message": f"Running script {record['index']} of {record['steps']}: {_python_step_label(record)}.",
                 "step": record["index"], "steps": record["steps"], "row": record["row"],
                 "script": record["script_name"], "checksum": record["script_checksum"],
                 "arguments": list(record["arguments"]), "arguments_text": record["arguments_text"],
                 "value": record["value"],
-            }),
+            })),
             step_result=lambda record: report_progress("running", _python_step_event(record)),
+            observer_factory=script_observer_factory,
+            on_line=(live_observer.line if live_observer is not None else None),
+            on_tick=(live_observer.tick if live_observer is not None else None),
+            stop_requested=(live_observer.stop_requested if live_observer is not None else None),
         )
     artifacts: list[dict] = []
     with timings.measure("file_normalization", report_id=job.get("report", {}).get("id")):
@@ -7275,6 +7288,71 @@ def execute_python_job(
         ],
     })
     return artifacts, timings.finish(item_count=len(artifacts)), {"no_op": False, "sql_artifacts": list(artifacts)}
+
+
+def execute_python_run_job(job: dict, report_progress, *, run_id: int,
+                           script_observer_factory=None, live_observer=None):
+    """Run-only Python source: no folder, output, SQL, email or publication."""
+    source = job.get("python_source") or {}
+    scripts = flow_python.check_scripts([Path(str(item)) for item in source.get("scripts") or []])
+    arguments = flow_python.aligned_arguments(source.get("arguments"), len(scripts))
+    values = flow_python.aligned_values(source.get("values"), len(scripts))
+    interpreter, reason = flow_python.resolve_interpreter(source.get("interpreter"))
+    timeout_seconds = int(source.get("timeout_seconds") or flow_python.SCRIPT_TIMEOUT_SECONDS)
+    plan = flow_python.run_plan(scripts, arguments, values)
+    report_progress("running", {
+        "stage": "python_scripts", "mode": "run", "interpreter": interpreter,
+        "interpreter_reason": reason, "runs": len(plan), "deliverables": 0,
+        "message": f"Running {len(plan)} Python script step(s) with {Path(interpreter).name} ({reason}).",
+    })
+    started = time.perf_counter()
+    waiting_count = None
+
+    def tick(process, observer):
+        nonlocal waiting_count
+        descendants = observer.running_descendants() if observer is not None else []
+        if process.poll() is not None and descendants and len(descendants) != waiting_count:
+            waiting_count = len(descendants)
+            report_progress("running", {
+                "stage": "python_waiting", "waiting": waiting_count,
+                "message": f"{Path(process.args[1]).name} exited; waiting for {waiting_count} process(es) it started.",
+            })
+        if live_observer is not None:
+            live_observer.tick(process, observer)
+
+    steps = flow_python.run_scripts_only(
+        scripts, environment=os.environ.copy(), flow_name=job["flow"]["name"],
+        run_id=run_id, interpreter=interpreter, arguments=arguments, values=values,
+        date=job.get("_runtime_task_date") or dubai_today().isoformat(),
+        timeout_seconds=timeout_seconds,
+        observer_factory=script_observer_factory,
+        progress=lambda record: (
+            live_observer.start_step(record) if live_observer is not None else None,
+            report_progress("running", {
+            "stage": "python_step", "message": f"Running script {record['index']} of {record['steps']}: {record['script_name']}.",
+            "step": record["index"], "steps": record["steps"], "script": record["script_name"],
+            "checksum": record["script_checksum"],
+        })),
+        step_result=lambda record: report_progress("running", _python_step_event(record)),
+        on_line=(live_observer.line if live_observer is not None else None),
+        on_tick=tick,
+        stop_requested=(live_observer.stop_requested if live_observer is not None else None),
+    )
+    elapsed_ms = round((time.perf_counter() - started) * 1000)
+    names = ", ".join(item["script_name"] for item in steps[:3])
+    message = f"Ran {names} (all exited 0) in {round(elapsed_ms / 1000)}s."
+    report_progress("running", {
+        "stage": "python_complete", "message": message,
+        "runs": len(steps), "deliverables": 0,
+        "results": [{"step": item["index"], "script": item["script_name"],
+                     "exit_code": item["exit_code"], "duration_ms": item["duration_ms"],
+                     "stdout": item["stdout"][-1000:], "stderr": item["stderr"][-1000:]}
+                    for item in steps[:20]],
+    })
+    return [], [{"phase": "python_scripts", "duration_ms": elapsed_ms,
+                 "status": "succeeded", "item_count": len(steps)}], {
+                     "no_op": False, "sql_artifacts": [], "message": message,
+                 }
 
 
 def execute_job(
@@ -8004,7 +8082,8 @@ def _python_success_message(job: dict, artifacts: list[dict], sql_result: dict |
 
 def execute_flow(page, job: dict, progress, profile_dir: Path, download_staging_dir=None,
                  *, run_id: int, register_folder, headed: bool = False,
-                 artifacts=None, state=None, run_started=None, acquire_bundle=None) -> dict:
+                 artifacts=None, state=None, run_started=None, acquire_bundle=None,
+                 script_observer_factory=None, live_observer=None) -> dict:
     """One acquisition/publication/transform/SQL path for every launch surface.
 
     Callers own process locks, browser lifetime, progress transport and retention
@@ -8114,9 +8193,15 @@ def execute_flow(page, job: dict, progress, profile_dir: Path, download_staging_
             artifacts, timings, source_outcome = execute_python_job(
                 job, progress, profile_dir,
                 run_id=run_id, register_folder=register_folder,
+                script_observer_factory=script_observer_factory,
+                live_observer=live_observer,
             )
             sql_artifacts = source_outcome["sql_artifacts"]
             no_op = False
+            if (job.get("python_source") or {}).get("mode") == "run":
+                progress("succeeded", {"stage": "complete", "no_op": False,
+                                       "message": source_outcome["message"]}, [], timings)
+                return state
         elif (job.get("outlook_source") or {}).get("enabled"):
             artifacts, timings, outlook_outcome = execute_outlook_job(
                 job, progress, profile_dir,
@@ -8276,6 +8361,12 @@ def execute_flow(page, job: dict, progress, profile_dir: Path, download_staging_
             timings = [{"phase": "total", "duration_ms": round((time.perf_counter() - run_started) * 1000), "status": "failed"}]
         raise
     finally:
+        if live_observer is not None and (job.get("python_source") or {}).get("enabled"):
+            try:
+                live_observer.finish(stopped=live_observer.stop_requested())
+            except Exception:
+                # A monitoring transport failure must not mask the run result.
+                pass
         state.update(artifacts=artifacts, timings=timings, transformation_started=transformation_started,
                      sql_started=sql_started, sql_result=sql_result, source_receipt=source_receipt, no_op=no_op)
     return state
@@ -8311,6 +8402,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
         registration['capabilities']['post_sql_refresh_v1'] = True
         registration['capabilities']['sql_table_ownership_v1'] = True
         registration['capabilities'][flow_python.ARGUMENTS_CAPABILITY] = True
+        registration['capabilities'][flow_python.RUN_CAPABILITY] = True
         registration['capabilities']['flow_recorder_v1'] = headed
         registration['capabilities']['flow_recorder_controls_v1'] = headed
         # Metronome can take several minutes to boot after an update (service
@@ -8554,6 +8646,18 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                 heartbeat_thread = threading.Thread(target=heartbeat_loop, daemon=True)
                 heartbeat_thread.start()
 
+                live_observer = None
+                script_observer_factory = None
+                if (run["job"].get("python_source") or {}).get("enabled"):
+                    from app.flow_process_tree import ProcessTreeObserver
+                    from app.flow_script_live import LiveObserver
+                    script_observer_factory = ProcessTreeObserver
+
+                    def post_live(payload):
+                        return _api(client, "POST", f"/api/flows/worker/{worker_id}/runs/{run_id}/live", payload)
+
+                    live_observer = LiveObserver(post_live, progress)
+
                 from app.flow_execution_lock import job_lock
                 execution_locks = job_lock(run["job"])
                 execution_state = {}
@@ -8582,7 +8686,9 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                         execute_flow(page, run["job"], progress, profile_dir, download_staging_dir,
                                      run_id=run_id, register_folder=register_folder, headed=headed,
                                      artifacts=artifacts, state=execution_state, run_started=run_started,
-                                     acquire_bundle=acquire_bundle)
+                                     acquire_bundle=acquire_bundle,
+                                     script_observer_factory=script_observer_factory,
+                                     live_observer=live_observer)
                 except Exception as exc:
                     artifacts = execution_state.get("artifacts", artifacts)
                     timings = execution_state.get("timings", timings)
@@ -8738,6 +8844,9 @@ def _bootstrap_browser_channel(server: str) -> str:
 
 
 def main():
+    # Child scripts inherit settings from the project .env. Do this before
+    # constructing worker jobs, whose configuration imports are otherwise lazy.
+    import app.config  # noqa: F401
     parser = argparse.ArgumentParser(description="Metronome authenticated download worker")
     parser.add_argument("--server", default=os.environ.get("METRONOME_URL", "http://127.0.0.1:8000"))
     parser.add_argument("--worker-id", default=os.environ.get("METRONOME_FLOW_WORKER_ID", socket.gethostname().lower()))

@@ -596,6 +596,18 @@ h2 {
 .flow-log-summary dd { font-size: 0.82rem; margin: 0.2rem 0 0; overflow-wrap: anywhere; }
 .flow-log-section { border-bottom: 1px solid var(--border); padding: var(--space-xl) 0; }
 .flow-log-section h2, .flow-log-failure h2 { font-size: 1.05rem; margin-bottom: var(--space-lg); }
+.python-console-head { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:18px; }
+.python-console-head h3 { margin:0 auto 0 0; font-size:.92rem; }
+.python-console-head label { display:flex; align-items:center; gap:5px; }
+.python-console-lines { max-height:420px; overflow:auto; border:1px solid var(--border); border-radius:8px; padding:10px; background:var(--surface-2); font:12px/1.5 ui-monospace,Consolas,monospace; }
+.python-console-line { display:flex; gap:10px; white-space:pre-wrap; overflow-wrap:anywhere; }
+.python-console-line span { min-width:46px; color:var(--text-muted); }
+.python-console-line.stderr { color:#b84d43; }
+.python-console-line.marker { font-weight:700; color:var(--accent); }
+.python-console-omitted { margin:8px 0; padding:5px; color:#8a5b00; background:#fff2cc; }
+.python-script-progress { height:9px; border-radius:5px; background:var(--surface-2); overflow:hidden; }
+.python-script-progress span { display:block; height:100%; background:var(--accent); }
+.python-script-silent { color:#9a6400; font-weight:600; }
 .flow-log-failure { background: color-mix(in srgb, var(--red) 8%, transparent); border: 1px solid color-mix(in srgb, var(--red) 35%, var(--border)); border-radius: 8px; margin-top: var(--space-xl); padding: var(--space-lg); }
 .flow-log-failure p { color: var(--red); overflow-wrap: anywhere; }
 .flow-log-event { border-top: 1px solid var(--border); padding: var(--space-lg) 0; }

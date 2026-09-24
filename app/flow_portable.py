@@ -31,6 +31,43 @@ SECTION_END = ' ===='
 ROOT = Path(__file__).resolve().parent
 DEPENDENCIES = ('playwright', 'httpx', 'openpyxl', 'xlrd', 'pyxlsb', 'sqlalchemy', 'psycopg2-binary', 'tzdata')
 CONFIG_SOURCE = '''import os
+import re
+from pathlib import Path
+
+_env_override = os.environ.get('DG_ENV_FILE')
+_env_path = None
+if _env_override == '':
+    pass
+elif _env_override is not None:
+    _env_path = Path(_env_override)
+else:
+    for _parent in list(Path(__file__).resolve().parents)[:8]:
+        if (_parent / '.env').is_file():
+            _env_path = _parent / '.env'
+            break
+if _env_path is not None:
+    try:
+        for _line in _env_path.read_text(encoding='utf-8-sig').splitlines():
+            _line = _line.strip()
+            if not _line or _line.startswith('#'):
+                continue
+            if _line.startswith('export '):
+                _line = _line[7:].strip()
+            if '=' not in _line:
+                continue
+            _name, _value = _line.split('=', 1)
+            _name, _value = _name.strip(), _value.strip()
+            if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', _name):
+                continue
+            if len(_value) >= 2 and _value[0] == _value[-1] and _value[0] in ('"', "'"):
+                _value = _value[1:-1]
+            if _value:
+                os.environ[_name] = _value
+    except (OSError, UnicodeError):
+        pass
+
+ENV_FILE = _env_path
+
 UPLOAD_PGDATABASE = os.getenv('DG_UPLOAD_PGDATABASE') or os.getenv('PGDATABASE', '')
 UPLOAD_PGHOST = os.getenv('DG_UPLOAD_PGHOST') or os.getenv('PGHOST', '')
 UPLOAD_PGPASSWORD = os.getenv('DG_UPLOAD_PGPASSWORD', '')

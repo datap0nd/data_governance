@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Callable
 
 from app.config import (
+    ENV_FILE,
     UPLOAD_PGDATABASE,
     UPLOAD_PGHOST,
     UPLOAD_PGPASSWORD,
@@ -132,6 +133,7 @@ def configuration_status() -> dict:
     return {
         "configured": not missing,
         "missing": missing,
+        "settings_file": str(ENV_FILE) if ENV_FILE else "",
         "host": UPLOAD_PGHOST,
         "default_database": UPLOAD_PGDATABASE,
     }

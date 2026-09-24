@@ -8,8 +8,55 @@ const stamp = value => value ? new Date(/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d
 const label = value => String(value || "unknown").replaceAll("_", " ");
 const runId = Number(location.pathname.match(/\/flow-runs\/(\d+)/)?.[1]);
 let loadRun = null;
+const consoleState = {lines: [], after: 0, omitted: 0, follow: true, loading: false};
+
+function renderConsole() {
+    const target = document.getElementById("python-console-lines");
+    if (!target) return;
+    let previous = 0;
+    target.innerHTML = consoleState.lines.map(line => {
+        const gap = line.line_no > previous + 1 ? `<div class="python-console-omitted">… ${line.line_no - previous - 1} lines omitted …</div>` : "";
+        previous = line.line_no;
+        return gap + `<div class="python-console-line ${esc(line.stream)} ${String(line.text).startsWith("::stage::") || String(line.text).startsWith("::progress::") ? "marker" : ""}"><span>${esc(line.stream)}</span><code>${esc(line.text)}</code></div>`;
+    }).join("") || '<div class="flow-inline-empty">Console output will appear here while the script runs.</div>';
+    if (consoleState.follow) target.scrollTop = target.scrollHeight;
+    const count = document.getElementById("python-console-count");
+    if (count) count.textContent = `${consoleState.lines.length} retained line(s)${consoleState.omitted ? ` · ${consoleState.omitted} omitted` : ""}`;
+}
+
+async function loadOutput() {
+    if (consoleState.loading || !document.getElementById("python-console-lines")) return;
+    consoleState.loading = true;
+    try {
+        for (let page = 0; page < 6; page++) {
+            const response = await fetch(`/api/flows/runs/${runId}/output?after_line=${consoleState.after}&limit=1000`);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const data = await response.json();
+            for (const line of data.lines || []) {
+                consoleState.lines.push(line);
+                consoleState.after = Math.max(consoleState.after, line.line_no);
+            }
+            consoleState.omitted = data.omitted || 0;
+            if ((data.lines || []).length < 1000) break;
+        }
+        // The server keeps the first 500 and newest 4500 lines. Bound this
+        // browser copy too, preserving the same head and tail.
+        if (consoleState.lines.length > 5000) consoleState.lines = [
+            ...consoleState.lines.slice(0, 500), ...consoleState.lines.slice(-4500),
+        ];
+        renderConsole();
+    } catch (error) {
+        const status = document.getElementById("python-console-count");
+        if (status) status.textContent = `Console unavailable: ${error.message}`;
+    } finally { consoleState.loading = false; }
+}
 
 function render(run) {
+    const python = run.job?.flow?.source_type === "python";
+    const live = run.live || {};
+    const processRows = (live.processes || []).map(item => `<tr><td>${esc(item.label || "process")}</td><td>${esc(item.pid)}</td><td>${esc(item.parent_pid || "—")}</td><td>${esc(item.state || "running")}${item.exit_code !== null && item.exit_code !== undefined ? ` · exit ${esc(item.exit_code)}` : ""}</td><td>${esc(stamp(item.started_at))}</td><td>${esc(item.duration_seconds ?? 0)}s</td><td>${esc(item.cpu_percent ?? 0)}%</td><td>${esc(Math.round((item.memory_bytes || 0) / 1048576))} MB</td></tr>`).join("");
+    const scriptProgress = /^\d+%$/.test(live.progress || "") ? Number.parseInt(live.progress) : /^\d+\/\d+$/.test(live.progress || "") ? (() => {const [a,b] = live.progress.split("/").map(Number); return b ? Math.min(100, Math.round(a / b * 100)) : 0;})() : null;
+    const silentMinutes = live.last_output_at ? Math.floor((Date.now() - Date.parse(live.last_output_at)) / 60000) : 0;
     const excelFailure = run.status === 'failed' ? [...(run.events || [])].reverse().find(item => item.details?.excel)?.details.excel : null;
     const sql = run.job?.sql_handoff || {};
     const transformation = run.job?.transformation || {};
@@ -44,6 +91,7 @@ function render(run) {
     document.getElementById("flow-run-log").innerHTML = `
         <header class="flow-log-header"><div><a href="/#flows">Back to Flows</a><h1>Run #${run.id}: ${esc(run.flow_name)}</h1><p>Complete diagnostic record captured by Metronome.${sqlRetrySource ? ` SQL-only retry of run #${esc(sqlRetrySource)}; the source was not opened.` : ""}</p></div><div class="flow-log-header-actions"><span class="flow-log-status ${esc(run.status)}">${esc(run.status)}</span><a class="btn-outline" href="/?investigate=flow_run&subject_id=${run.id}#flows">Investigate safely</a>${canRetrySql ? '<button class="btn-primary" id="flow-retry-sql">Retry SQL only</button>' : ""}${canRetryViews ? '<button class="btn-primary" id="flow-retry-views">Retry view refresh</button>' : ""}</div></header>
         ${run.error ? `<section class="flow-log-failure"><h2>${excelFailure ? 'Excel processing failed' : 'Final error'}</h2><p>${esc(run.error)}</p>${excelFailure ? `<p><strong>Workbook:</strong> ${esc(excelFailure.workbook)}</p><p><strong>Worksheets found:</strong> ${(excelFailure.available_sheets || []).map(name => `<code>${esc(name)}</code>`).join(', ') || 'None'}</p><p>SQL was not started. The original workbook is preserved.</p><a class="btn-primary" href="/?edit_flow=${encodeURIComponent(run.flow_id)}&worksheet_run=${encodeURIComponent(run.id)}#flows">Choose worksheets</a>` : ''}</section>` : ""}
+        ${python ? `<section class="flow-log-section python-script-activity"><h2>Script activity</h2><p><strong>${esc(live.script || run.progress?.script || "Preparing script")}</strong>${run.progress?.step && run.progress?.steps ? ` · step ${esc(run.progress.step)} of ${esc(run.progress.steps)}` : ""}${live.stage ? ` · ${esc(live.stage)}` : ""}</p>${scriptProgress !== null ? `<div class="python-script-progress" role="progressbar" aria-valuenow="${scriptProgress}" aria-valuemin="0" aria-valuemax="100"><span style="width:${scriptProgress}%"></span></div><p>${esc(live.progress)}</p>` : ""}${live.waiting ? `<p>Waiting for ${esc(live.waiting)} process(es) started by the script.</p>` : ""}${!terminal && silentMinutes >= 10 ? `<p class="python-script-silent">No console output for ${silentMinutes} min.</p>` : ""}<div class="flow-table-wrap"><table class="flow-table"><thead><tr><th>Process</th><th>PID</th><th>Parent</th><th>State</th><th>Started (Dubai)</th><th>Duration</th><th>CPU</th><th>Memory</th></tr></thead><tbody>${processRows || '<tr><td colspan="8">Process details will appear when the script starts.</td></tr>'}</tbody></table></div><div class="python-console-head"><h3>Live console</h3><label><input type="checkbox" id="python-console-follow" ${consoleState.follow ? "checked" : ""}> Follow</label><button type="button" class="btn-secondary" id="python-console-copy">Copy</button><button type="button" class="btn-secondary" id="python-console-download">Download .log</button></div><p id="python-console-count" class="flow-log-muted"></p><div id="python-console-lines" class="python-console-lines" aria-live="off"></div></section>` : ""}
         ${reconciliationBlocksRetry ? '<section class="flow-log-failure"><h2>SQL reconciliation required</h2><p>The prior append may have completed. Check and reconcile the target, then acknowledge reconciliation from the Flow’s More menu before running again.</p></section>' : ''}
         ${refresh ? `<section class="flow-log-section flow-log-views"><h2>SQL insertion → Refresh materialized views</h2><p><strong>${esc(sqlOutcomeText)}.</strong> ${refresh.deferred_to_pipeline ? "This run belongs to a full-pipeline run, which refreshes the configured views once after every upstream Flow finished." : refresh.blocked ? `Refresh blocked: ${esc(refresh.blocked)}` : `${refresh.completed} of ${refresh.total} materialized view(s) refreshed, each in its own transaction, upstream first.${refresh.source_run_id ? ` Refresh-only retry of run #${esc(refresh.source_run_id)}; nothing was downloaded, transformed or inserted again.` : ""}${refresh.discovered_at ? ` List frozen when the run was queued (${esc(stamp(refresh.discovered_at))}${refresh.metadata_at ? `, metadata verified ${esc(stamp(refresh.metadata_at))}` : ""}).` : ""}`}${refresh.retry && refresh.retry.status !== "eligible" ? ` ${esc(refresh.retry.message)}` : ""}</p>${viewRows ? `<div class="flow-table-wrap"><table class="flow-table"><thead><tr><th>#</th><th>Materialized view</th><th>Status</th><th>Duration</th><th>Finished</th><th>Error</th></tr></thead><tbody>${viewRows}</tbody></table></div>` : ""}</section>` : ""}
         ${email ? `<section class="flow-log-section flow-log-email"><h2>Email the final file</h2><p><strong>Status:</strong> <span class="flow-log-email-status ${esc(email.status || "none")}">${esc(emailStatusText)}</span>${email.detail ? ` <span class="${email.status === "failed" || email.status === "unknown" ? "flow-log-view-error" : ""}">${esc(email.detail)}</span>` : ""}</p><dl><div><dt>Recipients</dt><dd>${esc((email.recipients || []).join("; ") || "None")}</dd></div><div><dt>Subject</dt><dd>${esc(email.subject || `Metronome flow file: ${run.flow_name} (run #${run.id})`)}</dd></div><div><dt>File(s)</dt><dd>${esc((email.files || []).join(", ") || "None recorded")}</dd></div></dl>${canResendEmail ? '<p><button class="btn-secondary" id="flow-resend-email">Send again</button> <span id="flow-resend-email-status" role="status"></span></p>' : ""}<p class="flow-log-muted">The email is handed to Outlook on the BI desktop after the run succeeds; Outlook's receipt updates this status. Files above 20 MB are described instead of attached.</p></section>` : ""}
@@ -54,6 +102,16 @@ function render(run) {
         <section class="flow-log-section"><h2>Phase timings</h2><div class="flow-table-wrap"><table class="flow-table"><thead><tr><th>Phase</th><th>Duration</th><th>Status</th><th>Items</th></tr></thead><tbody>${timingRows || '<tr><td colspan="4">No timings recorded.</td></tr>'}</tbody></table></div></section>
         <section class="flow-log-section"><h2>Run files</h2><div class="flow-table-wrap"><table class="flow-table"><thead><tr><th>File</th><th>Period</th><th>Rows</th><th>Bytes</th><th>Path</th></tr></thead><tbody>${fileRows || '<tr><td colspan="5">No files recorded.</td></tr>'}</tbody></table></div></section>
         <section class="flow-log-section"><h2>Run configuration</h2><details><summary>View saved job configuration</summary><pre>${esc(JSON.stringify(run.job || {}, null, 2))}</pre></details></section>`;
+
+    if (python) {
+        renderConsole();
+        document.getElementById("python-console-follow").onchange = event => { consoleState.follow = event.target.checked; if (consoleState.follow) renderConsole(); };
+        document.getElementById("python-console-copy").onclick = () => navigator.clipboard.writeText(consoleState.lines.map(line => `[${line.stream}] ${line.text}`).join("\n"));
+        document.getElementById("python-console-download").onclick = () => {
+            const blob = new Blob([consoleState.lines.map(line => `[${line.at}] [${line.stream}] ${line.text}`).join("\n")], {type: "text/plain"});
+            const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = `flow-run-${run.id}.log`; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+        };
+    }
 
     const retryViewsButton = document.getElementById("flow-retry-views");
     if (retryViewsButton) retryViewsButton.onclick = async () => {
@@ -127,6 +185,7 @@ if (!Number.isInteger(runId)) {
         return response.json();
     }).then(run => {
         render(run);
+        if (run.job?.flow?.source_type === "python") loadOutput();
         clearTimeout(refreshTimer);
         if (!["succeeded", "failed", "cancelled"].includes(run.status)) {
             refreshTimer = setTimeout(loadRun, 2000);

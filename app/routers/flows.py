@@ -13,7 +13,7 @@ import sqlite3
 from app.flow_clock import dubai_now
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
@@ -162,7 +162,7 @@ def _flow_failure_context(db, run_id: int) -> dict | None:
                   r.error, r.created_at, r.started_at, r.finished_at,
                   f.name AS flow_name, f.target_folder, f.source_type,
                    f.outlook_subject_contains, f.local_file_path, f.python_scripts_json,
-                   f.python_script_arguments_json, f.python_script_values_json,
+                   f.python_script_arguments_json, f.python_script_values_json, f.python_run_mode,
                   s.name AS site_name, rep.name AS report_name,
                   p.name AS owner_name, p.email AS owner_email
            FROM flow_runs r
@@ -214,7 +214,7 @@ def _flow_failure_message(context: dict) -> dict:
         if context.get("source_type") == "outlook"
         else f"Configured file {context.get('local_file_path')}"
         if context.get("source_type") == "file"
-        else "Python scripts: " + flow_python.describe(
+        else ("Python run: " if context.get("python_run_mode") == "run" else "Python scripts: ") + flow_python.describe(
             _loads(context.get("python_scripts_json"), []),
             _loads(context.get("python_script_arguments_json"), []),
             _loads(context.get("python_script_values_json"), []),
@@ -702,6 +702,9 @@ class FlowWrite(BaseModel):
     # value list per script (the script runs once per value).
     python_script_arguments: list[str] = Field(default_factory=list, max_length=flow_python.MAX_SCRIPTS)
     python_script_values: list[list[str]] = Field(default_factory=list, max_length=flow_python.MAX_SCRIPTS)
+    python_run_mode: Literal["run", "outputs"] | None = None
+    python_interpreter: str | None = Field(default=None, max_length=2000)
+    python_timeout_minutes: int = Field(default=60, ge=1, le=1440, strict=True)
     export_views: list[str] = Field(default_factory=list, max_length=20)
     download_links: list[str] = Field(default_factory=list, max_length=50)
     enabled: bool = False
@@ -877,6 +880,17 @@ class FlowWrite(BaseModel):
                     self.python_scripts, self.python_script_arguments, self.python_script_values,
                 )
             )
+            # Old API clients omit this field and must retain their output
+            # behavior; the new builder explicitly sends its run default.
+            self.python_run_mode = self.python_run_mode or "outputs"
+            if self.python_interpreter:
+                self.python_interpreter = self.python_interpreter.strip().strip('"')
+                if (not _is_absolute_worker_path(self.python_interpreter)
+                        or self.python_interpreter.casefold().endswith(".py")
+                        or any(char in self.python_interpreter for char in "*?")
+                        or any(ord(char) < 32 or ord(char) == 127
+                               for char in self.python_interpreter)):
+                    raise ValueError("Python to use must be an absolute python.exe path without wildcards.")
             self.outlook_subject_contains = None
             self.local_file_path = None
             self.local_file_worksheet = None
@@ -897,6 +911,13 @@ class FlowWrite(BaseModel):
             self.start_week = None
             self.end_week = None
             self.file_format = (self.file_format or "csv").strip().casefold()
+            if self.python_run_mode == "run":
+                self.sql_handoff_enabled = False
+                self.email_delivery = None
+                self.post_sql_refresh = None
+                self.file_format = "csv"
+                self.filename_template = "run-only.csv"
+                self.output_mode = "run_folders"
             if self.sql_handoff_enabled:
                 # SQL loads the final CSV from the run folder (Retry SQL relies
                 # on it); the hidden file-output controls never publish it.
@@ -907,7 +928,7 @@ class FlowWrite(BaseModel):
             self.filename_template = _clean_filename_template(
                 self.filename_template or f"{{flow}}.{self.file_format}", self.file_format,
             )
-            if (
+            if (self.python_run_mode != "run" and
                 not self.sql_handoff_enabled
                 and len(self.python_script_values[-1]) > 1
                 and not any(token in self.filename_template for token in ("{value}", "{index}"))
@@ -921,6 +942,8 @@ class FlowWrite(BaseModel):
             self.transform_script_path = None
         else:
             self.python_scripts, self.python_script_arguments, self.python_script_values = [], [], []
+            self.python_run_mode = None
+            self.python_interpreter = None
             self.outlook_subject_contains = None
             self.local_file_path = None
             self.local_file_worksheet = None
@@ -1051,6 +1074,29 @@ class WorkerRegister(BaseModel):
     capabilities: dict[str, Any] = Field(default_factory=dict)
 
 
+class PythonInspect(BaseModel):
+    path: str = Field(min_length=1, max_length=2000)
+    interpreter: str | None = Field(default=None, max_length=2000)
+
+
+@router.post("/python/inspect")
+def inspect_python_script(body: PythonInspect):
+    """Soft builder check: read access and interpreter, without executing code."""
+    path = Path(body.path.strip().strip('"'))
+    readable = path.is_file() and os.access(path, os.R_OK)
+    hint = None
+    if not readable and re.match(r"^[A-Za-z]:[\\/]", str(path)):
+        hint = "A mapped drive may be invisible to the worker service. Use a \\\\server\\share path."
+    try:
+        interpreter, reason = flow_python.resolve_interpreter(body.interpreter)
+        interpreter_error = None
+    except RuntimeError as exc:
+        interpreter, reason, interpreter_error = None, None, str(exc)
+    return {"readable": readable, "path": str(path), "hint": hint,
+            "interpreter": interpreter, "interpreter_reason": reason,
+            "interpreter_error": interpreter_error}
+
+
 class OutlookSourceReceipt(BaseModel):
     kind: Literal["outlook"] = "outlook"
     identity: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -1103,6 +1149,27 @@ class WorkerProgress(BaseModel):
     @classmethod
     def _bound_message(cls, value: dict[str, Any]) -> dict[str, Any]:
         return _bound_progress_message(value)
+
+
+class LiveLine(BaseModel):
+    line_no: int = Field(ge=1)
+    stream: Literal["stdout", "stderr"]
+    text: str = Field(max_length=2000)
+    pid: int | None = Field(default=None, ge=1)
+    at: str = Field(max_length=60)
+
+
+class WorkerLive(BaseModel):
+    lines: list[LiveLine] = Field(default_factory=list, max_length=1000)
+    processes: list[dict[str, Any]] = Field(default_factory=list, max_length=300)
+    stage: str | None = Field(default=None, max_length=200)
+    script: str | None = Field(default=None, max_length=200)
+    progress: str | None = Field(default=None, max_length=80)
+    waiting: int = Field(default=0, ge=0, le=300)
+    main_exited: bool = False
+    dropped: int = Field(default=0, ge=0)
+    last_output_at: str | None = Field(default=None, max_length=60)
+    final: bool = False
 
 
 class FolderRegister(BaseModel):
@@ -2302,13 +2369,13 @@ def list_flows():
 def flow_activity():
     """A read-only display snapshot, independent of the run-history limit."""
     columns = """r.id, r.flow_id, f.name AS flow_name, r.status,
-                 r.created_at, r.claimed_at, r.started_at, r.finished_at"""
+                 r.created_at, r.claimed_at, r.started_at, r.finished_at, r.live_json"""
     cutoff = _iso(_now() - timedelta(seconds=90))
     with get_db() as db:
         db.execute("BEGIN")
         latest = db.execute(
             """SELECT f.id AS flow_id, r.id, f.name AS flow_name, r.status,
-                       r.created_at, r.claimed_at, r.started_at, r.finished_at
+                       r.created_at, r.claimed_at, r.started_at, r.finished_at, r.live_json
                 FROM flows f LEFT JOIN flow_runs r ON r.id=(
                     SELECT id FROM flow_runs WHERE flow_id=f.id ORDER BY id DESC LIMIT 1)
                 ORDER BY f.id"""
@@ -2330,19 +2397,37 @@ def flow_activity():
                                         THEN 1 ELSE 0 END), 0) AS online
                FROM flow_workers""", (cutoff,),
         ).fetchone()
-    return {"latest_runs": [{**dict(row), "progress": summaries.get(row["id"])} for row in latest],
-            "active_runs": [{**dict(row), "progress": summaries[row["id"]]} for row in active],
+    def public_activity(row):
+        item = dict(row)
+        item["live"] = _loads(item.pop("live_json", None), {})
+        item["progress"] = summaries.get(row["id"])
+        return item
+    return {"latest_runs": [public_activity(row) for row in latest],
+            "active_runs": [public_activity(row) for row in active],
             "workers": dict(workers)}
 
 
 @router.get("/runs")
-def list_runs(flow_id: int | None = None, limit: int = Query(default=100, ge=1, le=500)):
+def list_runs(flow_id: int | None = None, status: str | None = None,
+              before_id: Annotated[int | None, Query(ge=1)] = None,
+              limit: Annotated[int, Query(ge=1, le=500)] = 100):
+    if status is not None and status not in RUN_STATUSES:
+        raise HTTPException(422, "Choose a valid run status.")
     with get_db() as db:
         sql = """SELECT r.*, f.name AS flow_name FROM flow_runs r JOIN flows f ON f.id=r.flow_id"""
         params: list[Any] = []
+        clauses = []
         if flow_id is not None:
-            sql += " WHERE r.flow_id = ?"
+            clauses.append("r.flow_id = ?")
             params.append(flow_id)
+        if status is not None:
+            clauses.append("r.status = ?")
+            params.append(status)
+        if before_id is not None:
+            clauses.append("r.id < ?")
+            params.append(before_id)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
         sql += " ORDER BY r.created_at DESC, r.id DESC LIMIT ?"
         params.append(limit)
         rows = db.execute(sql, params).fetchall()
@@ -2350,6 +2435,7 @@ def list_runs(flow_id: int | None = None, limit: int = Query(default=100, ge=1, 
         for row in rows:
             public_row = dict(row)
             public_row.pop("job_json", None)
+            public_row["live"] = _loads(public_row.pop("live_json", None), {})
             timings = db.execute(
                 "SELECT phase, duration_ms, item_count, status FROM flow_operation_timings WHERE run_id=? ORDER BY id",
                 (row["id"],),
@@ -2367,6 +2453,28 @@ def list_runs(flow_id: int | None = None, limit: int = Query(default=100, ge=1, 
         return result
 
 
+@router.get("/runs/{run_id}/output")
+def get_run_output(run_id: int, after_line: int = Query(default=0, ge=0),
+                   limit: int = Query(default=500, ge=1, le=1000)):
+    with get_db() as db:
+        run = db.execute("SELECT status, live_json FROM flow_runs WHERE id=?", (run_id,)).fetchone()
+        if not run:
+            raise HTTPException(404, "Run not found.")
+        rows = db.execute(
+            """SELECT line_no, stream, text, pid, emitted_at AS at
+               FROM flow_run_output WHERE run_id=? AND line_no>?
+               ORDER BY line_no LIMIT ?""", (run_id, after_line, limit),
+        ).fetchall()
+        counts = db.execute(
+            "SELECT COALESCE(MAX(line_no),0), COUNT(*) FROM flow_run_output WHERE run_id=?",
+            (run_id,),
+        ).fetchone()
+        live = _loads(run["live_json"], {})
+    return {"lines": [dict(row) for row in rows], "next_line": rows[-1]["line_no"] if rows else after_line,
+            "omitted": max(0, counts[0] - counts[1]) + int(live.get("dropped") or 0),
+            "terminal": run["status"] in RUN_TERMINAL}
+
+
 @router.get("/runs/{run_id}")
 def get_run(run_id: int):
     with get_db() as db:
@@ -2379,6 +2487,7 @@ def get_run(run_id: int):
             raise HTTPException(404, "Run not found.")
         public_row = dict(row)
         public_row.pop("job_json", None)
+        public_row["live"] = _loads(public_row.pop("live_json", None), {})
         timings = db.execute(
             """SELECT phase, duration_ms, item_count, status, metadata_json, recorded_at
                FROM flow_operation_timings WHERE run_id=? ORDER BY id""",
@@ -3359,6 +3468,8 @@ def create_flow(body: FlowWrite, request: Request):
                        (_json(body.python_script_arguments), flow_id))
             db.execute("UPDATE flows SET python_script_values_json=? WHERE id=?",
                        (_json(body.python_script_values), flow_id))
+            db.execute("UPDATE flows SET python_run_mode=?, python_interpreter=?, python_timeout_minutes=? WHERE id=?",
+                       (body.python_run_mode, body.python_interpreter, body.python_timeout_minutes, flow_id))
             if managed:
                 adapter = db.execute("SELECT adapter FROM flow_sites WHERE id=?", (body.site_id,)).fetchone()[0]
                 allocated = flow_layout.create_flow_folder(flow_paths.get_flows_root(db), adapter, body.name, flow_id)
@@ -3748,6 +3859,8 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
                    (_json(body.python_script_arguments), flow_id))
         db.execute("UPDATE flows SET python_script_values_json=? WHERE id=?",
                    (_json(body.python_script_values), flow_id))
+        db.execute("UPDATE flows SET python_run_mode=?, python_interpreter=?, python_timeout_minutes=? WHERE id=?",
+                   (body.python_run_mode, body.python_interpreter, body.python_timeout_minutes, flow_id))
         db.execute('UPDATE flows SET execution_method=? WHERE id=?', (body.execution_method, flow_id))
         if body.recording_revision_id is not None:
             if body.execution_method != 'recorded':
@@ -3961,6 +4074,11 @@ def delete_flow(flow_id: int, body: FlowDeleteWrite, request: Request):
                 (flow_id,),
             )
             db.execute(
+                """DELETE FROM flow_run_output
+                   WHERE run_id IN (SELECT id FROM flow_runs WHERE flow_id=?)""",
+                (flow_id,),
+            )
+            db.execute(
                 """DELETE FROM flow_run_files
                    WHERE run_id IN (SELECT id FROM flow_runs WHERE flow_id=?)""",
                 (flow_id,),
@@ -4142,6 +4260,7 @@ def stop_run(flow_id: int, request: Request):
     run_id = None
     browser_mode = "headless"
     stop_assigned_worker = False
+    cooperative_stop = False
     message = ""
     with get_db() as db:
         db.execute('BEGIN IMMEDIATE')
@@ -4173,9 +4292,16 @@ def stop_run(flow_id: int, request: Request):
                 (worker_id, run_id),
             ).fetchone()
             capabilities = _loads(worker["capabilities_json"], {}) if worker else {}
+            cooperative_stop = (
+                (job.get("python_source") or {}).get("mode") == "run"
+                and bool(capabilities.get(flow_python.RUN_CAPABILITY))
+            )
+            if cooperative_stop:
+                stop_assigned_worker = False
             raw_pid = capabilities.get("process_id")
             process_id = raw_pid if isinstance(raw_pid, int) and raw_pid > 0 else None
-            message = "Stop requested by user for the assigned browser worker."
+            message = ("Stop requested for the Python script tree."
+                       if cooperative_stop else "Stop requested by user for the assigned browser worker.")
         else:
             message = "Cancelled by user before a worker started this run."
         db.execute(
@@ -4198,7 +4324,8 @@ def stop_run(flow_id: int, request: Request):
     stopped = (
         stop_local_worker(browser_mode, process_id, worker_id=worker_id)
         if stop_assigned_worker
-        else {"status": "not_needed", "message": "The run had not been assigned to a worker."}
+        else ({"status": "cooperative", "message": "The worker is stopping the Python script tree."}
+              if cooperative_stop else {"status": "not_needed", "message": "The run had not been assigned to a worker."})
     )
     if stop_assigned_worker:
         message = (
@@ -5688,6 +5815,8 @@ def claim_run(worker_id: str):
                 and (not required_adapter or required_adapter in adapters)
                 and (not flow_python.requires_arguments_capability(job.get("python_source") or {})
                      or capabilities.get(flow_python.ARGUMENTS_CAPABILITY))
+                and ((job.get("python_source") or {}).get("mode") != "run"
+                     or capabilities.get(flow_python.RUN_CAPABILITY))
                 and (not (job.get("paths") or {}).get("artifact_store_root") or capabilities.get("shared_flow_artifacts"))
                 and (not flow_view_refresh.plan_views(job) or capabilities.get(flow_view_refresh.CAPABILITY))
                 and flow_excel.worker_supported(job, capabilities)
@@ -6206,6 +6335,13 @@ def update_run(worker_id: str, run_id: int, body: WorkerProgress):
                 _json(body.progress), body.error, body.traceback, now,
             ),
         )
+        if body.status in RUN_TERMINAL:
+            db.execute(
+                """DELETE FROM flow_run_output WHERE run_id IN (
+                       SELECT id FROM flow_runs WHERE flow_id=?
+                       ORDER BY id DESC LIMIT -1 OFFSET 50)""",
+                (row["flow_id"],),
+            )
         if body.progress.get("stage") == "publish_complete":
             _record_publish_name_drift(db, row, stored_artifacts, now)
         _record_sql_outcome(db, run_id, body, now)
@@ -6404,6 +6540,82 @@ def _record_view_refresh(db, run_id: int, progress: dict, now: str) -> None:
             (run_id, index + 1, view["database"], view["schema"], view["name"], status, duration, error,
              item.get("started_at"), item.get("finished_at"), now),
         )
+
+
+@router.post("/worker/{worker_id}/runs/{run_id}/live")
+def update_run_live(worker_id: str, run_id: int, body: WorkerLive):
+    """Store a bounded, retry-safe console tail and latest process snapshot."""
+    now = _iso(_now())
+    with get_db() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute(
+            "SELECT status, finished_at, live_json FROM flow_runs WHERE id=? AND worker_id=?",
+            (run_id, worker_id),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Run is not assigned to this worker.")
+        terminal = row["status"] in RUN_TERMINAL
+        live = _loads(row["live_json"], {})
+        if terminal:
+            recent = False
+            if row["finished_at"]:
+                try:
+                    recent = (_now() - datetime.fromisoformat(row["finished_at"])).total_seconds() <= 120
+                except ValueError:
+                    pass
+            if not (body.final and recent and not live.get("final")):
+                return {"run_id": run_id, "terminal": True, "accepted": False}
+        if body.lines:
+            db.executemany(
+                """INSERT OR IGNORE INTO flow_run_output
+                   (run_id, line_no, stream, text, pid, emitted_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                [(run_id, line.line_no, line.stream, line.text, line.pid, line.at)
+                 for line in body.lines],
+            )
+            max_line = db.execute(
+                "SELECT MAX(line_no) FROM flow_run_output WHERE run_id=?", (run_id,),
+            ).fetchone()[0] or 0
+            db.execute(
+                """DELETE FROM flow_run_output WHERE run_id=?
+                   AND line_no>500 AND line_no<=?""",
+                (run_id, max_line - 4500),
+            )
+        processes = []
+        for item in body.processes:
+            processes.append({
+                "pid": item.get("pid"), "parent_pid": item.get("parent_pid"),
+                "label": str(item.get("label") or "process")[:200],
+                "state": str(item.get("state") or "running")[:30],
+                "started_at": str(item.get("started_at") or "")[:60],
+                "duration_seconds": item.get("duration_seconds"),
+                "cpu_percent": item.get("cpu_percent"),
+                "memory_bytes": item.get("memory_bytes"),
+                "exit_code": item.get("exit_code"),
+            })
+        live.update({"processes": processes, "waiting": body.waiting,
+                     "main_exited": body.main_exited, "updated_at": now,
+                     "last_output_at": body.last_output_at or live.get("last_output_at"),
+                     "dropped": max(int(live.get("dropped") or 0), body.dropped),
+                     "final": bool(body.final) or bool(live.get("final"))})
+        if body.stage is not None:
+            live["stage"] = body.stage
+        if body.progress is not None:
+            live["progress"] = body.progress
+        if body.script is not None:
+            live["script"] = body.script
+        db.execute("UPDATE flow_runs SET live_json=?, heartbeat_at=? WHERE id=?",
+                   (_json(live), now, run_id))
+        if terminal and body.final and row["status"] == "cancelled":
+            db.execute(
+                """INSERT INTO flow_run_events
+                   (run_id, status, stage, message, details_json, created_at)
+                   VALUES (?, 'cancelled', 'python_stopped', ?, '{}', ?)""",
+                (run_id, "Stopped the Python script tree.", now),
+            )
+        db.execute("UPDATE flow_workers SET last_seen_at=?, updated_at=? WHERE worker_id=?",
+                   (now, now, worker_id))
+    return {"run_id": run_id, "terminal": terminal, "accepted": True}
 
 
 @router.post("/worker/{worker_id}/runs/{run_id}/heartbeat")

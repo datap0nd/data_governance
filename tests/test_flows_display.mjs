@@ -41,7 +41,7 @@ assert.doesNotMatch(source, /function _flowFreshnessHtml/, "Unused Flow freshnes
 console.log("flows display tests passed");
 
 const render = flow => context.renderFlowList([{ id: 2, name: "Export", ...flow }], [], {}, []);
-assert.deepEqual(Array.from(context._flowSortColumns(), column => column[1]), ["Flow", "Active", "Owner", "Source", "Download", "Browser", "Schedule", "Last run"]);
+assert.deepEqual(Array.from(context._flowSortColumns(), column => column[1]), ["Flow", "Active", "Owner", "Source", "Type", "Browser", "Schedule", "Last run"]);
 assert.doesNotMatch(html, /flow-activity-scroll|Live activity/);
 assert.match(render({ schedule_type: "manual" }), /aria-label="Active: Export"[^>]*disabled/);
 assert.match(render({ schedule_type: "manual" }), /title="Choose a schedule to activate this flow"/);
