@@ -62,7 +62,7 @@ function syncFolder(target){
     if(mode==='none'){
         if(!destination.querySelector('#flow-target-folder')){
             const saved=existing&&!existing.managed_folder?existing.target_folder||'':'';
-            destination.innerHTML=`<label for="flow-target-folder"><span>Output folder</span></label><input id="flow-target-folder" maxlength="2000" value="${window.esc(saved)}" placeholder="\\\\fileserver\\reports\\orders"><small>Run folders and the final file go here. Any folder the worker service can write, even while Enforce paths is on; prefer a \\\\server\\share path to a mapped drive.</small>`;
+            destination.innerHTML=`<label><span>Output folder</span><input id="flow-target-folder" maxlength="2000" value="${window.esc(saved)}" placeholder="\\\\fileserver\\reports\\orders"><small>Run folders and the final file go here. Any folder the worker service can write, even while Enforce paths is on; prefer a \\\\server\\share path to a mapped drive.</small></label>`;
         }
         destination.querySelector('#flow-target-folder').required=!runOnly(target);
     }else if(destination.querySelector('#flow-target-folder')){
