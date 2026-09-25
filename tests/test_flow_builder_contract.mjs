@@ -199,7 +199,9 @@ assert.match(source, /python_script_arguments: "flow-python-arguments-1", python
 assert.match(source, /argumentsInput\.id = `flow-python-arguments-\$\{index \+ 1\}`;\n\s+argumentsInput\.setAttribute\("aria-label", `Script \$\{index \+ 1\} arguments`\)/);
 assert.match(source, /valuesInput\.id = `flow-python-values-\$\{index \+ 1\}`;\n\s+valuesInput\.setAttribute\("aria-label", `Script \$\{index \+ 1\} values`\)/);
 assert.match(source, /count\.textContent = _flowPythonRunCountLabel\(_flowPythonValuesList\(textarea\.value\)\)/);
-assert.match(source, /Scripts run in their own folder with the chosen computer Python and receive only your typed arguments/);
+assert.match(source, /Each script runs as it would from PowerShell: in the signed-in Windows session with your normal rights and mapped drives, in its own folder, with the chosen computer Python and only your typed arguments/);
+assert.match(source, /The BI desktop account must be signed in; a locked or disconnected session is fine\./);
+assert.match(source, /"Run queued\. The scripts start in the signed-in Windows session, as they would from PowerShell\."/);
 assert.match(source, /Every script receives <code>--output<\/code>; from the second script on it also receives <code>--input<\/code>/);
 assert.match(source, /scriptArguments\[index\] \|\| "", scriptValues\[index\] \|\| \[\]\)\)\.join\(""\)/);
 console.log('flow builder python arguments and values tests passed');

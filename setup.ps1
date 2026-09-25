@@ -74,6 +74,7 @@ $AuditorServiceName = "MetronomeAuditorReader"
 $AuditorPort = 8766
 $FlowServiceName = "MXFlowsWorker"
 $HeadedFlowTaskName = "Metronome_Flows_Headed"
+$PythonDesktopTaskName = 'Metronome_Python_Desktop'
 $AutoUpdateTaskName = "Metronome_Auto_Update"
 $CodeDir     = $PSScriptRoot
 $ProjectDir  = Split-Path $CodeDir
@@ -288,6 +289,7 @@ Stop-ScheduledTask -TaskName $HeadedFlowTaskName -ErrorAction SilentlyContinue
 foreach ($HeadedSlot in 2..$FlowMaxSlots) {
     Stop-ScheduledTask -TaskName "$HeadedFlowTaskName$HeadedSlot" -ErrorAction SilentlyContinue
 }
+Stop-ScheduledTask -TaskName $PythonDesktopTaskName -ErrorAction SilentlyContinue
 $NssmExe = "$CodeDir\tools\nssm.exe"
 $ErrorActionPreference = "Continue"
 $existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
@@ -752,6 +754,31 @@ foreach ($VisibleSlot in 1..$FlowMaxSlots | ForEach-Object { Get-MetronomeFlowSl
         -Principal $HeadedTaskPrincipal -Settings $HeadedTaskSettings -Force | Out-Null
 }
 Write-Host "  $FlowMaxSlots headed Flows tasks registered; $ConfiguredHeadedSlots visible slots enabled on demand." -ForegroundColor Green
+
+# "Just run" Python Flows start their scripts through this task. Windows runs it
+# in the signed-in desktop session with the account's standard (non-elevated)
+# rights, which is exactly where a script typed into PowerShell runs: Excel and
+# other COM programs, mapped drives and the account's own Python behave the
+# same. The worker services live in session 0, which has no desktop. Each start
+# claims one request from the private spool folder; see app\flow_desktop_host.py.
+# A failure here must not abort the update: only "Just run" Python Flows need
+# the task, and they fail closed, naming setup.ps1, until it is registered.
+$PythonDesktopSpool = Join-Path $env:USERPROFILE '.metronome-python-desktop'
+try {
+    $PythonDesktopPrincipal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
+    $PythonDesktopSettings = New-ScheduledTaskSettingsSet `
+        -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -ExecutionTimeLimit (New-TimeSpan -Days 3) -MultipleInstances Parallel -Priority 4
+    $PythonDesktopAction = New-ScheduledTaskAction -Execute (Join-Path $PyDir 'pythonw.exe') `
+        -Argument "`"$CodeDir\app\flow_desktop_host.py`" `"$PythonDesktopSpool`"" -WorkingDirectory $CodeDir
+    Register-ScheduledTask -TaskName $PythonDesktopTaskName -Action $PythonDesktopAction `
+        -Principal $PythonDesktopPrincipal -Settings $PythonDesktopSettings `
+        -Description "Start Metronome Python scripts in the signed-in session with standard rights" -Force | Out-Null
+    Write-Host "  Python desktop launcher task registered (signed-in session, standard rights)." -ForegroundColor Green
+} catch {
+    Write-Host "  WARNING: Could not register $PythonDesktopTaskName`: $_" -ForegroundColor Yellow
+    Write-Host "  'Just run' Python Flows will fail with this reason until setup.ps1 registers it." -ForegroundColor Yellow
+}
 
 # Register one fixed, non-interactive bridge while setup already has the
 # service account credential. The web app writes an exact-SHA request and

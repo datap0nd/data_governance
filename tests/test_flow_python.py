@@ -674,16 +674,17 @@ def test_python_surfaces_activity_groups_resume_and_paths(flow_db, tmp_path):
     flow = {"source_type": "python", "target_folder": str(root / "Python" / "Flow" / "Downloads"),
             "python_scripts": [str(inside)]}
     flow_paths.validate_flow(flow, rules, resolve=False)
-    with pytest.raises(flow_paths.PathOutsideRoot, match="Python script must be inside"):
-        flow_paths.validate_flow({**flow, "python_scripts": [str(scripts[0])]}, rules, resolve=False)
-    with pytest.raises(flow_paths.PathOutsideRoot, match="Python script must be inside"):
-        flow_paths.validate_flow({**flow, "python_scripts": None,
-                                  "python_scripts_json": json.dumps([str(scripts[0])])}, rules, resolve=False)
+    # Owner decision (2026-09-25): a Python script may live in any folder, even
+    # while paths are enforced; only the Flow's own destination stays contained.
+    flow_paths.validate_flow({**flow, "python_scripts": [str(scripts[0])]}, rules, resolve=False)
+    flow_paths.validate_flow({**flow, "python_scripts": None,
+                              "python_scripts_json": json.dumps([str(scripts[0])])}, rules, resolve=False)
+    with pytest.raises(flow_paths.PathOutsideRoot, match="Target folder must be inside"):
+        flow_paths.validate_flow({**flow, "target_folder": str(tmp_path / "elsewhere")}, rules, resolve=False)
     # The frozen job carries the scripts too: enforcing the saved policy on a
-    # job whose scripts live outside <root>/Python fails before any run.
+    # job whose scripts live outside <root>/Python still runs them.
     flow_paths.assert_job_paths(job)
-    with pytest.raises(flow_paths.PathOutsideRoot, match="Python script must be inside"):
-        flow_paths.assert_job_paths({**job, "paths": {**job["paths"], "enforced": True}})
+    flow_paths.assert_job_paths({**job, "paths": {**job["paths"], "enforced": True}})
 
 
 def test_browse_upload_stages_python_scripts_inside_the_enforced_folder(flow_db, tmp_path):
@@ -733,11 +734,27 @@ def test_browse_upload_stages_python_scripts_inside_the_enforced_folder(flow_db,
     flow = {"source_type": "python", "target_folder": str(root / "Python" / "Flow" / "Downloads"),
             "python_scripts": [str(staged)]}
     flow_paths.validate_flow(flow, rules)
-    with pytest.raises(flow_paths.PathOutsideRoot, match="Python script must be inside"):
-        flow_paths.validate_flow({**flow, "python_scripts": [transform["script_path"]]}, rules)
+    # A script outside <root>/Python is accepted too (owner decision 2026-09-25).
+    flow_paths.validate_flow({**flow, "python_scripts": [transform["script_path"]]}, rules)
     created = flows.create_flow(_python_flow([staged]), _request())
     assert created["python_scripts"] == [str(staged)]
     assert flow_paths.is_inside(created["target_folder"], str(root / "Python"))
+
+
+def test_enforced_paths_accept_python_scripts_kept_in_any_folder(flow_db, tmp_path):
+    # Owner decision (2026-09-25): scripts can live in any folder; enforcement
+    # keeps containing the Flow's own destination only.
+    root = tmp_path / "managed"
+    system_paths.put_paths(system_paths.PathsWrite(flows_root=str(root), create=True, enforced=True), _request())
+    scripts = _write_scripts(tmp_path / "somewhere" / "else")
+    saved = flows.create_flow(_python_flow(scripts), _request())
+    assert saved["python_scripts"] == [str(item) for item in scripts]
+    assert flow_paths.is_inside(saved["target_folder"], str(root / "Python"))
+    with database.get_db() as db:
+        job = flows._build_job(db, saved["id"])
+        assert job["paths"]["enforced"] is True
+        flow_paths.assert_job_paths(job)
+        assert system_paths.paths_state(db)["flows_outside_root"] == []
 
 
 def test_standalone_dry_run_reports_python_source_and_creates_nothing(flow_db, tmp_path):

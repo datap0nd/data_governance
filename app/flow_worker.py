@@ -7142,7 +7142,7 @@ def _python_step_event(record: dict) -> dict:
 
 def execute_python_job(
     job: dict, report_progress, profile_dir: Path, *, run_id: int, register_folder,
-    script_observer_factory=None, live_observer=None,
+    script_observer_factory=None, live_observer=None, desktop_session_factory=None,
 ) -> tuple[list[dict], list[dict], dict]:
     """Run the saved Python scripts in order, once per value; the last row writes the deliverables."""
     assert_job_paths(job)
@@ -7152,6 +7152,7 @@ def execute_python_job(
             job, report_progress, run_id=run_id,
             script_observer_factory=script_observer_factory,
             live_observer=live_observer,
+            desktop_session_factory=desktop_session_factory,
         )
     # Fail closed before any script runs or a run folder exists.
     scripts = flow_python.check_scripts(
@@ -7291,19 +7292,41 @@ def execute_python_job(
 
 
 def execute_python_run_job(job: dict, report_progress, *, run_id: int,
-                           script_observer_factory=None, live_observer=None):
-    """Run-only Python source: no folder, output, SQL, email or publication."""
+                           script_observer_factory=None, live_observer=None,
+                           desktop_session_factory=None):
+    """Run-only Python source: no folder, output, SQL, email or publication.
+
+    ``desktop_session_factory`` (the Windows worker) starts every step in the
+    signed-in desktop session with the account's standard rights, where the
+    scripts, their Python and mapped drives are checked too, so a script
+    behaves exactly as it does when typed into PowerShell.
+    """
     source = job.get("python_source") or {}
-    scripts = flow_python.check_scripts([Path(str(item)) for item in source.get("scripts") or []])
+    session = desktop_session_factory() if desktop_session_factory is not None else None
+    paths = [Path(str(item)) for item in source.get("scripts") or []]
+    checksums = None
+    if session is None:
+        scripts = flow_python.check_scripts(paths)
+        interpreter, reason = flow_python.resolve_interpreter(source.get("interpreter"))
+    else:
+        scripts = flow_python.check_script_names(paths)
+        report_progress("running", {
+            "stage": "python_session",
+            "message": "Starting the scripts in the signed-in Windows session with the account's "
+                       "standard rights, as PowerShell would.",
+        })
+        checked = session.verify(scripts, source.get("interpreter"))
+        interpreter, reason, checksums = checked["interpreter"], checked["interpreter_reason"], checked["checksums"]
     arguments = flow_python.aligned_arguments(source.get("arguments"), len(scripts))
     values = flow_python.aligned_values(source.get("values"), len(scripts))
-    interpreter, reason = flow_python.resolve_interpreter(source.get("interpreter"))
     timeout_seconds = int(source.get("timeout_seconds") or flow_python.SCRIPT_TIMEOUT_SECONDS)
     plan = flow_python.run_plan(scripts, arguments, values)
+    where = " in the signed-in Windows session" if session is not None else ""
     report_progress("running", {
         "stage": "python_scripts", "mode": "run", "interpreter": interpreter,
         "interpreter_reason": reason, "runs": len(plan), "deliverables": 0,
-        "message": f"Running {len(plan)} Python script step(s) with {Path(interpreter).name} ({reason}).",
+        "session": "desktop" if session is not None else "worker",
+        "message": f"Running {len(plan)} Python script step(s) with {Path(interpreter).name} ({reason}){where}.",
     })
     started = time.perf_counter()
     waiting_count = None
@@ -7326,6 +7349,7 @@ def execute_python_run_job(job: dict, report_progress, *, run_id: int,
         date=job.get("_runtime_task_date") or dubai_today().isoformat(),
         timeout_seconds=timeout_seconds,
         observer_factory=script_observer_factory,
+        session=session, checksums=checksums,
         progress=lambda record: (
             live_observer.start_step(record) if live_observer is not None else None,
             report_progress("running", {
@@ -8083,7 +8107,8 @@ def _python_success_message(job: dict, artifacts: list[dict], sql_result: dict |
 def execute_flow(page, job: dict, progress, profile_dir: Path, download_staging_dir=None,
                  *, run_id: int, register_folder, headed: bool = False,
                  artifacts=None, state=None, run_started=None, acquire_bundle=None,
-                 script_observer_factory=None, live_observer=None) -> dict:
+                 script_observer_factory=None, live_observer=None,
+                 desktop_session_factory=None) -> dict:
     """One acquisition/publication/transform/SQL path for every launch surface.
 
     Callers own process locks, browser lifetime, progress transport and retention
@@ -8195,6 +8220,7 @@ def execute_flow(page, job: dict, progress, profile_dir: Path, download_staging_
                 run_id=run_id, register_folder=register_folder,
                 script_observer_factory=script_observer_factory,
                 live_observer=live_observer,
+                desktop_session_factory=desktop_session_factory,
             )
             sql_artifacts = source_outcome["sql_artifacts"]
             no_op = False
@@ -8403,6 +8429,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
         registration['capabilities']['sql_table_ownership_v1'] = True
         registration['capabilities'][flow_python.ARGUMENTS_CAPABILITY] = True
         registration['capabilities'][flow_python.RUN_CAPABILITY] = True
+        registration['capabilities'][flow_python.DESKTOP_CAPABILITY] = True
         registration['capabilities']['flow_recorder_v1'] = headed
         registration['capabilities']['flow_recorder_controls_v1'] = headed
         # Metronome can take several minutes to boot after an update (service
@@ -8648,10 +8675,17 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
 
                 live_observer = None
                 script_observer_factory = None
+                desktop_session_factory = None
                 if (run["job"].get("python_source") or {}).get("enabled"):
                     from app.flow_process_tree import ProcessTreeObserver
                     from app.flow_script_live import LiveObserver
                     script_observer_factory = ProcessTreeObserver
+                    if os.name == "nt":
+                        # This worker is a session-0 service: "Just run"
+                        # scripts start in the signed-in desktop session.
+                        from app import config
+                        from app.flow_desktop_session import DesktopSession
+                        desktop_session_factory = lambda: DesktopSession(env_file=config.ENV_FILE)  # noqa: E731
 
                     def post_live(payload):
                         return _api(client, "POST", f"/api/flows/worker/{worker_id}/runs/{run_id}/live", payload)
@@ -8688,7 +8722,8 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                                      artifacts=artifacts, state=execution_state, run_started=run_started,
                                      acquire_bundle=acquire_bundle,
                                      script_observer_factory=script_observer_factory,
-                                     live_observer=live_observer)
+                                     live_observer=live_observer,
+                                     desktop_session_factory=desktop_session_factory)
                 except Exception as exc:
                     artifacts = execution_state.get("artifacts", artifacts)
                     timings = execution_state.get("timings", timings)

@@ -1,7 +1,7 @@
 import os
-import re
 from pathlib import Path
 
+from app import env_file
 from app.flow_clock import TIMEZONE
 
 # Base directory of the app
@@ -17,38 +17,8 @@ def _load_env_file() -> tuple[Path | None, dict]:
     """
     override = os.environ.get("DG_ENV_FILE")
     path = None if override == "" else Path(override) if override is not None else BASE_DIR.parent / ".env"
-    status = {"path": str(path) if path else "", "exists": False, "loaded_names": [],
-              "ignored_lines": [], "error": None}
-    if path is None:
-        return None, status
-    try:
-        status["exists"] = path.exists()
-        if not status["exists"]:
-            return path, status
-        for line_number, line in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), 1):
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#"):
-                continue
-            if stripped.startswith("export "):
-                stripped = stripped[7:].strip()
-            if "=" not in stripped:
-                status["ignored_lines"].append(line_number)
-                continue
-            name, value = stripped.split("=", 1)
-            name = name.strip()
-            value = value.strip()
-            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
-                status["ignored_lines"].append(line_number)
-                continue
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-                value = value[1:-1]
-            if value:
-                os.environ[name] = value
-                status["loaded_names"].append(name)
-    except OSError as exc:
-        status["error"] = f"{type(exc).__name__} while reading settings file"
-    except UnicodeError as exc:
-        status["error"] = f"{type(exc).__name__} while decoding settings file"
+    values, status = env_file.read(path)
+    os.environ.update(values)
     return path, status
 
 

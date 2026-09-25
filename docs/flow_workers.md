@@ -79,6 +79,12 @@ its own SSO sign-in when the Flow runs.
 | Headed 1 | Metronome_Flows_Headed task | bi-desktop-headed | .metronome-flow-browser-headed |
 | Headed 2–32 | Metronome_Flows_Headed2–32 tasks | bi-desktop-headed-2–32 | .metronome-flow-browser-headed-2–32 |
 
+A Python Flow set to **Just run the scripts** is claimed by a background slot,
+which stays occupied while the script runs, but each script starts through the
+`Metronome_Python_Desktop` interactive task in the signed-in BI desktop session
+with the account's standard rights; see
+[Python-script Flows](python_script_flows.md#where-the-scripts-run-as-from-powershell).
+
 Each profile has its own download staging and replay cache. New managed flows
 use the shared artifact store. Legacy Resume and SQL Retry keep their original
 store identity checks and may need the producing slot. Slot 1 retains its

@@ -11558,7 +11558,7 @@ function _flowPythonBuilderHtml(existing = null) {
                             <label class="flow-span-2"><span>Python to use (optional)</span><input id="flow-python-interpreter" maxlength="2000" value="${esc(existing?.python_interpreter || "")}" placeholder="Leave blank to use the computer's Python"><small>Set a full path to python.exe for a virtual environment, or leave blank for the computer's py launcher.</small></label>
                             <label><span>Stop a script after (minutes)</span><input id="flow-python-timeout" type="number" min="1" max="1440" value="${esc(existing?.python_timeout_minutes || 60)}"></label>
                             <div class="flow-span-2"><button type="button" class="btn-secondary" id="flow-python-inspect">Check script and Python</button><p id="flow-python-inspect-result" class="flow-dialog-help" role="status"></p></div>
-                            <p class="flow-dialog-help flow-span-2">A run ends when the script and everything it started have finished, or at its time limit. Stop ends the script tree while the worker remains available.</p>
+                            <p class="flow-dialog-help flow-span-2">A run ends when the script and everything it started have finished, or at its time limit. Stop ends the script tree while the worker remains available. The BI desktop account must be signed in; a locked or disconnected session is fine.</p>
                         </div>
                     </div>
                 </div>
@@ -12745,7 +12745,7 @@ function _flowSyncPythonMode(form) {
     for (const button of form.querySelectorAll(".flow-python-browse")) button.hidden = run;
     const help = form.querySelector("#flow-python-script-help");
     if (help) help.innerHTML = run
-        ? "Paste the full path to each .py file (Explorer: Copy as path). Scripts run in their own folder with the chosen computer Python and receive only your typed arguments. Upload is unavailable because a script may need neighboring files."
+        ? "Paste the full path to each .py file (Explorer: Copy as path). Each script runs as it would from PowerShell: in the signed-in Windows session with your normal rights and mapped drives, in its own folder, with the chosen computer Python and only your typed arguments. Upload is unavailable because a script may need neighboring files."
         : "The worker runs each script in place with its own Python. Every script receives <code>--output</code>; from the second script on it also receives <code>--input</code>. The last script writes the final CSV or Excel file. Enter absolute paths or upload a self-contained script.";
     const timeout = form.querySelector("#flow-python-timeout");
     if (timeout) timeout.required = run;
@@ -12969,7 +12969,7 @@ function _bindFlowWorkspace() {
         if (flow) _flowDeleteDialog(flow);
     });
     document.querySelectorAll(".flow-enabled-switch").forEach(input => input.onchange = async () => { const enabled = input.checked; input.disabled = true; try { const updated = await apiPatch(`/api/flows/${input.dataset.id}/enabled`, { enabled }); const flow = state.flows.find(item => item.id === updated.id); Object.assign(flow, updated); input.disabled = false; toast(enabled ? "Flow activated" : "Flow paused"); } catch (err) { input.checked = !enabled; input.disabled = false; toast("Flow status not changed: " + err.message); } });
-    document.querySelectorAll(".flow-run").forEach(button => button.onclick = async () => { button.disabled = true; button.dataset.busy = "true"; const flow = state.flows.find(item => item.id === Number(button.dataset.id)); try { await apiPost(`/api/flows/${button.dataset.id}/run`); toast(flow?.source_type === "python" ? "Run queued. The worker will run the Python scripts in order." : flow?.source_type === "file" ? "Run queued. The worker will read the configured file and force a new snapshot." : flow?.source_type === "outlook" ? "Run queued. The worker will check the signed-in user's Outlook Inbox." : flow?.browser_mode === "headed" ? "Run queued. The selected browser is opening in the BI desktop." : "Run queued for the background worker"); } catch (err) { toast("Run not queued: " + err.message); button.disabled = false; } finally { delete button.dataset.busy; button.disabled = false; _flowRefreshActivity(); } });
+    document.querySelectorAll(".flow-run").forEach(button => button.onclick = async () => { button.disabled = true; button.dataset.busy = "true"; const flow = state.flows.find(item => item.id === Number(button.dataset.id)); try { await apiPost(`/api/flows/${button.dataset.id}/run`); toast(flow?.source_type === "python" ? (flow.python_run_mode === "run" ? "Run queued. The scripts start in the signed-in Windows session, as they would from PowerShell." : "Run queued. The worker will run the Python scripts in order.") : flow?.source_type === "file" ? "Run queued. The worker will read the configured file and force a new snapshot." : flow?.source_type === "outlook" ? "Run queued. The worker will check the signed-in user's Outlook Inbox." : flow?.browser_mode === "headed" ? "Run queued. The selected browser is opening in the BI desktop." : "Run queued for the background worker"); } catch (err) { toast("Run not queued: " + err.message); button.disabled = false; } finally { delete button.dataset.busy; button.disabled = false; _flowRefreshActivity(); } });
     document.querySelectorAll(".flow-stop").forEach(button => button.onclick = async () => { button.disabled = true; button.dataset.busy = "true"; try { const result = await apiPost(`/api/flows/${button.dataset.id}/stop`); toast(result.message || "Run stopped"); } catch (err) { toast("Run not stopped: " + err.message); button.disabled = false; } finally { delete button.dataset.busy; button.disabled = false; _flowRefreshActivity(); } });
     document.querySelectorAll(".flow-retry-views").forEach(button => button.onclick = async () => { button.disabled = true; try { const result = await apiPost(`/api/flows/runs/${button.dataset.id}/retry-views`); toast(`View refresh queued - ${result.remaining_views} view(s) left; SQL insertion is not repeated`); await navigate("flows"); } catch (err) { toast("View refresh not queued: " + err.message); button.disabled = false; } });
     document.querySelectorAll(".flow-resume").forEach(button => button.onclick = async () => { button.disabled = true; try { const result = await apiPost(`/api/flows/runs/${button.dataset.id}/resume`); toast(`Resume queued - skipping ${result.skipped_files} saved file(s)`); await navigate("flows"); } catch (err) { toast("Resume not queued: " + err.message); button.disabled = false; } });
@@ -13485,7 +13485,7 @@ function _bindFlowWorkspace() {
                 })));
                 const unreadable = checks.filter(check => !check.readable);
                 const python = checks[0].interpreter || checks[0].interpreter_error || "Python unavailable";
-                result.textContent = `${paths.length - unreadable.length} of ${paths.length} script(s) readable. Python: ${python}. ${unreadable.map(check => check.hint || `${check.path} is not readable by the service`).join(" ")}`;
+                result.textContent = `${paths.length - unreadable.length} of ${paths.length} script(s) readable. Python: ${python}. ${unreadable.map(check => check.hint || `${check.path} is not visible to the Metronome service.`).join(" ")}`;
             } catch (err) { result.textContent = "Check failed: " + err.message; }
             finally { button.disabled = false; }
         });
@@ -13543,7 +13543,7 @@ async function renderPaths() {
         <p class="text-muted">Value from ${esc(state.source)}. Default: ${esc(state.default)}</p>
         <label><input type="checkbox" id="paths-create" checked> Create missing source folders</label><br>
         <label><input type="checkbox" id="paths-enforced" ${state.enforced ? "checked" : ""}> Enforce paths for existing flows</label>
-        <p>Transformation scripts still run with the worker account's file permissions.</p>
+        <p>Transformation scripts still run with the worker account's file permissions. Python-script Flows may keep their scripts in any folder.</p>
         <div class="flow-builder-actions"><button type="button" class="btn-secondary" id="paths-check">Check impact</button><button type="submit" class="btn-primary">Save paths</button></div>
         <p id="paths-error" role="alert"></p></form></section>
         <section class="settings-panel paths-panel"><h2>Source folders</h2>${state.source_folders.map(folder => `<p><strong>${esc(folder.name)}</strong> — ${esc(folder.path)}</p>`).join("")}</section>

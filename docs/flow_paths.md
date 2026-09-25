@@ -7,8 +7,8 @@ can supply a bootstrap value, and a saved setting takes precedence.
 Saving a root does not move files or change existing flow destinations. Check
 impact to see which flows need relocation. Enforce paths for existing flows
 rejects destinations outside their source folder, Local inputs outside Local,
-Python-script Flow scripts outside Python, and transformations outside the
-root. Changes wait for queued/active runs.
+and transformations outside the root. Python-script Flow scripts may live in
+any folder. Changes wait for queued/active runs.
 
 Enforcement is off by default for a staged migration. It restricts configured
 application paths, not the filesystem permissions of transformation processes.
@@ -17,7 +17,7 @@ existing ownership. Historic recovery jobs retain their frozen configuration.
 
 Uploaded transformation scripts are staged under .metronome/uploads in unique
 directories; Python-source scripts uploaded from the builder are staged under
-Python/.uploads so enforcement accepts them.
+Python/.uploads.
 No user files are moved or deleted by changing these settings.
 
 ## Managed flow folders

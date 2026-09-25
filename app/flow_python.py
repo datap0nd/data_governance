@@ -30,6 +30,10 @@ SCRIPT_TIMEOUT_SECONDS = 3600
 # values; a job that uses either is never claimed by an older worker.
 ARGUMENTS_CAPABILITY = "python_script_arguments_v1"
 RUN_CAPABILITY = "python_script_run_v1"
+# Workers advertise this once they start run-only scripts the way PowerShell
+# would: on Windows in the signed-in desktop session with the account's
+# standard rights, never inside the session-0 worker service.
+DESKTOP_CAPABILITY = "python_script_desktop_v1"
 # Per-script arguments are one line typed by the owner; values are one short
 # line each and the same script runs once per value.
 MAX_ARGUMENT_CHARS = 2000
@@ -406,6 +410,23 @@ def _checksum(path: Path) -> str:
     return digest.hexdigest()
 
 
+def check_script_names(scripts) -> list[Path]:
+    """The checks that need no file access: how many scripts, and the .py suffix.
+
+    Used when the scripts are opened somewhere else (the signed-in Windows
+    session), which then confirms that each one exists.
+    """
+    checked = [Path(str(item)) for item in scripts or []]
+    if not checked:
+        raise RuntimeError("Python-script job has no scripts to run.")
+    if len(checked) > MAX_SCRIPTS:
+        raise RuntimeError(f"Python-script job lists more than {MAX_SCRIPTS} scripts.")
+    for script in checked:
+        if script.suffix.casefold() != ".py":
+            raise RuntimeError(f"Python script is not a .py file: {script.name}")
+    return checked
+
+
 def check_scripts(scripts: list[Path]) -> list[Path]:
     """Fail closed before anything runs: every script exists and is a .py file."""
     checked = [Path(str(item)) for item in scripts or []]
@@ -667,13 +688,50 @@ def run_scripts(scripts: list[Path], final_outputs, steps_folder: Path, *, envir
     return records
 
 
+# File-producing variables that a run-only script must never inherit.
+RUN_MODE_STALE_VARIABLES = ("METRONOME_FLOW_OUTPUT", "METRONOME_FLOW_INPUT", "METRONOME_FLOW_INPUTS",
+                            "METRONOME_FLOW_RESULTS_DIR", "METRONOME_FLOW_OUTPUT_FORMAT")
+
+
+def run_variables(*, flow_name, run_id, step, steps, value=None) -> dict:
+    """What Metronome sets for one run-only step, on top of the script's environment."""
+    return {
+        "METRONOME_FLOW_MODE": "run", "METRONOME_FLOW_NAME": str(flow_name),
+        "METRONOME_FLOW_RUN_ID": str(run_id), "METRONOME_FLOW_STEP": str(step),
+        "METRONOME_FLOW_STEPS": str(steps),
+        "METRONOME_FLOW_VALUE": "" if value is None else str(value),
+        # Output reaches Metronome through a pipe, not a console: keep prints
+        # live and Unicode-safe, as they are in a console window.
+        "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8",
+    }
+
+
+def run_environment(base: dict, variables: dict) -> dict:
+    """``base`` without stale file-producing variables, plus one step's ``variables``."""
+    environment = dict(base)
+    for key in RUN_MODE_STALE_VARIABLES:
+        environment.pop(key, None)
+    environment.update(variables)
+    return environment
+
+
 def run_scripts_only(scripts: list[Path], *, environment: dict, flow_name: str,
                      run_id: int, interpreter: str, arguments=None, values=None,
                      date: str | None = None, timeout_seconds: int = SCRIPT_TIMEOUT_SECONDS,
                      progress=None, step_result=None, observer_factory=None,
-                     on_line=None, on_tick=None, stop_requested=None) -> list[dict]:
-    """Run scripts exactly as typed without requiring or producing any file."""
-    scripts = check_scripts(scripts)
+                     on_line=None, on_tick=None, stop_requested=None,
+                     session=None, checksums=None) -> list[dict]:
+    """Run scripts exactly as typed without requiring or producing any file.
+
+    ``session`` starts each step somewhere else instead of as a child of this
+    process: the worker passes the signed-in Windows session. It receives
+    only the variables Metronome sets, because the script keeps that
+    session's own environment. ``checksums`` holds each script's SHA-256 as
+    that session read it when checking the scripts, since this process may not
+    see the same drives; each run's record then takes the hash the session
+    read just before starting that run.
+    """
+    scripts = check_scripts(scripts) if session is None else check_script_names(scripts)
     plan = run_plan(scripts, arguments, values)
     deadline = time.monotonic() + timeout_seconds
     records = []
@@ -687,21 +745,12 @@ def run_scripts_only(scripts: list[Path], *, environment: dict, flow_name: str,
             text = f"{text} {quote_argument(run['value'])}".strip()
         split = split_arguments(text)
         command = [interpreter, str(script), *split]
-        step_env = dict(environment)
-        for key in ("METRONOME_FLOW_OUTPUT", "METRONOME_FLOW_INPUT",
-                    "METRONOME_FLOW_INPUTS", "METRONOME_FLOW_RESULTS_DIR",
-                    "METRONOME_FLOW_OUTPUT_FORMAT"):
-            step_env.pop(key, None)
-        step_env.update({
-            "METRONOME_FLOW_MODE": "run", "METRONOME_FLOW_NAME": str(flow_name),
-            "METRONOME_FLOW_RUN_ID": str(run_id), "METRONOME_FLOW_STEP": str(index),
-            "METRONOME_FLOW_STEPS": str(total),
-            "METRONOME_FLOW_VALUE": "" if run["value"] is None else str(run["value"]),
-            "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8",
-        })
+        variables = run_variables(flow_name=flow_name, run_id=run_id, step=index,
+                                  steps=total, value=run["value"])
+        checksum = (checksums or {}).get(str(script)) if session is not None else _checksum(script)
         record = {"index": index, "steps": total, "row": run["row"],
                   "script": str(script), "script_name": script.name,
-                  "script_checksum": _checksum(script), "value": run["value"],
+                  "script_checksum": checksum, "value": run["value"],
                   "arguments": split, "arguments_text": text,
                   "output_path": None, "output_size": 0, "exit_code": None,
                   "duration_ms": 0, "stdout": "", "stderr": ""}
@@ -713,12 +762,23 @@ def run_scripts_only(scripts: list[Path], *, environment: dict, flow_name: str,
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError("The Flow time limit elapsed before this step started.")
-            completed = run_process(
-                command, cwd=script.parent, environment=step_env,
-                timeout_seconds=remaining,
-                wait_descendants=True, observer=observer,
-                on_line=on_line, on_tick=on_tick, stop_requested=stop_requested,
-            )
+            if session is None:
+                completed = run_process(
+                    command, cwd=script.parent, environment=run_environment(environment, variables),
+                    timeout_seconds=remaining,
+                    wait_descendants=True, observer=observer,
+                    on_line=on_line, on_tick=on_tick, stop_requested=stop_requested,
+                )
+            else:
+                # The session hashes the script just before it starts, so the
+                # record names the exact script this run executed.
+                completed = session.run(
+                    command, cwd=script.parent, variables=variables, script=script,
+                    timeout_seconds=remaining, observer=observer,
+                    on_line=on_line, on_tick=on_tick, stop_requested=stop_requested,
+                    on_start=lambda started: record.update(
+                        script_checksum=started.get("checksum") or record["script_checksum"]),
+                )
             record["exit_code"] = completed.returncode
             record["stdout"] = _tail(completed.stdout)
             record["stderr"] = _tail(completed.stderr)

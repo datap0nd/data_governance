@@ -16,7 +16,9 @@ an older worker never picks up a Python job. A job that uses arguments or
 values additionally requires the `python_script_arguments_v1` worker
 capability, so a worker from an earlier release never runs such a Flow with
 the arguments silently dropped. Run-mode Flows also require
-`python_script_run_v1`, which covers process waiting, live output and Stop.
+`python_script_run_v1`, which covers process waiting, live output and Stop,
+and `python_script_desktop_v1`, so a worker from an earlier release never
+starts a run-only script inside its own session-0 service.
 
 ## Script contract
 
@@ -34,8 +36,52 @@ immediately instead of hanging. `PYTHONUNBUFFERED=1` and
 a virtual environment). Otherwise `DG_PYTHON_EXE` is used, then the computer's
 `py` launcher, then a usable `python` on PATH. A missing configured interpreter
 fails the run; Metronome never silently uses its embedded worker Python. The
-builder's **Check script and Python** checks read access without executing the
-script. Use a UNC path in place of a mapped drive that the service cannot see.
+builder's **Check script and Python** checks read access from the Metronome
+service without executing the script. A mapped drive letter exists only in the
+signed-in session, so that check cannot see it; the run checks it there.
+
+#### Where the scripts run: as from PowerShell
+
+The background Flow workers are Windows services in session 0, which has no
+desktop, so Excel and other programs that a script drives through COM
+(`Excel.Application`) cannot start there. On Windows every step of this mode
+therefore starts through the interactive scheduled task
+`Metronome_Python_Desktop`, which `setup.ps1` registers with the account's
+standard rights. Windows runs it in the signed-in BI desktop session, so the
+script runs the way a PowerShell window opened by that account runs it:
+
+- in the same session and desktop, so Excel, Outlook and other COM or GUI
+  programs start and behave as they do there;
+- with the account's standard (non-elevated) rights, like a PowerShell window
+  not opened with **Run as administrator**, and with its mapped drives;
+- with the account's own environment variables, read from Windows at each
+  start, at normal process priority and with a hidden console;
+- in the script's own folder, with `stdin` closed, so a prompt fails at once
+  instead of waiting for someone to type.
+
+Metronome adds only the project `.env` settings (non-empty values win, as for
+the service), the `METRONOME_FLOW_*` variables below, and `PYTHONUNBUFFERED=1`
+with `PYTHONIOENCODING=utf-8`, because the output reaches Metronome through a
+pipe instead of a console. The worker service's own variables are not passed
+on. Before the first script starts, that session confirms every script and
+chooses the Python to use, so scripts on a mapped drive work and a missing
+script or Python fails the run before anything runs. The run log's first line
+reads "Starting the scripts in the signed-in Windows session…".
+
+The BI desktop account must be signed in; a locked or disconnected session is
+fine. When nobody is signed in, Windows starts nothing and the run fails after
+60 seconds with that reason. Signing out during a run ends the script, and the
+run fails with that reason instead of waiting for its time limit. If the task
+is missing, the run fails and names `setup.ps1`; every update registers it.
+Scripts that exit non-zero, time out or are stopped behave exactly as before.
+The launcher also enforces the time limit on its own. It ends the script and
+everything the script started when the worker has stopped following the run
+for two minutes (for example, because the service restarted), so a script
+never outlives its worker. Each run's history records the SHA-256 of the
+script as the launcher read it just before starting that run.
+The **Produce a file or SQL table** mode keeps running its scripts inside the
+worker service with the worker's own Python. On a non-Windows development
+host, run-only scripts start as children of the worker.
 
 The time limit is 1–1440 minutes (default 60) for the entire Flow. A run waits
 for the main script and the processes it started, even if the main script exits
@@ -44,8 +90,8 @@ and remains available. Programs opened through COM or Task Scheduler cannot
 be tracked; GUI programs and `os.startfile` targets can keep a run occupied until
 the time limit. A long script also occupies one headless worker slot.
 
-Run scripts inherit the worker environment (including non-empty project `.env`
-settings) after stale output variables are removed. They receive
+Run scripts receive the signed-in session's environment plus non-empty project
+`.env` settings, without stale output variables. They receive
 `METRONOME_FLOW_MODE=run`, `METRONOME_FLOW_NAME`, `METRONOME_FLOW_RUN_ID`,
 `METRONOME_FLOW_STEP`, `METRONOME_FLOW_STEPS` and `METRONOME_FLOW_VALUE`.
 Only configure trusted scripts; never print secrets.
@@ -215,7 +261,8 @@ bound for SQL fails the run.
 The schedule (daily, weekly or monthly day-of-month, Dubai time), the owner
 and the failure-alert and email-delivery settings are the shared blocks used
 by every Flow. Runs go to the headless worker; no browser is opened, and
-**Browser mode** does not apply.
+**Browser mode** does not apply. A **Just run the scripts** run then starts
+each script in the signed-in desktop session, as described above.
 
 ## Recovery
 
@@ -231,15 +278,14 @@ by every Flow. Runs go to the headless worker; no browser is opened, and
 ## Path policy
 
 System > Paths lists a `Python` subfolder beside ASAP, GSCM, Outlook, Local and
-Web. While enforcement is off, scripts may live anywhere the worker service
-account can read. When **Enforce paths** is on, every configured script must be
-inside `<root>/Python`, and the Flow's target folder must be inside its own
-managed folder; Save and queued jobs reject other locations. Scripts uploaded
-through **Browse...** in the builder are staged under `<root>/Python/.uploads`
-in unique directories, so enforcement accepts them as configured.
+Web. Scripts may live in any folder, whether or not **Enforce paths** is on:
+enforcement never requires them inside `<root>/Python`. It still requires the
+Flow's target folder to be inside its own managed folder; Save and queued jobs
+reject other destinations. Scripts uploaded through **Browse...** in the
+builder are staged under `<root>/Python/.uploads` in unique directories.
 Browse is hidden for run-mode Flows because an uploaded script may depend on
-neighboring files. Paste a full path visible to the worker service instead;
-the service does not have an interactive desktop.
+neighboring files. Paste the script's full path instead; a run-only script can
+be on a mapped drive of the signed-in account.
 Scripts kept inside the Flow's own managed folder (for example its `Scripts`
 subfolder) follow that folder when the Flow is renamed; the rename is refused
 while another Flow still uses scripts from it.
