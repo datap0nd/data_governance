@@ -49,6 +49,10 @@ scheduled task or live portal is used.
 | S-15 | Claim gate | Adapter-only and run-capability-only workers never claim a run-mode job; a worker with both capabilities does | `tests/test_flow_run_mode.py` |
 | S-16 | Existing direct runner and other Python paths | Run-mode, live output, Python Flow, portable and standalone suites pass unchanged | `tests/test_flow_run_mode.py`, `test_flow_live_output.py`, `test_flow_python.py`, `test_flow_portable_script.py`, `test_flow_standalone.py` |
 | S-17 | `.env` reader moved to `app/env_file.py` | Same parsing, precedence, value-free diagnostics and error handling | `tests/test_env_file.py` |
+| S-18 | A step whose worker stops renewing its heartbeat (launcher limit shortened to 1 s) | The launcher ends the script and its child; the exit and done markers record `worker lost` | `tests/test_flow_desktop_session.py` |
+| S-19 | The time limit passes while the worker renews the heartbeat but does not act; the script already exited and its child holds the output | The launcher ends the child; the done marker records `time limit` | same file |
+| S-20 | A 2.5-second step with the launcher's heartbeat limit at 1 s and renewal every 0.2 s | Completes normally | same file |
+| S-21 | Script edited after the up-front check; script removed after the check | The record carries the hash read when the run started; the removed script fails that run without starting | same file |
 
 ### Script location
 
