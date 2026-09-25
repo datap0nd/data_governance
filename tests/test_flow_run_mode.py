@@ -142,9 +142,16 @@ def test_run_mode_claim_requires_versioned_worker_capability(flow_db, tmp_path):
         worker_id="old-python-worker", display_name="Old", capabilities=base,
     ))
     assert flows.claim_run("old-python-worker")["run"] is None
+    # A worker that would still start the script inside its own session-0
+    # service never claims it: PowerShell parity needs the desktop session.
+    flows.register_worker(flows.WorkerRegister(
+        worker_id="service-python-worker", display_name="Service",
+        capabilities={**base, flow_python.RUN_CAPABILITY: True},
+    ))
+    assert flows.claim_run("service-python-worker")["run"] is None
     flows.register_worker(flows.WorkerRegister(
         worker_id="new-python-worker", display_name="New",
-        capabilities={**base, flow_python.RUN_CAPABILITY: True},
+        capabilities={**base, flow_python.RUN_CAPABILITY: True, flow_python.DESKTOP_CAPABILITY: True},
     ))
     assert flows.claim_run("new-python-worker")["run"]["flow_id"] == saved["id"]
 

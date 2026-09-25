@@ -1086,7 +1086,9 @@ def inspect_python_script(body: PythonInspect):
     readable = path.is_file() and os.access(path, os.R_OK)
     hint = None
     if not readable and re.match(r"^[A-Za-z]:[\\/]", str(path)):
-        hint = "A mapped drive may be invisible to the worker service. Use a \\\\server\\share path."
+        hint = ("The Metronome service cannot see this drive letter; mapped drives exist only in the signed-in session. "
+                "\"Just run the scripts\" Flows check it there when they start. Flows that produce a file need a "
+                "\\\\server\\share path.")
     try:
         interpreter, reason = flow_python.resolve_interpreter(body.interpreter)
         interpreter_error = None
@@ -5816,7 +5818,8 @@ def claim_run(worker_id: str):
                 and (not flow_python.requires_arguments_capability(job.get("python_source") or {})
                      or capabilities.get(flow_python.ARGUMENTS_CAPABILITY))
                 and ((job.get("python_source") or {}).get("mode") != "run"
-                     or capabilities.get(flow_python.RUN_CAPABILITY))
+                     or (capabilities.get(flow_python.RUN_CAPABILITY)
+                         and capabilities.get(flow_python.DESKTOP_CAPABILITY)))
                 and (not (job.get("paths") or {}).get("artifact_store_root") or capabilities.get("shared_flow_artifacts"))
                 and (not flow_view_refresh.plan_views(job) or capabilities.get(flow_view_refresh.CAPABILITY))
                 and flow_excel.worker_supported(job, capabilities)

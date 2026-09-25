@@ -1,7 +1,6 @@
 """Managed Flow paths. This is path containment, not process isolation."""
 from __future__ import annotations
 
-import json
 import ntpath
 import os
 import re
@@ -165,15 +164,8 @@ def validate_flow(flow: dict, rules: dict | None, *, resolve=True):
         assert_inside(flow.get("target_folder"), source, label="Target folder", resolve=resolve)
     elif rules.get("enforced"):
         assert_inside(flow.get("local_file_path"), str(Path(root) / "Local"), label="Source file", resolve=resolve)
-    if flow.get("source_type") == "python" and rules.get("enforced"):
-        scripts = flow.get("python_scripts")
-        if scripts is None:
-            try:
-                scripts = json.loads(flow.get("python_scripts_json") or "[]")
-            except (TypeError, ValueError):
-                scripts = []
-        for script in (scripts if isinstance(scripts, list) else []):
-            assert_inside(str(script), str(Path(root) / "Python"), label="Python script", resolve=resolve)
+    # Python-script Flows name their scripts wherever the owner keeps them;
+    # enforcement never requires them inside <root>/Python.
     if flow.get("transform_enabled") and (rules.get("enforced") or rules.get("scripts_folder")):
         assert_inside(flow.get("transform_script_path"), rules.get("scripts_folder") or root, label="Transformation script", resolve=resolve)
 

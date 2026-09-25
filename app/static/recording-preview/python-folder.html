@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Python Flow folder preview</title><link rel="stylesheet" href="/static/style.css?v=63">
+<style>
+body{padding:24px}
+.preview-bar{max-width:1180px;margin:0 auto 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 16px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;font-size:.82rem}
+.preview-bar h1{font-size:1.05rem;font-weight:700;margin:0 auto 0 0}
+.preview-bar p{margin:0;width:100%;color:var(--text-secondary)}
+.preview-nav{max-width:1180px;margin:0 auto 16px;display:flex;gap:8px;flex-wrap:wrap}
+.preview-nav button[aria-current=true]{outline:2px solid var(--accent);outline-offset:2px}
+#preview-status{max-width:1180px;margin:8px auto;color:var(--accent);font-size:.85rem;min-height:1.2em}
+#preview-status:empty{display:none}
+#flow-workspace{max-width:1180px;margin:0 auto}
+#preview-folder-choice .flow-dialog-help{margin:var(--space-xs) 0 0}
+#flow-destination input{width:100%}
+@media(max-width:600px){body{padding:12px}.preview-bar h1{width:100%}}
+</style>
+<div class="preview-bar"><h1>Fictional preview · Python Flow folder (proposal)</h1>
+<button id="preview-reset" class="btn-secondary">Reset preview</button>
+<p>Proposed: a Python Flow chooses whether Metronome keeps a managed folder for it. Nothing here is saved, run or created on disk.</p></div>
+<nav class="preview-nav" aria-label="Preview screens"><button class="btn-secondary" data-screen="new" aria-current="true">New Python flow</button><button class="btn-secondary" data-screen="builder">Edit Python flow</button><button class="btn-secondary" data-screen="list">Flows list</button></nav>
+<div id="preview-status" role="status"></div>
+<main id="flow-workspace"></main>
+<script src="/static/flow_recording_model.js?v=7"></script>
+<script type="module" src="python-folder.js"></script></html>
