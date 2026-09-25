@@ -5,6 +5,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
+import socket
 import subprocess
 import threading
 from urllib.parse import urlsplit
@@ -33,6 +34,13 @@ EXCEL_ERROR = {
     "available_sheets": [" North ", "South", "Totals"], "selected_sheets": [],
     "sql_started": False,
 }
+
+
+class FixtureServer(ThreadingHTTPServer):
+    # Chrome opens six connections at once for the app shell's files and API
+    # calls. socketserver listens with a backlog of five, and Windows refuses a
+    # connection beyond it, which the page showed as "Failed to fetch".
+    request_queue_size = 128
 
 
 def fixture_server(source_type="outlook", port=0):
@@ -109,7 +117,7 @@ def fixture_server(source_type="outlook", port=0):
             state["flow"].update(body)
             return self.reply(state["flow"])
 
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    server = FixtureServer(("127.0.0.1", port), Handler)
     return server, state
 
 
@@ -124,11 +132,14 @@ def excel_ui(request, tmp_path):
             page = browser.new_page(viewport={"width": 1440, "height": 1000})
             errors = []
             page.on("pageerror", lambda error: errors.append(str(error)))
+            # Printed with the result so a network failure names its request.
+            failed = []
+            page.on("requestfailed", lambda request: failed.append((urlsplit(request.url).path, request.failure)))
             base = f"http://127.0.0.1:{server.server_port}"
             yield page, state, base
             assert not errors, errors
             assert not state["errors"], state["errors"]
-            print("Worksheet UI:", browser.version, datetime.now(timezone.utc).isoformat())
+            print("Worksheet UI:", browser.version, datetime.now(timezone.utc).isoformat(), "failed requests:", failed)
             browser.close()
     finally:
         server.shutdown()
@@ -139,6 +150,23 @@ def excel_ui(request, tmp_path):
 def edit(page, base):
     page.goto(base + "/?edit_flow=901#flows")
     expect(page.locator("#flow-excel-names")).to_be_visible()
+
+
+def test_fixture_server_queues_a_browser_connection_burst():
+    # Its accept loop is not running, as when a busy runner starves it while
+    # Chrome opens its parallel connections for the app shell and its API calls.
+    server, _state = fixture_server()
+    clients = []
+    try:
+        for number in range(1, 17):
+            try:
+                clients.append(socket.create_connection(server.server_address, timeout=2))
+            except OSError as exc:
+                pytest.fail(f"connection {number} of 16 was not queued: {exc!r}")
+    finally:
+        for client in clients:
+            client.close()
+        server.server_close()
 
 
 def test_excel_failure_recovery_and_saved_choices(excel_ui, tmp_path):
