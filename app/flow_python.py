@@ -726,8 +726,10 @@ def run_scripts_only(scripts: list[Path], *, environment: dict, flow_name: str,
     ``session`` starts each step somewhere else instead of as a child of this
     process: the worker passes the signed-in Windows session. It receives
     only the variables Metronome sets, because the script keeps that
-    session's own environment, and ``checksums`` holds each script's SHA-256
-    as that session read it, since this process may not see the same drives.
+    session's own environment. ``checksums`` holds each script's SHA-256 as
+    that session read it when checking the scripts, since this process may not
+    see the same drives; each run's record then takes the hash the session
+    read just before starting that run.
     """
     scripts = check_scripts(scripts) if session is None else check_script_names(scripts)
     plan = run_plan(scripts, arguments, values)
@@ -768,10 +770,14 @@ def run_scripts_only(scripts: list[Path], *, environment: dict, flow_name: str,
                     on_line=on_line, on_tick=on_tick, stop_requested=stop_requested,
                 )
             else:
+                # The session hashes the script just before it starts, so the
+                # record names the exact script this run executed.
                 completed = session.run(
-                    command, cwd=script.parent, variables=variables,
+                    command, cwd=script.parent, variables=variables, script=script,
                     timeout_seconds=remaining, observer=observer,
                     on_line=on_line, on_tick=on_tick, stop_requested=stop_requested,
+                    on_start=lambda started: record.update(
+                        script_checksum=started.get("checksum") or record["script_checksum"]),
                 )
             record["exit_code"] = completed.returncode
             record["stdout"] = _tail(completed.stdout)

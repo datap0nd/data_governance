@@ -10,6 +10,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -41,6 +42,31 @@ class _TaskScheduler:
     def wait(self):
         for process in self.processes:
             process.wait(timeout=30)
+
+
+class _InProcessScheduler:
+    """Run the launcher on a thread of this process, so a test can shorten its limits."""
+
+    def __init__(self, spool: Path):
+        self.spool = spool
+        self.threads = []
+
+    def __call__(self):
+        thread = threading.Thread(target=host.main, args=([str(self.spool)],), daemon=True)
+        thread.start()
+        self.threads.append(thread)
+
+    def wait(self):
+        for thread in self.threads:
+            thread.join(timeout=30)
+
+
+def _run_request(spool: Path, script: Path, deadline: float) -> Path:
+    """A run request that no worker follows, as after the worker crashed."""
+    return DesktopSession(spool, start=lambda: None)._submit("run", {
+        "command": [sys.executable, str(script)], "cwd": str(script.parent), "variables": {},
+        "script": str(script), "deadline": deadline,
+    })
 
 
 @pytest.fixture
@@ -300,6 +326,97 @@ def test_session_that_ends_mid_run_is_reported_without_waiting_for_the_time_limi
             session=DesktopSession(scheduler.spool, start=scheduler), checksums={},
         )
     assert time.monotonic() - started < 30
+
+
+def test_launcher_ends_a_step_whose_worker_stopped_renewing_its_heartbeat(tmp_path, monkeypatch):
+    monkeypatch.setattr(host, "HEARTBEAT_TIMEOUT_SECONDS", 1)
+    script = tmp_path / "long.py"
+    script.write_text(
+        "import os, pathlib, subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        "pathlib.Path('pids.txt').write_text(f'{os.getpid()} {child.pid}')\n"
+        "time.sleep(60)\n", encoding="utf-8",
+    )
+    spool = tmp_path / "spool"
+    directory = _run_request(spool, script, time.time() + 600)
+
+    def worker_until_started():
+        # The worker renews the heartbeat until the script runs, then "crashes".
+        while not (tmp_path / "pids.txt").exists():
+            os.utime(directory / host.HEARTBEAT)
+            time.sleep(.1)
+
+    threading.Thread(target=worker_until_started, daemon=True).start()
+    started = time.monotonic()
+    assert host.main([str(spool)]) == 0
+    assert time.monotonic() - started < 30
+    assert host.read_json(directory / host.EXITED)["ended_by"] == "worker lost"
+    assert host.read_json(directory / host.DONE)["ended_by"] == "worker lost"
+    root, child = (int(value) for value in (tmp_path / "pids.txt").read_text().split())
+    assert _gone(root) and _gone(child)
+
+
+def test_launcher_enforces_the_time_limit_when_no_worker_does(tmp_path, monkeypatch):
+    monkeypatch.setattr(host, "DEADLINE_GRACE_SECONDS", 0)
+    script = tmp_path / "leaves_child.py"
+    script.write_text(
+        "import pathlib, subprocess, sys\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        "pathlib.Path('child.pid').write_text(str(child.pid))\n", encoding="utf-8",
+    )
+    spool = tmp_path / "spool"
+    directory = _run_request(spool, script, time.time() + 2)
+    alive = threading.Event()
+
+    def live_worker():
+        # A worker that renews the heartbeat but never ends the step itself.
+        while not alive.is_set():
+            os.utime(directory / host.HEARTBEAT)
+            time.sleep(.2)
+
+    threading.Thread(target=live_worker, daemon=True).start()
+    try:
+        assert host.main([str(spool)]) == 0
+    finally:
+        alive.set()
+    exited = host.read_json(directory / host.EXITED)
+    assert exited["returncode"] == 0 and exited["ended_by"] is None
+    # The child it left behind held the output until the limit ended it too.
+    assert host.read_json(directory / host.DONE)["ended_by"] == "time limit"
+    assert _gone(int((tmp_path / "child.pid").read_text()))
+
+
+def test_worker_heartbeat_keeps_a_long_step_running(tmp_path, monkeypatch):
+    monkeypatch.setattr(host, "HEARTBEAT_TIMEOUT_SECONDS", 1)
+    monkeypatch.setattr(flow_desktop_session, "HEARTBEAT_SECONDS", .2)
+    script = tmp_path / "slow.py"
+    script.write_text("import time\ntime.sleep(2.5)\nprint('done', flush=True)\n", encoding="utf-8")
+    launcher = _InProcessScheduler(tmp_path / "spool")
+    completed = DesktopSession(launcher.spool, start=launcher).run(
+        [sys.executable, str(script)], cwd=tmp_path, variables={}, timeout_seconds=30, script=script,
+    )
+    launcher.wait()
+    assert completed.returncode == 0
+    assert "done" in completed.stdout
+
+
+def test_each_run_records_the_hash_of_the_script_as_it_started(tmp_path, scheduler):
+    script = tmp_path / "changed.py"
+    script.write_text("print('edited after the check')\n", encoding="utf-8")
+    records = []
+    flow_python.run_scripts_only(
+        [script], environment=os.environ.copy(), flow_name="Hash", run_id=48,
+        interpreter=sys.executable, step_result=records.append,
+        session=DesktopSession(scheduler.spool, start=scheduler), checksums={str(script): "0" * 64},
+    )
+    assert records[0]["script_checksum"] == hashlib.sha256(script.read_bytes()).hexdigest()
+    # A script removed after the check fails that run instead of starting it.
+    with pytest.raises(RuntimeError, match="does not exist or is not readable"):
+        flow_python.run_scripts_only(
+            [tmp_path / "removed.py"], environment=os.environ.copy(), flow_name="Hash", run_id=49,
+            interpreter=sys.executable,
+            session=DesktopSession(scheduler.spool, start=scheduler), checksums={},
+        )
 
 
 def test_output_lines_are_bounded_like_the_pipe_reader(tmp_path):

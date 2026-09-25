@@ -74,6 +74,11 @@ fine. When nobody is signed in, Windows starts nothing and the run fails after
 run fails with that reason instead of waiting for its time limit. If the task
 is missing, the run fails and names `setup.ps1`; every update registers it.
 Scripts that exit non-zero, time out or are stopped behave exactly as before.
+The launcher also enforces the time limit on its own. It ends the script and
+everything the script started when the worker has stopped following the run
+for two minutes (for example, because the service restarted), so a script
+never outlives its worker. Each run's history records the SHA-256 of the
+script as the launcher read it just before starting that run.
 The **Produce a file or SQL table** mode keeps running its scripts inside the
 worker service with the worker's own Python. On a non-Windows development
 host, run-only scripts start as children of the worker.

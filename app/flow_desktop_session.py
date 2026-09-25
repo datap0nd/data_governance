@@ -23,6 +23,7 @@ import re
 import shutil
 import signal
 import subprocess
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -43,6 +44,9 @@ SPOOL_FOLDER = ".metronome-python-desktop"
 START_TIMEOUT_SECONDS = 60
 # A request folder can outlive a crashed worker; no run lasts a day.
 STALE_SECONDS = 2 * 24 * 3600
+# How often the worker renews a running step's heartbeat; the launcher ends
+# the step when it stays silent for host.HEARTBEAT_TIMEOUT_SECONDS.
+HEARTBEAT_SECONDS = 5
 READ_CHUNK = 1 << 20
 LINE_BYTES = 8000
 LINE_CHARS = 2000
@@ -222,6 +226,7 @@ class DesktopSession:
         name = f"{time.time_ns():020d}-{uuid.uuid4().hex}"
         staging = self.spool / f".tmp-{name}"
         staging.mkdir()
+        (staging / host.HEARTBEAT).touch()
         host.write_json(staging / host.REQUEST, {
             "schema": host.SCHEMA, "version": host.VERSION, "kind": kind,
             "created_at": now, "expires_at": now + self.start_timeout,
@@ -336,27 +341,47 @@ class DesktopSession:
                 "checksums": {str(key): str(value) for key, value in (result.get("checksums") or {}).items()}}
 
     def run(self, command, *, cwd, variables: dict, timeout_seconds: float, observer=None,
-            on_line=None, on_tick=None, stop_requested=None) -> subprocess.CompletedProcess:
+            on_line=None, on_tick=None, stop_requested=None, script=None,
+            on_start=None) -> subprocess.CompletedProcess:
         """Run one step there and follow it like ``flow_python.run_process``.
 
         ``variables`` are only what Metronome sets for the step: the script
         otherwise keeps the signed-in session's own environment and the
         project .env, as it would in a PowerShell window. The run waits for
         the script and every tracked process it started; a time limit or
-        Stop ends the whole tree.
+        Stop ends the whole tree. The launcher hashes ``script`` just before
+        starting it and passes that, with the process IDs, to ``on_start``.
+        A heartbeat thread tells the launcher this worker is still in charge;
+        without it the launcher ends the step itself.
         """
         deadline = time.monotonic() + timeout_seconds
         directory = self._launch("run", {
             "command": [str(item) for item in command], "cwd": str(cwd),
             "variables": {str(key): str(value) for key, value in (variables or {}).items()},
+            "script": str(script) if script is not None else None,
+            "deadline": time.time() + timeout_seconds,
         }, deadline=deadline, timeout_seconds=timeout_seconds, stop_requested=stop_requested)
+        stopped = threading.Event()
+
+        def heartbeat():
+            while not stopped.wait(HEARTBEAT_SECONDS):
+                try:
+                    os.utime(directory / host.HEARTBEAT)
+                except OSError:
+                    pass
+
+        beating = threading.Thread(target=heartbeat, daemon=True)
+        beating.start()
         try:
             return self._follow(directory, command, deadline, timeout_seconds, observer,
-                                on_line, on_tick, stop_requested)
+                                on_line, on_tick, stop_requested, on_start)
         finally:
+            stopped.set()
+            beating.join(timeout=1)
             self._discard(directory)
 
-    def _follow(self, directory, command, deadline, timeout_seconds, observer, on_line, on_tick, stop_requested):
+    def _follow(self, directory, command, deadline, timeout_seconds, observer, on_line, on_tick,
+                stop_requested, on_start=None):
         answer = self._wait_for(directory, (host.STARTED, host.RESULT),
                                 deadline=min(deadline, time.monotonic() + self.start_timeout),
                                 stop_requested=stop_requested)
@@ -374,6 +399,8 @@ class DesktopSession:
                 raise TimeoutError(f"Python script exceeded its {round(timeout_seconds)} second time limit.")
             raise DesktopUnavailable("The launcher in the signed-in Windows session did not start the script.")
         process = DesktopProcess(directory, command, answer[1])
+        if on_start is not None:
+            on_start(answer[1])
         if observer is not None and hasattr(observer, "start"):
             observer.start(process)
         tails = {"stdout": _Tail(directory / host.STDOUT), "stderr": _Tail(directory / host.STDERR)}
