@@ -5,6 +5,7 @@ in [the testing workflow](../README.md); this file is the complete history.
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-09-25: Excel UI test fixture queues Chrome's parallel connections | [Test plan](2026-09-25-excel-ui-fixture-backlog/test-plan.md) | [Test report](2026-09-25-excel-ui-fixture-backlog/test-report.md) |
 | 2026-09-25: Python scripts run as from PowerShell; scripts in any folder | [Test plan](2026-09-25-python-desktop-session/test-plan.md) | [Test report](2026-09-25-python-desktop-session/test-report.md) |
 | 2026-09-24: Python scheduler, .env credentials and script monitoring | [Test plan](2026-09-24-python-scheduler/test-plan.md) | [Test report](2026-09-24-python-scheduler/test-report.md) |
 | 2026-09-21: optional Flow SQL table owner | [Test plan](2026-09-21-optional-flow-sql-owner/test-plan.md) | [Test report](2026-09-21-optional-flow-sql-owner/test-report.md) |
