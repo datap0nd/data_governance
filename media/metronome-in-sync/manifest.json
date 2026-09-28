@@ -1,0 +1,20 @@
+{
+  "title": "Metronome — In Sync",
+  "status": "quiet presentation review cut",
+  "durationSeconds": 84,
+  "width": 1920,
+  "height": 1080,
+  "framesPerSecond": 60,
+  "renderHyperFramesVersion": "0.8.78",
+  "editableProjectHyperFramesVersion": "0.8.81",
+  "artifacts": {
+    "renders/review/animatic.mp4": {
+      "bytes": 9559885,
+      "sha256": "86dd838c1877214d9950be40ebc555f9cd7b96112570b443f83b5ed495c30449"
+    },
+    "audio/score.wav": {
+      "bytes": 24192102,
+      "sha256": "eb94a7f7c1635a36d078cdc6c38bfe63385b4b44abd943d9f7cd0c7d26e985b2"
+    }
+  }
+}

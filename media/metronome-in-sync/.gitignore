@@ -1,0 +1,15 @@
+node_modules/
+.venv/
+.tools/
+.hyperframes/
+snapshots/
+*.log
+audio/ticks.wav
+audio/pulse.wav
+audio/pad.wav
+audio/fx.wav
+audio/score-pre.wav
+audio/score-master.wav
+renders/review/animatic-*.mp4
+assets/screens.json
+assets/simulation.json
