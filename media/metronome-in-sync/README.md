@@ -1,35 +1,28 @@
-# Metronome — In Sync
+# Metronome — Ready by morning
 
-This folder contains the editable HyperFrames project and the current **84-second quiet presentation cut**. The film is a fictional product illustration; its source systems, reports, numbers and AI journey are illustrative. The AI sequence is visibly labeled “Concept preview.”
+The current 84-second presentation film has English narration, burned-in Korean subtitles, continuous instrumental background music and light interfaces. Metronome is a static brand icon. The story follows sources → Metronome → organized datasets → scheduled Flows → overnight agents → evidence → a morning dashboard.
 
-- [Watch the MP4](renders/review/animatic.mp4) (1920×1080, 60 fps, H.264/AAC).
-- [Open the review page](animatic-review.html) or [browse eight style frames](review.html).
-- Edit [timeline.json](timeline.json), [scene builder](scripts/build.mjs), [visual runtime](compositions/runtime.js), [styles](compositions/film.css), and [score source](audio/score.py).
-- Read the [storyboard](STORYBOARD.md), [visual direction](frame.md), [supers](SUPERS.md), [asset ledger](assets/LEDGER.md), and [validation record](QA.md).
+- [Watch the MP4](renders/review/animatic.mp4), 1920×1080, 30 fps, H.264/AAC.
+- [Review with scene buttons](animatic-review.html) or [view eight frames](review.html).
+- [English script and Korean translation](narration.json), [Korean SRT](subtitles.ko.srt), [English SRT](subtitles.en.srt).
+- [Storyboard](STORYBOARD.md), [asset sources](assets/LEDGER.md), [validation](QA.md).
 
-The committed MP4 and 24-bit score are the reviewed output. Build dependencies, discarded photo candidates, prior renders, temporary frames, caches and local environments are intentionally excluded. The audio WAV is kept because HyperFrames uses it when rendering the editable composition.
+## Edit and render
 
-## Work on the film
-
-From this directory, use Node.js 24 and npm:
+Use Node.js 24. All editable visuals live in `scripts/build.mjs`, `compositions/film.css` and `compositions/runtime.js`; narrative cue timings live in `narration.json`. The build generates `index.html` and `timeline.json`.
 
 ```powershell
 npm ci
 node scripts/build.mjs
-.\film.ps1 check --at '18,30.5,42,53.5,70' --strict --json
-.\film.ps1 preview
+.\film.ps1 check --at '3,17,25,35,51,59,70,81' --strict --json
+.\film.ps1 render --fps 30 --quality looks --workers 2 --output renders/review/animatic.mp4
+node scripts/serve-review.mjs
 ```
 
-The project pins HyperFrames 0.8.81, GSAP 3.14.2, Three.js 0.181.2 and esbuild 0.25.12. The supplied MP4 was rendered with HyperFrames 0.8.78 before this source package was brought into GitHub; the 0.8.81 project passes the same focused composition checks, but a future render may not be pixel-identical.
+Review at `http://127.0.0.1:4392/animatic-review.html`. The server supports MP4 seeking. Set `FILM_REVIEW_PORT` for another port. FFmpeg and FFprobe must be on PATH; HyperFrames also accepts `HYPERFRAMES_FFMPEG_PATH` and `HYPERFRAMES_FFPROBE_PATH`.
 
-For the review website, run `node scripts/serve-review.mjs` and open `http://127.0.0.1:4392/animatic-review.html`. Set `FILM_REVIEW_PORT` to use another local port. The server supports MP4 byte ranges for seeking.
+To regenerate narration and music, install `audio/requirements.txt` in the film's own Python environment, then run `python audio/score.py`. It uses Microsoft Edge TTS's synthetic `en-US-AndrewMultilingualNeural` voice and needs network access. Cached phrases go under ignored `.audio-cache/`. Set `FILM_FFMPEG_PATH` if needed. The score master is 48 kHz stereo 24-bit PCM. Keep source MP3 attribution when sharing the film.
 
-To regenerate the score, install Python 3.13, FFmpeg and the film's own NumPy environment:
+The Excel ribbon reuses pixels from the owner's linked Scribble product tour. Chrome is recreated in HTML/CSS using its Windows tab strip, omnibox and controls; it is not a native screen recording or a verified pixel-perfect capture. UI content and data are illustrative. Local Segoe UI is used when available on Windows; other operating systems may render native UI labels differently. Korean subtitles embed a subset of Noto Sans KR under OFL.
 
-```powershell
-py -3.13 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r audio\requirements.txt
-.\.venv\Scripts\python.exe audio\score.py
-```
-
-`audio/score.py` finds `ffmpeg` on PATH; `FILM_FFMPEG_PATH` may name a specific executable. The generated stem WAVs are ignored. Rebuild and render after changing the timeline, visuals or score; the committed MP4 is a review artifact, not an automatically updated build output.
+No live portal, real business data or desktop automation is involved. The overnight auditor reflects `docs/data_auditor.md`: read-only checks and evidence-linked findings, with human review. The final AI dashboard is an illustrative reporting workflow.
