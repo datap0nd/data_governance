@@ -1,21 +1,11 @@
-# Visual film validation — 29 September 2026
+# Revision 6 validation
 
-The [current MP4](renders/review/animatic.mp4) is a newly rendered **144-second film with no subtitles**. It is 1920×1080, H.264 at 30 fps (4,320 frames), with stereo AAC at 48 kHz. HyperFrames 0.8.81 used Chrome 153.0.8010.53. Full FFmpeg decoding passed. Encoded loudness measured −16.16 LUFS, −1.92 dBTP and 14.90 LU range. Music remains under narration and continues through visual reading pauses.
+**104 seconds, 1080p30, 3,120 frames, zero subtitles.** The previous cut was 144 seconds. Gaps outside trimmed narration phrases fall from 63.067 to 31.154 seconds (50.6% reduction). This measures inter-sentence, lead and tail gaps, not pauses within a spoken sentence. Music remains continuous.
 
-## Visual and narrative checks
+- [Strict check](renders/revision6-check.json): 19 sampled times, zero lint/runtime/layout/contrast errors, warnings or information findings; 248 contrast checks passed. Motion analysis was disabled; sampled motion states were visually inspected.
+- [Encoded scene samples](renders/review/revision6-samples.jpg): code continues while the Flow completes, inspectors occupy different stages and lanes, generic dashboards, two access modes, ChatGPT retries versus guided creation, final comparison table.
+- [Media measurements](renders/revision6-validation.json): full FFmpeg decode passed; H.264 1920×1080 30 fps, stereo AAC 48 kHz, 104.000 seconds, -16.19 LUFS and -1.95 dBTP.
+- [Narration review](audio/pronunciation-review.json): all 13 final phrases checked with local Whisper base.en and synthesis word boundaries. No time compression, truncation or overlapping speech. ASAP/GSCM, two AM and MCP recognized. Recognition homophones and a trailing artifact are retained. No human listening pass claimed.
+- Two existing package tests and five syntax checks passed: `20260929T090032959Z-30724-74bb9ae8`. Duration assertions changed from 144 to 104 seconds to match the requested shorter film; hash, media and reference checks remain intact.
 
-The [14 encoded samples](renders/review/encoded-samples.jpg) cover both Korean report portals, all six source names, the centered icon/name-only hub, Excel and AI tools, code-to-no-code transition, input selection and pipeline creation, standalone overnight local AI, five findings before/after expansion, METO portal with an external API connection, internal-server/browser access and all three MCP boost states.
-
-No subtitle, chapter-corner or product-overview element remains. Scene 1 has no Excel icon/window. The shared-key claim is removed. Korean glyph coverage for portal text is complete. The current review offers no subtitle downloads.
-
-The [strict check](renders/revision-check.json) reports zero lint, runtime, layout and contrast errors/warnings: 14 layout sample times and 197 contrast checks across five sampled times. The motion-analysis feature was not enabled; animation states were inspected visually. The [encoded measurements](renders/encoded-validation.json) record media, narration and glyph checks. All 16 voice phrases fit at natural speed, with explicit acronym spellings in `narration.json`; no phrase overlaps or truncation was detected.
-
-## Playback and package
-
-Chrome chapter navigation sought to 78 seconds and visibly played the expanded finding, then sought to 122 seconds and played the ChatGPT boost. Encoded samples separately confirm the Claude and Gemini states. The review, frame page, script and ninth scene image returned HTTP 200. The MP4 range request returned 206 (`bytes 0-1023/11967978`).
-
-The two existing film-package tests and four applicable syntax checks passed in run `20260929T071406561Z-18540-8790388e`. The test's duration contract was updated from 84 to 144 seconds for the expanded story; all checksum, WAV-format and link checks remain intact.
-
-Chrome is recreated in code and Excel reuses the owner's Scribble ribbon. Data, issue fixes and addresses are illustrative. The METO/MCP integration story follows the owner's product direction and is not a deployment verification. Proposed fixes remain subject to human review. Source and license information is in the [ledger](assets/LEDGER.md).
-
-See the [release plan](../../../docs/testing/releases/2026-09-29-visual-film-mcp/test-plan.md) and [report](../../../docs/testing/releases/2026-09-29-visual-film-mcp/test-report.md). Final-head CI evidence is recorded in the PR before merging.
+Dropdowns retain narrowly scoped markers for their intentional layering and four scrollable offscreen choices. Robot inspectors now share the fleet coordinate frame; no robot overflow exemption is used. Chrome and ChatGPT are recreated in code from visual references, with synthetic content. The MCP comparison is illustrative, not a benchmark or accuracy guarantee. [Plan](../../../docs/testing/releases/2026-09-29-narration-agent-motion/test-plan.md) · [Report](../../../docs/testing/releases/2026-09-29-narration-agent-motion/test-report.md).
