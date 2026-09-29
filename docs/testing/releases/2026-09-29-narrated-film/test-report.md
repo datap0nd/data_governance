@@ -29,6 +29,8 @@ Subtitle files were normalized to LF and pinned with local `.gitattributes` so m
 
 ## Findings resolved and limits
 
+Initial CI run [36531334180](https://github.com/datap0nd/data_governance/actions/runs/36531334180) failed the scope gate on trailing whitespace in the newly imported font license. Whitespace was removed without changing the license wording; the base-to-head diff check then passed. No workflow or test was changed.
+
 Initial ARM64 Python setup could not install locked binary wheels; the checkout was rebuilt using official Python 3.13.7 x64 and setup/verification passed. Initial strict checks identified a missing audio ID, faint labels and a portal overflow; these were corrected before final render. An initial render stalled locating a managed browser; selecting the installed Chrome executable completed the render. Its log included two non-blocking resource 404 messages without URLs; no lint/runtime/layout/contrast issues remained in the strict check and full encoded decoding passed.
 
 Chrome is an HTML/CSS reconstruction, not a verified pixel-perfect native capture. Excel's ribbon is reused from the owner's linked Scribble tour; worksheet data are synthetic. Narration is synthetic English, Korean text is an original translation. The background music is a separately licensed instrumental, not the Scribble audio track. The nightly audit is read-only and evidence-based; the final dashboard is explicitly an illustrative AI reporting workflow. No source-script change affects the application or existing tests.
