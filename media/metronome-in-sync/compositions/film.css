@@ -39,3 +39,6 @@
 .line-numbers{color:#687782}.pipeline-fleet{position:relative}.pipeline-fleet>.pipeline-agent{top:22px;color:var(--agent-color)}
 
 .chat-sidebar>div:not(.chat-profile){display:flex;align-items:center;gap:15px}.chat-sidebar>div>.glyph,.chat-sidebar>div>.i{width:29px;height:29px}.chat-mic{width:32px;height:32px}.chat-side .chrome-tab>.ai-logo{width:19px;height:19px}
+
+/* Explicit comparison labels: the two approaches, not two Metronome versions. */
+.comparison-heading{position:absolute;top:105px}.comparison-heading h2{font-size:43px;font-weight:500;letter-spacing:-.7px}.comparison-heading p{font-size:29px;margin-top:15px;font-weight:500}.code-way{left:60px;color:#64534c}.flow-way{left:730px;color:#0d7377}.code-way p{display:inline-block;background:#eee8e2;padding:9px 18px;border-radius:8px}.flow-way p{display:inline-block;background:#dceee6;padding:9px 18px;border-radius:8px}.comparison-divider{position:absolute;left:705px;top:108px;width:1px;height:792px;background:#cfdbd5}#s4 .code-race{top:260px}#s4 .builder-browser{top:260px}.manual-demo #s4 .builder-browser{top:130px}

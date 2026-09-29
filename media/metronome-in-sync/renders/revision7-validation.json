@@ -1,0 +1,52 @@
+{
+  "video": {
+    "codec_name": "h264",
+    "width": 1920,
+    "height": 1080,
+    "r_frame_rate": "30/1",
+    "duration": "95.000000",
+    "nb_frames": "2850"
+  },
+  "audio": {
+    "codec_name": "aac",
+    "sample_rate": "48000",
+    "channels": 2,
+    "duration": "95.000000"
+  },
+  "duration": "95.000000",
+  "loudness": {
+    "input_i": "-16.19",
+    "input_tp": "-1.95",
+    "input_lra": "6.80",
+    "input_thresh": "-27.77",
+    "output_i": "-16.12",
+    "output_tp": "-1.60",
+    "output_lra": "6.70",
+    "output_thresh": "-27.52",
+    "normalization_type": "dynamic",
+    "target_offset": "0.12"
+  },
+  "decode": "PASS",
+  "narrationPhrases": 12,
+  "maxSpeechSpeed": 1,
+  "encodedFrameSamples": [
+    22,
+    29,
+    35.8,
+    56.9,
+    57.2,
+    64,
+    69.9,
+    70.2,
+    84,
+    92
+  ],
+  "strictLayoutIssues": 0,
+  "strictContrastChecks": 152,
+  "narrationGaps": {
+    "v5Seconds": 63.06685416666669,
+    "v7Seconds": 28.287270833333338,
+    "reductionPercent": 55.14716691183199,
+    "method": "Duration minus sum of trimmed generated phrase lengths, including lead and tail gaps; not intra-sentence pauses."
+  }
+}

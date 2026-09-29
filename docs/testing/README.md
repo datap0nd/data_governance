@@ -8,6 +8,7 @@ templates and the result vocabulary.
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-09-29: Clear film comparison labels and dashboard removal | [Test plan](releases/2026-09-29-film-comparison-labels/test-plan.md) | [Test report](releases/2026-09-29-film-comparison-labels/test-report.md) |
 | 2026-09-29: Natural narration and visible agent inspections | [Test plan](releases/2026-09-29-narration-agent-motion/test-plan.md) | [Test report](releases/2026-09-29-narration-agent-motion/test-report.md) |
 | 2026-09-29: Visual Metronome film and MCP ending | [Test plan](releases/2026-09-29-visual-film-mcp/test-plan.md) | [Test report](releases/2026-09-29-visual-film-mcp/test-report.md) |
 | 2026-09-29: Narrated Metronome film | [Test plan](releases/2026-09-29-narrated-film/test-plan.md) | [Test report](releases/2026-09-29-narrated-film/test-report.md) |

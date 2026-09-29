@@ -6,7 +6,7 @@
  const script='import requests\n\nsession = requests.Session()\nresponse = session.get(\n    "https://asap-portal.com"\n)\n\ndef parse_report(response):\n    rows = []\n    # Map every column';
  const laneBots=$$('[data-lane]').map(lane=>{const bot=lane.querySelector('.pipeline-agent');bot.style.setProperty('--agent-color',lane.style.getPropertyValue('--agent-color'));lane.parentElement.appendChild(bot);return bot;});
  function draw(realTime){
- const t=realTime<37?realTime:realTime<57?realTime+2:realTime+4;
+ const t=realTime<37?realTime:realTime<57?realTime+2:realTime+13;
  scenes.forEach(s=>{const active=realTime>=s.start&&realTime<s.end;s.el.style.visibility=active?'visible':'hidden';s.el.style.opacity=active?'1':'0';});
  $('.intro-asap').style.transform=`translateY(${(1-ease(t/.45))*25}px)`;
  $('.intro-gscm').style.opacity=ease((t-.8)/.6);$('.intro-gscm').style.transform=`translateX(${(1-ease((t-.8)/.6))*55}px)`;
@@ -26,7 +26,6 @@
  $$('[data-issue]').forEach((el,i)=>{show(el,t>=51.1+i*.2);el.classList.toggle('selected',i===1&&t>=54);});
  const expand=ease((t-54)/.5);$('.issue-list').style.width=(100-expand*48)+'%';$('.issue-detail').style.width=(expand*48)+'%';$('.issue-detail').style.opacity=expand;show($('.issue-detail'),t>=54);$$('[data-issue]>span:nth-last-child(2)').forEach(el=>show(el,t<54));
  cursorAt($('.issue-cursor'),t,[[52.5,1400,413],[53.8,460,119],[54.2,460,119],[55,720,360]]);show($('.issue-cursor'),t>=52.5&&t<55);const click=clamp((t-53.9)/.4);$('.issue-cursor>i').style.opacity=t>=53.9&&t<54.3?1-click:0;$('.issue-cursor>i').style.transform=`scale(${.5+click*2})`;
- $('.trend-line').style.strokeDasharray='1600';$('.trend-line').style.strokeDashoffset=(1-ease((t-61.3)/1.4))*1600;$('.api-bridge').style.opacity=ease((t-61.2)/.5);$('.api-path i').style.left=clamp(((t-61)%1.7)/1.7)*218+'px';
  $('.access-web').style.opacity=ease((t-70)/.45);$('.access-ai').style.opacity=ease((t-76.5)/.5);$$('.ai-choice-logos>div').forEach((el,i)=>el.style.transform=`translateY(${(1-ease((t-76.8-i*.16)/.4))*22}px)`);$('.prompt-flow').style.opacity=ease((t-79.5)/.5);
  show($('.chat-comparison'),t<100);show($('.outcome-table'),t>=100);const comparison=t-83;
  $$('[data-retry]').forEach((el,i)=>show(el,comparison>=[.4,2.3,4.6,6.4,7.7][i]));const right=ease((comparison-8.2)/.5);$('.connection-chip').style.opacity=right;$('.mcp-run').style.opacity=right;
