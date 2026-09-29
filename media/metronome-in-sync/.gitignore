@@ -13,3 +13,6 @@ audio/score-master.wav
 renders/review/animatic-*.mp4
 assets/screens.json
 assets/simulation.json
+
+.audio-cache/
+renders/revision-frames/

@@ -4,7 +4,7 @@ import path from 'node:path';
 const base=path.resolve(import.meta.dirname,'..');
 const port=Number(process.env.FILM_REVIEW_PORT||4392);
 if(!Number.isInteger(port)||port<1||port>65535)throw new Error('FILM_REVIEW_PORT must be a valid TCP port');
-const types={'.html':'text/html; charset=utf-8','.png':'image/png','.jpg':'image/jpeg','.css':'text/css','.js':'text/javascript','.json':'application/json','.md':'text/plain; charset=utf-8','.ttf':'font/ttf','.svg':'image/svg+xml','.mp4':'video/mp4'};
+const types={'.html':'text/html; charset=utf-8','.png':'image/png','.jpg':'image/jpeg','.css':'text/css','.js':'text/javascript','.json':'application/json','.md':'text/plain; charset=utf-8','.ttf':'font/ttf','.svg':'image/svg+xml','.mp4':'video/mp4','.srt':'text/plain; charset=utf-8','.woff2':'font/woff2'};
 const server=http.createServer((req,res)=>{
   try{
     const url=new URL(req.url,'http://127.0.0.1');const rel=decodeURIComponent(url.pathname==='/'?'/review.html':url.pathname);

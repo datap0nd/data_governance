@@ -1,1349 +1,146 @@
 {
-  "title": "Metronome — In Sync",
-  "version": 1,
-  "status": "Gate 2 animatic revision — owner review",
-  "bpm": 120,
-  "fps": 60,
+  "title": "Metronome — Ready by morning",
+  "version": 2,
+  "status": "Narrated presentation revision",
+  "durationSeconds": 84,
   "width": 1920,
   "height": 1080,
-  "durationBeats": 168,
-  "seed": 20260926,
-  "timeConvention": "Beat zero is film start. Intervals are start-inclusive and end-exclusive. Seconds, frames and audio samples are derived from beats; never independently hardcode timings.",
-  "audio": {
-    "sampleRate": 48000,
-    "bitDepth": 24,
-    "stems": [
-      "ticks",
-      "pulse",
-      "pad",
-      "fx"
-    ],
-    "mix": "audio/score.wav",
-    "targetIntegratedLufs": -20,
-    "maxTruePeakDbtp": -6
-  },
-  "simulation": {
-    "oscillators": 1,
-    "naturalBpmMin": 120,
-    "naturalBpmMax": 120,
-    "couplingStartBeat": 42,
-    "lockByBeat": 45,
-    "gridBpm": 120,
-    "tickExport": "audio/sim_ticks.json",
-    "deterministic": true
-  },
-  "heroStat": null,
-  "decisions": [
-    {
-      "id": "kinetic-gap",
-      "status": "Proposed for gate 1",
-      "text": "Preserve the six words from beats 31–36; fill beats 37–39 with Export., Repeat., Export. so each beat through 19.5 seconds has a cut."
-    },
-    {
-      "id": "disclosure-hold",
-      "status": "Owner decision requested at gate 1",
-      "text": "Preserve the supplied start at beat 165 (82.5 seconds) and final black at beat 167 (83.5 seconds), leaving a 1.0-second disclosure. Moving it to beat 164 (82.0 seconds) would satisfy 1.5 seconds."
-    },
-    {
-      "id": "verbatim-super",
-      "status": "Applied",
-      "text": "Supplied exact supers take precedence over the general seven-word guideline. Short kinetic words use one-beat holds."
-    },
-    {
-      "id": "ai-concept",
-      "status": "Applied",
-      "text": "Keep Concept preview visible throughout S6 because the source plan identifies the AI report journey as an upcoming capability."
-    },
-    {
-      "id": "no-measured-stat",
-      "status": "Applied",
-      "text": "HERO_STAT is empty; omit a measured headline statistic. All report numbers are illustrative."
-    }
-  ],
+  "fps": 30,
+  "duration": 84,
   "scenes": [
     {
       "id": "s1",
-      "name": "Out of time",
-      "file": "compositions/frames/01-out-of-time.html",
-      "startBeat": 0,
-      "endBeat": 16,
-      "styleBeat": 3.5
+      "start": 0,
+      "end": 8,
+      "name": "The question"
     },
     {
       "id": "s2",
-      "name": "Thirty systems",
-      "file": "compositions/frames/02-thirty-systems.html",
-      "startBeat": 16,
-      "endBeat": 40,
-      "styleBeat": 25.5
+      "start": 8,
+      "end": 22,
+      "name": "Sources → organized database"
     },
     {
       "id": "s3",
-      "name": "The turn",
-      "file": "compositions/frames/03-the-turn.html",
-      "startBeat": 40,
-      "endBeat": 48,
-      "styleBeat": 45
+      "start": 22,
+      "end": 29,
+      "name": "Organized datasets in Excel"
     },
     {
       "id": "s4",
-      "name": "Show it once",
-      "file": "compositions/frames/04-show-it-once.html",
-      "startBeat": 48,
-      "endBeat": 72,
-      "styleBeat": 61
+      "start": 29,
+      "end": 42,
+      "name": "Build and schedule a Flow"
     },
     {
       "id": "s5",
-      "name": "One place",
-      "file": "compositions/frames/05-one-place.html",
-      "startBeat": 72,
-      "endBeat": 92,
-      "styleBeat": 84
+      "start": 42,
+      "end": 55,
+      "name": "Overnight agents"
     },
     {
       "id": "s6",
-      "name": "Just ask",
-      "file": "compositions/frames/06-just-ask.html",
-      "startBeat": 92,
-      "endBeat": 128,
-      "styleBeat": 113.5
+      "start": 55,
+      "end": 65.6,
+      "name": "Evidence and findings"
     },
     {
       "id": "s7",
-      "name": "Everyone",
-      "file": "compositions/frames/07-everyone.html",
-      "startBeat": 128,
-      "endBeat": 148,
-      "styleBeat": 140
+      "start": 65.6,
+      "end": 78.2,
+      "name": "Morning dashboard"
     },
     {
       "id": "s8",
-      "name": "One rhythm",
-      "file": "compositions/frames/08-one-rhythm.html",
-      "startBeat": 148,
-      "endBeat": 168,
-      "styleBeat": 166
+      "start": 78.2,
+      "end": 84,
+      "name": "Ready by morning"
     }
   ],
-  "supers": [
+  "narration": [
     {
-      "id": "systems",
-      "scene": "s2",
-      "text": "Our business runs on 30+ systems.",
-      "startBeat": 18,
-      "endBeat": 26,
-      "kind": "headline"
+      "start": 0.6,
+      "end": 4.9,
+      "en": "A business question arrives. The answer is spread across systems.",
+      "ko": "새로운 비즈니스 질문.\n답은 여러 시스템에 흩어져 있습니다."
     },
     {
-      "id": "own-time",
-      "scene": "s2",
-      "text": "Each keeping its own time.",
-      "startBeat": 27,
-      "endBeat": 31,
-      "kind": "headline"
+      "start": 5.1,
+      "end": 10.1,
+      "en": "ASAP, GSCM, spreadsheets, and existing databases.",
+      "ko": "ASAP, GSCM, 엑셀 파일,\n그리고 기존 데이터베이스."
     },
     {
-      "id": "kinetic-1",
-      "scene": "s2",
-      "text": "Export.",
-      "startBeat": 31,
-      "endBeat": 32,
-      "kind": "kinetic",
-      "exception": "Deliberate one-beat kinetic insert; the 1.5-second headline hold does not apply."
+      "start": 10.2,
+      "end": 16.5,
+      "en": "Metronome brings those sources together, transforming scattered exports into organized datasets.",
+      "ko": "Metronome은 여러 소스를 연결하고,\n흩어진 데이터를 체계적인 데이터셋으로 정리합니다."
     },
     {
-      "id": "kinetic-2",
-      "scene": "s2",
-      "text": "Copy.",
-      "startBeat": 32,
-      "endBeat": 33,
-      "kind": "kinetic",
-      "exception": "Deliberate one-beat kinetic insert; the 1.5-second headline hold does not apply."
+      "start": 16.8,
+      "end": 21.7,
+      "en": "Consistent names. Clear ownership. A database your team can use.",
+      "ko": "일관된 이름, 명확한 담당자.\n누구나 활용할 수 있는 데이터베이스."
     },
     {
-      "id": "kinetic-3",
-      "scene": "s2",
-      "text": "Paste.",
-      "startBeat": 33,
-      "endBeat": 34,
-      "kind": "kinetic",
-      "exception": "Deliberate one-beat kinetic insert; the 1.5-second headline hold does not apply."
+      "start": 22,
+      "end": 28.1,
+      "en": "Sales, stock, and shipments share the same keys, ready for Excel, reporting, and AI.",
+      "ko": "판매·재고·출하 데이터를 공통 키로 연결해\n엑셀, 보고서, AI에서 바로 활용합니다."
     },
     {
-      "id": "kinetic-4",
-      "scene": "s2",
-      "text": "Email.",
-      "startBeat": 34,
-      "endBeat": 35,
-      "kind": "kinetic",
-      "exception": "Deliberate one-beat kinetic insert; the 1.5-second headline hold does not apply."
+      "start": 28.4,
+      "end": 34.5,
+      "en": "Build a Flow once. Collect the data, transform it, and save it to the right destination.",
+      "ko": "Flow를 한 번 구성하면\n데이터 수집, 변환, 저장이 자동으로 이어집니다."
     },
     {
-      "id": "kinetic-5",
-      "scene": "s2",
-      "text": "Repeat.",
-      "startBeat": 35,
-      "endBeat": 36,
-      "kind": "kinetic",
-      "exception": "Deliberate one-beat kinetic insert; the 1.5-second headline hold does not apply."
+      "start": 34.8,
+      "end": 41.3,
+      "en": "Schedule the work, and see each step, every run, and every result.",
+      "ko": "실행 시간을 예약하고,\n모든 단계와 실행 결과를 확인하세요."
     },
     {
-      "id": "kinetic-6",
-      "scene": "s2",
-      "text": "Again.",
-      "startBeat": 36,
-      "endBeat": 37,
-      "kind": "kinetic",
-      "exception": "Deliberate one-beat kinetic insert; the 1.5-second headline hold does not apply."
+      "start": 42,
+      "end": 48,
+      "en": "At two A.M., Metronome's overnight agents get to work.",
+      "ko": "새벽 2시,\nMetronome의 야간 에이전트가 작업을 시작합니다."
     },
     {
-      "id": "kinetic-7",
-      "scene": "s2",
-      "text": "Export.",
-      "startBeat": 37,
-      "endBeat": 38,
-      "kind": "kinetic",
-      "exception": "Deliberate one-beat kinetic insert; the 1.5-second headline hold does not apply."
+      "start": 48.3,
+      "end": 54.5,
+      "en": "They check freshness, missing periods, duplicates, and unexpected changes across your datasets.",
+      "ko": "데이터의 최신 상태, 누락 기간, 중복,\n예상치 못한 변화를 점검합니다."
     },
     {
-      "id": "kinetic-8",
-      "scene": "s2",
-      "text": "Repeat.",
-      "startBeat": 38,
-      "endBeat": 39,
-      "kind": "kinetic",
-      "exception": "Deliberate one-beat kinetic insert; the 1.5-second headline hold does not apply."
+      "start": 54.8,
+      "end": 60.5,
+      "en": "When something looks wrong, they flag it with evidence for your team to review.",
+      "ko": "이상이 발견되면 근거와 함께 알려\n담당자가 확인할 수 있도록 합니다."
     },
     {
-      "id": "kinetic-9",
-      "scene": "s2",
-      "text": "Export.",
-      "startBeat": 39,
-      "endBeat": 40,
-      "kind": "kinetic",
-      "exception": "Deliberate one-beat kinetic insert; the 1.5-second headline hold does not apply."
+      "start": 60.8,
+      "end": 65.5,
+      "en": "So the morning starts with the issue already identified.",
+      "ko": "아침에는 문제를 찾는 일부터\n다시 시작할 필요가 없습니다."
     },
     {
-      "id": "in-sync",
-      "scene": "s3",
-      "text": "Metronome puts every system in sync.",
-      "startBeat": 44,
-      "endBeat": 48,
-      "kind": "headline"
+      "start": 65.8,
+      "end": 72.5,
+      "en": "Your AI agents can then investigate the business question and prepare a dashboard that shows its sources.",
+      "ko": "AI 에이전트는 비즈니스 질문을 분석하고,\n출처가 명확한 대시보드를 만들 수 있습니다."
     },
     {
-      "id": "show-once",
-      "scene": "s4",
-      "text": "Show it once.",
-      "startBeat": 49,
-      "endBeat": 55,
-      "kind": "headline"
+      "start": 72.8,
+      "end": 77.9,
+      "en": "From disconnected files to a repeatable path from data to decisions.",
+      "ko": "흩어진 파일을 넘어,\n데이터에서 의사결정까지 이어지는 반복 가능한 프로세스."
     },
     {
-      "id": "learns",
-      "scene": "s4",
-      "text": "Metronome learns it.",
-      "startBeat": 56,
-      "endBeat": 62,
-      "kind": "headline"
-    },
-    {
-      "id": "nightly",
-      "scene": "s4",
-      "text": "And runs it for you. Every night.",
-      "startBeat": 63,
-      "endBeat": 70,
-      "kind": "headline"
-    },
-    {
-      "id": "one-place",
-      "scene": "s5",
-      "text": "Everything lands in one place.",
-      "startBeat": 74,
-      "endBeat": 81,
-      "kind": "headline"
-    },
-    {
-      "id": "trusted",
-      "scene": "s5",
-      "text": "On time. Checked. Trusted.",
-      "startBeat": 83,
-      "endBeat": 90,
-      "kind": "headline"
-    },
-    {
-      "id": "just-ask",
-      "scene": "s6",
-      "text": "Just ask.",
-      "startBeat": 92,
-      "endBeat": 98,
-      "kind": "headline"
-    },
-    {
-      "id": "sources",
-      "scene": "s6",
-      "text": "AI finds the answer — and shows its sources.",
-      "startBeat": 106,
-      "endBeat": 114,
-      "kind": "headline",
-      "exception": "Eight words excluding the em dash: supplied verbatim copy takes precedence over the seven-word style guideline."
-    },
-    {
-      "id": "self-reports",
-      "scene": "s6",
-      "text": "Reports that build themselves.",
-      "startBeat": 116,
-      "endBeat": 122,
-      "kind": "headline"
-    },
-    {
-      "id": "sleep-check",
-      "scene": "s6",
-      "text": "It checks the data while you sleep.",
-      "startBeat": 123,
-      "endBeat": 128,
-      "kind": "headline"
-    },
-    {
-      "id": "no-code",
-      "scene": "s7",
-      "text": "No code. No waiting.",
-      "startBeat": 130,
-      "endBeat": 137,
-      "kind": "headline"
-    },
-    {
-      "id": "anyone",
-      "scene": "s7",
-      "text": "Anyone can build it.",
-      "startBeat": 139,
-      "endBeat": 146,
-      "kind": "headline"
-    },
-    {
-      "id": "one-rhythm",
-      "scene": "s8",
-      "text": "Every system. One rhythm.",
-      "startBeat": 158,
-      "endBeat": 167,
-      "kind": "headline"
-    },
-    {
-      "id": "disclosure",
-      "scene": "s8",
-      "text": "Imagery generated with AI · Data shown is illustrative",
-      "startBeat": 165,
-      "endBeat": 167,
-      "kind": "disclosure",
-      "exception": "Supplied 82.5-second start is preserved. The final-beat black cut at 83.5 leaves a 1.0-second hold, below the requested 1.5 seconds; owner decision required at plan gate."
-    }
-  ],
-  "events": [
-    {
-      "id": "intro-black",
-      "scene": "s1",
-      "type": "black",
-      "startBeat": 0,
-      "endBeat": 1
-    },
-    {
-      "id": "intro-first-tick",
-      "scene": "s1",
-      "type": "sound",
-      "startBeat": 0,
-      "sound": "wooden-tick",
-      "label": "First tick before picture"
-    },
-    {
-      "id": "intro-camera",
-      "scene": "s1",
-      "type": "camera",
-      "startBeat": 1,
-      "endBeat": 16,
-      "move": "macro pullback with slow lateral drift"
-    },
-    {
-      "id": "intro-fade",
-      "scene": "s1",
-      "type": "reveal",
-      "startBeat": 1,
-      "endBeat": 3,
-      "target": "single rim-lit 3D metronome"
-    },
-    {
-      "id": "intro-tick-field",
-      "scene": "s1",
-      "type": "sound_grid",
-      "startBeat": 1,
-      "endBeat": 16,
-      "sound": "wooden-tick",
-      "source": "audio/score.py",
-      "mix": "One Metronome tick; distinct source-data pings emerge"
-    },
-    {
-      "id": "intro-drone",
-      "scene": "s1",
-      "type": "sound_bed",
-      "startBeat": 4,
-      "endBeat": 16,
-      "sound": "low-drone",
-      "envelope": "build"
-    },
-    {
-      "id": "intro-first-source",
-      "scene": "s1",
-      "type": "reveal",
-      "startBeat": 4,
-      "endBeat": 6,
-      "target": "first data-source window",
-      "label": "A separate source appears beside the single Metronome mark"
-    },
-    {
-      "id": "intro-source-field",
-      "scene": "s1",
-      "type": "reveal",
-      "startBeat": 6,
-      "endBeat": 16,
-      "target": "four data-source windows",
-      "label": "ASAP, GSCM, Big Data Portal and Data Hub remain distinct from the Metronome mark"
-    },
-    {
-      "id": "constellation",
-      "scene": "s2",
-      "type": "morph",
-      "startBeat": 16,
-      "endBeat": 18,
-      "target": "metronomes become system constellation"
-    },
-    {
-      "id": "constellation-ticks",
-      "scene": "s2",
-      "type": "simulation_audio",
-      "startBeat": 16,
-      "endBeat": 40,
-      "sound": "wooden-tick",
-      "source": "audio/sim_ticks.json",
-      "mix": "Wide, unresolved"
-    },
-    {
-      "id": "system-label-1",
-      "scene": "s2",
-      "type": "label",
-      "startBeat": 18,
-      "endBeat": 31,
-      "text": "ASAP"
-    },
-    {
-      "id": "system-ping-1",
-      "scene": "s2",
-      "type": "sound",
-      "startBeat": 18,
-      "sound": "soft-ping",
-      "label": "ASAP"
-    },
-    {
-      "id": "system-label-2",
-      "scene": "s2",
-      "type": "label",
-      "startBeat": 19,
-      "endBeat": 31,
-      "text": "GSCM"
-    },
-    {
-      "id": "system-ping-2",
-      "scene": "s2",
-      "type": "sound",
-      "startBeat": 19,
-      "sound": "soft-ping",
-      "label": "GSCM"
-    },
-    {
-      "id": "system-label-3",
-      "scene": "s2",
-      "type": "label",
-      "startBeat": 20,
-      "endBeat": 31,
-      "text": "Big Data Portal"
-    },
-    {
-      "id": "system-ping-3",
-      "scene": "s2",
-      "type": "sound",
-      "startBeat": 20,
-      "sound": "soft-ping",
-      "label": "Big Data Portal"
-    },
-    {
-      "id": "system-label-4",
-      "scene": "s2",
-      "type": "label",
-      "startBeat": 21,
-      "endBeat": 31,
-      "text": "Data Hub"
-    },
-    {
-      "id": "system-more",
-      "scene": "s2",
-      "type": "counter",
-      "startBeat": 21,
-      "endBeat": 25,
-      "text": "+26 more",
-      "label": "Anonymous blurred glyphs only"
-    },
-    {
-      "id": "system-ping-4",
-      "scene": "s2",
-      "type": "sound",
-      "startBeat": 21,
-      "sound": "soft-ping",
-      "label": "Data Hub"
-    },
-    {
-      "id": "s2-riser",
-      "scene": "s2",
-      "type": "sound_bed",
-      "startBeat": 28,
-      "endBeat": 40,
-      "sound": "filtered-noise-riser",
-      "envelope": "build; hard mute at beat 40"
-    },
-    {
-      "id": "kinetic-cut-1",
-      "scene": "s2",
-      "type": "image_cut",
-      "startBeat": 31,
-      "endBeat": 32,
-      "asset": "port-dusk",
-      "superId": "kinetic-1"
-    },
-    {
-      "id": "kinetic-hit-1",
-      "scene": "s2",
-      "type": "sound",
-      "startBeat": 31,
-      "sound": "dry-hit",
-      "superId": "kinetic-1"
-    },
-    {
-      "id": "kinetic-cut-2",
-      "scene": "s2",
-      "type": "image_cut",
-      "startBeat": 32,
-      "endBeat": 33,
-      "asset": "factory-line",
-      "superId": "kinetic-2"
-    },
-    {
-      "id": "kinetic-hit-2",
-      "scene": "s2",
-      "type": "sound",
-      "startBeat": 32,
-      "sound": "dry-hit",
-      "superId": "kinetic-2"
-    },
-    {
-      "id": "kinetic-cut-3",
-      "scene": "s2",
-      "type": "image_cut",
-      "startBeat": 33,
-      "endBeat": 34,
-      "asset": "warehouse",
-      "superId": "kinetic-3"
-    },
-    {
-      "id": "kinetic-hit-3",
-      "scene": "s2",
-      "type": "sound",
-      "startBeat": 33,
-      "sound": "dry-hit",
-      "superId": "kinetic-3"
-    },
-    {
-      "id": "kinetic-cut-4",
-      "scene": "s2",
-      "type": "image_cut",
-      "startBeat": 34,
-      "endBeat": 35,
-      "asset": "office-2340",
-      "superId": "kinetic-4",
-      "overlay": "23:40"
-    },
-    {
-      "id": "kinetic-hit-4",
-      "scene": "s2",
-      "type": "sound",
-      "startBeat": 34,
-      "sound": "dry-hit",
-      "superId": "kinetic-4"
-    },
-    {
-      "id": "kinetic-cut-5",
-      "scene": "s2",
-      "type": "image_cut",
-      "startBeat": 35,
-      "endBeat": 36,
-      "asset": "port-dusk",
-      "superId": "kinetic-5"
-    },
-    {
-      "id": "kinetic-hit-5",
-      "scene": "s2",
-      "type": "sound",
-      "startBeat": 35,
-      "sound": "dry-hit",
-      "superId": "kinetic-5"
-    },
-    {
-      "id": "kinetic-cut-6",
-      "scene": "s2",
-      "type": "image_cut",
-      "startBeat": 36,
-      "endBeat": 37,
-      "asset": "factory-line",
-      "superId": "kinetic-6"
-    },
-    {
-      "id": "kinetic-hit-6",
-      "scene": "s2",
-      "type": "sound",
-      "startBeat": 36,
-      "sound": "dry-hit",
-      "superId": "kinetic-6"
-    },
-    {
-      "id": "kinetic-cut-7",
-      "scene": "s2",
-      "type": "image_cut",
-      "startBeat": 37,
-      "endBeat": 38,
-      "asset": "warehouse",
-      "superId": "kinetic-7"
-    },
-    {
-      "id": "kinetic-hit-7",
-      "scene": "s2",
-      "type": "sound",
-      "startBeat": 37,
-      "sound": "dry-hit",
-      "superId": "kinetic-7"
-    },
-    {
-      "id": "kinetic-cut-8",
-      "scene": "s2",
-      "type": "image_cut",
-      "startBeat": 38,
-      "endBeat": 39,
-      "asset": "office-2340",
-      "superId": "kinetic-8",
-      "overlay": "23:40"
-    },
-    {
-      "id": "kinetic-hit-8",
-      "scene": "s2",
-      "type": "sound",
-      "startBeat": 38,
-      "sound": "dry-hit",
-      "superId": "kinetic-8"
-    },
-    {
-      "id": "kinetic-cut-9",
-      "scene": "s2",
-      "type": "image_cut",
-      "startBeat": 39,
-      "endBeat": 40,
-      "asset": "port-dusk",
-      "superId": "kinetic-9"
-    },
-    {
-      "id": "kinetic-hit-9",
-      "scene": "s2",
-      "type": "sound",
-      "startBeat": 39,
-      "sound": "dry-hit",
-      "superId": "kinetic-9"
-    },
-    {
-      "id": "turn-black-silence",
-      "scene": "s3",
-      "type": "black_silence",
-      "startBeat": 40,
-      "endBeat": 41,
-      "audio": "Mute all stems and tails"
-    },
-    {
-      "id": "mark-draw",
-      "scene": "s3",
-      "type": "logo_draw",
-      "startBeat": 41,
-      "endBeat": 42,
-      "target": "Metronome mark",
-      "label": "One arm swing"
-    },
-    {
-      "id": "turn-clean-tick",
-      "scene": "s3",
-      "type": "sound",
-      "startBeat": 41,
-      "sound": "wooden-tick",
-      "label": "Clean tick"
-    },
-    {
-      "id": "sync_start",
-      "scene": "s3",
-      "type": "simulation_marker",
-      "startBeat": 42,
-      "label": "Begin coupling ramp and external 120 BPM anchor"
-    },
-    {
-      "id": "sync_end",
-      "scene": "s3",
-      "type": "simulation_marker",
-      "startBeat": 45,
-      "label": "Complete coupling ramp; visibly synchronized"
-    },
-    {
-      "id": "sync-coupling",
-      "scene": "s3",
-      "type": "simulation_coupling",
-      "startBeat": 42,
-      "endBeat": 45,
-      "source": "shared seeded oscillator simulation",
-      "coupling": "ramp from zero to strong",
-      "label": "Phases visibly lock by beat 45"
-    },
-    {
-      "id": "sync-hit",
-      "scene": "s3",
-      "type": "sound",
-      "startBeat": 42,
-      "sound": "cinematic-sub-hit"
-    },
-    {
-      "id": "sync-pad",
-      "scene": "s3",
-      "type": "sound_bed",
-      "startBeat": 42,
-      "endBeat": 48,
-      "sound": "warm-detuned-pad",
-      "envelope": "enter"
-    },
-    {
-      "id": "sync-ripple",
-      "scene": "s3",
-      "type": "light_ripple",
-      "startBeat": 42,
-      "endBeat": 45,
-      "target": "entire metronome constellation"
-    },
-    {
-      "id": "sync-unison",
-      "scene": "s3",
-      "type": "sound_grid",
-      "startBeat": 42,
-      "endBeat": 48,
-      "sound": "wooden-tick",
-      "intervalBeats": 1,
-      "source": "audio/sim_ticks.json"
-    },
-    {
-      "id": "browser-open",
-      "scene": "s4",
-      "type": "ui_reveal",
-      "startBeat": 48,
-      "endBeat": 49,
-      "target": "fictional neutral portal",
-      "text": "ASAP"
-    },
-    {
-      "id": "continuous-camera",
-      "scene": "s4",
-      "type": "camera",
-      "startBeat": 48,
-      "endBeat": 128,
-      "move": "One continuous slow push through S4, S5 and S6; no hard cuts"
-    },
-    {
-      "id": "s4-pulse",
-      "scene": "s4",
-      "type": "sound_grid",
-      "startBeat": 48,
-      "endBeat": 72,
-      "sound": "soft-sub-pulse",
-      "intervalBeats": 1
-    },
-    {
-      "id": "record-action-1",
-      "scene": "s4",
-      "type": "cursor_action",
-      "startBeat": 50,
-      "endBeat": 51,
-      "label": "Open report"
-    },
-    {
-      "id": "record-click-1",
-      "scene": "s4",
-      "type": "sound",
-      "startBeat": 50,
-      "sound": "soft-click",
-      "label": "Open report"
-    },
-    {
-      "id": "record-card-1",
-      "scene": "s4",
-      "type": "step_card",
-      "startBeat": 51,
-      "endBeat": 52,
-      "text": "Open ASAP report",
-      "target": "Metronome recording editor"
-    },
-    {
-      "id": "record-whoosh-1",
-      "scene": "s4",
-      "type": "sound",
-      "startBeat": 51,
-      "sound": "airy-whoosh",
-      "label": "Open ASAP report"
-    },
-    {
-      "id": "record-action-2",
-      "scene": "s4",
-      "type": "cursor_action",
-      "startBeat": 52,
-      "endBeat": 53,
-      "label": "Set period: last week"
-    },
-    {
-      "id": "record-click-2",
-      "scene": "s4",
-      "type": "sound",
-      "startBeat": 52,
-      "sound": "soft-click",
-      "label": "Set period: last week"
-    },
-    {
-      "id": "record-card-2",
-      "scene": "s4",
-      "type": "step_card",
-      "startBeat": 53,
-      "endBeat": 54,
-      "text": "Set period · Last week",
-      "target": "Metronome recording editor"
-    },
-    {
-      "id": "record-whoosh-2",
-      "scene": "s4",
-      "type": "sound",
-      "startBeat": 53,
-      "sound": "airy-whoosh",
-      "label": "Set period · Last week"
-    },
-    {
-      "id": "record-action-3",
-      "scene": "s4",
-      "type": "cursor_action",
-      "startBeat": 54,
-      "endBeat": 55,
-      "label": "Run"
-    },
-    {
-      "id": "record-click-3",
-      "scene": "s4",
-      "type": "sound",
-      "startBeat": 54,
-      "sound": "soft-click",
-      "label": "Run"
-    },
-    {
-      "id": "record-card-3",
-      "scene": "s4",
-      "type": "step_card",
-      "startBeat": 55,
-      "endBeat": 56,
-      "text": "Run report",
-      "target": "Metronome recording editor"
-    },
-    {
-      "id": "record-whoosh-3",
-      "scene": "s4",
-      "type": "sound",
-      "startBeat": 55,
-      "sound": "airy-whoosh",
-      "label": "Run report"
-    },
-    {
-      "id": "record-action-4",
-      "scene": "s4",
-      "type": "cursor_action",
-      "startBeat": 56,
-      "endBeat": 57,
-      "label": "Download"
-    },
-    {
-      "id": "record-click-4",
-      "scene": "s4",
-      "type": "sound",
-      "startBeat": 56,
-      "sound": "soft-click",
-      "label": "Download"
-    },
-    {
-      "id": "record-card-4",
-      "scene": "s4",
-      "type": "step_card",
-      "startBeat": 57,
-      "endBeat": 58,
-      "text": "Download Excel",
-      "target": "Metronome recording editor"
-    },
-    {
-      "id": "record-whoosh-4",
-      "scene": "s4",
-      "type": "sound",
-      "startBeat": 57,
-      "sound": "airy-whoosh",
-      "label": "Download Excel"
-    },
-    {
-      "id": "record-parallel",
-      "scene": "s4",
-      "type": "automation_pipeline",
-      "startBeat": 58,
-      "endBeat": 68,
-      "labels": ["Record task", "Schedule", "Gather", "Check", "AI ready"],
-      "label": "Five inspectable stages in the automation builder"
-    },
-    {
-      "id": "night-clock",
-      "scene": "s4",
-      "type": "clock",
-      "startBeat": 68,
-      "endBeat": 72,
-      "text": "02:00 · Dubai",
-      "asset": "dubai-night"
-    },
-    {
-      "id": "night-roads",
-      "scene": "s4",
-      "type": "light_pulses",
-      "startBeat": 68,
-      "endBeat": 72,
-      "target": "roads",
-      "direction": "toward camera"
-    },
-    {
-      "id": "one-place-transition",
-      "scene": "s5",
-      "type": "dissolve",
-      "startBeat": 72,
-      "endBeat": 75,
-      "target": "30+ streams of particles from portal windows",
-      "asset": "core-hall"
-    },
-    {
-      "id": "s5-pad-open",
-      "scene": "s5",
-      "type": "sound_bed",
-      "startBeat": 72,
-      "endBeat": 92,
-      "sound": "warm-detuned-pad",
-      "envelope": "slowly open filter"
-    },
-    {
-      "id": "core-converge",
-      "scene": "s5",
-      "type": "particle_convergence",
-      "startBeat": 74,
-      "endBeat": 82,
-      "target": "crystalline core",
-      "label": "One place"
-    },
-    {
-      "id": "core-row-stack",
-      "scene": "s5",
-      "type": "light_rows",
-      "startBeat": 74,
-      "endBeat": 92,
-      "intervalBeats": 0.5,
-      "target": "core",
-      "sound": "eighth-note glass pulse"
-    },
-    {
-      "id": "s5-arpeggio",
-      "scene": "s5",
-      "type": "sound_grid",
-      "startBeat": 74,
-      "endBeat": 92,
-      "sound": "slow-rising-arpeggio",
-      "intervalBeats": 0.5
-    },
-    {
-      "id": "run-history",
-      "scene": "s5",
-      "type": "ui_reveal",
-      "startBeat": 76,
-      "endBeat": 78,
-      "target": "Metronome run-history table"
-    },
-    {
-      "id": "run-row-1",
-      "scene": "s5",
-      "type": "table_row",
-      "startBeat": 78,
-      "endBeat": 79,
-      "flow": "GSCM · Weekly stock cover",
-      "rows": 12480,
-      "startTime": "02:00",
-      "status": "Success",
-      "dataClass": "illustrative"
-    },
-    {
-      "id": "run-row-2",
-      "scene": "s5",
-      "type": "table_row",
-      "startBeat": 79,
-      "endBeat": 80,
-      "flow": "ASAP · Daily sell-out",
-      "rows": 8960,
-      "startTime": "02:02",
-      "status": "Success",
-      "dataClass": "illustrative"
-    },
-    {
-      "id": "run-row-3",
-      "scene": "s5",
-      "type": "table_row",
-      "startBeat": 80,
-      "endBeat": 81,
-      "flow": "Big Data Portal · Channel inventory",
-      "rows": 18320,
-      "startTime": "02:05",
-      "status": "Success",
-      "dataClass": "illustrative"
-    },
-    {
-      "id": "run-row-4",
-      "scene": "s5",
-      "type": "table_row",
-      "startBeat": 81,
-      "endBeat": 82,
-      "flow": "Data Hub · Price tracker",
-      "rows": 6240,
-      "startTime": "02:07",
-      "status": "Success",
-      "dataClass": "illustrative"
-    },
-    {
-      "id": "ai-context",
-      "scene": "s6",
-      "type": "context_label",
-      "startBeat": 92,
-      "endBeat": 128,
-      "text": "Concept preview",
-      "label": "Upcoming capability, visible for the whole scene"
-    },
-    {
-      "id": "ask-field",
-      "scene": "s6",
-      "type": "ui_reveal",
-      "startBeat": 92,
-      "endBeat": 94,
-      "target": "single input field",
-      "label": "Soft teal edges"
-    },
-    {
-      "id": "s6-pulse",
-      "scene": "s6",
-      "type": "sound_grid",
-      "startBeat": 92,
-      "endBeat": 128,
-      "sound": "soft-sub-pulse",
-      "intervalBeats": 1,
-      "envelope": "thin under question"
-    },
-    {
-      "id": "ask-type",
-      "scene": "s6",
-      "type": "type_text",
-      "startBeat": 94,
-      "endBeat": 102,
-      "text": "Why did Gulf stock cover drop last week?",
-      "intervalBeats": 1,
-      "label": "Reveal phrase groups on beats, readable by beat 101"
-    },
-    {
-      "id": "s6-shimmer",
-      "scene": "s6",
-      "type": "sound_bed",
-      "startBeat": 94,
-      "endBeat": 116,
-      "sound": "glassy-shimmer",
-      "envelope": "swell as report assembles"
-    },
-    {
-      "id": "typing-clicks",
-      "scene": "s6",
-      "type": "sound_grid",
-      "startBeat": 94,
-      "endBeat": 102,
-      "sound": "typing-click",
-      "intervalBeats": 1
-    },
-    {
-      "id": "question-to-core",
-      "scene": "s6",
-      "type": "word_flight",
-      "startBeat": 102,
-      "endBeat": 104,
-      "target": "crystalline core"
-    },
-    {
-      "id": "report-build",
-      "scene": "s6",
-      "type": "report_assembly",
-      "startBeat": 108,
-      "endBeat": 116,
-      "title": "Gulf stock cover · Week 38",
-      "dataClass": "illustrative"
-    },
-    {
-      "id": "source-links",
-      "scene": "s6",
-      "type": "agent_investigation",
-      "startBeat": 102,
-      "endBeat": 108,
-      "labels": ["ASAP sell-out", "GSCM shipments", "GSCM stock cover"],
-      "label": "AI agents investigate Metronome automation outputs before building a sourced report"
-    },
-    {
-      "id": "report-kpis",
-      "scene": "s6",
-      "type": "kpi_reveal",
-      "startBeat": 108,
-      "endBeat": 113,
-      "items": [
-        "Stock cover 4.2 wks ▼0.8",
-        "UAE sell-out ▲12%",
-        "Inbound delayed · 2 shipments"
-      ],
-      "dataClass": "illustrative"
-    },
-    {
-      "id": "report-line",
-      "scene": "s6",
-      "type": "chart_draw",
-      "startBeat": 108,
-      "endBeat": 113,
-      "target": "stock-cover line chart",
-      "dataClass": "illustrative"
-    },
-    {
-      "id": "report-insight",
-      "scene": "s6",
-      "type": "type_text",
-      "startBeat": 110,
-      "endBeat": 113,
-      "text": "Cover fell because UAE sell-out rose 12% while two inbound shipments slipped six days.",
-      "label": "Word-by-word insight",
-      "dataClass": "illustrative"
-    },
-    {
-      "id": "report-sources",
-      "scene": "s6",
-      "type": "label",
-      "startBeat": 112,
-      "endBeat": 118,
-      "text": "Sources: GSCM shipments · ASAP sell-out"
-    },
-    {
-      "id": "report-email",
-      "scene": "s6",
-      "type": "email_fold",
-      "startBeat": 118,
-      "endBeat": 121,
-      "label": "Report folds into an email"
-    },
-    {
-      "id": "email-chime",
-      "scene": "s6",
-      "type": "sound",
-      "startBeat": 120,
-      "sound": "soft-chime"
-    },
-    {
-      "id": "email-send",
-      "scene": "s6",
-      "type": "recipient_fan",
-      "startBeat": 120,
-      "endBeat": 122,
-      "text": "Sent to 14 people · 07:00",
-      "avatars": "Plain initials only",
-      "dataClass": "illustrative"
-    },
-    {
-      "id": "audit-card",
-      "scene": "s6",
-      "type": "ui_reveal",
-      "startBeat": 122,
-      "endBeat": 128,
-      "text": "02:00 · Nightly AI audit",
-      "status": "Attention"
-    },
-    {
-      "id": "audit-flag",
-      "scene": "s6",
-      "type": "attention_flag",
-      "startBeat": 123,
-      "endBeat": 128,
-      "text": "Data Hub price feed arrived 38% short. Downstream refresh paused.",
-      "status": "Attention",
-      "dataClass": "illustrative"
-    },
-    {
-      "id": "audit-tension",
-      "scene": "s6",
-      "type": "sound",
-      "startBeat": 123,
-      "endBeat": 128,
-      "sound": "low-tension-note"
-    },
-    {
-      "id": "role-1",
-      "scene": "s7",
-      "type": "role_photo",
-      "startBeat": 128,
-      "endBeat": 133,
-      "asset": "role-planner",
-      "label": "Planner",
-      "report": "Stock cover",
-      "screen": "Corner-pinned fictional HTML report",
-      "camera": "Slow push with 2–3 depth layers"
-    },
-    {
-      "id": "s7-warmth",
-      "scene": "s7",
-      "type": "sound_bed",
-      "startBeat": 128,
-      "endBeat": 148,
-      "sound": "full-warm-chords",
-      "envelope": "breathe"
-    },
-    {
-      "id": "role-2",
-      "scene": "s7",
-      "type": "role_photo",
-      "startBeat": 133,
-      "endBeat": 138,
-      "asset": "role-finance",
-      "label": "Finance",
-      "report": "Margin overview",
-      "screen": "Corner-pinned fictional HTML report",
-      "camera": "Slow push with 2–3 depth layers"
-    },
-    {
-      "id": "role-3",
-      "scene": "s7",
-      "type": "role_photo",
-      "startBeat": 138,
-      "endBeat": 143,
-      "asset": "role-sales",
-      "label": "Sales",
-      "report": "Weekly sell-out",
-      "screen": "Corner-pinned fictional HTML report",
-      "camera": "Slow push with 2–3 depth layers"
-    },
-    {
-      "id": "role-4",
-      "scene": "s7",
-      "type": "role_photo",
-      "startBeat": 143,
-      "endBeat": 148,
-      "asset": "role-logistics",
-      "label": "Logistics",
-      "report": "Inbound tracker",
-      "screen": "Corner-pinned fictional HTML report",
-      "camera": "Slow push with 2–3 depth layers"
-    },
-    {
-      "id": "s8-collapse",
-      "scene": "s8",
-      "type": "collapse",
-      "startBeat": 148,
-      "endBeat": 154,
-      "target": "single centred metronome arm"
-    },
-    {
-      "id": "s8-score-fall",
-      "scene": "s8",
-      "type": "sound_fade",
-      "startBeat": 148,
-      "endBeat": 152,
-      "stems": [
-        "pulse",
-        "pad",
-        "fx"
-      ],
-      "label": "Only ticks remain"
-    },
-    {
-      "id": "s8-thin-ticks",
-      "scene": "s8",
-      "type": "sound_grid",
-      "startBeat": 148,
-      "endBeat": 157,
-      "sound": "wooden-tick",
-      "beats": [
-        148,
-        150,
-        152,
-        154,
-        156
-      ],
-      "label": "Ticks thin out"
-    },
-    {
-      "id": "s8-steady-swing",
-      "scene": "s8",
-      "type": "pendulum",
-      "startBeat": 150,
-      "endBeat": 158,
-      "motion": "Slow steady swing; settle for final tick"
-    },
-    {
-      "id": "s8-silence",
-      "scene": "s8",
-      "type": "silence",
-      "startBeat": 157,
-      "endBeat": 158,
-      "audio": "All stems and tails muted"
-    },
-    {
-      "id": "final-tick",
-      "scene": "s8",
-      "type": "sound",
-      "startBeat": 158,
-      "endBeat": 167,
-      "sound": "wooden-tick",
-      "reverb": "Long tail, fade fully before final black"
-    },
-    {
-      "id": "logo-lockup",
-      "scene": "s8",
-      "type": "logo_reveal",
-      "startBeat": 162,
-      "endBeat": 167,
-      "text": "Metronome",
-      "label": "Mark and Outfit wordmark; restrained teal glow",
-      "samsung": "Only supplied brand-inbox/samsung.svg; static and unmodified"
-    },
-    {
-      "id": "final-black",
-      "scene": "s8",
-      "type": "black_silence",
-      "startBeat": 167,
-      "endBeat": 168,
-      "audio": "Silent final beat",
-      "label": "Hard cut to black at 83.5 seconds"
+      "start": 78.2,
+      "end": 83.6,
+      "en": "Metronome. More data. Less manual work. Ready by morning.",
+      "ko": "Metronome. 더 많은 데이터, 더 적은 수작업.\n아침이면 준비되어 있습니다."
     }
   ]
 }
