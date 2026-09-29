@@ -1,0 +1,45 @@
+{
+  "video": {
+    "codec_name": "h264",
+    "width": 1920,
+    "height": 1080,
+    "r_frame_rate": "30/1",
+    "duration": "95.000000",
+    "nb_frames": "2850"
+  },
+  "audio": {
+    "codec_name": "aac",
+    "sample_rate": "48000",
+    "channels": 2,
+    "duration": "95.000000"
+  },
+  "duration": "95.000000",
+  "loudness": {
+    "input_i": "-16.19",
+    "input_tp": "-1.95",
+    "input_lra": "6.80",
+    "input_thresh": "-27.77",
+    "output_i": "-16.12",
+    "output_tp": "-1.60",
+    "output_lra": "6.70",
+    "output_thresh": "-27.52",
+    "normalization_type": "dynamic",
+    "target_offset": "0.12"
+  },
+  "decode": "PASS",
+  "narrationPhrases": 12,
+  "maxSpeechSpeed": 1,
+  "encodedFrameSamples": [
+    87.45,
+    87.8,
+    88.7,
+    89.05,
+    90.8,
+    91.15,
+    91.88,
+    92.25,
+    94.8
+  ],
+  "strictLayoutIssues": 0,
+  "strictContrastChecks": 127
+}

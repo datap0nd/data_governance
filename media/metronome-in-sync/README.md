@@ -1,12 +1,12 @@
 # Metronome — Your data, connected
 
-Current cut: **95 seconds, 1920×1080, 30 fps**, English narration and background music, zero subtitles, light-mode UIs. Revision 7 adds explicit Without Metronome / Write code and With Metronome / No code comparison headings, and removes the entire nine-second HTML dashboard section and its narration.
+Current cut: **95 seconds, 1920×1080, 30 fps**, English narration and background music, zero subtitles, light-mode UIs. Revision 8 rebuilds the closing comparison as two equal columns. Four paired rows reveal at the corresponding narration words; the 95-second duration and audio are unchanged.
 
 [Watch](animatic-review.html) · [MP4](renders/review/animatic.mp4) · [Scene frames](review.html) · [Try the Flow builder](builder-demo.html) · [Narration](narration.json) · [Storyboard](STORYBOARD.md) · [QA](QA.md) · [Sources](assets/LEDGER.md)
 
 ## Story
 
-Seven scenes: reports across portals; organized data; slow code beside completed no-code creation; independent overnight agents; five actionable findings; browser or AI-prompt access; concrete ChatGPT before/after and a comparison table. The repeated Excel/AI-question scene, METO portal section, internal-server diagram and rotating AI-logo equation are removed.
+Seven scenes: reports across portals; organized data; slow code beside completed no-code creation; independent overnight agents; five actionable findings; browser or AI-prompt access; concrete ChatGPT before/after and a two-column comparison synchronized to narration. The repeated Excel/AI-question scene, METO portal section, internal-server diagram and rotating AI-logo equation are removed.
 
 The builder uses actual input/dropdown/click handlers. It offers 12 reports, Shared drive / Documents / Local database and four schedules. The film replays those events with deterministic typing, pointer dwell and press/release timing. The standalone demo creates no backend Flow.
 
@@ -18,7 +18,7 @@ Edit scripts/build.mjs, compositions/film.css, compositions/builder.js, composit
 node scripts/build.mjs
 python audio/score.py
 $env:HYPERFRAMES_BROWSER_PATH='C:\Program Files\Google\Chrome\Application\chrome.exe'
-.\film.ps1 check --at '16.1,22.4,24.5,29,35.8,54,56.9,57.2,64,69.9,70.2,84,92' --strict --json
+.\film.ps1 check --at '86.9,87.2,87.49,87.8,88.74,89.05,90.84,91.15,91.92,92.25,94.8' --strict --json
 .\film.ps1 render --fps 30 --quality looks --workers 4 --output renders/review/animatic.mp4
 node scripts/serve-review.mjs
 ```
@@ -30,3 +30,5 @@ Set HYPERFRAMES_FFMPEG_PATH and HYPERFRAMES_FFPROBE_PATH if necessary. The voice
 Interfaces, data, prompts and outcomes are synthetic. The ChatGPT layout was visually referenced in Chrome on 2026-09-29, then recreated in English/light mode with generic content; no account content was copied. Chrome is recreated in code. No native desktop automation was used. asap-portal.com is the requested display address, not a contacted or authenticated site.
 
 The MCP comparison demonstrates the owner's intended workflow. It is not a benchmark or a claim that disconnected AI always fails, MCP guarantees accuracy, or token/time savings have been measured. No app implementation or deployment verification is included. Proposed overnight fixes require review.
+
+Closing reveal timings and cached speech provenance: [closing-cues.json](assets/closing-cues.json). Cue times use the source word boundaries minus the exact leading PCM trim in `audio/score.py`.

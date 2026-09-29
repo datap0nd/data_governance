@@ -1,6 +1,6 @@
 {
   "title": "Metronome — Your data, connected",
-  "version": 7,
+  "version": 8,
   "durationSeconds": 95,
   "width": 1920,
   "height": 1080,
@@ -123,5 +123,44 @@
       "en": "Fewer retries. Less time and fewer tokens. Accurate data, in your own repeatable Flow.",
       "spoken": "Fewer retries. Less time and fewer tokens. Accurate data, in your own repeatable Flow."
     }
-  ]
+  ],
+  "closingCues": {
+    "segment": 12,
+    "segmentStart": 87.5,
+    "voiceCacheHash": "93812f605c6dc44e",
+    "sourceAudioSha256": "1cb7a00def899aa20d9da8282a4880308cc2806a24dac8050f4ca939b09a20fa",
+    "source": "Cached synthesis WordBoundary events, corrected by the same PCM leading trim as audio/score.py. No speech regeneration.",
+    "trimSeconds": 0.10477083333333333,
+    "revealSeconds": 0.22,
+    "cues": [
+      {
+        "row": 0,
+        "topic": "retries",
+        "word": "Fewer",
+        "wordOffsetSeconds": 0.116,
+        "start": 87.511229
+      },
+      {
+        "row": 1,
+        "topic": "time and tokens",
+        "word": "Less",
+        "wordOffsetSeconds": 1.366,
+        "start": 88.761229
+      },
+      {
+        "row": 2,
+        "topic": "data accuracy",
+        "word": "Accurate",
+        "wordOffsetSeconds": 3.4665,
+        "start": 90.861729
+      },
+      {
+        "row": 3,
+        "topic": "repeatable Flow",
+        "word": "in",
+        "wordOffsetSeconds": 4.548958,
+        "start": 91.944187
+      }
+    ]
+  }
 }

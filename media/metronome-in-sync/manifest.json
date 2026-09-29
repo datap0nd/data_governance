@@ -1,6 +1,6 @@
 {
   "title": "Metronome — Your data, connected",
-  "status": "explicit code comparison; HTML dashboard scene removed",
+  "status": "two-column closing comparison synchronized to narration",
   "durationSeconds": 95,
   "width": 1920,
   "height": 1080,
@@ -9,8 +9,8 @@
   "editableProjectHyperFramesVersion": "0.8.81",
   "artifacts": {
     "renders/review/animatic.mp4": {
-      "bytes": 8531749,
-      "sha256": "29b12069bc55c487b33bb0ffdf75b64b72d5b58f3d755d30c3f4e132eb494d19"
+      "bytes": 8559306,
+      "sha256": "61d3d4b5db01edee5046c363a6294c3f44ff6cd544ed7cebcbf56c5bd0df4a39"
     },
     "audio/score.wav": {
       "bytes": 27360102,
