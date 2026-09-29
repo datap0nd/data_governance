@@ -1,23 +1,23 @@
 {
   "title": "Metronome — Your data, connected",
-  "status": "visual AI tools connecting to Metronome",
-  "durationSeconds": 95,
+  "status": "clear problem statement; overnight feature marked in testing",
+  "durationSeconds": 110,
   "width": 1920,
   "height": 1080,
   "framesPerSecond": 30,
   "editableProjectHyperFramesVersion": "0.8.81",
   "artifacts": {
     "renders/review/animatic.mp4": {
-      "bytes": 6247166,
-      "sha256": "ef9cafd167ddc2b03bc4da644c30e4aa1a498e12bf9bad897ef711a8ba81e511"
+      "bytes": 6979890,
+      "sha256": "37ee0d2dc82799643557baa8f42449242c5c7d2cad9bd23d52fa2534c3101707"
     },
     "audio/score.wav": {
-      "bytes": 27360102,
-      "sha256": "a07194dd6af7eee6312376219812c03290c70ae6cfc2dcdf8ab2cf1fdf80838f"
+      "bytes": 31680102,
+      "sha256": "441aa8c9284bd5455e5f868fb3c4895a6e6bdc2e14cba6b3f502b7bd30f43141"
     },
     "audio/narration.flac": {
-      "bytes": 1932561,
-      "sha256": "cc624a055e025c0e9dc2a34b86f567105fbe99ac27cd53f2701d2b59666034f9"
+      "bytes": 2327717,
+      "sha256": "fbe01858e547ecd3bd09a1da32c7709b18295299f05de4d3d53dc61bc5a18eca"
     },
     "audio/background.mp3": {
       "bytes": 2103552,
@@ -25,5 +25,5 @@
     }
   },
   "baseRenderHyperFramesVersion": "0.8.81",
-  "renderEngine": "FFmpeg 7.1 + resvg 2.6.2, shared SVG overlay on revision 8 master"
+  "renderEngine": "FFmpeg 7.1 + resvg 2.6.2, shared SVG opening and testing badge, retimed revision 9 master"
 }

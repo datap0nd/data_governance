@@ -1,17 +1,16 @@
-# Storyboard — revision 9
+# Storyboard — revision 10
 
-95 seconds, English narration and instrumental music. Zero subtitles. Light-mode interfaces.
+110 seconds / 1:50. English narration and background music; zero narration subtitles, light-mode interfaces.
 
-| Scene | Time | Visual |
+| Scene | Time | Visual and purpose |
 | --- | --- | --- |
-| Reports | 0–6 | Two Korean portals, ASAP and GSCM. ASAP displays asap-portal.com. |
-| Connected data | 6–16 | Six sources pass through centered Metronome into organized datasets. Anyone can build their own flows in minutes without code. |
-| Code vs Flow | 16–37 | Explicit Without Metronome / Write code and With Metronome / No code headings above the two panels. Continuous slow Python typing on the left. A working Flow builder on the right types asap-portal.com, chooses report/destination/schedule and creates the pipeline while the script remains unfinished. |
-| Overnight agents | 37–49 | Six independent inspectors move horizontally and between report lanes, visiting sources, Flows and datasets at different phases. Five findings emerge while work continues. |
-| Findings | 49–57 | Five findings populate; click Refresh overdue to reveal evidence and proposed fix. |
-| Two ways | 57–70 | Browser access on the left. On the right, ChatGPT, Claude and Gemini logos appear first (63.65–64.26), then three lines draw into Metronome (64.45–65.59), which highlights as connected at 65.6. No prompt/status cards. |
-| AI comparison | 70–95 | Two recreated ChatGPT interfaces run the same illustrative request. Left: wrong portal path, retry, wrong reporting period. Right: MCP tool steps build and verify a repeatable Flow. At 87 seconds, switch to two equal columns: Without Metronome MCP / With Metronome MCP. Reveal paired rows on “Fewer” (87.511), “Less” (88.761), “Accurate” (90.862), and “in your own repeatable Flow” (91.944). Previously shown rows remain visible. |
+| Where reports start | 0–9 | ASAP and GSCM interactive portals with downloadable, pre-made report tables. Establish where the inputs come from. |
+| The work behind reporting | 9–20 | Downloaded reports → Extract → Transform → Load. Dates visibly standardized into one format, then saved for analysis and scheduled reporting. Establish the work a download alone does not complete. |
+| Meet Metronome | 20–31 | Sources flow through Metronome to organized datasets. Build, Schedule, Run now and Run history appear on their spoken cues. Establish the tool’s purpose and one-place management. |
+| Code vs Flow | 31–52 | Existing Without/With comparison and working no-code builder. |
+| Overnight agents | 52–64 | Independent agents inspect reports/stages. Top-right In testing label remains visible for the entire scene. |
+| Findings | 64–72 | Five findings and expanded issue/fix. In testing remains visible. |
+| Two ways | 72–85 | Browser access and AI logos drawing connecting lines into Metronome MCP. |
+| AI comparison | 85–110 | Existing ChatGPT before/after. Two-column closing starts at 102; paired rows appear on shifted speech cues. |
 
-The comparison is a synthetic example of the requested product direction, not measured performance or a guarantee. No subtitles or governance narrative.
-
-The entire HTML dashboard section and its narration are removed. Findings transition directly into browser/MCP access.
+The ETL and capability reveals use synthesis word boundaries corrected for the exact PCM lead trim. See assets/opening-cues.json. Later animation/speech is shifted by 15 seconds. The prototype label covers both overnight monitoring and its findings to avoid implying rollout readiness. Other illustrative/demo limits remain in the review notes.

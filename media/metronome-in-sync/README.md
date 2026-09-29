@@ -1,12 +1,12 @@
 # Metronome — Your data, connected
 
-Current cut: **95 seconds, 1920×1080, 30 fps**, English narration and background music, zero subtitles, light-mode UIs. Revision 9 replaces the AI access card stack with large tool logos and animated lines converging on Metronome MCP. Audio and duration are unchanged.
+Current cut: **110 seconds / 1:50, 1920×1080, 30 fps**, English narration and background music, zero subtitles, light-mode UIs. Revision 10 explains why portal downloads still require extraction, transformation and loading, then introduces Metronome as one place to build, schedule, trigger and track pipelines. The overnight agents and findings carry a top-right **In testing** label.
 
 [Watch](animatic-review.html) · [MP4](renders/review/animatic.mp4) · [Scene frames](review.html) · [Try the Flow builder](builder-demo.html) · [Narration](narration.json) · [Storyboard](STORYBOARD.md) · [QA](QA.md) · [Sources](assets/LEDGER.md)
 
 ## Story
 
-Seven scenes: reports across portals; organized data; slow code beside completed no-code creation; independent overnight agents; five actionable findings; browser or AI-prompt access; concrete ChatGPT before/after and a two-column comparison synchronized to narration. The repeated Excel/AI-question scene, METO portal section, internal-server diagram and rotating AI-logo equation are removed.
+Eight scenes: interactive portals; the ETL work required for reporting; Metronome and pipeline controls; slow code beside completed no-code creation; independent overnight agents; five actionable findings; browser or AI-prompt access; concrete ChatGPT before/after and a two-column comparison synchronized to narration. The repeated Excel/AI-question scene, METO portal section, internal-server diagram and rotating AI-logo equation are removed.
 
 The builder uses actual input/dropdown/click handlers. It offers 12 reports, Shared drive / Documents / Local database and four schedules. The film replays those events with deterministic typing, pointer dwell and press/release timing. The standalone demo creates no backend Flow.
 
@@ -33,4 +33,6 @@ The MCP comparison demonstrates the owner's intended workflow. It is not a bench
 
 Closing reveal timings and cached speech provenance: [closing-cues.json](assets/closing-cues.json). Cue times use the source word boundaries minus the exact leading PCM trim in `audio/score.py`.
 
-Revision 9 connection animation: `compositions/ai-connection.js` is the shared SVG source used by the film and the offline resvg/FFmpeg compositor. [Connection preview](connection-preview.html) provides stage buttons and replay. Browser verification used connected Chrome only; no new headless browser render or HyperFrames check was run for this revision. Historical commands above remain the original build reference.
+Connection animation: `compositions/ai-connection.js` is the shared SVG source used by the film and the offline resvg/FFmpeg compositor. [Connection preview](connection-preview.html) provides stage buttons and replay. Browser verification used connected Chrome only; no new headless browser render or HyperFrames check was run for this revision. Historical commands above remain the original build reference.
+
+Revision 10 uses `compositions/introduction.js` for the ETL diagram, speech-cued pipeline controls and testing badge, shared by editable HTML and offline resvg/FFmpeg export. [Opening preview](opening-preview.html). Three new narration lines have fresh local ASR and synthesis-boundary evidence; later phrases are reused at a 15-second offset. No headless browser was used for this revision.

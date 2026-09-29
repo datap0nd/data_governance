@@ -3,233 +3,911 @@
   "rate": "-3%",
   "reviewMethod": "Local Whisper base.en speech recognition, synthesis word boundaries and media timing. No human listening pass claimed.",
   "notes": [
-    "Revision 7 removes the HTML dashboard sentence. The remaining 12 phrases use byte-identical cached audio from revision 6; recognition and word boundaries are retained.",
-    "Recognition preserves in minutes as and minutes, and a proposed fix as in a proposed fix, and a trailing // artifact in phrase 3. These are recognition differences, not conclusive phoneme judgments.",
-    "No time compression, truncation or overlapping speech."
+    "Revision 10: three new opening phrases reviewed with local Whisper base.en plus synthesis word boundaries. Ten later voice phrases reuse the exact cached audio, shifted by 15 seconds.",
+    "No time compression, truncation or overlapping speech. No human listening pass claimed."
   ],
   "phrases": [
     {
       "segment": 1,
-      "script": "Your reports are spread across portals like ASAP and GSCM.",
-      "spoken": "Your reports are spread across portals like A S A P and G S C M.",
-      "recognized": "Your reports are spread across portals like ASAP and GSCM.",
+      "script": "Our data comes from interactive portals like ASAP and GSCM, where we download ready-made reports.",
+      "spoken": "Our data comes from interactive portals like A S A P and G S C M, where we download ready-made reports.",
+      "recognized": "Our data comes from interactive portals like ASAP and GSCM, where we download ready-made reports.",
       "wordBoundaries": [
         {
           "type": "WordBoundary",
           "offset": 1030830,
-          "duration": 1417500,
-          "text": "Your"
+          "duration": 1288750,
+          "text": "Our"
         },
         {
           "type": "WordBoundary",
-          "offset": 2577500,
-          "duration": 4252500,
-          "text": "reports"
+          "offset": 2448330,
+          "duration": 2963750,
+          "text": "data"
         },
         {
           "type": "WordBoundary",
-          "offset": 6958750,
-          "duration": 902080,
-          "text": "are"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 7989580,
+          "offset": 5541250,
           "duration": 3221660,
-          "text": "spread"
+          "text": "comes"
         },
         {
           "type": "WordBoundary",
-          "offset": 11340000,
-          "duration": 3737080,
-          "text": "across"
+          "offset": 8891660,
+          "duration": 1932910,
+          "text": "from"
         },
         {
           "type": "WordBoundary",
-          "offset": 15206250,
-          "duration": 4510410,
+          "offset": 11726660,
+          "duration": 5412500,
+          "text": "interactive"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 17267910,
+          "duration": 4767910,
           "text": "portals"
         },
         {
           "type": "WordBoundary",
-          "offset": 19845410,
-          "duration": 1804160,
+          "offset": 22165000,
+          "duration": 1932910,
           "text": "like"
         },
         {
           "type": "WordBoundary",
-          "offset": 22938330,
+          "offset": 25386660,
           "duration": 1675410,
           "text": "A"
         },
         {
           "type": "WordBoundary",
-          "offset": 24742080,
+          "offset": 27190830,
           "duration": 2963750,
           "text": "S"
         },
         {
           "type": "WordBoundary",
-          "offset": 28865830,
+          "offset": 31314580,
           "duration": 1160000,
           "text": "A"
         },
         {
           "type": "WordBoundary",
-          "offset": 30154580,
-          "duration": 4381250,
+          "offset": 32602910,
+          "duration": 4510410,
           "text": "P"
         },
         {
           "type": "WordBoundary",
-          "offset": 34665000,
-          "duration": 1417500,
+          "offset": 37242080,
+          "duration": 1546250,
           "text": "and"
         },
         {
           "type": "WordBoundary",
-          "offset": 36211250,
-          "duration": 3479580,
+          "offset": 38917500,
+          "duration": 3221660,
           "text": "G"
         },
         {
           "type": "WordBoundary",
-          "offset": 39819580,
-          "duration": 1932910,
+          "offset": 42267910,
+          "duration": 2319580,
           "text": "S"
         },
         {
           "type": "WordBoundary",
-          "offset": 41881250,
-          "duration": 2319580,
+          "offset": 44716660,
+          "duration": 2448330,
           "text": "C"
         },
         {
           "type": "WordBoundary",
-          "offset": 44330000,
-          "duration": 2577500,
+          "offset": 47293750,
+          "duration": 3350410,
           "text": "M"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 53995000,
+          "duration": 1160000,
+          "text": "where"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 55283330,
+          "duration": 1417500,
+          "text": "we"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 56830000,
+          "duration": 5283330,
+          "text": "download"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 62242080,
+          "duration": 4123750,
+          "text": "ready-made"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 66495000,
+          "duration": 6314580,
+          "text": "reports"
+        }
+      ],
+      "asr": [
+        {
+          "start": 0.0,
+          "end": 6.94,
+          "text": " Our data comes from interactive portals like ASAP and GSCM, where we download ready-made reports.",
+          "words": [
+            {
+              "text": " Our",
+              "start": 0.0,
+              "end": 0.22,
+              "probability": 0.9369611740112305
+            },
+            {
+              "text": " data",
+              "start": 0.22,
+              "end": 0.44,
+              "probability": 0.9793047308921814
+            },
+            {
+              "text": " comes",
+              "start": 0.44,
+              "end": 0.78,
+              "probability": 0.9950312376022339
+            },
+            {
+              "text": " from",
+              "start": 0.78,
+              "end": 1.06,
+              "probability": 0.996155321598053
+            },
+            {
+              "text": " interactive",
+              "start": 1.06,
+              "end": 1.46,
+              "probability": 0.9847210049629211
+            },
+            {
+              "text": " portals",
+              "start": 1.46,
+              "end": 1.94,
+              "probability": 0.9945226907730103
+            },
+            {
+              "text": " like",
+              "start": 1.94,
+              "end": 2.38,
+              "probability": 0.9753158688545227
+            },
+            {
+              "text": " ASAP",
+              "start": 2.38,
+              "end": 2.82,
+              "probability": 0.4506618082523346
+            },
+            {
+              "text": " and",
+              "start": 2.82,
+              "end": 3.9,
+              "probability": 0.9277374148368835
+            },
+            {
+              "text": " GSCM,",
+              "start": 3.9,
+              "end": 4.98,
+              "probability": 0.9090976317723592
+            },
+            {
+              "text": " where",
+              "start": 5.44,
+              "end": 5.52,
+              "probability": 0.9938541650772095
+            },
+            {
+              "text": " we",
+              "start": 5.52,
+              "end": 5.66,
+              "probability": 0.9989035129547119
+            },
+            {
+              "text": " download",
+              "start": 5.66,
+              "end": 5.92,
+              "probability": 0.9913158416748047
+            },
+            {
+              "text": " ready",
+              "start": 5.92,
+              "end": 6.36,
+              "probability": 0.4115208387374878
+            },
+            {
+              "text": "-made",
+              "start": 6.36,
+              "end": 6.6,
+              "probability": 0.7644333243370056
+            },
+            {
+              "text": " reports.",
+              "start": 6.6,
+              "end": 6.94,
+              "probability": 0.9965560436248779
+            }
+          ]
         }
       ]
     },
     {
       "segment": 2,
-      "script": "Metronome lets everyone create their own flows in minutes, without code. Connect your sources and organize your data.",
-      "spoken": "Metronome lets everyone create their own flows in minutes, without code. Connect your sources and organize your data.",
-      "recognized": "Metronome lets everyone create their own flows and minutes, without code. Connect your sources and organize your data.",
+      "script": "But downloads alone aren't ready for analysis or scheduled reporting. We still need to extract the data, standardize its format, and load it into a destination.",
+      "spoken": "But downloads alone aren't ready for analysis or scheduled reporting. We still need to extract the data, standardize its format, and load it into a destination.",
+      "recognized": "but downloads alone aren't ready for analysis or scheduled reporting. We still need to extract the data, standardize its format, and load it into a destination.",
       "wordBoundaries": [
         {
           "type": "WordBoundary",
-          "offset": 1030830,
-          "duration": 4767910,
-          "text": "Metronome"
+          "offset": 1288750,
+          "duration": 1288750,
+          "text": "But"
         },
         {
           "type": "WordBoundary",
-          "offset": 5927910,
-          "duration": 1932910,
-          "text": "lets"
+          "offset": 2706250,
+          "duration": 5154580,
+          "text": "downloads"
         },
         {
           "type": "WordBoundary",
-          "offset": 9020410,
+          "offset": 7989580,
           "duration": 4252500,
-          "text": "everyone"
+          "text": "alone"
         },
         {
           "type": "WordBoundary",
-          "offset": 13402080,
-          "duration": 3737080,
-          "text": "create"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 17267910,
-          "duration": 2061660,
-          "text": "their"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 20232080,
-          "duration": 2319580,
-          "text": "own"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 22680410,
-          "duration": 4510410,
-          "text": "flows"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 27319580,
-          "duration": 1160000,
-          "text": "in"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 28608330,
-          "duration": 5025830,
-          "text": "minutes"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 35695830,
-          "duration": 3608330,
-          "text": "without"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 39432910,
-          "duration": 3608330,
-          "text": "code"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 47293750,
+          "offset": 13530830,
           "duration": 2963750,
-          "text": "Connect"
+          "text": "aren't"
         },
         {
           "type": "WordBoundary",
-          "offset": 50386660,
+          "offset": 16623750,
+          "duration": 2319580,
+          "text": "ready"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 19072080,
+          "duration": 1675410,
+          "text": "for"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 20876250,
+          "duration": 7474160,
+          "text": "analysis"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 29252500,
+          "duration": 1417500,
+          "text": "or"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 30799160,
+          "duration": 4639160,
+          "text": "scheduled"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 35567080,
+          "duration": 4767910,
+          "text": "reporting"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 44716660,
+          "duration": 773330,
+          "text": "We"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 45618750,
+          "duration": 2577500,
+          "text": "still"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 48324580,
+          "duration": 1804160,
+          "text": "need"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 50257910,
+          "duration": 1030830,
+          "text": "to"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 51417500,
+          "duration": 5283330,
+          "text": "extract"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 56830000,
+          "duration": 902080,
+          "text": "the"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 57860830,
+          "duration": 3479580,
+          "text": "data"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 64432910,
+          "duration": 6314580,
+          "text": "standardize"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 70876250,
           "duration": 1288750,
-          "text": "your"
+          "text": "its"
         },
         {
           "type": "WordBoundary",
-          "offset": 51804160,
-          "duration": 5927910,
-          "text": "sources"
+          "offset": 72293750,
+          "duration": 5541250,
+          "text": "format"
         },
         {
           "type": "WordBoundary",
-          "offset": 59922500,
-          "duration": 1288750,
+          "offset": 80927910,
+          "duration": 1417500,
           "text": "and"
         },
         {
           "type": "WordBoundary",
-          "offset": 61340000,
-          "duration": 4897080,
-          "text": "organize"
+          "offset": 82474160,
+          "duration": 2448330,
+          "text": "load"
         },
         {
           "type": "WordBoundary",
-          "offset": 66365830,
-          "duration": 1030830,
-          "text": "your"
+          "offset": 85051660,
+          "duration": 773330,
+          "text": "it"
         },
         {
           "type": "WordBoundary",
-          "offset": 67525830,
-          "duration": 3737080,
-          "text": "data"
+          "offset": 85953750,
+          "duration": 2577500,
+          "text": "into"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 88659580,
+          "duration": 644160,
+          "text": "a"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 89432910,
+          "duration": 6958750,
+          "text": "destination"
+        }
+      ],
+      "asr": [
+        {
+          "start": 0.0,
+          "end": 5.8,
+          "text": " but downloads alone aren't ready for analysis or scheduled reporting. We still need to extract the",
+          "words": [
+            {
+              "text": " but",
+              "start": 0.0,
+              "end": 0.24,
+              "probability": 0.39128074049949646
+            },
+            {
+              "text": " downloads",
+              "start": 0.24,
+              "end": 0.6,
+              "probability": 0.9912542700767517
+            },
+            {
+              "text": " alone",
+              "start": 0.6,
+              "end": 0.98,
+              "probability": 0.9897302389144897
+            },
+            {
+              "text": " aren't",
+              "start": 0.98,
+              "end": 1.64,
+              "probability": 0.9776409566402435
+            },
+            {
+              "text": " ready",
+              "start": 1.64,
+              "end": 1.88,
+              "probability": 0.998176097869873
+            },
+            {
+              "text": " for",
+              "start": 1.88,
+              "end": 2.06,
+              "probability": 0.9989957213401794
+            },
+            {
+              "text": " analysis",
+              "start": 2.06,
+              "end": 2.4,
+              "probability": 0.9889376163482666
+            },
+            {
+              "text": " or",
+              "start": 2.4,
+              "end": 3.04,
+              "probability": 0.9756538271903992
+            },
+            {
+              "text": " scheduled",
+              "start": 3.04,
+              "end": 3.4,
+              "probability": 0.971729576587677
+            },
+            {
+              "text": " reporting.",
+              "start": 3.4,
+              "end": 3.82,
+              "probability": 0.9981483221054077
+            },
+            {
+              "text": " We",
+              "start": 4.54,
+              "end": 4.56,
+              "probability": 0.990728497505188
+            },
+            {
+              "text": " still",
+              "start": 4.56,
+              "end": 4.78,
+              "probability": 0.9970738887786865
+            },
+            {
+              "text": " need",
+              "start": 4.78,
+              "end": 5.0,
+              "probability": 0.9992972612380981
+            },
+            {
+              "text": " to",
+              "start": 5.0,
+              "end": 5.14,
+              "probability": 0.9988695979118347
+            },
+            {
+              "text": " extract",
+              "start": 5.14,
+              "end": 5.38,
+              "probability": 0.9960973858833313
+            },
+            {
+              "text": " the",
+              "start": 5.38,
+              "end": 5.8,
+              "probability": 0.9914517998695374
+            }
+          ]
+        },
+        {
+          "start": 5.8,
+          "end": 9.3,
+          "text": " data, standardize its format, and load it into a destination.",
+          "words": [
+            {
+              "text": " data,",
+              "start": 5.8,
+              "end": 6.04,
+              "probability": 0.9966974258422852
+            },
+            {
+              "text": " standardize",
+              "start": 6.52,
+              "end": 7.02,
+              "probability": 0.9815077781677246
+            },
+            {
+              "text": " its",
+              "start": 7.02,
+              "end": 7.2,
+              "probability": 0.967361330986023
+            },
+            {
+              "text": " format,",
+              "start": 7.2,
+              "end": 7.52,
+              "probability": 0.9974588751792908
+            },
+            {
+              "text": " and",
+              "start": 8.14,
+              "end": 8.2,
+              "probability": 0.9981945157051086
+            },
+            {
+              "text": " load",
+              "start": 8.2,
+              "end": 8.42,
+              "probability": 0.9936606287956238
+            },
+            {
+              "text": " it",
+              "start": 8.42,
+              "end": 8.6,
+              "probability": 0.9845945835113525
+            },
+            {
+              "text": " into",
+              "start": 8.6,
+              "end": 8.84,
+              "probability": 0.977408230304718
+            },
+            {
+              "text": " a",
+              "start": 8.84,
+              "end": 8.96,
+              "probability": 0.9968168139457703
+            },
+            {
+              "text": " destination.",
+              "start": 8.96,
+              "end": 9.3,
+              "probability": 0.9983752965927124
+            }
+          ]
         }
       ]
     },
     {
       "segment": 3,
+      "script": "Meet Metronome. Build data pipelines in minutes, without code. Schedule them, trigger a run when you need it, and track every run in one place.",
+      "spoken": "Meet Metronome. Build data pipelines in minutes, without code. Schedule them, trigger a run when you need it, and track every run in one place.",
+      "recognized": "Meet metronome, build data pipelines in minutes, without code, schedule them, trigger a run when you need it, and track every run in one place.",
+      "wordBoundaries": [
+        {
+          "type": "WordBoundary",
+          "offset": 1030830,
+          "duration": 1932910,
+          "text": "Meet"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 3092910,
+          "duration": 5154580,
+          "text": "Metronome"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 12500000,
+          "duration": 2448330,
+          "text": "Build"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 15077500,
+          "duration": 2706250,
+          "text": "data"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 17912500,
+          "duration": 5927910,
+          "text": "pipelines"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 23969160,
+          "duration": 1030830,
+          "text": "in"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 25128750,
+          "duration": 5025830,
+          "text": "minutes"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 31830000,
+          "duration": 3608330,
+          "text": "without"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 35567080,
+          "duration": 3737080,
+          "text": "code"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 43685410,
+          "duration": 4123750,
+          "text": "Schedule"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 47938330,
+          "duration": 2319580,
+          "text": "them"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 53221660,
+          "duration": 3092910,
+          "text": "trigger"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 56443330,
+          "duration": 515409,
+          "text": "a"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 57087500,
+          "duration": 3350410,
+          "text": "run"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 60567080,
+          "duration": 1417500,
+          "text": "when"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 62113330,
+          "duration": 1030830,
+          "text": "you"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 63273330,
+          "duration": 2448330,
+          "text": "need"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 65850410,
+          "duration": 1546250,
+          "text": "it"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 70489580,
+          "duration": 644160,
+          "text": "and"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 71262910,
+          "duration": 3737080,
+          "text": "track"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 76288750,
+          "duration": 2190830,
+          "text": "every"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 78608330,
+          "duration": 2706250,
+          "text": "run"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 81443330,
+          "duration": 1030830,
+          "text": "in"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 82602910,
+          "duration": 1675410,
+          "text": "one"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 84407080,
+          "duration": 5412500,
+          "text": "place"
+        }
+      ],
+      "asr": [
+        {
+          "start": 0.0,
+          "end": 6.2,
+          "text": " Meet metronome, build data pipelines in minutes, without code, schedule them, trigger a run when",
+          "words": [
+            {
+              "text": " Meet",
+              "start": 0.0,
+              "end": 0.28,
+              "probability": 0.8894630670547485
+            },
+            {
+              "text": " metronome,",
+              "start": 0.28,
+              "end": 0.76,
+              "probability": 0.7671621739864349
+            },
+            {
+              "text": " build",
+              "start": 1.18,
+              "end": 1.42,
+              "probability": 0.9809194207191467
+            },
+            {
+              "text": " data",
+              "start": 1.42,
+              "end": 1.68,
+              "probability": 0.9183840155601501
+            },
+            {
+              "text": " pipelines",
+              "start": 1.68,
+              "end": 2.06,
+              "probability": 0.9901658892631531
+            },
+            {
+              "text": " in",
+              "start": 2.06,
+              "end": 2.5,
+              "probability": 0.8010219931602478
+            },
+            {
+              "text": " minutes,",
+              "start": 2.5,
+              "end": 2.8,
+              "probability": 0.9901583790779114
+            },
+            {
+              "text": " without",
+              "start": 3.26,
+              "end": 3.42,
+              "probability": 0.8503692746162415
+            },
+            {
+              "text": " code,",
+              "start": 3.42,
+              "end": 3.76,
+              "probability": 0.9960007071495056
+            },
+            {
+              "text": " schedule",
+              "start": 4.4,
+              "end": 4.66,
+              "probability": 0.9529387950897217
+            },
+            {
+              "text": " them,",
+              "start": 4.66,
+              "end": 4.98,
+              "probability": 0.9964170455932617
+            },
+            {
+              "text": " trigger",
+              "start": 5.26,
+              "end": 5.5,
+              "probability": 0.9975614547729492
+            },
+            {
+              "text": " a",
+              "start": 5.5,
+              "end": 5.74,
+              "probability": 0.9825267195701599
+            },
+            {
+              "text": " run",
+              "start": 5.74,
+              "end": 5.96,
+              "probability": 0.9925028085708618
+            },
+            {
+              "text": " when",
+              "start": 5.96,
+              "end": 6.2,
+              "probability": 0.9976211190223694
+            }
+          ]
+        },
+        {
+          "start": 6.2,
+          "end": 8.74,
+          "text": " you need it, and track every run in one place.",
+          "words": [
+            {
+              "text": " you",
+              "start": 6.2,
+              "end": 6.34,
+              "probability": 0.9966643452644348
+            },
+            {
+              "text": " need",
+              "start": 6.34,
+              "end": 6.54,
+              "probability": 0.9956851005554199
+            },
+            {
+              "text": " it,",
+              "start": 6.54,
+              "end": 6.7,
+              "probability": 0.9941311478614807
+            },
+            {
+              "text": " and",
+              "start": 7.06,
+              "end": 7.16,
+              "probability": 0.9979677796363831
+            },
+            {
+              "text": " track",
+              "start": 7.16,
+              "end": 7.4,
+              "probability": 0.9965118765830994
+            },
+            {
+              "text": " every",
+              "start": 7.4,
+              "end": 7.76,
+              "probability": 0.995750904083252
+            },
+            {
+              "text": " run",
+              "start": 7.76,
+              "end": 8.08,
+              "probability": 0.9953984618186951
+            },
+            {
+              "text": " in",
+              "start": 8.08,
+              "end": 8.26,
+              "probability": 0.9969231486320496
+            },
+            {
+              "text": " one",
+              "start": 8.26,
+              "end": 8.42,
+              "probability": 0.9919163584709167
+            },
+            {
+              "text": " place.",
+              "start": 8.42,
+              "end": 8.74,
+              "probability": 0.996841311454773
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "segment": 4,
       "script": "Instead of writing a script, build your own Flow. Choose a website and the report you need.",
       "spoken": "Instead of writing a script, build your own Flow. Choose a website and the report you need.",
       "recognized": "Instead of writing a script, build your own flow. Choose a website and the report you need. //",
@@ -339,7 +1017,7 @@
       ]
     },
     {
-      "segment": 4,
+      "segment": 5,
       "script": "Choose where the data goes and when it runs.",
       "spoken": "Choose where the data goes and when it runs.",
       "recognized": "Choose where the data goes, and when it runs.",
@@ -401,7 +1079,7 @@
       ]
     },
     {
-      "segment": 5,
+      "segment": 6,
       "script": "While the script is still being written, your Flow is ready. No code needed.",
       "spoken": "While the script is still being written, your Flow is ready. No code needed.",
       "recognized": "While the script is still being written, your flow is ready. No code needed.",
@@ -493,7 +1171,7 @@
       ]
     },
     {
-      "segment": 6,
+      "segment": 7,
       "script": "At two AM, local AI agents keep working across your reports and pipelines, checking missing data, refresh issues, and blank rows.",
       "spoken": "At two a.m., local AI agents keep working across your reports and pipelines, checking missing data, refresh issues, and blank rows.",
       "recognized": "At 2 a.m., local AI agents keep working across your reports and pipelines, checking missing data, refresh issues, and blank rows.",
@@ -627,7 +1305,7 @@
       ]
     },
     {
-      "segment": 7,
+      "segment": 8,
       "script": "By morning, five issues are flagged. Open one to see the evidence and a proposed fix.",
       "spoken": "By morning, five issues are flagged. Open one to see the evidence and a proposed fix.",
       "recognized": "By morning, five issues are flagged. Open one to see the evidence in a proposed fix.",
@@ -731,7 +1409,7 @@
       ]
     },
     {
-      "segment": 8,
+      "segment": 9,
       "script": "There are two ways to use Metronome. Open it in your browser, just like any other website.",
       "spoken": "There are two ways to use Metronome. Open it in your browser, just like any other website.",
       "recognized": "There are two ways to use metronome. Open it in your browser, just like any other website.",
@@ -841,7 +1519,7 @@
       ]
     },
     {
-      "segment": 9,
+      "segment": 10,
       "script": "Or connect Metronome MCP to your AI, and create flows with a prompt.",
       "spoken": "Or connect Metronome M C P to your AI, and create flows with a prompt.",
       "recognized": "or connect Metronome MCP to your AI and create flows with a prompt.",
@@ -939,7 +1617,7 @@
       ]
     },
     {
-      "segment": 10,
+      "segment": 11,
       "script": "Without that connection, your AI may take wrong turns, retry steps, or return the wrong reporting period.",
       "spoken": "Without that connection, your AI may take wrong turns, retry steps, or return the wrong reporting period.",
       "recognized": "Without that connection, your AI may take wrong turns, retry steps, or return the wrong reporting period.",
@@ -1049,7 +1727,7 @@
       ]
     },
     {
-      "segment": 11,
+      "segment": 12,
       "script": "With Metronome MCP, it can follow the portal workflow, create your Flow, and check the result.",
       "spoken": "With Metronome M C P, it can follow the portal workflow, create your Flow, and check the result.",
       "recognized": "With Metronome MCP, it can follow the portal workflow, create your flow, and check the result.",
@@ -1165,7 +1843,7 @@
       ]
     },
     {
-      "segment": 12,
+      "segment": 13,
       "script": "Fewer retries. Less time and fewer tokens. Accurate data, in your own repeatable Flow.",
       "spoken": "Fewer retries. Less time and fewer tokens. Accurate data, in your own repeatable Flow.",
       "recognized": "Fewer retries, less time and fewer tokens. Accurate data in your own repeatable flow.",

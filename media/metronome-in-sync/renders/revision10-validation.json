@@ -1,0 +1,51 @@
+{
+  "video": {
+    "codec_name": "h264",
+    "width": 1920,
+    "height": 1080,
+    "r_frame_rate": "30/1",
+    "duration": "110.000000",
+    "nb_frames": "3300"
+  },
+  "audio": {
+    "codec_name": "aac",
+    "sample_rate": "48000",
+    "channels": 2,
+    "duration": "110.000000"
+  },
+  "duration": "110.000000",
+  "loudness": {
+    "input_i": "-16.14",
+    "input_tp": "-1.91",
+    "input_lra": "6.00",
+    "input_thresh": "-27.57",
+    "output_i": "-16.02",
+    "output_tp": "-1.67",
+    "output_lra": "6.20",
+    "output_thresh": "-27.37",
+    "normalization_type": "dynamic",
+    "target_offset": "0.02"
+  },
+  "decode": "PASS",
+  "narrationPhrases": 13,
+  "maxSpeechSpeed": 1,
+  "encodedFrameSamples": [
+    3,
+    10,
+    16,
+    19.7,
+    30,
+    31.2,
+    51.95,
+    52.1,
+    55,
+    64.2,
+    68,
+    72.1,
+    81,
+    85.1,
+    104,
+    109
+  ],
+  "browserValidation": "Connected Chrome: ETL, capability controls, overnight agents and findings inspected; no console errors/warnings. No HyperFrames strict run this revision."
+}
