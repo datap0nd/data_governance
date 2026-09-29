@@ -1,16 +1,15 @@
 {
   "title": "Metronome — Your data, connected",
-  "status": "two-column closing comparison synchronized to narration",
+  "status": "visual AI tools connecting to Metronome",
   "durationSeconds": 95,
   "width": 1920,
   "height": 1080,
   "framesPerSecond": 30,
-  "renderHyperFramesVersion": "0.8.81",
   "editableProjectHyperFramesVersion": "0.8.81",
   "artifacts": {
     "renders/review/animatic.mp4": {
-      "bytes": 8559306,
-      "sha256": "61d3d4b5db01edee5046c363a6294c3f44ff6cd544ed7cebcbf56c5bd0df4a39"
+      "bytes": 6247166,
+      "sha256": "ef9cafd167ddc2b03bc4da644c30e4aa1a498e12bf9bad897ef711a8ba81e511"
     },
     "audio/score.wav": {
       "bytes": 27360102,
@@ -24,5 +23,7 @@
       "bytes": 2103552,
       "sha256": "364a546834db4c0c2e3b3240eb6df03e98b7362230154b04c5c614442f6660d7"
     }
-  }
+  },
+  "baseRenderHyperFramesVersion": "0.8.81",
+  "renderEngine": "FFmpeg 7.1 + resvg 2.6.2, shared SVG overlay on revision 8 master"
 }

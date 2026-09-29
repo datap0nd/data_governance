@@ -1,6 +1,6 @@
 # Metronome — Your data, connected
 
-Current cut: **95 seconds, 1920×1080, 30 fps**, English narration and background music, zero subtitles, light-mode UIs. Revision 8 rebuilds the closing comparison as two equal columns. Four paired rows reveal at the corresponding narration words; the 95-second duration and audio are unchanged.
+Current cut: **95 seconds, 1920×1080, 30 fps**, English narration and background music, zero subtitles, light-mode UIs. Revision 9 replaces the AI access card stack with large tool logos and animated lines converging on Metronome MCP. Audio and duration are unchanged.
 
 [Watch](animatic-review.html) · [MP4](renders/review/animatic.mp4) · [Scene frames](review.html) · [Try the Flow builder](builder-demo.html) · [Narration](narration.json) · [Storyboard](STORYBOARD.md) · [QA](QA.md) · [Sources](assets/LEDGER.md)
 
@@ -32,3 +32,5 @@ Interfaces, data, prompts and outcomes are synthetic. The ChatGPT layout was vis
 The MCP comparison demonstrates the owner's intended workflow. It is not a benchmark or a claim that disconnected AI always fails, MCP guarantees accuracy, or token/time savings have been measured. No app implementation or deployment verification is included. Proposed overnight fixes require review.
 
 Closing reveal timings and cached speech provenance: [closing-cues.json](assets/closing-cues.json). Cue times use the source word boundaries minus the exact leading PCM trim in `audio/score.py`.
+
+Revision 9 connection animation: `compositions/ai-connection.js` is the shared SVG source used by the film and the offline resvg/FFmpeg compositor. [Connection preview](connection-preview.html) provides stage buttons and replay. Browser verification used connected Chrome only; no new headless browser render or HyperFrames check was run for this revision. Historical commands above remain the original build reference.
