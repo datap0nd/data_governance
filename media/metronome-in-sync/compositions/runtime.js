@@ -6,6 +6,7 @@
  const script='import requests\n\nsession = requests.Session()\nresponse = session.get(\n    "https://asap-portal.com"\n)\n\ndef parse_report(response):\n    rows = []\n    # Map every column';
  const laneBots=$$('[data-lane]').map(lane=>{const bot=lane.querySelector('.pipeline-agent');bot.style.setProperty('--agent-color',lane.style.getPropertyValue('--agent-color'));lane.parentElement.appendChild(bot);return bot;});
  function draw(realTime){
+ const caption=config.captions.find(c=>realTime>=c.start&&realTime<c.end);$('.english-caption').textContent=caption?caption.text:'';
  const baseTime=realTime<9?realTime*6/9:realTime<20?6:realTime<31?6+(realTime-20)*10/11:realTime-15;
  const t=baseTime<37?baseTime:baseTime<57?baseTime+2:baseTime+13;
  if(realTime>=9&&realTime<20)$('.etl-scene').innerHTML=etlSVG(realTime,config.openingCues);

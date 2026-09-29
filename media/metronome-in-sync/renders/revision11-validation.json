@@ -1,0 +1,32 @@
+{
+  "duration": 110,
+  "video": {
+    "width": 1920,
+    "height": 1080,
+    "codec_name": "h264",
+    "nb_frames": "3300",
+    "r_frame_rate": "30/1"
+  },
+  "decode": "PASS",
+  "audioPacketHash": "SHA256=080b81e182935ed283e755d361380dc1edb41d0cc9b259cb85fd59bd61378c9f",
+  "audioUnchanged": true,
+  "captionCues": 38,
+  "completeNarrationCoverage": true,
+  "noCueOverlap": true,
+  "minCueSeconds": 0.953,
+  "maxCharacters": 53,
+  "sampleTimes": [
+    3,
+    6.5,
+    16,
+    23,
+    35,
+    55,
+    67,
+    76,
+    81,
+    95,
+    107,
+    109
+  ]
+}

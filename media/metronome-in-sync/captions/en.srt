@@ -1,0 +1,151 @@
+1
+00:00:00,203 --> 00:00:02,316
+Our data comes from interactive portals
+
+2
+00:00:02,316 --> 00:00:05,499
+like ASAP and GSCM,
+
+3
+00:00:05,499 --> 00:00:07,516
+where we download ready-made reports.
+
+4
+00:00:09,155 --> 00:00:10,933
+But downloads alone aren't ready
+
+5
+00:00:10,933 --> 00:00:13,497
+for analysis or scheduled reporting.
+
+6
+00:00:13,497 --> 00:00:15,469
+We still need to extract the data,
+
+7
+00:00:15,469 --> 00:00:17,119
+standardize its format,
+
+8
+00:00:17,119 --> 00:00:18,820
+and load it into a destination.
+
+9
+00:00:20,150 --> 00:00:21,295
+Meet Metronome.
+
+10
+00:00:21,295 --> 00:00:24,414
+Build data pipelines in minutes, without code.
+
+11
+00:00:24,414 --> 00:00:25,367
+Schedule them,
+
+12
+00:00:25,367 --> 00:00:27,094
+trigger a run when you need it,
+
+13
+00:00:27,094 --> 00:00:29,159
+and track every run in one place.
+
+14
+00:00:31,202 --> 00:00:32,800
+Instead of writing a script,
+
+15
+00:00:32,800 --> 00:00:34,153
+build your own Flow.
+
+16
+00:00:34,153 --> 00:00:36,222
+Choose a website and the report you need.
+
+17
+00:00:38,400 --> 00:00:40,824
+Choose where the data goes and when it runs.
+
+18
+00:00:45,008 --> 00:00:46,993
+While the script is still being written,
+
+19
+00:00:46,993 --> 00:00:49,311
+your Flow is ready. No code needed.
+
+20
+00:00:52,202 --> 00:00:55,140
+At two AM, local AI agents keep working
+
+21
+00:00:55,140 --> 00:00:57,305
+across your reports and pipelines,
+
+22
+00:00:57,305 --> 00:00:58,761
+checking missing data,
+
+23
+00:00:58,761 --> 00:01:00,888
+refresh issues, and blank rows.
+
+24
+00:01:04,203 --> 00:01:06,639
+By morning, five issues are flagged.
+
+25
+00:01:06,639 --> 00:01:09,685
+Open one to see the evidence and a proposed fix.
+
+26
+00:01:12,208 --> 00:01:14,334
+There are two ways to use Metronome.
+
+27
+00:01:14,334 --> 00:01:17,315
+Open it in your browser, just like any other website.
+
+28
+00:01:19,000 --> 00:01:22,129
+Or connect Metronome MCP to your AI,
+
+29
+00:01:22,129 --> 00:01:23,867
+and create flows with a prompt.
+
+30
+00:01:25,202 --> 00:01:26,607
+Without that connection,
+
+31
+00:01:26,607 --> 00:01:30,125
+your AI may take wrong turns, retry steps,
+
+32
+00:01:30,125 --> 00:01:32,057
+or return the wrong reporting period.
+
+33
+00:01:33,703 --> 00:01:35,662
+With Metronome MCP,
+
+34
+00:01:35,662 --> 00:01:37,376
+it can follow the portal workflow,
+
+35
+00:01:37,376 --> 00:01:39,572
+create your Flow, and check the result.
+
+36
+00:01:42,511 --> 00:01:43,761
+Fewer retries.
+
+37
+00:01:43,761 --> 00:01:45,862
+Less time and fewer tokens.
+
+38
+00:01:45,862 --> 00:01:48,622
+Accurate data, in your own repeatable Flow.

@@ -1,6 +1,6 @@
 {
   "title": "Metronome — Your data, connected",
-  "status": "clear problem statement; overnight feature marked in testing",
+  "status": "English captions throughout",
   "durationSeconds": 110,
   "width": 1920,
   "height": 1080,
@@ -8,8 +8,8 @@
   "editableProjectHyperFramesVersion": "0.8.81",
   "artifacts": {
     "renders/review/animatic.mp4": {
-      "bytes": 6979890,
-      "sha256": "37ee0d2dc82799643557baa8f42449242c5c7d2cad9bd23d52fa2534c3101707"
+      "bytes": 6949673,
+      "sha256": "958d09a48a8310c7e5d9de73eff7be73049383f4e0456683f67ebdfa89db274c"
     },
     "audio/score.wav": {
       "bytes": 31680102,
@@ -22,8 +22,34 @@
     "audio/background.mp3": {
       "bytes": 2103552,
       "sha256": "364a546834db4c0c2e3b3240eb6df03e98b7362230154b04c5c614442f6660d7"
+    },
+    "renders/review/animatic-clean.mp4": {
+      "bytes": 6979890,
+      "sha256": "37ee0d2dc82799643557baa8f42449242c5c7d2cad9bd23d52fa2534c3101707"
+    },
+    "captions/en.json": {
+      "bytes": 8488,
+      "sha256": "9d4664784ccffb17b0df900b8c1264f904974a5395f73c0c8ca34e5a59557b26"
+    },
+    "captions/en.srt": {
+      "bytes": 2714,
+      "sha256": "ed6faba5fb254bae33731d7186c6ae193ffaeb09ea3d150e93c5aa9658698d42"
+    },
+    "captions/en.vtt": {
+      "bytes": 2581,
+      "sha256": "e401915a653092c52de47710d6b660994d0c936c4f5cd2f45d8b6239f04ea48d"
+    },
+    "captions/en.ass": {
+      "bytes": 4392,
+      "sha256": "0b9bcacac3842437de9a1c24ca21c706f80c4d61f794c45378c8c211957d6c1a"
     }
   },
   "baseRenderHyperFramesVersion": "0.8.81",
-  "renderEngine": "FFmpeg 7.1 + resvg 2.6.2, shared SVG opening and testing badge, retimed revision 9 master"
+  "renderEngine": "FFmpeg 7.1 + libass; captioned revision 10 master",
+  "captions": {
+    "language": "en",
+    "cues": 38,
+    "burnedIn": true,
+    "source": "captions/en.json"
+  }
 }
