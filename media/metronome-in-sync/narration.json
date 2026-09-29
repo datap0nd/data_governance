@@ -1,86 +1,98 @@
 [
   {
-    "start": 0.6,
-    "end": 4.9,
-    "en": "A business question arrives. The answer is spread across systems.",
-    "ko": "새로운 비즈니스 질문.\n답은 여러 시스템에 흩어져 있습니다."
+    "start": 0.5,
+    "end": 9.6,
+    "en": "Reports live in separate portals, like ASAP and GSCM.",
+    "spoken": "Reports live in separate portals, like A. S. A. P., and G. S. C. M."
   },
   {
-    "start": 5.1,
-    "end": 10.1,
-    "en": "ASAP, GSCM, spreadsheets, and existing databases.",
-    "ko": "ASAP, GSCM, 엑셀 파일,\n그리고 기존 데이터베이스."
+    "start": 10.4,
+    "end": 23.5,
+    "en": "Connect your business portals, Datahub, NERP, and email reports. Metronome organizes their data in one place.",
+    "spoken": "Connect your business portals, Datahub, N. E. R. P., and email reports. Metronome organizes their data in one place."
   },
   {
-    "start": 10.2,
-    "end": 16.5,
-    "en": "Metronome brings those sources together, transforming scattered exports into organized datasets.",
-    "ko": "Metronome은 여러 소스를 연결하고,\n흩어진 데이터를 체계적인 데이터셋으로 정리합니다."
+    "start": 24.5,
+    "end": 35.4,
+    "en": "Ready for Excel and reporting. And ready for you to use your own AI tools to analyze the data.",
+    "spoken": "Ready for Excel and reporting. And ready for you to use your own A. I. tools to analyze the data."
   },
   {
-    "start": 16.8,
-    "end": 21.7,
-    "en": "Consistent names. Clear ownership. A database your team can use.",
-    "ko": "일관된 이름, 명확한 담당자.\n누구나 활용할 수 있는 데이터베이스."
+    "start": 36.4,
+    "end": 42.8,
+    "en": "Building pipelines used to mean writing code. Now, create a Flow yourself, without code.",
+    "spoken": "Building pipelines used to mean writing code. Now, create a Flow yourself, without code."
   },
   {
-    "start": 22.0,
-    "end": 28.1,
-    "en": "Sales, stock, and shipments share the same keys, ready for Excel, reporting, and AI.",
-    "ko": "판매·재고·출하 데이터를 공통 키로 연결해\n엑셀, 보고서, AI에서 바로 활용합니다."
+    "start": 43,
+    "end": 48.4,
+    "en": "Point Metronome to a website. Choose the data you want.",
+    "spoken": "Point Metronome to a website. Choose the data you want."
   },
   {
-    "start": 28.4,
-    "end": 34.5,
-    "en": "Build a Flow once. Collect the data, transform it, and save it to the right destination.",
-    "ko": "Flow를 한 번 구성하면\n데이터 수집, 변환, 저장이 자동으로 이어집니다."
+    "start": 49,
+    "end": 54.3,
+    "en": "Pick where it should go, and when it should run.",
+    "spoken": "Pick where it should go, and when it should run."
   },
   {
-    "start": 34.8,
-    "end": 41.3,
-    "en": "Schedule the work, and see each step, every run, and every result.",
-    "ko": "실행 시간을 예약하고,\n모든 단계와 실행 결과를 확인하세요."
+    "start": 55,
+    "end": 61.4,
+    "en": "Metronome turns those choices into a repeatable pipeline.",
+    "spoken": "Metronome turns those choices into a repeatable pipeline."
   },
   {
-    "start": 42.0,
-    "end": 48.0,
-    "en": "At two A.M., Metronome's overnight agents get to work.",
-    "ko": "새벽 2시,\nMetronome의 야간 에이전트가 작업을 시작합니다."
+    "start": 62.5,
+    "end": 68.2,
+    "en": "Another feature: local AI agents, working overnight.",
+    "spoken": "Another feature: local A. I. agents, working overnight."
   },
   {
-    "start": 48.3,
-    "end": 54.5,
-    "en": "They check freshness, missing periods, duplicates, and unexpected changes across your datasets.",
-    "ko": "데이터의 최신 상태, 누락 기간, 중복,\n예상치 못한 변화를 점검합니다."
+    "start": 68.5,
+    "end": 77.4,
+    "en": "At two AM, they check your database for missing data, refresh issues, and blank rows.",
+    "spoken": "At two A. M., they check your database for missing data, refresh issues, and blank rows."
   },
   {
-    "start": 54.8,
-    "end": 60.5,
-    "en": "When something looks wrong, they flag it with evidence for your team to review.",
-    "ko": "이상이 발견되면 근거와 함께 알려\n담당자가 확인할 수 있도록 합니다."
+    "start": 78.5,
+    "end": 82.6,
+    "en": "By morning, five issues are flagged.",
+    "spoken": "By morning, five issues are flagged."
   },
   {
-    "start": 60.8,
-    "end": 65.5,
-    "en": "So the morning starts with the issue already identified.",
-    "ko": "아침에는 문제를 찾는 일부터\n다시 시작할 필요가 없습니다."
+    "start": 83,
+    "end": 93.4,
+    "en": "Open one to see what went wrong, the evidence, and a proposed fix for your team to review.",
+    "spoken": "Open one to see what went wrong, the evidence, and a proposed fix for your team to review."
   },
   {
-    "start": 65.8,
-    "end": 72.5,
-    "en": "Your AI agents can then investigate the business question and prepare a dashboard that shows its sources.",
-    "ko": "AI 에이전트는 비즈니스 질문을 분석하고,\n출처가 명확한 대시보드를 만들 수 있습니다."
+    "start": 94.5,
+    "end": 101.5,
+    "en": "Your HTML dashboards will live in the METO AI Portal.",
+    "spoken": "Your H. T. M. L. dashboards will live in the Meto A. I. Portal."
   },
   {
-    "start": 72.8,
-    "end": 77.9,
-    "en": "From disconnected files to a repeatable path from data to decisions.",
-    "ko": "흩어진 파일을 넘어,\n데이터에서 의사결정까지 이어지는 반복 가능한 프로세스."
+    "start": 101.8,
+    "end": 109.6,
+    "en": "Metronome connects by API, supplying freshness and ETL pipelines.",
+    "spoken": "Metronome connects by A. P. I., supplying freshness and E. T. L. pipelines."
   },
   {
-    "start": 78.2,
-    "end": 83.6,
-    "en": "Metronome. More data. Less manual work. Ready by morning.",
-    "ko": "Metronome. 더 많은 데이터, 더 적은 수작업.\n아침이면 준비되어 있습니다."
+    "start": 110.4,
+    "end": 121.4,
+    "en": "Metronome is a web application, hosted on your internal server. Open it in your browser to build flows and check your data.",
+    "spoken": "Metronome is a web application, hosted on your internal server. Open it in your browser to build flows and check your data."
+  },
+  {
+    "start": 122.5,
+    "end": 132.6,
+    "en": "Connect ChatGPT, Claude, or Gemini through Metronome MCP.",
+    "spoken": "Connect Chat G. P. T., Claude, or Gemini through Metronome M. C. P."
+  },
+  {
+    "start": 133,
+    "end": 143.2,
+    "en": "Your familiar AI tools, now connected to your business data, freshness checks, and flows.",
+    "spoken": "Your familiar A. I. tools, now connected to your business data, freshness checks, and flows."
   }
 ]

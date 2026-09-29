@@ -1,7 +1,7 @@
 {
-  "title": "Metronome — Ready by morning",
-  "status": "narrated light-mode review cut",
-  "durationSeconds": 84,
+  "title": "Metronome — Your data, connected",
+  "status": "visual revision without subtitles",
+  "durationSeconds": 144,
   "width": 1920,
   "height": 1080,
   "framesPerSecond": 30,
@@ -9,28 +9,20 @@
   "editableProjectHyperFramesVersion": "0.8.81",
   "artifacts": {
     "renders/review/animatic.mp4": {
-      "bytes": 7485071,
-      "sha256": "e87b2763d1e41bcc122126e8ce161082555f2e2494dcb13d52207ed8050b4938"
+      "bytes": 11967978,
+      "sha256": "e14bfdaff376f7b08d0f9dc87f0644ac6ae416806a33b17dca9bf809bced9d48"
     },
     "audio/score.wav": {
-      "bytes": 24192102,
-      "sha256": "384803791d786fd23614a3e357ace6bd437c742a22072eb64a19d0371418b204"
+      "bytes": 41472102,
+      "sha256": "69dde384bcd6156988606261247279bad9d9eb64487238b5d7e4db8319c241b7"
     },
     "audio/narration.flac": {
-      "bytes": 2188883,
-      "sha256": "81bce2559a7c2a763bdef3f362a948fa209a24f756bc9c53df891477404b0be6"
+      "bytes": 2664600,
+      "sha256": "5468037197fa1e8d66288f8f7a51343883f8589e5427928c97dcad37d6d68293"
     },
     "audio/background.mp3": {
       "bytes": 2103552,
       "sha256": "364a546834db4c0c2e3b3240eb6df03e98b7362230154b04c5c614442f6660d7"
-    },
-    "subtitles.ko.srt": {
-      "bytes": 1773,
-      "sha256": "3d9603e61c4357c6a95aeba8e6f8360561e2cb757a517bba9715e7054a4760c3"
-    },
-    "subtitles.en.srt": {
-      "bytes": 1506,
-      "sha256": "5c503d2bfd2ddd892032d934a5076ae6f3a127e06dfc58a778183e7e4bf87a9e"
     }
   }
 }

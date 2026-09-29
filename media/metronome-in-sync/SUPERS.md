@@ -1,12 +1,5 @@
-# Film text
+# On-screen text policy
 
-- 0s: The question
-- 8s: Sources → organized database
-- 22s: Organized datasets in Excel
-- 29s: Build and schedule a Flow
-- 42s: Overnight agents
-- 55s: Evidence and findings
-- 65.6s: Morning dashboard
-- 78.2s: Ready by morning
+No subtitle track, burned-in narration text, top-left chapter label or product-overview corner. No descriptive text below the central Metronome name in section 2. No source sublabels, dataset key lists or shared-key claim.
 
-Full narration and Korean subtitles are in `narration.json`. Closing: **More data. Less manual work. Ready by morning.**
+Use only names, primary feature labels and meaningful interface content: portal tables and filters, Flow inputs, audit checks, issue/proposed-fix text, METO branding, the internal-server/address explanation and MCP connection names. The review page carries chapter navigation, product-scope notes and credits outside the film.
