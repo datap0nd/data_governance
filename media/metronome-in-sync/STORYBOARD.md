@@ -1,6 +1,6 @@
 # Storyboard — revision 10
 
-110 seconds / 1:50. English narration and background music; zero narration subtitles, light-mode interfaces.
+110 seconds / 1:50. English narration and background music; English captions, light-mode interfaces.
 
 | Scene | Time | Visual and purpose |
 | --- | --- | --- |

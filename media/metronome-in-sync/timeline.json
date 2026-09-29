@@ -1,6 +1,6 @@
 {
   "title": "Metronome — Your data, connected",
-  "version": 10,
+  "version": 11,
   "durationSeconds": 110,
   "width": 1920,
   "height": 1080,
@@ -191,5 +191,311 @@
     "schedule": 24.413687,
     "trigger": 25.367312,
     "track": 27.171437
-  }
+  },
+  "captions": [
+    {
+      "start": 0.203,
+      "end": 2.316,
+      "text": "Our data comes from interactive portals",
+      "segment": 1,
+      "firstWord": 0,
+      "lastWord": 5
+    },
+    {
+      "start": 2.316,
+      "end": 5.499,
+      "text": "like ASAP and GSCM,",
+      "segment": 1,
+      "firstWord": 6,
+      "lastWord": 15
+    },
+    {
+      "start": 5.499,
+      "end": 7.516,
+      "text": "where we download ready-made reports.",
+      "segment": 1,
+      "firstWord": 16,
+      "lastWord": 20
+    },
+    {
+      "start": 9.155,
+      "end": 10.933,
+      "text": "But downloads alone aren't ready",
+      "segment": 2,
+      "firstWord": 0,
+      "lastWord": 4
+    },
+    {
+      "start": 10.933,
+      "end": 13.497,
+      "text": "for analysis or scheduled reporting.",
+      "segment": 2,
+      "firstWord": 5,
+      "lastWord": 9
+    },
+    {
+      "start": 13.497,
+      "end": 15.469,
+      "text": "We still need to extract the data,",
+      "segment": 2,
+      "firstWord": 10,
+      "lastWord": 16
+    },
+    {
+      "start": 15.469,
+      "end": 17.119,
+      "text": "standardize its format,",
+      "segment": 2,
+      "firstWord": 17,
+      "lastWord": 19
+    },
+    {
+      "start": 17.119,
+      "end": 18.82,
+      "text": "and load it into a destination.",
+      "segment": 2,
+      "firstWord": 20,
+      "lastWord": 25
+    },
+    {
+      "start": 20.15,
+      "end": 21.295,
+      "text": "Meet Metronome.",
+      "segment": 3,
+      "firstWord": 0,
+      "lastWord": 1
+    },
+    {
+      "start": 21.295,
+      "end": 24.414,
+      "text": "Build data pipelines in minutes, without code.",
+      "segment": 3,
+      "firstWord": 2,
+      "lastWord": 8
+    },
+    {
+      "start": 24.414,
+      "end": 25.367,
+      "text": "Schedule them,",
+      "segment": 3,
+      "firstWord": 9,
+      "lastWord": 10
+    },
+    {
+      "start": 25.367,
+      "end": 27.094,
+      "text": "trigger a run when you need it,",
+      "segment": 3,
+      "firstWord": 11,
+      "lastWord": 17
+    },
+    {
+      "start": 27.094,
+      "end": 29.159,
+      "text": "and track every run in one place.",
+      "segment": 3,
+      "firstWord": 18,
+      "lastWord": 24
+    },
+    {
+      "start": 31.202,
+      "end": 32.8,
+      "text": "Instead of writing a script,",
+      "segment": 4,
+      "firstWord": 0,
+      "lastWord": 4
+    },
+    {
+      "start": 32.8,
+      "end": 34.153,
+      "text": "build your own Flow.",
+      "segment": 4,
+      "firstWord": 5,
+      "lastWord": 8
+    },
+    {
+      "start": 34.153,
+      "end": 36.222,
+      "text": "Choose a website and the report you need.",
+      "segment": 4,
+      "firstWord": 9,
+      "lastWord": 16
+    },
+    {
+      "start": 38.4,
+      "end": 40.824,
+      "text": "Choose where the data goes and when it runs.",
+      "segment": 5,
+      "firstWord": 0,
+      "lastWord": 8
+    },
+    {
+      "start": 45.008,
+      "end": 46.993,
+      "text": "While the script is still being written,",
+      "segment": 6,
+      "firstWord": 0,
+      "lastWord": 6
+    },
+    {
+      "start": 46.993,
+      "end": 49.311,
+      "text": "your Flow is ready. No code needed.",
+      "segment": 6,
+      "firstWord": 7,
+      "lastWord": 13
+    },
+    {
+      "start": 52.202,
+      "end": 55.14,
+      "text": "At two AM, local AI agents keep working",
+      "segment": 7,
+      "firstWord": 0,
+      "lastWord": 7
+    },
+    {
+      "start": 55.14,
+      "end": 57.305,
+      "text": "across your reports and pipelines,",
+      "segment": 7,
+      "firstWord": 8,
+      "lastWord": 12
+    },
+    {
+      "start": 57.305,
+      "end": 58.761,
+      "text": "checking missing data,",
+      "segment": 7,
+      "firstWord": 13,
+      "lastWord": 15
+    },
+    {
+      "start": 58.761,
+      "end": 60.888,
+      "text": "refresh issues, and blank rows.",
+      "segment": 7,
+      "firstWord": 16,
+      "lastWord": 20
+    },
+    {
+      "start": 64.203,
+      "end": 66.639,
+      "text": "By morning, five issues are flagged.",
+      "segment": 8,
+      "firstWord": 0,
+      "lastWord": 5
+    },
+    {
+      "start": 66.639,
+      "end": 69.685,
+      "text": "Open one to see the evidence and a proposed fix.",
+      "segment": 8,
+      "firstWord": 6,
+      "lastWord": 15
+    },
+    {
+      "start": 72.208,
+      "end": 74.334,
+      "text": "There are two ways to use Metronome.",
+      "segment": 9,
+      "firstWord": 0,
+      "lastWord": 6
+    },
+    {
+      "start": 74.334,
+      "end": 77.315,
+      "text": "Open it in your browser, just like any other website.",
+      "segment": 9,
+      "firstWord": 7,
+      "lastWord": 16
+    },
+    {
+      "start": 79,
+      "end": 82.129,
+      "text": "Or connect Metronome MCP to your AI,",
+      "segment": 10,
+      "firstWord": 0,
+      "lastWord": 8
+    },
+    {
+      "start": 82.129,
+      "end": 83.867,
+      "text": "and create flows with a prompt.",
+      "segment": 10,
+      "firstWord": 9,
+      "lastWord": 14
+    },
+    {
+      "start": 85.202,
+      "end": 86.607,
+      "text": "Without that connection,",
+      "segment": 11,
+      "firstWord": 0,
+      "lastWord": 2
+    },
+    {
+      "start": 86.607,
+      "end": 90.125,
+      "text": "your AI may take wrong turns, retry steps,",
+      "segment": 11,
+      "firstWord": 3,
+      "lastWord": 10
+    },
+    {
+      "start": 90.125,
+      "end": 92.057,
+      "text": "or return the wrong reporting period.",
+      "segment": 11,
+      "firstWord": 11,
+      "lastWord": 16
+    },
+    {
+      "start": 93.703,
+      "end": 95.662,
+      "text": "With Metronome MCP,",
+      "segment": 12,
+      "firstWord": 0,
+      "lastWord": 4
+    },
+    {
+      "start": 95.662,
+      "end": 97.376,
+      "text": "it can follow the portal workflow,",
+      "segment": 12,
+      "firstWord": 5,
+      "lastWord": 10
+    },
+    {
+      "start": 97.376,
+      "end": 99.572,
+      "text": "create your Flow, and check the result.",
+      "segment": 12,
+      "firstWord": 11,
+      "lastWord": 17
+    },
+    {
+      "start": 102.511,
+      "end": 103.761,
+      "text": "Fewer retries.",
+      "segment": 13,
+      "firstWord": 0,
+      "lastWord": 1
+    },
+    {
+      "start": 103.761,
+      "end": 105.862,
+      "text": "Less time and fewer tokens.",
+      "segment": 13,
+      "firstWord": 2,
+      "lastWord": 6
+    },
+    {
+      "start": 105.862,
+      "end": 108.622,
+      "text": "Accurate data, in your own repeatable Flow.",
+      "segment": 13,
+      "firstWord": 7,
+      "lastWord": 13
+    }
+  ]
 }

@@ -1,0 +1,51 @@
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 1920
+PlayResY: 1080
+WrapStyle: 2
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: English,Outfit,36,&H00393217,&H00393217,&H00F9FAF8,&H00F9FAF8,0,0,0,0,100,100,0,0,1,0,0,5,60,60,0,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.20,0:00:02.31,English,,0,0,0,,{\pos(960,1034)}Our data comes from interactive portals
+Dialogue: 0,0:00:02.31,0:00:05.49,English,,0,0,0,,{\pos(960,1034)}like ASAP and GSCM,
+Dialogue: 0,0:00:05.49,0:00:07.51,English,,0,0,0,,{\pos(960,1034)}where we download ready-made reports.
+Dialogue: 0,0:00:09.15,0:00:10.93,English,,0,0,0,,{\pos(960,1034)}But downloads alone aren't ready
+Dialogue: 0,0:00:10.93,0:00:13.49,English,,0,0,0,,{\pos(960,1034)}for analysis or scheduled reporting.
+Dialogue: 0,0:00:13.49,0:00:15.46,English,,0,0,0,,{\pos(960,1034)}We still need to extract the data,
+Dialogue: 0,0:00:15.46,0:00:17.11,English,,0,0,0,,{\pos(960,1034)}standardize its format,
+Dialogue: 0,0:00:17.11,0:00:18.82,English,,0,0,0,,{\pos(960,1034)}and load it into a destination.
+Dialogue: 0,0:00:20.15,0:00:21.29,English,,0,0,0,,{\pos(960,1034)}Meet Metronome.
+Dialogue: 0,0:00:21.29,0:00:24.41,English,,0,0,0,,{\pos(960,1034)}Build data pipelines in minutes, without code.
+Dialogue: 0,0:00:24.41,0:00:25.36,English,,0,0,0,,{\pos(960,1034)}Schedule them,
+Dialogue: 0,0:00:25.36,0:00:27.09,English,,0,0,0,,{\pos(960,1034)}trigger a run when you need it,
+Dialogue: 0,0:00:27.09,0:00:29.15,English,,0,0,0,,{\pos(960,1034)}and track every run in one place.
+Dialogue: 0,0:00:31.20,0:00:32.80,English,,0,0,0,,{\pos(960,1034)}Instead of writing a script,
+Dialogue: 0,0:00:32.80,0:00:34.15,English,,0,0,0,,{\pos(960,1034)}build your own Flow.
+Dialogue: 0,0:00:34.15,0:00:36.22,English,,0,0,0,,{\pos(960,1034)}Choose a website and the report you need.
+Dialogue: 0,0:00:38.40,0:00:40.82,English,,0,0,0,,{\pos(960,1034)}Choose where the data goes and when it runs.
+Dialogue: 0,0:00:45.00,0:00:46.99,English,,0,0,0,,{\pos(960,1034)}While the script is still being written,
+Dialogue: 0,0:00:46.99,0:00:49.31,English,,0,0,0,,{\pos(960,1034)}your Flow is ready. No code needed.
+Dialogue: 0,0:00:52.20,0:00:55.14,English,,0,0,0,,{\pos(960,1034)}At two AM, local AI agents keep working
+Dialogue: 0,0:00:55.14,0:00:57.30,English,,0,0,0,,{\pos(960,1034)}across your reports and pipelines,
+Dialogue: 0,0:00:57.30,0:00:58.76,English,,0,0,0,,{\pos(960,1034)}checking missing data,
+Dialogue: 0,0:00:58.76,0:01:00.88,English,,0,0,0,,{\pos(960,1034)}refresh issues, and blank rows.
+Dialogue: 0,0:01:04.20,0:01:06.63,English,,0,0,0,,{\pos(960,1034)}By morning, five issues are flagged.
+Dialogue: 0,0:01:06.63,0:01:09.68,English,,0,0,0,,{\pos(960,1034)}Open one to see the evidence and a proposed fix.
+Dialogue: 0,0:01:12.20,0:01:14.33,English,,0,0,0,,{\pos(960,1034)}There are two ways to use Metronome.
+Dialogue: 0,0:01:14.33,0:01:17.31,English,,0,0,0,,{\pos(960,1034)}Open it in your browser, just like any other website.
+Dialogue: 0,0:01:19.00,0:01:22.12,English,,0,0,0,,{\pos(960,1034)}Or connect Metronome MCP to your AI,
+Dialogue: 0,0:01:22.12,0:01:23.86,English,,0,0,0,,{\pos(960,1034)}and create flows with a prompt.
+Dialogue: 0,0:01:25.20,0:01:26.60,English,,0,0,0,,{\pos(960,1034)}Without that connection,
+Dialogue: 0,0:01:26.60,0:01:30.12,English,,0,0,0,,{\pos(960,1034)}your AI may take wrong turns, retry steps,
+Dialogue: 0,0:01:30.12,0:01:32.05,English,,0,0,0,,{\pos(960,1034)}or return the wrong reporting period.
+Dialogue: 0,0:01:33.70,0:01:35.66,English,,0,0,0,,{\pos(960,1034)}With Metronome MCP,
+Dialogue: 0,0:01:35.66,0:01:37.37,English,,0,0,0,,{\pos(960,1034)}it can follow the portal workflow,
+Dialogue: 0,0:01:37.37,0:01:39.57,English,,0,0,0,,{\pos(960,1034)}create your Flow, and check the result.
+Dialogue: 0,0:01:42.51,0:01:43.76,English,,0,0,0,,{\pos(960,1034)}Fewer retries.
+Dialogue: 0,0:01:43.76,0:01:45.86,English,,0,0,0,,{\pos(960,1034)}Less time and fewer tokens.
+Dialogue: 0,0:01:45.86,0:01:48.62,English,,0,0,0,,{\pos(960,1034)}Accurate data, in your own repeatable Flow.

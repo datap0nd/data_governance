@@ -1,6 +1,6 @@
 # Metronome — Your data, connected
 
-Current cut: **110 seconds / 1:50, 1920×1080, 30 fps**, English narration and background music, zero subtitles, light-mode UIs. Revision 10 explains why portal downloads still require extraction, transformation and loading, then introduces Metronome as one place to build, schedule, trigger and track pipelines. The overnight agents and findings carry a top-right **In testing** label.
+Current cut: **110 seconds / 1:50, 1920×1080, 30 fps**, English narration and background music, English captions, light-mode UIs. Revision 10 explains why portal downloads still require extraction, transformation and loading, then introduces Metronome as one place to build, schedule, trigger and track pipelines. The overnight agents and findings carry a top-right **In testing** label.
 
 [Watch](animatic-review.html) · [MP4](renders/review/animatic.mp4) · [Scene frames](review.html) · [Try the Flow builder](builder-demo.html) · [Narration](narration.json) · [Storyboard](STORYBOARD.md) · [QA](QA.md) · [Sources](assets/LEDGER.md)
 
@@ -36,3 +36,9 @@ Closing reveal timings and cached speech provenance: [closing-cues.json](assets/
 Connection animation: `compositions/ai-connection.js` is the shared SVG source used by the film and the offline resvg/FFmpeg compositor. [Connection preview](connection-preview.html) provides stage buttons and replay. Browser verification used connected Chrome only; no new headless browser render or HyperFrames check was run for this revision. Historical commands above remain the original build reference.
 
 Revision 10 uses `compositions/introduction.js` for the ETL diagram, speech-cued pipeline controls and testing badge, shared by editable HTML and offline resvg/FFmpeg export. [Opening preview](opening-preview.html). Three new narration lines have fresh local ASR and synthesis-boundary evidence; later phrases are reused at a 15-second offset. No headless browser was used for this revision.
+
+## English captions (revision 11)
+
+The canonical video includes 38 English cues, synchronized to synthesis word boundaries after correcting for PCM lead trimming. The full original image is scaled to 1760×990 and centered above a 90px caption strip; no UI is obscured. Narration, music and duration are unchanged.
+
+Editable cues: `captions/en.json`; sidecars: `captions/en.srt` and `captions/en.vtt`; burn-in styling: `captions/en.ass`. The editable HTML uses the same cues. `renders/review/animatic-clean.mp4` preserves the revision 10 master. To reproduce the captioned MP4, set `FILM_FFMPEG_PATH` to an FFmpeg executable with libass and run `python scripts/render-captions.py`.
