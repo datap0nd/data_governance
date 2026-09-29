@@ -31,7 +31,8 @@
  $$('[data-retry]').forEach((el,i)=>show(el,comparison>=[.4,2.3,4.6,6.4,7.7][i]));const right=ease((comparison-8.2)/.5);$('.connection-chip').style.opacity=right;$('.mcp-run').style.opacity=right;
  $$('[data-step]').forEach((el,i)=>{const p=ease((comparison-9-i*.8)/.45);el.style.opacity=p;el.style.transform=`translateY(${(1-p)*15}px)`;});const done=ease((comparison-13)/.5);$('.chat-result').style.opacity=done;$('.chat-result').style.transform=`scale(${.97+done*.03})`;
  $('.mcp-run').style.boxShadow=`0 0 ${18+Math.sin(comparison*3)*7}px rgba(45,155,112,${comparison>8.2&&comparison<14.5?.18:0})`;
- $$('[data-compare-row]').forEach((el,i)=>{const p=ease((t-100-i*.28)/.4);el.style.opacity=p;el.style.transform=`translateY(${(1-p)*12}px)`;});
+ // Word-aligned paired reveals use real film time, so seek/backward playback is deterministic.
+ $$('[data-compare-row]').forEach((el,i)=>{const p=ease((realTime-config.closingCues.cues[i].start)/config.closingCues.revealSeconds);el.style.opacity=p;el.style.transform=`translateY(${(1-p)*12}px)`;});
  }
  window.Film={draw,seek:draw};window.__timelines=window.__timelines||{};const clock={t:0},timeline=gsap.timeline({paused:true});timeline.to(clock,{t:config.duration,duration:config.duration,ease:'none',onUpdate:()=>draw(clock.t)},0);window.__timelines['metronome-your-data-connected']=timeline;window.addEventListener('hf-seek',e=>draw(e.detail.time));draw(0);
 })();

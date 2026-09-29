@@ -5,6 +5,7 @@ in [the testing workflow](../README.md); this file is the complete history.
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-09-29: Two-column narrated closing comparison | [Test plan](2026-09-29-film-synced-closing/test-plan.md) | [Test report](2026-09-29-film-synced-closing/test-report.md) |
 | 2026-09-29: Clear film comparison labels and dashboard removal | [Test plan](2026-09-29-film-comparison-labels/test-plan.md) | [Test report](2026-09-29-film-comparison-labels/test-report.md) |
 | 2026-09-29: Natural narration and visible agent inspections | [Test plan](2026-09-29-narration-agent-motion/test-plan.md) | [Test report](2026-09-29-narration-agent-motion/test-report.md) |
 | 2026-09-29: Visual Metronome film and MCP ending | [Test plan](2026-09-29-visual-film-mcp/test-plan.md) | [Test report](2026-09-29-visual-film-mcp/test-report.md) |
