@@ -1,163 +1,139 @@
 {
   "title": "Metronome — Your data, connected",
-  "version": 5,
-  "durationSeconds": 144,
+  "version": 6,
+  "durationSeconds": 104,
   "width": 1920,
   "height": 1080,
   "fps": 30,
-  "duration": 144,
+  "duration": 104,
   "scenes": [
     {
       "id": "s1",
       "start": 0,
-      "end": 10,
-      "name": "ASAP & GSCM"
+      "end": 6,
+      "name": "Reports across portals"
     },
     {
       "id": "s2",
-      "start": 10,
-      "end": 24,
-      "name": "Connected sources"
-    },
-    {
-      "id": "s3",
-      "start": 24,
-      "end": 36,
-      "name": "Excel & your AI tools"
+      "start": 6,
+      "end": 16,
+      "name": "Your own flows"
     },
     {
       "id": "s4",
-      "start": 36,
-      "end": 62,
-      "name": "Build a Flow without code"
+      "start": 16,
+      "end": 37,
+      "name": "Code vs no-code"
     },
     {
       "id": "s5",
-      "start": 62,
-      "end": 78,
-      "name": "Overnight local AI agents"
+      "start": 37,
+      "end": 49,
+      "name": "Continuous overnight agents"
     },
     {
       "id": "s6",
-      "start": 78,
-      "end": 94,
-      "name": "Five findings & a proposed fix"
+      "start": 49,
+      "end": 57,
+      "name": "Five findings"
     },
     {
       "id": "s7",
-      "start": 94,
-      "end": 110,
-      "name": "METO AI Portal"
+      "start": 57,
+      "end": 66,
+      "name": "Power HTML dashboards"
     },
     {
       "id": "s8",
-      "start": 110,
-      "end": 122,
-      "name": "A website you can access"
+      "start": 66,
+      "end": 79,
+      "name": "Two ways to use Metronome"
     },
     {
       "id": "s9",
-      "start": 122,
-      "end": 144,
-      "name": "Metronome MCP"
+      "start": 79,
+      "end": 104,
+      "name": "AI before and after MCP"
     }
   ],
   "narration": [
     {
-      "start": 0.5,
-      "end": 9.6,
+      "start": 0.2,
+      "end": 5.8,
       "en": "Your reports are spread across portals like ASAP and GSCM.",
       "spoken": "Your reports are spread across portals like A S A P and G S C M."
     },
     {
-      "start": 10.4,
-      "end": 23.5,
-      "en": "With Metronome, anyone can create their own flows in minutes, without code. Connect your sources and organize the data in one place.",
-      "spoken": "With Metronome, anyone can create their own flows in minutes, without code. Connect your sources and organize the data in one place."
+      "start": 6.2,
+      "end": 15.7,
+      "en": "Metronome lets everyone create their own flows in minutes, without code. Connect your sources and organize your data.",
+      "spoken": "Metronome lets everyone create their own flows in minutes, without code. Connect your sources and organize your data."
     },
     {
-      "start": 24.5,
-      "end": 35.4,
-      "en": "Use your data in Excel, or connect Metronome to your own AI tools and start asking questions.",
-      "spoken": "Use your data in Excel, or connect Metronome to your own AI tools and start asking questions."
+      "start": 16.2,
+      "end": 23,
+      "en": "Instead of writing a script, build your own Flow. Choose a website and the report you need.",
+      "spoken": "Instead of writing a script, build your own Flow. Choose a website and the report you need."
     },
     {
-      "start": 36.4,
-      "end": 42.8,
-      "en": "What once needed code now takes minutes. Create your own Flow.",
-      "spoken": "What once needed code now takes minutes. Create your own Flow."
+      "start": 23.4,
+      "end": 29.5,
+      "en": "Choose where the data goes and when it runs.",
+      "spoken": "Choose where the data goes and when it runs."
     },
     {
-      "start": 43,
-      "end": 48.4,
-      "en": "Enter a website. Then choose the report you want.",
-      "spoken": "Enter a website. Then choose the report you want."
+      "start": 30,
+      "end": 38.6,
+      "en": "While the script is still being written, your Flow is ready. No code needed.",
+      "spoken": "While the script is still being written, your Flow is ready. No code needed."
     },
     {
-      "start": 49,
-      "end": 54.3,
-      "en": "Pick a destination, and choose when your Flow should run.",
-      "spoken": "Pick a destination, and choose when your Flow should run."
+      "start": 37.2,
+      "end": 48.7,
+      "en": "At two AM, local AI agents keep working across your reports and pipelines, checking missing data, refresh issues, and blank rows.",
+      "spoken": "At two a.m., local AI agents keep working across your reports and pipelines, checking missing data, refresh issues, and blank rows."
     },
     {
-      "start": 55,
-      "end": 61.4,
-      "en": "Click Create Flow, and Metronome builds your pipeline. No code needed.",
-      "spoken": "Click Create Flow, and Metronome builds your pipeline. No code needed."
+      "start": 49.2,
+      "end": 56.7,
+      "en": "By morning, five issues are flagged. Open one to see the evidence and a proposed fix.",
+      "spoken": "By morning, five issues are flagged. Open one to see the evidence and a proposed fix."
     },
     {
-      "start": 62.5,
-      "end": 68.2,
-      "en": "Local AI agents help keep your flows healthy, working overnight.",
-      "spoken": "Local AI agents help keep your flows healthy, working overnight."
+      "start": 57.2,
+      "end": 65.6,
+      "en": "Metronome also powers your HTML dashboards, supplying fresh data through repeatable flows.",
+      "spoken": "Metronome also powers your HTML dashboards, supplying fresh data through repeatable flows."
     },
     {
-      "start": 68.5,
-      "end": 77.4,
-      "en": "At two AM, they check your database for missing data, refresh issues, and blank rows.",
-      "spoken": "At two a.m., they check your database for missing data, refresh issues, and blank rows."
+      "start": 66.2,
+      "end": 72.7,
+      "en": "There are two ways to use Metronome. Open it in your browser, just like any other website.",
+      "spoken": "There are two ways to use Metronome. Open it in your browser, just like any other website."
     },
     {
-      "start": 78.5,
-      "end": 82.6,
-      "en": "By morning, five issues are flagged.",
-      "spoken": "By morning, five issues are flagged."
+      "start": 73,
+      "end": 78.8,
+      "en": "Or connect Metronome MCP to your AI, and create flows with a prompt.",
+      "spoken": "Or connect Metronome M C P to your AI, and create flows with a prompt."
     },
     {
-      "start": 83,
-      "end": 93.4,
-      "en": "Open one to see what went wrong, the evidence, and a proposed fix for your team to review.",
-      "spoken": "Open one to see what went wrong, the evidence, and a proposed fix for your team to review."
+      "start": 79.2,
+      "end": 87.4,
+      "en": "Without that connection, your AI may take wrong turns, retry steps, or return the wrong reporting period.",
+      "spoken": "Without that connection, your AI may take wrong turns, retry steps, or return the wrong reporting period."
     },
     {
-      "start": 94.5,
-      "end": 101.5,
-      "en": "Your HTML dashboards are hosted in the METO AI Portal.",
-      "spoken": "Your HTML dashboards are hosted in the Meto AI Portal."
+      "start": 87.7,
+      "end": 96,
+      "en": "With Metronome MCP, it can follow the portal workflow, create your Flow, and check the result.",
+      "spoken": "With Metronome M C P, it can follow the portal workflow, create your Flow, and check the result."
     },
     {
-      "start": 101.8,
-      "end": 109.6,
-      "en": "Your flows supply fresh data through Metronome's API and ETL pipelines.",
-      "spoken": "Your flows supply fresh data through Metronome's API and ETL pipelines."
-    },
-    {
-      "start": 110.4,
-      "end": 121.4,
-      "en": "Open Metronome in your browser. It is a web application on your internal server, where anyone can build and manage their own flows.",
-      "spoken": "Open Metronome in your browser. It is a web application on your internal server, where anyone can build and manage their own flows."
-    },
-    {
-      "start": 122.5,
-      "end": 132.6,
-      "en": "Connect Metronome MCP to ChatGPT, Claude, or Gemini, and bring your data into the AI tools you already use.",
-      "spoken": "Connect Metronome M C P to ChatGPT, Claude, or Gemini, and bring your data into the AI tools you already use."
-    },
-    {
-      "start": 133,
-      "end": 143.2,
-      "en": "Build your own flows in minutes without code, and connect your AI to make working with data easier.",
-      "spoken": "Build your own flows in minutes without code, and connect your AI to make working with data easier."
+      "start": 96.5,
+      "end": 103.7,
+      "en": "Fewer retries. Less time and fewer tokens. Accurate data, in your own repeatable Flow.",
+      "spoken": "Fewer retries. Less time and fewer tokens. Accurate data, in your own repeatable Flow."
     }
   ]
 }

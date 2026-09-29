@@ -13,3 +13,7 @@
 | Diagrams, dashboard, data and Korean report labels | Original material for this revision. Fictional figures and reserved `.example` domains. |
 
 The linked 2:49 Scribble tour uses English captions; its familiar-app framing and product-tour rhythm were used as the visual reference. The owner subsequently requested zero subtitles; this revision removes them entirely and uses Korean only in portal UI tables. The source tour's music is not reused or represented as the identical track.
+
+## Revision 6 interface reference
+
+ChatGPT web layout observed in Chrome at https://chatgpt.com/ on 2026-09-29 (sidebar, Chat/Work toggle, composer). Recreated in English/light mode with fictional messages; no personal account content or screenshot is embedded. See also https://developers.openai.com/plugins/concepts/ui-guidelines for in-chat tool/widget conventions. The MCP card and before/after messages are original illustrative content, not captured service responses.

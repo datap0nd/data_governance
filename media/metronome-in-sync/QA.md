@@ -1,15 +1,11 @@
-# Interactive Flow and narration validation
+# Revision 6 validation
 
-Current cut: **144 seconds, 1920×1080, 30 fps, zero subtitles**, English narration and instrumental music. Revision 5 replaces the form with functional input/dropdown controls, natural typing and press/release animation, and narration emphasizing anyone creating their own flows without code in minutes and connecting their AI tools. Revision 4’s six moving agent characters and continuous English acronym delivery remain.
+**104 seconds, 1080p30, 3,120 frames, zero subtitles.** The previous cut was 144 seconds. Gaps outside trimmed narration phrases fall from 63.067 to 31.154 seconds (50.6% reduction). This measures inter-sentence, lead and tail gaps, not pauses within a spoken sentence. Music remains continuous.
 
-## Evidence
+- [Strict check](renders/revision6-check.json): 19 sampled times, zero lint/runtime/layout/contrast errors, warnings or information findings; 248 contrast checks passed. Motion analysis was disabled; sampled motion states were visually inspected.
+- [Encoded scene samples](renders/review/revision6-samples.jpg): code continues while the Flow completes, inspectors occupy different stages and lanes, generic dashboards, two access modes, ChatGPT retries versus guided creation, final comparison table.
+- [Media measurements](renders/revision6-validation.json): full FFmpeg decode passed; H.264 1920×1080 30 fps, stereo AAC 48 kHz, 104.000 seconds, -16.19 LUFS and -1.95 dBTP.
+- [Narration review](audio/pronunciation-review.json): all 13 final phrases checked with local Whisper base.en and synthesis word boundaries. No time compression, truncation or overlapping speech. ASAP/GSCM, two AM and MCP recognized. Recognition homophones and a trailing artifact are retained. No human listening pass claimed.
+- Two existing package tests and five syntax checks passed: `20260929T090032959Z-30724-74bb9ae8`. Duration assertions changed from 144 to 104 seconds to match the requested shorter film; hash, media and reference checks remain intact.
 
-- [Encoded interaction frames](renders/review/builder-interaction-samples.jpg): typing, report menu and selection, destination menu and selection, schedule menu, press, Creating and completed pipeline.
-- [Strict check](renders/builder-v5-check.json): 16 sampled times, no lint/runtime/layout/contrast errors or warnings, zero layout findings; 222 contrast checks passed. Automated motion analysis was disabled; before/after motion states were inspected visually.
-- [Media measurements](renders/builder-v5-validation.json): full FFmpeg decode passed; 4,320 H.264 frames, stereo AAC 48 kHz, 144.000 seconds; -16.09 LUFS and -1.87 dBTP.
-- [All sixteen narration phrases](audio/pronunciation-review.json) were checked with local Whisper base.en and synthesis word boundaries. ASAP/GSCM are spoken continuously, `a.m.` stays one pronunciation unit, and AI/API/HTML/ETL/ChatGPT use normal text. The TTS rate is −3%; all post-generation speed factors are 1.0. The generator now fails on an overlong line instead of accelerating or truncating it.
-- Existing film-package tests and five syntax checks passed: `20260929T082839334Z-14240-6ae0b7d6`. No test or workflow change.
-
-Speech recognition preserves spelling ambiguities (METO/Mito, Claude/Clod, in/and) and a trailing artifact in phrase 3. It cannot establish subjective voice quality. **No human listening pass is claimed.**
-
-The film's product-direction, fictional-data and code-recreated Chrome scope remains in [README](README.md). The agent inspection animation implies checks and proposed findings, not autonomous remediation. [Release plan](../../../docs/testing/releases/2026-09-29-narration-agent-motion/test-plan.md) · [Report](../../../docs/testing/releases/2026-09-29-narration-agent-motion/test-report.md).
+Dropdowns retain narrowly scoped markers for their intentional layering and four scrollable offscreen choices. Robot inspectors now share the fleet coordinate frame; no robot overflow exemption is used. Chrome and ChatGPT are recreated in code from visual references, with synthetic content. The MCP comparison is illustrative, not a benchmark or accuracy guarantee. [Plan](../../../docs/testing/releases/2026-09-29-narration-agent-motion/test-plan.md) · [Report](../../../docs/testing/releases/2026-09-29-narration-agent-motion/test-report.md).

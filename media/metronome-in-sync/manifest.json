@@ -1,7 +1,7 @@
 {
   "title": "Metronome — Your data, connected",
-  "status": "interactive no-code flow creation and natural narration",
-  "durationSeconds": 144,
+  "status": "shorter continuous workflows and concrete AI comparison",
+  "durationSeconds": 104,
   "width": 1920,
   "height": 1080,
   "framesPerSecond": 30,
@@ -9,16 +9,16 @@
   "editableProjectHyperFramesVersion": "0.8.81",
   "artifacts": {
     "renders/review/animatic.mp4": {
-      "bytes": 13548469,
-      "sha256": "b7708de51dfd39845886b495d85ab7a88ad41c5cb916f19851920820a57b6b46"
+      "bytes": 8943205,
+      "sha256": "93cfaf20f8fdf47ee3786a80108ebca6fe956e2d0be07124157092121280a935"
     },
     "audio/score.wav": {
-      "bytes": 41472102,
-      "sha256": "9d708ad981d5e99a17ee1d93d7a7397cdd6224bf6684ea75df9f527b2e089919"
+      "bytes": 29952102,
+      "sha256": "15f844e816dc32b32ba7e4fe65c69ae42f16566bc96c4377964be11bac6e1397"
     },
     "audio/narration.flac": {
-      "bytes": 2400630,
-      "sha256": "f5b495eb68984c3bb8ce9302730f168bd9bc1efc9bc874170c3b78e6ec1b117a"
+      "bytes": 2121047,
+      "sha256": "5177f9247c224b3451c08ab3c96acda1fd75896891cedb57e725f1fce37eb0aa"
     },
     "audio/background.mp3": {
       "bytes": 2103552,

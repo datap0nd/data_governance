@@ -77,8 +77,8 @@
   // Press first, then dispatch the control's click on release.
   events.forEach(event=>event.at+=.12);
   let typedAt=42.5;
-  const address='asap.example',cadence=[.11,.16,.1,.19,.26,.12,.09,.18,.13,.15,.1,.19];
-  [...address].forEach((_,i)=>{typedAt+=cadence[i];events.push({at:typedAt,type:'input',value:address.slice(0,i+1)});});
+  const address='asap-portal.com',cadence=[.11,.16,.1,.19,.26,.12,.09,.18,.13,.15,.1,.19];
+  [...address].forEach((_,i)=>{typedAt+=cadence[i%cadence.length];events.push({at:typedAt,type:'input',value:address.slice(0,i+1)});});
   events.sort((a,b)=>a.at-b.at);
   const clickTimes=[42.25,45.55,48.05,49.2,50.75,51.55,52.9,55.4];
   // Fixed composition coordinates are pointer-tip targets, in the app body.

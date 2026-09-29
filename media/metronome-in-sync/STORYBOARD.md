@@ -1,17 +1,16 @@
-# Storyboard — visual revision
+# Storyboard — revision 6
 
-No subtitles or secondary presentation labels. The visuals and narration carry the explanation.
+104 seconds, English narration and instrumental music. Zero subtitles. Light-mode interfaces.
 
-| Section | Time | Visual |
+| Scene | Time | Visual |
 | --- | --- | --- |
-| 01 | 0–10 s | Side-by-side Chrome windows: navy ASAP and violet GSCM. Korean tables, period filters, YoY triangles, download controls. No Excel icon or Excel window. |
-| 02 | 10–24 s | Six clean source cards feed the centered Metronome icon/name, then four organized dataset cards. No source descriptions, key lists or hub badges. |
-| 03 | 24–36 s | Excel worksheet with a connector to ChatGPT, Claude and Gemini. Narration describes using the viewer’s own AI tools; no shared-key assertion. |
-| 04 | 36–62 s | Code becomes a no-code card. In Chrome, a cursor types a website, opens a scrollable list of 12 reports and selects Monthly sales report, chooses Local database from the three-destination menu, and selects daily 06:00. It lands at the center of Create Flow, presses/releases it, shows Creating, then reveals Collect → Transform → Load → Repeat. |
-| 05 | 62–78 s | Standalone Overnight agents title. Local AI server, 02:00 AM and six little robot inspectors moving through all six source → Flow → dataset lanes. Five issue flags appear, alongside one healthy marker. |
-| 06 | 78–94 s | Five issues populate the list. A cursor clicks Refresh overdue. The side panel expands with expected/last update, issue description and a proposed fix. |
-| 07 | 94–110 s | METO AI Portal alone brands the dashboard. Outside the browser, Metronome sends an API signal with freshness and ETL capabilities. |
-| 08 | 110–122 s | An internal server is visibly linked to a Chrome window running Metronome. The address is an illustrative .example placeholder. |
-| 09 | 122–144 s | ChatGPT + Metronome MCP = enhanced ChatGPT. Repeat for Claude and Gemini. The enhanced tool grows, gains a halo and data/clock/pipeline symbols. |
+| Reports | 0–6 | Two Korean portals, ASAP and GSCM. ASAP displays asap-portal.com. |
+| Connected data | 6–16 | Six sources pass through centered Metronome into organized datasets. Anyone can build their own flows in minutes without code. |
+| Code vs Flow | 16–37 | Continuous slow Python typing on the left. A working Flow builder on the right types asap-portal.com, chooses report/destination/schedule and creates the pipeline while the script remains unfinished. |
+| Overnight agents | 37–49 | Six independent inspectors move horizontally and between report lanes, visiting sources, Flows and datasets at different phases. Five findings emerge while work continues. |
+| Findings | 49–57 | Five findings populate; click Refresh overdue to reveal evidence and proposed fix. |
+| HTML dashboards | 57–66 | Generic operations dashboard powered by Metronome flows, API and freshness. No METO AI Portal. |
+| Two ways | 66–79 | Browser access beside ChatGPT, Claude and Gemini connected through Metronome MCP; a prompt becomes a Flow. No server diagram. |
+| AI comparison | 79–104 | Two recreated ChatGPT interfaces run the same illustrative request. Left: wrong portal path, retry, wrong reporting period. Right: MCP tool steps build and verify a repeatable Flow. Finish with a compact comparison of navigation, time/tokens, data accuracy and deliverable. |
 
-Narrative throughline: anyone can build their own flows in minutes without code, keep them healthy overnight, and connect their existing AI tools to make data easier to use.
+The comparison is a synthetic example of the requested product direction, not measured performance or a guarantee. No subtitles or governance narrative.
