@@ -3,105 +3,111 @@
   "rate": "-3%",
   "reviewMethod": "Local faster-whisper 1.2.1 / base.en / int8 / CPU, synthesis word boundaries and media timing. No human listening pass claimed.",
   "notes": [
-    "All sixteen phrases were reviewed. ASAP, GSCM, two AM, AI, HTML, API, ETL, ChatGPT and MCP appear in recognition.",
-    "ASR writes NERP as and ERP, METO as Mito, Claude as CLOD and your as you’re. These spelling ambiguities are retained, not silently corrected.",
-    "Whisper inserted low-confidence field (0.27) before flows in phrase 14. A second recognition service returned build flows, and the synthesis boundaries contain only build / flows.",
-    "Automated recognition does not prove subjective voice quality or every vowel. Owner listening remains the final pronunciation preference check."
+    "All sixteen final phrases have recognition and synthesis boundary evidence. Changed phrases were regenerated and re-recognized; unchanged phrases 9–11 retain identical cached source audio.",
+    "ASR recognizes ASAP, GSCM, two AM, AI, HTML, API, ETL, ChatGPT and MCP. METO is spelled Mito and Claude is spelled Clod; some in minutes becomes and minutes. These differences are retained, not silently corrected.",
+    "Phrase 3 includes a trailing recognition artifact //. Automated recognition does not establish subjective voice quality or every vowel.",
+    "The opening says Your reports are spread across portals, eliminating the ambiguous verb live. All generated phrases fit naturally with no post-generation time compression."
   ],
   "phrases": [
     {
       "segment": 1,
-      "script": "Reports live in separate portals, like ASAP and GSCM.",
-      "spoken": "Reports live in separate portals, like A S A P and G S C M.",
-      "recognized": "Reports live in separate portals, like ASAP and GSCM.",
+      "script": "Your reports are spread across portals like ASAP and GSCM.",
+      "spoken": "Your reports are spread across portals like A S A P and G S C M.",
+      "recognized": "Your reports are spread across portals like ASAP and GSCM.",
       "wordBoundaries": [
         {
           "type": "WordBoundary",
           "offset": 1030830,
-          "duration": 3865830,
-          "text": "Reports"
+          "duration": 1417500,
+          "text": "Your"
         },
         {
           "type": "WordBoundary",
-          "offset": 5025830,
-          "duration": 3865830,
-          "text": "live"
+          "offset": 2577500,
+          "duration": 4252500,
+          "text": "reports"
         },
         {
           "type": "WordBoundary",
-          "offset": 9020410,
-          "duration": 1030830,
-          "text": "in"
+          "offset": 6958750,
+          "duration": 902080,
+          "text": "are"
         },
         {
           "type": "WordBoundary",
-          "offset": 10180410,
-          "duration": 3995000,
-          "text": "separate"
+          "offset": 7989580,
+          "duration": 3221660,
+          "text": "spread"
         },
         {
           "type": "WordBoundary",
-          "offset": 14304160,
-          "duration": 5412500,
+          "offset": 11340000,
+          "duration": 3737080,
+          "text": "across"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 15206250,
+          "duration": 4510410,
           "text": "portals"
         },
         {
           "type": "WordBoundary",
-          "offset": 22036250,
-          "duration": 1675410,
+          "offset": 19845410,
+          "duration": 1804160,
           "text": "like"
         },
         {
           "type": "WordBoundary",
-          "offset": 25128750,
+          "offset": 22938330,
           "duration": 1675410,
           "text": "A"
         },
         {
           "type": "WordBoundary",
-          "offset": 26932910,
-          "duration": 3092910,
+          "offset": 24742080,
+          "duration": 2963750,
           "text": "S"
         },
         {
           "type": "WordBoundary",
-          "offset": 31185410,
-          "duration": 1288750,
+          "offset": 28865830,
+          "duration": 1160000,
           "text": "A"
         },
         {
           "type": "WordBoundary",
-          "offset": 32602910,
-          "duration": 4639160,
+          "offset": 30154580,
+          "duration": 4381250,
           "text": "P"
         },
         {
           "type": "WordBoundary",
-          "offset": 37371250,
-          "duration": 1546250,
+          "offset": 34665000,
+          "duration": 1417500,
           "text": "and"
         },
         {
           "type": "WordBoundary",
-          "offset": 39046250,
+          "offset": 36211250,
           "duration": 3479580,
           "text": "G"
         },
         {
           "type": "WordBoundary",
-          "offset": 42654580,
+          "offset": 39819580,
           "duration": 1932910,
           "text": "S"
         },
         {
           "type": "WordBoundary",
-          "offset": 44716660,
-          "duration": 2448330,
+          "offset": 41881250,
+          "duration": 2319580,
           "text": "C"
         },
         {
           "type": "WordBoundary",
-          "offset": 47293750,
+          "offset": 44330000,
           "duration": 2577500,
           "text": "M"
         }
@@ -109,121 +115,139 @@
     },
     {
       "segment": 2,
-      "script": "Connect your business portals, Datahub, NERP, and email reports. Metronome organizes their data in one place.",
-      "spoken": "Connect your business portals, Datahub, N E R P, and email reports. Metronome organizes their data in one place.",
-      "recognized": "Connect your business portals, data hub, and ERP and email reports. Metronome organizes their data in one place.",
+      "script": "With Metronome, anyone can create their own flows in minutes, without code. Connect your sources and organize the data in one place.",
+      "spoken": "With Metronome, anyone can create their own flows in minutes, without code. Connect your sources and organize the data in one place.",
+      "recognized": "With Metronome, anyone can create their own flows and minutes, without code, connect your sources and organize the data in one place.",
       "wordBoundaries": [
         {
           "type": "WordBoundary",
           "offset": 1030830,
-          "duration": 2835000,
+          "duration": 1417500,
+          "text": "With"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 2577500,
+          "duration": 5154580,
+          "text": "Metronome"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 11597910,
+          "duration": 3479580,
+          "text": "anyone"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 15206250,
+          "duration": 1546250,
+          "text": "can"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 16881250,
+          "duration": 3479580,
+          "text": "create"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 20489580,
+          "duration": 1932910,
+          "text": "their"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 22551660,
+          "duration": 2061660,
+          "text": "own"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 24742080,
+          "duration": 4123750,
+          "text": "flows"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 28995000,
+          "duration": 1160000,
+          "text": "in"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 30283330,
+          "duration": 4897080,
+          "text": "minutes"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 37113330,
+          "duration": 3865830,
+          "text": "without"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 41108330,
+          "duration": 3865830,
+          "text": "code"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 49226660,
+          "duration": 2963750,
           "text": "Connect"
         },
         {
           "type": "WordBoundary",
-          "offset": 3995000,
+          "offset": 52319580,
           "duration": 1288750,
           "text": "your"
         },
         {
           "type": "WordBoundary",
-          "offset": 5412500,
-          "duration": 3608330,
-          "text": "business"
+          "offset": 53737080,
+          "duration": 6056660,
+          "text": "sources"
         },
         {
           "type": "WordBoundary",
-          "offset": 9149580,
-          "duration": 5541250,
-          "text": "portals"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 17010410,
-          "duration": 4767910,
-          "text": "Datahub"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 25773330,
-          "duration": 1030830,
-          "text": "N"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 27963750,
-          "duration": 2061660,
-          "text": "E"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 30154580,
-          "duration": 1546250,
-          "text": "R"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 31830000,
-          "duration": 4381250,
-          "text": "P"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 39304160,
-          "duration": 1288750,
+          "offset": 61597910,
+          "duration": 1417500,
           "text": "and"
         },
         {
           "type": "WordBoundary",
-          "offset": 40721660,
-          "duration": 3221660,
-          "text": "email"
+          "offset": 63788750,
+          "duration": 5412500,
+          "text": "organize"
         },
         {
           "type": "WordBoundary",
-          "offset": 44072080,
-          "duration": 6185410,
-          "text": "reports"
+          "offset": 69330000,
+          "duration": 1030830,
+          "text": "the"
         },
         {
           "type": "WordBoundary",
-          "offset": 54510410,
-          "duration": 4639160,
-          "text": "Metronome"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 60695830,
-          "duration": 5670000,
-          "text": "organizes"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 66495000,
-          "duration": 1546250,
-          "text": "their"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 68170000,
-          "duration": 4252500,
+          "offset": 70489580,
+          "duration": 4123750,
           "text": "data"
         },
         {
           "type": "WordBoundary",
-          "offset": 74097910,
-          "duration": 1288750,
+          "offset": 76159580,
+          "duration": 1160000,
           "text": "in"
         },
         {
           "type": "WordBoundary",
-          "offset": 75515410,
-          "duration": 1804160,
+          "offset": 77448330,
+          "duration": 1932910,
           "text": "one"
         },
         {
           "type": "WordBoundary",
-          "offset": 77448330,
+          "offset": 79510410,
           "duration": 5412500,
           "text": "place"
         }
@@ -231,450 +255,456 @@
     },
     {
       "segment": 3,
-      "script": "Your data is ready for Excel and reporting, and for analysis with your own AI tools.",
-      "spoken": "Your data is ready for Excel and reporting, and for analysis with your own AI tools.",
-      "recognized": "Your data is ready for Excel and reporting and for analysis with your own AI tools.",
+      "script": "Use your data in Excel, or connect Metronome to your own AI tools and start asking questions.",
+      "spoken": "Use your data in Excel, or connect Metronome to your own AI tools and start asking questions.",
+      "recognized": "Use your data in Excel or connect Metronome to your own AI tools and start asking questions. //",
       "wordBoundaries": [
         {
           "type": "WordBoundary",
           "offset": 1030830,
-          "duration": 1030830,
-          "text": "Your"
+          "duration": 2061660,
+          "text": "Use"
         },
         {
           "type": "WordBoundary",
-          "offset": 2190830,
-          "duration": 4639160,
-          "text": "data"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 6958750,
-          "duration": 1417500,
-          "text": "is"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 8505000,
-          "duration": 2319580,
-          "text": "ready"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 10953750,
-          "duration": 1804160,
-          "text": "for"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 12886660,
-          "duration": 5670000,
-          "text": "Excel"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 19587500,
-          "duration": 773330,
-          "text": "and"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 20489580,
-          "duration": 5670000,
-          "text": "reporting"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 30283330,
-          "duration": 515409,
-          "text": "and"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 30927910,
-          "duration": 1546250,
-          "text": "for"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 32602910,
-          "duration": 5799160,
-          "text": "analysis"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 38530830,
-          "duration": 1417500,
-          "text": "with"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 40077500,
-          "duration": 1417500,
+          "offset": 3221660,
+          "duration": 1160000,
           "text": "your"
         },
         {
           "type": "WordBoundary",
-          "offset": 41623750,
-          "duration": 1675410,
+          "offset": 4510410,
+          "duration": 3608330,
+          "text": "data"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 8247500,
+          "duration": 1288750,
+          "text": "in"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 9665000,
+          "duration": 5541250,
+          "text": "Excel"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 19200830,
+          "duration": 1160000,
+          "text": "or"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 20489580,
+          "duration": 3608330,
+          "text": "connect"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 24226660,
+          "duration": 5154580,
+          "text": "Metronome"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 29510410,
+          "duration": 1030830,
+          "text": "to"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 30670000,
+          "duration": 1932910,
+          "text": "your"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 32732080,
+          "duration": 1804160,
           "text": "own"
         },
         {
           "type": "WordBoundary",
-          "offset": 43427910,
-          "duration": 2448330,
+          "offset": 34665000,
+          "duration": 3221660,
           "text": "AI"
         },
         {
           "type": "WordBoundary",
-          "offset": 46005000,
-          "duration": 4897080,
+          "offset": 38015410,
+          "duration": 5025830,
           "text": "tools"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 44845410,
+          "duration": 1030830,
+          "text": "and"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 46005000,
+          "duration": 2706250,
+          "text": "start"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 48840000,
+          "duration": 3221660,
+          "text": "asking"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 52190830,
+          "duration": 6443330,
+          "text": "questions"
         }
       ]
     },
     {
       "segment": 4,
-      "script": "Building pipelines used to mean writing code. Now, create a Flow yourself, without code.",
-      "spoken": "Building pipelines used to mean writing code. Now, create a Flow yourself, without code.",
-      "recognized": "Building pipelines used to mean writing code. Now, create a flow yourself without code.",
+      "script": "What once needed code now takes minutes. Create your own Flow.",
+      "spoken": "What once needed code now takes minutes. Create your own Flow.",
+      "recognized": "What once needed code now takes minutes. Create your own flow.",
       "wordBoundaries": [
         {
           "type": "WordBoundary",
-          "offset": 1160000,
-          "duration": 2706250,
-          "text": "Building"
+          "offset": 1030830,
+          "duration": 1804160,
+          "text": "What"
         },
         {
           "type": "WordBoundary",
-          "offset": 3995000,
-          "duration": 6056660,
-          "text": "pipelines"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 10180410,
-          "duration": 2319580,
-          "text": "used"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 12628750,
-          "duration": 515409,
-          "text": "to"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 13273330,
-          "duration": 2319580,
-          "text": "mean"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 15721660,
-          "duration": 2706250,
-          "text": "writing"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 18556660,
-          "duration": 3737080,
-          "text": "code"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 26546250,
-          "duration": 3221660,
-          "text": "Now"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 32602910,
+          "offset": 2963750,
           "duration": 2835000,
-          "text": "create"
+          "text": "once"
         },
         {
           "type": "WordBoundary",
-          "offset": 35567080,
-          "duration": 515409,
-          "text": "a"
+          "offset": 5927910,
+          "duration": 2963750,
+          "text": "needed"
         },
         {
           "type": "WordBoundary",
-          "offset": 36211250,
-          "duration": 2448330,
-          "text": "Flow"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 38788750,
-          "duration": 4767910,
-          "text": "yourself"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 46005000,
-          "duration": 3350410,
-          "text": "without"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 49484580,
-          "duration": 3350410,
+          "offset": 9020410,
+          "duration": 3865830,
           "text": "code"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 14561660,
+          "duration": 2577500,
+          "text": "now"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 17267910,
+          "duration": 3221660,
+          "text": "takes"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 20618750,
+          "duration": 5154580,
+          "text": "minutes"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 30025830,
+          "duration": 2706250,
+          "text": "Create"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 32860830,
+          "duration": 1288750,
+          "text": "your"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 34278330,
+          "duration": 1288750,
+          "text": "own"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 35695830,
+          "duration": 3737080,
+          "text": "Flow"
         }
       ]
     },
     {
       "segment": 5,
-      "script": "Point Metronome to a website. Choose the data you want.",
-      "spoken": "Point Metronome to a website. Choose the data you want.",
-      "recognized": "Point metronome to a website. Choose the data you want.",
+      "script": "Enter a website. Then choose the report you want.",
+      "spoken": "Enter a website. Then choose the report you want.",
+      "recognized": "Enter a website, then choose the report you want.",
       "wordBoundaries": [
         {
           "type": "WordBoundary",
-          "offset": 1160000,
+          "offset": 1030830,
           "duration": 1932910,
-          "text": "Point"
+          "text": "Enter"
         },
         {
           "type": "WordBoundary",
-          "offset": 3221660,
-          "duration": 5412500,
-          "text": "Metronome"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 9536250,
-          "duration": 1546250,
-          "text": "to"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 11211250,
-          "duration": 773330,
+          "offset": 3092910,
+          "duration": 515409,
           "text": "a"
         },
         {
           "type": "WordBoundary",
-          "offset": 12113330,
-          "duration": 5799160,
+          "offset": 3737080,
+          "duration": 5283330,
           "text": "website"
         },
         {
           "type": "WordBoundary",
-          "offset": 22165000,
-          "duration": 2319580,
-          "text": "Choose"
+          "offset": 13402080,
+          "duration": 1804160,
+          "text": "Then"
         },
         {
           "type": "WordBoundary",
-          "offset": 24613330,
+          "offset": 15335000,
+          "duration": 2835000,
+          "text": "choose"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 18299160,
           "duration": 902080,
           "text": "the"
         },
         {
           "type": "WordBoundary",
-          "offset": 25644160,
-          "duration": 2319580,
-          "text": "data"
+          "offset": 19330000,
+          "duration": 3608330,
+          "text": "report"
         },
         {
           "type": "WordBoundary",
-          "offset": 28092910,
-          "duration": 1417500,
+          "offset": 23067080,
+          "duration": 902080,
           "text": "you"
         },
         {
           "type": "WordBoundary",
-          "offset": 29639160,
-          "duration": 3350410,
+          "offset": 24097910,
+          "duration": 3092910,
           "text": "want"
         }
       ]
     },
     {
       "segment": 6,
-      "script": "Pick where it should go, and when it should run.",
-      "spoken": "Pick where it should go, and when it should run.",
-      "recognized": "Pick where it should go, and when it should run.",
+      "script": "Pick a destination, and choose when your Flow should run.",
+      "spoken": "Pick a destination, and choose when your Flow should run.",
+      "recognized": "Pick a destination and choose when your flow should run.",
       "wordBoundaries": [
         {
           "type": "WordBoundary",
-          "offset": 1160000,
-          "duration": 1804160,
+          "offset": 1288750,
+          "duration": 1288750,
           "text": "Pick"
         },
         {
           "type": "WordBoundary",
-          "offset": 3092910,
-          "duration": 1417500,
-          "text": "where"
+          "offset": 2706250,
+          "duration": 515409,
+          "text": "a"
         },
         {
           "type": "WordBoundary",
-          "offset": 4639160,
-          "duration": 644160,
-          "text": "it"
+          "offset": 3350410,
+          "duration": 7087500,
+          "text": "destination"
         },
         {
           "type": "WordBoundary",
-          "offset": 5412500,
-          "duration": 2190830,
-          "text": "should"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 7732080,
-          "duration": 3737080,
-          "text": "go"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 14561660,
-          "duration": 1160000,
+          "offset": 14046250,
+          "duration": 773330,
           "text": "and"
         },
         {
           "type": "WordBoundary",
-          "offset": 15850410,
+          "offset": 14948330,
+          "duration": 3995000,
+          "text": "choose"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 19072080,
           "duration": 1160000,
           "text": "when"
         },
         {
           "type": "WordBoundary",
-          "offset": 17139160,
-          "duration": 644160,
-          "text": "it"
+          "offset": 20360830,
+          "duration": 1160000,
+          "text": "your"
         },
         {
           "type": "WordBoundary",
-          "offset": 17912500,
-          "duration": 2190830,
+          "offset": 21649580,
+          "duration": 3092910,
+          "text": "Flow"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 24871250,
+          "duration": 2061660,
           "text": "should"
         },
         {
           "type": "WordBoundary",
-          "offset": 20232080,
-          "duration": 2835000,
+          "offset": 27061660,
+          "duration": 3092910,
           "text": "run"
         }
       ]
     },
     {
       "segment": 7,
-      "script": "Metronome turns those choices into a repeatable pipeline.",
-      "spoken": "Metronome turns those choices into a repeatable pipeline.",
-      "recognized": "Metronome turns those choices into a repeatable pipeline.",
+      "script": "Click Create Flow, and Metronome builds your pipeline. No code needed.",
+      "spoken": "Click Create Flow, and Metronome builds your pipeline. No code needed.",
+      "recognized": "Click Create Flow and Metronome builds your pipeline. No code needed.",
       "wordBoundaries": [
         {
           "type": "WordBoundary",
           "offset": 1030830,
+          "duration": 1932910,
+          "text": "Click"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 3092910,
+          "duration": 3737080,
+          "text": "Create"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 6958750,
+          "duration": 4252500,
+          "text": "Flow"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 14690830,
+          "duration": 1288750,
+          "text": "and"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 16108330,
           "duration": 5541250,
           "text": "Metronome"
         },
         {
           "type": "WordBoundary",
-          "offset": 6700830,
-          "duration": 3479580,
-          "text": "turns"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 10309160,
-          "duration": 2190830,
-          "text": "those"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 12628750,
-          "duration": 6314580,
-          "text": "choices"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 19716660,
+          "offset": 22551660,
           "duration": 3221660,
-          "text": "into"
+          "text": "builds"
         },
         {
           "type": "WordBoundary",
-          "offset": 23067080,
-          "duration": 773330,
-          "text": "a"
+          "offset": 25902080,
+          "duration": 1030830,
+          "text": "your"
         },
         {
           "type": "WordBoundary",
-          "offset": 23969160,
+          "offset": 27061660,
           "duration": 5541250,
-          "text": "repeatable"
+          "text": "pipeline"
         },
         {
           "type": "WordBoundary",
-          "offset": 29639160,
-          "duration": 6185410,
-          "text": "pipeline"
+          "offset": 36855830,
+          "duration": 1160000,
+          "text": "No"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 38144160,
+          "duration": 2448330,
+          "text": "code"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 40721660,
+          "duration": 3221660,
+          "text": "needed"
         }
       ]
     },
     {
       "segment": 8,
-      "script": "Metronome also has local AI agents that work overnight.",
-      "spoken": "Metronome also has local AI agents that work overnight.",
-      "recognized": "Metronome also has local AI agents that work overnight.",
+      "script": "Local AI agents help keep your flows healthy, working overnight.",
+      "spoken": "Local AI agents help keep your flows healthy, working overnight.",
+      "recognized": "Local AI agents help keep your flows healthy, working overnight.",
       "wordBoundaries": [
         {
           "type": "WordBoundary",
           "offset": 1030830,
-          "duration": 4767910,
-          "text": "Metronome"
+          "duration": 3608330,
+          "text": "Local"
         },
         {
           "type": "WordBoundary",
-          "offset": 7087500,
-          "duration": 2963750,
-          "text": "also"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 10180410,
-          "duration": 2190830,
-          "text": "has"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 12500000,
-          "duration": 4381250,
-          "text": "local"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 17783330,
+          "offset": 4767910,
           "duration": 3737080,
           "text": "AI"
         },
         {
           "type": "WordBoundary",
-          "offset": 21649580,
-          "duration": 4381250,
+          "offset": 8634160,
+          "duration": 4123750,
           "text": "agents"
         },
         {
           "type": "WordBoundary",
-          "offset": 26159580,
-          "duration": 1546250,
-          "text": "that"
+          "offset": 12886660,
+          "duration": 2577500,
+          "text": "help"
         },
         {
           "type": "WordBoundary",
-          "offset": 27835000,
-          "duration": 2061660,
-          "text": "work"
+          "offset": 15592910,
+          "duration": 2963750,
+          "text": "keep"
         },
         {
           "type": "WordBoundary",
-          "offset": 30025830,
-          "duration": 5412500,
+          "offset": 18685410,
+          "duration": 1288750,
+          "text": "your"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 20102910,
+          "duration": 3221660,
+          "text": "flows"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 23453750,
+          "duration": 4510410,
+          "text": "healthy"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 31185410,
+          "duration": 3865830,
+          "text": "working"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 35180410,
+          "duration": 5283330,
           "text": "overnight"
         }
       ]
@@ -939,67 +969,67 @@
     },
     {
       "segment": 12,
-      "script": "Your HTML dashboards will live in the METO AI Portal.",
-      "spoken": "Your HTML dashboards will live in the Meto AI Portal.",
-      "recognized": "Your HTML dashboards will live in the Mito AI portal.",
+      "script": "Your HTML dashboards are hosted in the METO AI Portal.",
+      "spoken": "Your HTML dashboards are hosted in the Meto AI Portal.",
+      "recognized": "Your HTML dashboards are hosted in the Mito AI portal.",
       "wordBoundaries": [
         {
           "type": "WordBoundary",
-          "offset": 1030830,
+          "offset": 1160000,
           "duration": 1932910,
           "text": "Your"
         },
         {
           "type": "WordBoundary",
-          "offset": 3092910,
-          "duration": 6830000,
+          "offset": 3221660,
+          "duration": 6700830,
           "text": "HTML"
         },
         {
           "type": "WordBoundary",
           "offset": 10051660,
-          "duration": 6185410,
+          "duration": 5927910,
           "text": "dashboards"
         },
         {
           "type": "WordBoundary",
-          "offset": 16365830,
-          "duration": 1675410,
-          "text": "will"
+          "offset": 16108330,
+          "duration": 773330,
+          "text": "are"
         },
         {
           "type": "WordBoundary",
-          "offset": 18170000,
-          "duration": 2835000,
-          "text": "live"
+          "offset": 17010410,
+          "duration": 4897080,
+          "text": "hosted"
         },
         {
           "type": "WordBoundary",
-          "offset": 21134160,
-          "duration": 644160,
+          "offset": 22036250,
+          "duration": 1417500,
           "text": "in"
         },
         {
           "type": "WordBoundary",
-          "offset": 21907080,
-          "duration": 644160,
+          "offset": 23582500,
+          "duration": 773330,
           "text": "the"
         },
         {
           "type": "WordBoundary",
-          "offset": 22680410,
-          "duration": 4767910,
+          "offset": 24484580,
+          "duration": 4897080,
           "text": "Meto"
         },
         {
           "type": "WordBoundary",
-          "offset": 28737080,
-          "duration": 2963750,
+          "offset": 30670000,
+          "duration": 3092910,
           "text": "AI"
         },
         {
           "type": "WordBoundary",
-          "offset": 31830000,
+          "offset": 33891660,
           "duration": 4510410,
           "text": "Portal"
         }
@@ -1007,363 +1037,471 @@
     },
     {
       "segment": 13,
-      "script": "Metronome connects by API, supplying freshness and ETL pipelines.",
-      "spoken": "Metronome connects by API, supplying freshness and ETL pipelines.",
-      "recognized": "Metronome connects by API, supplying freshness and ETL pipelines.",
+      "script": "Your flows supply fresh data through Metronome's API and ETL pipelines.",
+      "spoken": "Your flows supply fresh data through Metronome's API and ETL pipelines.",
+      "recognized": "Your flows supply fresh data through Metronome's API and ETL pipelines.",
       "wordBoundaries": [
         {
           "type": "WordBoundary",
           "offset": 1030830,
-          "duration": 4639160,
-          "text": "Metronome"
+          "duration": 1160000,
+          "text": "Your"
         },
         {
           "type": "WordBoundary",
-          "offset": 5799160,
-          "duration": 4381250,
-          "text": "connects"
+          "offset": 2319580,
+          "duration": 2835000,
+          "text": "flows"
         },
         {
           "type": "WordBoundary",
-          "offset": 10309160,
-          "duration": 1675410,
-          "text": "by"
+          "offset": 5283330,
+          "duration": 3995000,
+          "text": "supply"
         },
         {
           "type": "WordBoundary",
-          "offset": 13273330,
-          "duration": 6056660,
+          "offset": 9407080,
+          "duration": 3221660,
+          "text": "fresh"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 12757910,
+          "duration": 3092910,
+          "text": "data"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 15979580,
+          "duration": 1804160,
+          "text": "through"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 17912500,
+          "duration": 6830000,
+          "text": "Metronome's"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 26030830,
+          "duration": 6700830,
           "text": "API"
         },
         {
           "type": "WordBoundary",
-          "offset": 22422500,
-          "duration": 4897080,
-          "text": "supplying"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 27448330,
-          "duration": 6572080,
-          "text": "freshness"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 35309160,
-          "duration": 2190830,
+          "offset": 35567080,
+          "duration": 1417500,
           "text": "and"
         },
         {
           "type": "WordBoundary",
-          "offset": 38659580,
-          "duration": 3995000,
+          "offset": 38144160,
+          "duration": 3865830,
           "text": "ETL"
         },
         {
           "type": "WordBoundary",
-          "offset": 42783330,
-          "duration": 8118750,
+          "offset": 42139160,
+          "duration": 7860830,
           "text": "pipelines"
         }
       ]
     },
     {
       "segment": 14,
-      "script": "Metronome is a web application, hosted on your internal server. Open it in your browser to build flows and check your data.",
-      "spoken": "Metronome is a web application, hosted on your internal server. Open it in your browser to build flows and check your data.",
-      "recognized": "Metronome is a web application hosted on your internal server. Open it in your browser to build field flows, and check your data.",
+      "script": "Open Metronome in your browser. It is a web application on your internal server, where anyone can build and manage their own flows.",
+      "spoken": "Open Metronome in your browser. It is a web application on your internal server, where anyone can build and manage their own flows.",
+      "recognized": "Open Metronome in your browser. It is a web application on your internal server where anyone can build and manage their own flows.",
       "wordBoundaries": [
         {
           "type": "WordBoundary",
           "offset": 1030830,
-          "duration": 5154580,
+          "duration": 2448330,
+          "text": "Open"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 3608330,
+          "duration": 4639160,
           "text": "Metronome"
         },
         {
           "type": "WordBoundary",
-          "offset": 7732080,
-          "duration": 1030830,
+          "offset": 8376250,
+          "duration": 644160,
+          "text": "in"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 9149580,
+          "duration": 1160000,
+          "text": "your"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 10438330,
+          "duration": 5025830,
+          "text": "browser"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 19716660,
+          "duration": 773330,
+          "text": "It"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 20618750,
+          "duration": 902080,
           "text": "is"
         },
         {
           "type": "WordBoundary",
-          "offset": 8891660,
-          "duration": 773330,
+          "offset": 21649580,
+          "duration": 644160,
           "text": "a"
         },
         {
           "type": "WordBoundary",
-          "offset": 9793750,
-          "duration": 2319580,
+          "offset": 22422500,
+          "duration": 2190830,
           "text": "web"
         },
         {
           "type": "WordBoundary",
-          "offset": 12242080,
-          "duration": 7216660,
+          "offset": 24742080,
+          "duration": 6830000,
           "text": "application"
         },
         {
           "type": "WordBoundary",
-          "offset": 23324580,
-          "duration": 3608330,
-          "text": "hosted"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 27061660,
+          "offset": 31700830,
           "duration": 1030830,
           "text": "on"
         },
         {
           "type": "WordBoundary",
-          "offset": 28221660,
-          "duration": 1288750,
+          "offset": 32860830,
+          "duration": 1546250,
           "text": "your"
         },
         {
           "type": "WordBoundary",
-          "offset": 29639160,
-          "duration": 3995000,
+          "offset": 34536250,
+          "duration": 4252500,
           "text": "internal"
         },
         {
           "type": "WordBoundary",
-          "offset": 33762910,
-          "duration": 4897080,
+          "offset": 38917500,
+          "duration": 4767910,
           "text": "server"
         },
         {
           "type": "WordBoundary",
-          "offset": 42912500,
-          "duration": 2706250,
-          "text": "Open"
+          "offset": 46649580,
+          "duration": 1804160,
+          "text": "where"
         },
         {
           "type": "WordBoundary",
-          "offset": 45747500,
-          "duration": 1030830,
-          "text": "it"
+          "offset": 48582500,
+          "duration": 4381250,
+          "text": "anyone"
         },
         {
           "type": "WordBoundary",
-          "offset": 46907080,
-          "duration": 1160000,
-          "text": "in"
+          "offset": 53092910,
+          "duration": 1804160,
+          "text": "can"
         },
         {
           "type": "WordBoundary",
-          "offset": 48195830,
-          "duration": 1288750,
-          "text": "your"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 49613330,
-          "duration": 4123750,
-          "text": "browser"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 53865830,
-          "duration": 902080,
-          "text": "to"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 54897080,
-          "duration": 2835000,
+          "offset": 55025830,
+          "duration": 3865830,
           "text": "build"
         },
         {
           "type": "WordBoundary",
-          "offset": 57860830,
-          "duration": 5283330,
-          "text": "flows"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 65592910,
-          "duration": 902080,
+          "offset": 59020410,
+          "duration": 1160000,
           "text": "and"
         },
         {
           "type": "WordBoundary",
-          "offset": 66623750,
-          "duration": 2190830,
-          "text": "check"
+          "offset": 60309160,
+          "duration": 3865830,
+          "text": "manage"
         },
         {
           "type": "WordBoundary",
-          "offset": 68943330,
-          "duration": 902080,
-          "text": "your"
+          "offset": 64304160,
+          "duration": 1546250,
+          "text": "their"
         },
         {
           "type": "WordBoundary",
-          "offset": 69974160,
-          "duration": 3350410,
-          "text": "data"
+          "offset": 65979580,
+          "duration": 1546250,
+          "text": "own"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 67654580,
+          "duration": 5799160,
+          "text": "flows"
         }
       ]
     },
     {
       "segment": 15,
-      "script": "Connect ChatGPT, Claude, or Gemini through Metronome MCP.",
-      "spoken": "Connect ChatGPT, Claude, or Gemini through Metronome M C P.",
-      "recognized": "Connect chat GPT, CLOD, or Gemini, through metronome MCP.",
+      "script": "Connect Metronome MCP to ChatGPT, Claude, or Gemini, and bring your data into the AI tools you already use.",
+      "spoken": "Connect Metronome M C P to ChatGPT, Claude, or Gemini, and bring your data into the AI tools you already use.",
+      "recognized": "Connect Metronome MCP to ChatGPT, Clod, or Gemini, and bring your data into the AI tools you already use.",
       "wordBoundaries": [
         {
           "type": "WordBoundary",
-          "offset": 1030830,
-          "duration": 3350410,
+          "offset": 1160000,
+          "duration": 3092910,
           "text": "Connect"
         },
         {
           "type": "WordBoundary",
-          "offset": 5154580,
-          "duration": 10953750,
-          "text": "ChatGPT"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 18814580,
-          "duration": 5154580,
-          "text": "Claude"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 27963750,
-          "duration": 1030830,
-          "text": "or"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 29123750,
-          "duration": 5412500,
-          "text": "Gemini"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 36340000,
-          "duration": 1804160,
-          "text": "through"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 38273330,
-          "duration": 6314580,
+          "offset": 4381250,
+          "duration": 5541250,
           "text": "Metronome"
         },
         {
           "type": "WordBoundary",
-          "offset": 47293750,
-          "duration": 1160000,
+          "offset": 11469160,
+          "duration": 1932910,
           "text": "M"
         },
         {
           "type": "WordBoundary",
-          "offset": 48582500,
+          "offset": 13530830,
           "duration": 2577500,
           "text": "C"
         },
         {
           "type": "WordBoundary",
-          "offset": 51288750,
-          "duration": 3350410,
+          "offset": 16237080,
+          "duration": 3221660,
           "text": "P"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 19587500,
+          "duration": 1288750,
+          "text": "to"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 21005000,
+          "duration": 10953750,
+          "text": "ChatGPT"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 34793750,
+          "duration": 4897080,
+          "text": "Claude"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 43556660,
+          "duration": 773330,
+          "text": "or"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 44458750,
+          "duration": 5670000,
+          "text": "Gemini"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 53737080,
+          "duration": 902080,
+          "text": "and"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 54767910,
+          "duration": 2577500,
+          "text": "bring"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 57474160,
+          "duration": 1160000,
+          "text": "your"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 58762910,
+          "duration": 3865830,
+          "text": "data"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 62757910,
+          "duration": 2577500,
+          "text": "into"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 65463750,
+          "duration": 1288750,
+          "text": "the"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 66881250,
+          "duration": 4381250,
+          "text": "AI"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 71391660,
+          "duration": 3350410,
+          "text": "tools"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 74871250,
+          "duration": 1288750,
+          "text": "you"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 76288750,
+          "duration": 4123750,
+          "text": "already"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 80541250,
+          "duration": 5025830,
+          "text": "use"
         }
       ]
     },
     {
       "segment": 16,
-      "script": "Your familiar AI tools, now connected to your business data, freshness checks, and flows.",
-      "spoken": "Your familiar AI tools, now connected to your business data, freshness checks, and flows.",
-      "recognized": "You're familiar AI tools, now connected to your business data, freshness checks, and flows.",
+      "script": "Build your own flows in minutes without code, and connect your AI to make working with data easier.",
+      "spoken": "Build your own flows in minutes without code, and connect your AI to make working with data easier.",
+      "recognized": "Build your own flows and minutes without code, and connect your AI to make working with data easier.",
       "wordBoundaries": [
         {
           "type": "WordBoundary",
-          "offset": 1030830,
+          "offset": 1160000,
+          "duration": 2190830,
+          "text": "Build"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 3479580,
           "duration": 1804160,
-          "text": "Your"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 2963750,
-          "duration": 5799160,
-          "text": "familiar"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 9536250,
-          "duration": 2963750,
-          "text": "AI"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 12628750,
-          "duration": 5154580,
-          "text": "tools"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 20360830,
-          "duration": 2319580,
-          "text": "now"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 22809160,
-          "duration": 4639160,
-          "text": "connected"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 27577500,
-          "duration": 902080,
-          "text": "to"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 28608330,
-          "duration": 1417500,
           "text": "your"
         },
         {
           "type": "WordBoundary",
-          "offset": 30154580,
+          "offset": 5412500,
+          "duration": 1932910,
+          "text": "own"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 7474160,
           "duration": 4123750,
-          "text": "business"
+          "text": "flows"
         },
         {
           "type": "WordBoundary",
-          "offset": 34407080,
-          "duration": 3221660,
-          "text": "data"
+          "offset": 11726660,
+          "duration": 1160000,
+          "text": "in"
         },
         {
           "type": "WordBoundary",
-          "offset": 40721660,
-          "duration": 4381250,
-          "text": "freshness"
+          "offset": 13015410,
+          "duration": 3865830,
+          "text": "minutes"
         },
         {
           "type": "WordBoundary",
-          "offset": 45232080,
-          "duration": 4381250,
-          "text": "checks"
+          "offset": 17010410,
+          "duration": 4123750,
+          "text": "without"
         },
         {
           "type": "WordBoundary",
-          "offset": 51932910,
-          "duration": 1030830,
+          "offset": 21262910,
+          "duration": 4252500,
+          "text": "code"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 28737080,
+          "duration": 902080,
           "text": "and"
         },
         {
           "type": "WordBoundary",
-          "offset": 53092910,
-          "duration": 5541250,
-          "text": "flows"
+          "offset": 29767910,
+          "duration": 3608330,
+          "text": "connect"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 33505000,
+          "duration": 1546250,
+          "text": "your"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 35180410,
+          "duration": 3608330,
+          "text": "AI"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 38917500,
+          "duration": 1417500,
+          "text": "to"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 40463750,
+          "duration": 2190830,
+          "text": "make"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 42783330,
+          "duration": 3479580,
+          "text": "working"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 46391660,
+          "duration": 1675410,
+          "text": "with"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 48195830,
+          "duration": 2577500,
+          "text": "data"
+        },
+        {
+          "type": "WordBoundary",
+          "offset": 50902080,
+          "duration": 5154580,
+          "text": "easier"
         }
       ]
     }

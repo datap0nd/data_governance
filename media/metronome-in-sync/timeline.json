@@ -1,6 +1,6 @@
 {
   "title": "Metronome — Your data, connected",
-  "version": 3,
+  "version": 5,
   "durationSeconds": 144,
   "width": 1920,
   "height": 1080,
@@ -66,50 +66,50 @@
     {
       "start": 0.5,
       "end": 9.6,
-      "en": "Reports live in separate portals, like ASAP and GSCM.",
-      "spoken": "Reports live in separate portals, like A S A P and G S C M."
+      "en": "Your reports are spread across portals like ASAP and GSCM.",
+      "spoken": "Your reports are spread across portals like A S A P and G S C M."
     },
     {
       "start": 10.4,
       "end": 23.5,
-      "en": "Connect your business portals, Datahub, NERP, and email reports. Metronome organizes their data in one place.",
-      "spoken": "Connect your business portals, Datahub, N E R P, and email reports. Metronome organizes their data in one place."
+      "en": "With Metronome, anyone can create their own flows in minutes, without code. Connect your sources and organize the data in one place.",
+      "spoken": "With Metronome, anyone can create their own flows in minutes, without code. Connect your sources and organize the data in one place."
     },
     {
       "start": 24.5,
       "end": 35.4,
-      "en": "Your data is ready for Excel and reporting, and for analysis with your own AI tools.",
-      "spoken": "Your data is ready for Excel and reporting, and for analysis with your own AI tools."
+      "en": "Use your data in Excel, or connect Metronome to your own AI tools and start asking questions.",
+      "spoken": "Use your data in Excel, or connect Metronome to your own AI tools and start asking questions."
     },
     {
       "start": 36.4,
       "end": 42.8,
-      "en": "Building pipelines used to mean writing code. Now, create a Flow yourself, without code.",
-      "spoken": "Building pipelines used to mean writing code. Now, create a Flow yourself, without code."
+      "en": "What once needed code now takes minutes. Create your own Flow.",
+      "spoken": "What once needed code now takes minutes. Create your own Flow."
     },
     {
       "start": 43,
       "end": 48.4,
-      "en": "Point Metronome to a website. Choose the data you want.",
-      "spoken": "Point Metronome to a website. Choose the data you want."
+      "en": "Enter a website. Then choose the report you want.",
+      "spoken": "Enter a website. Then choose the report you want."
     },
     {
       "start": 49,
       "end": 54.3,
-      "en": "Pick where it should go, and when it should run.",
-      "spoken": "Pick where it should go, and when it should run."
+      "en": "Pick a destination, and choose when your Flow should run.",
+      "spoken": "Pick a destination, and choose when your Flow should run."
     },
     {
       "start": 55,
       "end": 61.4,
-      "en": "Metronome turns those choices into a repeatable pipeline.",
-      "spoken": "Metronome turns those choices into a repeatable pipeline."
+      "en": "Click Create Flow, and Metronome builds your pipeline. No code needed.",
+      "spoken": "Click Create Flow, and Metronome builds your pipeline. No code needed."
     },
     {
       "start": 62.5,
       "end": 68.2,
-      "en": "Metronome also has local AI agents that work overnight.",
-      "spoken": "Metronome also has local AI agents that work overnight."
+      "en": "Local AI agents help keep your flows healthy, working overnight.",
+      "spoken": "Local AI agents help keep your flows healthy, working overnight."
     },
     {
       "start": 68.5,
@@ -132,32 +132,32 @@
     {
       "start": 94.5,
       "end": 101.5,
-      "en": "Your HTML dashboards will live in the METO AI Portal.",
-      "spoken": "Your HTML dashboards will live in the Meto AI Portal."
+      "en": "Your HTML dashboards are hosted in the METO AI Portal.",
+      "spoken": "Your HTML dashboards are hosted in the Meto AI Portal."
     },
     {
       "start": 101.8,
       "end": 109.6,
-      "en": "Metronome connects by API, supplying freshness and ETL pipelines.",
-      "spoken": "Metronome connects by API, supplying freshness and ETL pipelines."
+      "en": "Your flows supply fresh data through Metronome's API and ETL pipelines.",
+      "spoken": "Your flows supply fresh data through Metronome's API and ETL pipelines."
     },
     {
       "start": 110.4,
       "end": 121.4,
-      "en": "Metronome is a web application, hosted on your internal server. Open it in your browser to build flows and check your data.",
-      "spoken": "Metronome is a web application, hosted on your internal server. Open it in your browser to build flows and check your data."
+      "en": "Open Metronome in your browser. It is a web application on your internal server, where anyone can build and manage their own flows.",
+      "spoken": "Open Metronome in your browser. It is a web application on your internal server, where anyone can build and manage their own flows."
     },
     {
       "start": 122.5,
       "end": 132.6,
-      "en": "Connect ChatGPT, Claude, or Gemini through Metronome MCP.",
-      "spoken": "Connect ChatGPT, Claude, or Gemini through Metronome M C P."
+      "en": "Connect Metronome MCP to ChatGPT, Claude, or Gemini, and bring your data into the AI tools you already use.",
+      "spoken": "Connect Metronome M C P to ChatGPT, Claude, or Gemini, and bring your data into the AI tools you already use."
     },
     {
       "start": 133,
       "end": 143.2,
-      "en": "Your familiar AI tools, now connected to your business data, freshness checks, and flows.",
-      "spoken": "Your familiar AI tools, now connected to your business data, freshness checks, and flows."
+      "en": "Build your own flows in minutes without code, and connect your AI to make working with data easier.",
+      "spoken": "Build your own flows in minutes without code, and connect your AI to make working with data easier."
     }
   ]
 }

@@ -6,8 +6,6 @@
   const $$ = selector => [...document.querySelectorAll(selector)];
   const show = (el, visible) => { el.style.visibility = visible ? 'inherit' : 'hidden'; };
   const scenes = config.scenes.map(s => ({...s, el: document.getElementById(s.id)}));
-  const fields = $$('[data-field]');
-  const values = $$('[data-value]').map(el => ({el, value: el.textContent}));
   const brandEls = $$('[data-brand]');
   const move = (el, x, y) => { el.style.transform = `translate(${x}px,${y}px)`; };
   function cursorAt(el, t, points) {
@@ -37,28 +35,7 @@
     show($('.builder-browser'),t>=41.4);
     $('.builder-browser').style.opacity=ease((t-41.4)/.45);
     $('.code-sheet').style.transform=`translateX(${-ease((t-40.7)/.7)*60}px)`;
-    const fieldTimes=[43,46,49,52];
-    fields.forEach((el,i)=>{
-      const entered=t>=fieldTimes[i];
-      el.classList.toggle('selected',entered&&t<fieldTimes[i]+2.4);
-      values[i].el.textContent=entered?values[i].value.slice(0,Math.ceil(clamp((t-fieldTimes[i])/.9)*values[i].value.length)):'—';
-      show(el.querySelector('.i'),t>=fieldTimes[i]+1.1);
-    });
-    $$('.pipeline-node').forEach((el,i)=>{const p=ease((t-57.85-i*.35)/.5);el.style.opacity=p;el.style.transform=`translateY(${(1-p)*18}px)`;});
-    $$('.node-link').forEach((el,i)=>el.style.opacity=ease((t-58.1-i*.35)/.5));
-    $('.pipeline-status').style.opacity=ease((t-59.4)/.5);
-    const create=$('.create-flow');
-    create.textContent=t>=59.4?'Flow created ✓':t>=57.65?'Creating…':'Create Flow';
-    create.classList.toggle('pressed',t>=57.4&&t<57.65);
-    create.classList.toggle('hovered',t>=56.8&&t<59.2);
-    // Fixed 1920x1080 composition: button box (1430,549,230,60), tip (4.3,3.25).
-    // Keep geometry independent of seek order and the changing button label.
-    const targetX=1545-4.3;
-    const targetY=579-3.25;
-    cursorAt($('.flow-cursor'),t,[[41.4,1530,530],[42.9,210,165],[45.7,210,275],[48.7,210,382],[51.7,210,490],[56.8,targetX,targetY],[58.7,targetX,targetY],[59.6,targetX+90,targetY-60]]);
-    $('.flow-cursor .pointer').style.transform=`scale(${t>=57.4&&t<57.65?.88:1})`;
-    const click=clamp((t-57.4)/.6);$('.flow-cursor>i').style.opacity=t>=57.4&&t<58?1-click:0;$('.flow-cursor>i').style.transform=`scale(${.5+click*1.8})`;
-    show($('.flow-cursor'),t>=41.4&&t<60);
+    window.FilmBuilder.draw(t);
 
     let findings=0;
     $$('[data-lane]').forEach((lane,i)=>{

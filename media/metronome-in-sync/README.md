@@ -38,3 +38,9 @@ Install `audio/requirements.txt` and run `python audio/score.py` to regenerate n
 This film presents the owner's requested product story. The METO AI Portal/API architecture, Metronome MCP connections and simplified no-code journey are illustrative product direction, not evidence that those integrations are deployed. No application implementation is included. The overnight checks reflect `docs/data_auditor.md`; suggested fixes remain proposals for a person to review.
 
 Portal data, issue examples and `.example` addresses are fictional. Chrome is a code recreation, not a verified pixel-identical capture of a particular release. Excel's ribbon comes from the owner's Scribble tour. Korean text is used only inside the report portals, with embedded Noto Sans KR. No native desktop automation is used.
+
+## Interactive Flow demonstration (revision 5)
+
+Open `builder-demo.html` to try the exact input and dropdown handlers used in the film. Enter a website, choose from 12 generic reports, select Shared drive / Documents / Local database and a schedule, then create the illustrated pipeline. This synthetic demo has no backend side effects. The video replays those control events deterministically, including uneven typing, menu dwell, and press/release timing.
+
+The narration emphasizes anyone creating their own flows in minutes without code and connecting their existing AI tools. “Your reports are spread across portals” removes the ambiguous pronunciation of “live”.
