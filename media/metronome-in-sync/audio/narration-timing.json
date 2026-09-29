@@ -2,113 +2,113 @@
   {
     "segment": 1,
     "start": 0.5,
-    "end": 6.41175,
+    "end": 5.550104166666666,
     "speed": 1,
-    "naturalSeconds": 5.912
+    "naturalSeconds": 5.05
   },
   {
     "segment": 2,
     "start": 10.4,
-    "end": 20.633645833333333,
+    "end": 18.718541666666667,
     "speed": 1,
-    "naturalSeconds": 10.234
+    "naturalSeconds": 8.319
   },
   {
     "segment": 3,
     "start": 24.5,
-    "end": 31.622374999999998,
+    "end": 29.613541666666666,
     "speed": 1,
-    "naturalSeconds": 7.122
+    "naturalSeconds": 5.114
   },
   {
     "segment": 4,
     "start": 36.4,
-    "end": 42.2815625,
+    "end": 41.715937499999995,
     "speed": 1,
-    "naturalSeconds": 5.882
+    "naturalSeconds": 5.316
   },
   {
     "segment": 5,
     "start": 43,
-    "end": 46.596583333333335,
+    "end": 46.31583333333333,
     "speed": 1,
-    "naturalSeconds": 3.597
+    "naturalSeconds": 3.316
   },
   {
     "segment": 6,
     "start": 49,
-    "end": 51.421958333333336,
+    "end": 51.36535416666667,
     "speed": 1,
-    "naturalSeconds": 2.422
+    "naturalSeconds": 2.365
   },
   {
     "segment": 7,
     "start": 55,
-    "end": 58.81402083333333,
+    "end": 58.6305,
     "speed": 1,
-    "naturalSeconds": 3.814
+    "naturalSeconds": 3.631
   },
   {
     "segment": 8,
     "start": 62.5,
-    "end": 67.31239583333334,
+    "end": 66.07145833333334,
     "speed": 1,
-    "naturalSeconds": 4.812
+    "naturalSeconds": 3.571
   },
   {
     "segment": 9,
     "start": 68.5,
-    "end": 75.50558333333333,
+    "end": 74.0221875,
     "speed": 1,
-    "naturalSeconds": 7.006
+    "naturalSeconds": 5.522
   },
   {
     "segment": 10,
     "start": 78.5,
-    "end": 80.7485625,
+    "end": 80.64370833333334,
     "speed": 1,
-    "naturalSeconds": 2.249
+    "naturalSeconds": 2.144
   },
   {
     "segment": 11,
     "start": 83,
-    "end": 88.080625,
+    "end": 88.3354375,
     "speed": 1,
-    "naturalSeconds": 5.081
+    "naturalSeconds": 5.335
   },
   {
     "segment": 12,
     "start": 94.5,
-    "end": 100.98514583333333,
+    "end": 98.1633125,
     "speed": 1,
-    "naturalSeconds": 6.485
+    "naturalSeconds": 3.663
   },
   {
     "segment": 13,
     "start": 101.8,
-    "end": 109.176875,
+    "end": 106.90189583333333,
     "speed": 1,
-    "naturalSeconds": 7.377
+    "naturalSeconds": 5.102
   },
   {
     "segment": 14,
     "start": 110.4,
-    "end": 117.82947916666667,
+    "end": 117.80385416666667,
     "speed": 1,
-    "naturalSeconds": 7.429
+    "naturalSeconds": 7.404
   },
   {
     "segment": 15,
     "start": 122.5,
-    "end": 130.028125,
+    "end": 128.0336875,
     "speed": 1,
-    "naturalSeconds": 7.528
+    "naturalSeconds": 5.534
   },
   {
     "segment": 16,
     "start": 133,
-    "end": 140.40708333333333,
+    "end": 138.883375,
     "speed": 1,
-    "naturalSeconds": 7.407
+    "naturalSeconds": 5.883
   }
 ]

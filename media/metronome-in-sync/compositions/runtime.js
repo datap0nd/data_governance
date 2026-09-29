@@ -44,16 +44,44 @@
       values[i].el.textContent=entered?values[i].value.slice(0,Math.ceil(clamp((t-fieldTimes[i])/.9)*values[i].value.length)):'—';
       show(el.querySelector('.i'),t>=fieldTimes[i]+1.1);
     });
-    $$('.pipeline-node').forEach((el,i)=>{const p=ease((t-57.5-i*.35)/.5);el.style.opacity=p;el.style.transform=`translateY(${(1-p)*18}px)`;});
-    $$('.node-link').forEach((el,i)=>el.style.opacity=ease((t-58-i*.35)/.5));
-    $('.pipeline-status').style.opacity=ease((t-59.1)/.5);
-    $('.create-flow').textContent=t>=58.2?'Flow created ✓':'Create Flow';
-    cursorAt($('.flow-cursor'),t,[[41.4,1530,530],[42.9,210,165],[45.7,210,275],[48.7,210,382],[51.7,210,490],[56.8,1480,542],[58.3,1480,542],[59.4,1580,580]]);
-    const click=ease((t-57.4)/.6);$('.flow-cursor>i').style.opacity=t>=57.4&&t<58.1?1-click:0;$('.flow-cursor>i').style.transform=`scale(${.5+click*2})`;
+    $$('.pipeline-node').forEach((el,i)=>{const p=ease((t-57.85-i*.35)/.5);el.style.opacity=p;el.style.transform=`translateY(${(1-p)*18}px)`;});
+    $$('.node-link').forEach((el,i)=>el.style.opacity=ease((t-58.1-i*.35)/.5));
+    $('.pipeline-status').style.opacity=ease((t-59.4)/.5);
+    const create=$('.create-flow');
+    create.textContent=t>=59.4?'Flow created ✓':t>=57.65?'Creating…':'Create Flow';
+    create.classList.toggle('pressed',t>=57.4&&t<57.65);
+    create.classList.toggle('hovered',t>=56.8&&t<59.2);
+    // Fixed 1920x1080 composition: button box (1430,549,230,60), tip (4.3,3.25).
+    // Keep geometry independent of seek order and the changing button label.
+    const targetX=1545-4.3;
+    const targetY=579-3.25;
+    cursorAt($('.flow-cursor'),t,[[41.4,1530,530],[42.9,210,165],[45.7,210,275],[48.7,210,382],[51.7,210,490],[56.8,targetX,targetY],[58.7,targetX,targetY],[59.6,targetX+90,targetY-60]]);
+    $('.flow-cursor .pointer').style.transform=`scale(${t>=57.4&&t<57.65?.88:1})`;
+    const click=clamp((t-57.4)/.6);$('.flow-cursor>i').style.opacity=t>=57.4&&t<58?1-click:0;$('.flow-cursor>i').style.transform=`scale(${.5+click*1.8})`;
     show($('.flow-cursor'),t>=41.4&&t<60);
 
-    $('.scan-beam').style.transform=`translateX(${((Math.max(0,t-64)*65)%660)}px)`;
-    $$('[data-audit]').forEach((el,i)=>{el.classList.toggle('checked',t>=69+i*2);show(el.querySelector('.i'),t>=69+i*2);});
+    let findings=0;
+    $$('[data-lane]').forEach((lane,i)=>{
+      const local=t-64-i*.35;
+      const bot=lane.querySelector('.pipeline-agent');
+      // Fleet width 1410; stations 216,156,244 wide, bot width 68.
+      const stops=[[-1,-74],[.7,74],[2,74],[3.5,650.3],[5,650.3],[6.5,1254],[8.3,1254]];
+      cursorAt(bot,local,stops.map(([at,left])=>[at,left,0]));
+      const scanning=(local>=.7&&local<2)||(local>=3.5&&local<5)||(local>=6.5&&local<8.3);
+      bot.classList.toggle('scanning',scanning);
+      bot.style.opacity=ease((local+.7)/.5);
+      bot.querySelector('.agent-character').style.transform=`translateY(${scanning?Math.sin(local*6)*2:Math.sin(local*9)*3}px)`;
+      lane.querySelector('.agent-scan').style.opacity=scanning?String(.45+Math.sin(local*7)*.25):'0';
+      const complete=local>=8.3;
+      lane.classList.toggle('complete',complete);
+      lane.classList.toggle('flagged',complete&&i<5);
+      lane.querySelector('.lane-result').textContent=complete?(i<5?'!':'✓'):'';
+      lane.querySelector('.lane-progress').style.width=clamp(local/6.5)*82+'%';
+      if(complete&&i<5)findings++;
+    });
+    $('.findings-counter').textContent=findings?`${findings} finding${findings===1?'':'s'}`:'Scanning';
+    $('.findings-counter').classList.toggle('has-findings',findings>0);
+    $('.agent-launch').style.opacity=1-ease((t-64)/1);
 
     $$('[data-issue]').forEach((el,i)=>{show(el,t>=78.4+i*.45);el.classList.toggle('selected',i===1&&t>=84);});
     const expand=ease((t-84)/.8);

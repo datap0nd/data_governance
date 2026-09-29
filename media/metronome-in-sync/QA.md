@@ -1,21 +1,15 @@
-# Visual film validation — 29 September 2026
+# Narration and agent motion validation
 
-The [current MP4](renders/review/animatic.mp4) is a newly rendered **144-second film with no subtitles**. It is 1920×1080, H.264 at 30 fps (4,320 frames), with stereo AAC at 48 kHz. HyperFrames 0.8.81 used Chrome 153.0.8010.53. Full FFmpeg decoding passed. Encoded loudness measured −16.16 LUFS, −1.92 dBTP and 14.90 LU range. Music remains under narration and continues through visual reading pauses.
+Current cut: **144 seconds, 1920×1080, 30 fps, zero subtitles**, English narration and instrumental music. This revision fixes the Create Flow click, depicts six moving AI agent characters, and replaces dotted-letter speech with continuous delivery using `en-US-AndrewNeural`.
 
-## Visual and narrative checks
+## Evidence
 
-The [14 encoded samples](renders/review/encoded-samples.jpg) cover both Korean report portals, all six source names, the centered icon/name-only hub, Excel and AI tools, code-to-no-code transition, input selection and pipeline creation, standalone overnight local AI, five findings before/after expansion, METO portal with an external API connection, internal-server/browser access and all three MCP boost states.
+- [Encoded interaction frames](renders/review/agents-click-samples.jpg): hover, press, Creating, completed pipeline, source inspection, Flow inspection, movement, dataset inspection and five flags.
+- [Strict check](renders/narration-agents-check.json): 12 sampled times, no lint/runtime/layout/contrast errors or warnings, zero layout findings; 234 contrast checks passed. Automated motion analysis was disabled; before/after motion states were inspected visually.
+- [Media measurements](renders/narration-agents-validation.json): full FFmpeg decode passed; 4,320 H.264 frames, stereo AAC 48 kHz, 144.000 seconds; -16.01 LUFS and -1.90 dBTP.
+- [All sixteen narration phrases](audio/pronunciation-review.json) were checked with local Whisper base.en and synthesis word boundaries. ASAP/GSCM are spoken continuously, `a.m.` stays one pronunciation unit, and AI/API/HTML/ETL/ChatGPT use normal text. The TTS rate is −3%; all post-generation speed factors are 1.0. The generator now fails on an overlong line instead of accelerating or truncating it.
+- Existing film-package tests and four syntax checks passed: `20260929T080316586Z-23040-068588a8`. No test or workflow change.
 
-No subtitle, chapter-corner or product-overview element remains. Scene 1 has no Excel icon/window. The shared-key claim is removed. Korean glyph coverage for portal text is complete. The current review offers no subtitle downloads.
+Speech recognition preserves proper-name spelling ambiguities (NERP, METO, Claude) and cannot establish subjective voice quality. **No human listening pass is claimed.** A second recognizer resolved a low-confidence extra “field” that Whisper inserted before “flows”; the synthesis boundary data has only build/flows.
 
-The [strict check](renders/revision-check.json) reports zero lint, runtime, layout and contrast errors/warnings: 14 layout sample times and 197 contrast checks across five sampled times. The motion-analysis feature was not enabled; animation states were inspected visually. The [encoded measurements](renders/encoded-validation.json) record media, narration and glyph checks. All 16 voice phrases fit at natural speed, with explicit acronym spellings in `narration.json`; no phrase overlaps or truncation was detected.
-
-## Playback and package
-
-Chrome chapter navigation sought to 78 seconds and visibly played the expanded finding, then sought to 122 seconds and played the ChatGPT boost. Encoded samples separately confirm the Claude and Gemini states. The review, frame page, script and ninth scene image returned HTTP 200. The MP4 range request returned 206 (`bytes 0-1023/11967978`).
-
-The two existing film-package tests and four applicable syntax checks passed in run `20260929T071406561Z-18540-8790388e`. The test's duration contract was updated from 84 to 144 seconds for the expanded story; all checksum, WAV-format and link checks remain intact.
-
-Chrome is recreated in code and Excel reuses the owner's Scribble ribbon. Data, issue fixes and addresses are illustrative. The METO/MCP integration story follows the owner's product direction and is not a deployment verification. Proposed fixes remain subject to human review. Source and license information is in the [ledger](assets/LEDGER.md).
-
-See the [release plan](../../../docs/testing/releases/2026-09-29-visual-film-mcp/test-plan.md) and [report](../../../docs/testing/releases/2026-09-29-visual-film-mcp/test-report.md). Final-head CI evidence is recorded in the PR before merging.
+The film's product-direction, fictional-data and code-recreated Chrome scope remains in [README](README.md). The agent inspection animation implies checks and proposed findings, not autonomous remediation. [Release plan](../../../docs/testing/releases/2026-09-29-narration-agent-motion/test-plan.md) · [Report](../../../docs/testing/releases/2026-09-29-narration-agent-motion/test-report.md).

@@ -1,6 +1,6 @@
 {
   "title": "Metronome — Your data, connected",
-  "status": "visual revision without subtitles",
+  "status": "natural narration and visible agent inspections",
   "durationSeconds": 144,
   "width": 1920,
   "height": 1080,
@@ -9,16 +9,16 @@
   "editableProjectHyperFramesVersion": "0.8.81",
   "artifacts": {
     "renders/review/animatic.mp4": {
-      "bytes": 11967978,
-      "sha256": "e14bfdaff376f7b08d0f9dc87f0644ac6ae416806a33b17dca9bf809bced9d48"
+      "bytes": 13423775,
+      "sha256": "5f1f2e2aea3b1c398a43f99274915cfda697d02bb2eb9f8182fedebe6be4d6a4"
     },
     "audio/score.wav": {
       "bytes": 41472102,
-      "sha256": "69dde384bcd6156988606261247279bad9d9eb64487238b5d7e4db8319c241b7"
+      "sha256": "f5c67a422fc588ed77146552060ea7aabf01fb104c75d6e219237271e0ee5ec0"
     },
     "audio/narration.flac": {
-      "bytes": 2664600,
-      "sha256": "5468037197fa1e8d66288f8f7a51343883f8589e5427928c97dcad37d6d68293"
+      "bytes": 2263932,
+      "sha256": "791b4776242fcdfba13603f38f87d750b032dd64a220c560b2978ad35ea6ca87"
     },
     "audio/background.mp3": {
       "bytes": 2103552,

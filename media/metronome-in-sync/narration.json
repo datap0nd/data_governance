@@ -3,19 +3,19 @@
     "start": 0.5,
     "end": 9.6,
     "en": "Reports live in separate portals, like ASAP and GSCM.",
-    "spoken": "Reports live in separate portals, like A. S. A. P., and G. S. C. M."
+    "spoken": "Reports live in separate portals, like A S A P and G S C M."
   },
   {
     "start": 10.4,
     "end": 23.5,
     "en": "Connect your business portals, Datahub, NERP, and email reports. Metronome organizes their data in one place.",
-    "spoken": "Connect your business portals, Datahub, N. E. R. P., and email reports. Metronome organizes their data in one place."
+    "spoken": "Connect your business portals, Datahub, N E R P, and email reports. Metronome organizes their data in one place."
   },
   {
     "start": 24.5,
     "end": 35.4,
-    "en": "Ready for Excel and reporting. And ready for you to use your own AI tools to analyze the data.",
-    "spoken": "Ready for Excel and reporting. And ready for you to use your own A. I. tools to analyze the data."
+    "en": "Your data is ready for Excel and reporting, and for analysis with your own AI tools.",
+    "spoken": "Your data is ready for Excel and reporting, and for analysis with your own AI tools."
   },
   {
     "start": 36.4,
@@ -44,14 +44,14 @@
   {
     "start": 62.5,
     "end": 68.2,
-    "en": "Another feature: local AI agents, working overnight.",
-    "spoken": "Another feature: local A. I. agents, working overnight."
+    "en": "Metronome also has local AI agents that work overnight.",
+    "spoken": "Metronome also has local AI agents that work overnight."
   },
   {
     "start": 68.5,
     "end": 77.4,
     "en": "At two AM, they check your database for missing data, refresh issues, and blank rows.",
-    "spoken": "At two A. M., they check your database for missing data, refresh issues, and blank rows."
+    "spoken": "At two a.m., they check your database for missing data, refresh issues, and blank rows."
   },
   {
     "start": 78.5,
@@ -69,13 +69,13 @@
     "start": 94.5,
     "end": 101.5,
     "en": "Your HTML dashboards will live in the METO AI Portal.",
-    "spoken": "Your H. T. M. L. dashboards will live in the Meto A. I. Portal."
+    "spoken": "Your HTML dashboards will live in the Meto AI Portal."
   },
   {
     "start": 101.8,
     "end": 109.6,
     "en": "Metronome connects by API, supplying freshness and ETL pipelines.",
-    "spoken": "Metronome connects by A. P. I., supplying freshness and E. T. L. pipelines."
+    "spoken": "Metronome connects by API, supplying freshness and ETL pipelines."
   },
   {
     "start": 110.4,
@@ -87,12 +87,12 @@
     "start": 122.5,
     "end": 132.6,
     "en": "Connect ChatGPT, Claude, or Gemini through Metronome MCP.",
-    "spoken": "Connect Chat G. P. T., Claude, or Gemini through Metronome M. C. P."
+    "spoken": "Connect ChatGPT, Claude, or Gemini through Metronome M C P."
   },
   {
     "start": 133,
     "end": 143.2,
     "en": "Your familiar AI tools, now connected to your business data, freshness checks, and flows.",
-    "spoken": "Your familiar A. I. tools, now connected to your business data, freshness checks, and flows."
+    "spoken": "Your familiar AI tools, now connected to your business data, freshness checks, and flows."
   }
 ]

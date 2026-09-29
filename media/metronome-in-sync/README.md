@@ -11,7 +11,7 @@ The current film is 144 seconds, 1920×1080 at 30 fps, with English narration an
 2. ASAP, GSCM, Bigdata portal, Datahub, NERP and Email reports flow through a centered Metronome icon/name into organized datasets.
 3. Data ready for Excel, reporting and analysis using the user's own AI tools. No shared-key claim.
 4. Code gives way to a visual Flow builder: website, data, destination, schedule, then a repeatable pipeline.
-5. A standalone overnight local-AI feature checks missing data, refresh issues and blank rows at 02:00 AM Dubai time.
+5. Six animated local AI agents inspect source, Flow and dataset stages at 02:00 AM Dubai time, leaving five issue flags and one healthy marker.
 6. Five findings appear. A cursor selects one, opening its issue, evidence and proposed fix for review.
 7. The METO AI Portal hosts the dashboard. Metronome supplies freshness and ETL through an API outside that portal UI.
 8. An internal server connects to a Metronome website in Chrome, making access explicit.
@@ -31,7 +31,7 @@ node scripts/serve-review.mjs
 
 Open `http://127.0.0.1:4392/animatic-review.html`. Set `HYPERFRAMES_BROWSER_PATH` to the installed Chrome executable if managed-browser discovery stalls. FFmpeg/FFprobe can be selected through `HYPERFRAMES_FFMPEG_PATH` and `HYPERFRAMES_FFPROBE_PATH`.
 
-Install `audio/requirements.txt` and run `python audio/score.py` to regenerate narration/music. This uses network-based Edge TTS and cached phrases keyed by voice, rate and spoken text. `en` is readable copy; `spoken` explicitly spells acronyms. The audio master is 48 kHz stereo 24-bit PCM and matches `timeline.json` duration. No SRT files are generated.
+Install `audio/requirements.txt` and run `python audio/score.py` to regenerate narration/music. This uses network-based Edge TTS and cached phrases keyed by voice, rate and spoken text. `en` is readable copy; `spoken` guides continuous acronym pronunciation without full stops between letters. The English-only Andrew voice replaces the multilingual version. Word-boundary metadata is cached for review. A sentence exceeding its slot raises an error; it is never accelerated or truncated. The audio master is 48 kHz stereo 24-bit PCM and matches `timeline.json` duration. No SRT files are generated.
 
 ## Scope and fidelity
 
