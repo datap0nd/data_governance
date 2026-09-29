@@ -22,16 +22,22 @@
     "warningCount": 0,
     "infoCount": 0,
     "findings": [],
-    "duration": 84,
+    "duration": 144,
     "samples": [
-      3,
-      17,
-      25,
-      35,
-      51,
+      6,
+      18,
+      31,
+      39,
+      47,
       59,
-      70,
-      81
+      73,
+      81,
+      88,
+      106,
+      117,
+      126,
+      133,
+      140
     ],
     "transitionSamples": [],
     "transitionSamplesDropped": 0,
@@ -56,14 +62,14 @@
     "findings": [],
     "enabled": true,
     "samples": [
-      3,
-      17,
-      35,
-      59,
-      81
+      6,
+      39,
+      73,
+      106,
+      140
     ],
-    "checked": 260,
-    "passed": 260
+    "checked": 197,
+    "passed": 197
   },
   "hdr": {
     "autoPromotion": null,

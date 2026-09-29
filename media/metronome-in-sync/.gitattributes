@@ -1,2 +1,0 @@
-# Subtitle checksums must be identical on Windows and Linux checkouts.
-*.srt text eol=lf

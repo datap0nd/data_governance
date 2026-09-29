@@ -1,18 +1,15 @@
-# Metronome — Ready by morning
+# Storyboard — visual revision
 
-84 seconds · 1920×1080 · 30 fps · English synthetic narration · Korean subtitles.
+No subtitles or secondary presentation labels. The visuals and narration carry the explanation.
 
-The brand icon remains static. Background music supports speech. Light application UIs use a Windows Chrome frame or recognizable Excel ribbon, formula bar, row/column headers and worksheet tabs. No musical synchronization metaphor, swinging metronome, tick score or orchestral climax remains.
-
-| Time | Picture | Story |
+| Section | Time | Visual |
 | --- | --- | --- |
-| 0–8 | Chrome report portal and Excel workbook | One business question, several disconnected sources. |
-| 8–22 | Left: ASAP, GSCM, Excel, existing database. Center: static Metronome icon. Right: a database containing named datasets and their keys. | Collection and transformation turn scattered inputs into organized data. Animated packets travel left to right. |
-| 22–29 | Full Excel window with normalized dates, countries, product IDs, values, sources and quality status | A shared schema makes datasets usable by people and agents. |
-| 29–42 | Light Metronome Flows UI in Chrome; Collect → Transform → Load → Schedule | The selected step changes to show its input, action and result. Daily scheduling remains visible. |
-| 42–55 | Large 02:00 Dubai clock beside AI Auditor in Chrome | Overnight checks cover freshness, completeness, consistency and evidence. The clock advances to 02:17 as checks complete. |
-| 55–65.6 | Audit finding in Chrome: 1,000 previous rows, 620 latest rows, −38% | A computed issue and its run evidence are ready for human review. No autonomous repair or refresh pause is claimed. |
-| 65.6–78.2 | Light HTML business dashboard in Chrome, with KPIs, trend and source labels | An illustrative AI reporting workflow connects trusted datasets to a sourced business answer. |
-| 78.2–84 | Static logo and three-line closing message | More data. Less manual work. Ready by morning. |
-
-The timed English/Korean script is `narration.json`. Korean captions remain outside the application windows. All figures are illustrative; none is a measured customer result. The auditor story is supported by the current repository's `docs/data_auditor.md`; the final business dashboard is identified as an illustrative AI reporting workflow.
+| 01 | 0–10 s | Side-by-side Chrome windows: navy ASAP and violet GSCM. Korean tables, period filters, YoY triangles, download controls. No Excel icon or Excel window. |
+| 02 | 10–24 s | Six clean source cards feed the centered Metronome icon/name, then four organized dataset cards. No source descriptions, key lists or hub badges. |
+| 03 | 24–36 s | Excel worksheet with a connector to ChatGPT, Claude and Gemini. Narration describes using the viewer’s own AI tools; no shared-key assertion. |
+| 04 | 36–62 s | Code becomes a no-code card. In Chrome, a cursor fills website/data/destination/schedule fields, clicks Create Flow and reveals Collect → Transform → Load → Repeat. |
+| 05 | 62–78 s | Standalone Overnight agents title. Local AI, 02:00 AM, a scanning database and three checks: missing data, refresh issues, blank rows. |
+| 06 | 78–94 s | Five issues populate the list. A cursor clicks Refresh overdue. The side panel expands with expected/last update, issue description and a proposed fix. |
+| 07 | 94–110 s | METO AI Portal alone brands the dashboard. Outside the browser, Metronome sends an API signal with freshness and ETL capabilities. |
+| 08 | 110–122 s | An internal server is visibly linked to a Chrome window running Metronome. The address is an illustrative .example placeholder. |
+| 09 | 122–144 s | ChatGPT + Metronome MCP = enhanced ChatGPT. Repeat for Claude and Gemini. The enhanced tool grows, gains a halo and data/clock/pipeline symbols. |
