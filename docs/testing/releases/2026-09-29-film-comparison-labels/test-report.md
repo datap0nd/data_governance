@@ -25,3 +25,4 @@ The duration test changes 104 to 95 seconds to match the requested deletion; ass
 
 An initial package run (`20260929T092354279Z-28396-bf65ad48`) was started before render finalization and failed because the manifest still reported 104 seconds. After the 95-second render was finalized and its manifest regenerated, the same affected set passed as recorded above.
 
+CI run 36549160082 stopped at the scope gate because this new report had an extra blank line at EOF. The formatting was corrected before the final-head rerun.
