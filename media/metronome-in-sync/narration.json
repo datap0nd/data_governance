@@ -1,73 +1,79 @@
 [
   {
     "start": 0.2,
-    "end": 5.8,
-    "en": "Your reports are spread across portals like ASAP and GSCM.",
-    "spoken": "Your reports are spread across portals like A S A P and G S C M."
+    "end": 8.8,
+    "en": "Our data comes from interactive portals like ASAP and GSCM, where we download ready-made reports.",
+    "spoken": "Our data comes from interactive portals like A S A P and G S C M, where we download ready-made reports."
   },
   {
-    "start": 6.2,
-    "end": 15.7,
-    "en": "Metronome lets everyone create their own flows in minutes, without code. Connect your sources and organize your data.",
-    "spoken": "Metronome lets everyone create their own flows in minutes, without code. Connect your sources and organize your data."
+    "start": 9.15,
+    "end": 19.75,
+    "en": "But downloads alone aren't ready for analysis or scheduled reporting. We still need to extract the data, standardize its format, and load it into a destination.",
+    "spoken": "But downloads alone aren't ready for analysis or scheduled reporting. We still need to extract the data, standardize its format, and load it into a destination."
   },
   {
-    "start": 16.2,
-    "end": 23,
+    "start": 20.15,
+    "end": 30.8,
+    "en": "Meet Metronome. Build data pipelines in minutes, without code. Schedule them, trigger a run when you need it, and track every run in one place.",
+    "spoken": "Meet Metronome. Build data pipelines in minutes, without code. Schedule them, trigger a run when you need it, and track every run in one place."
+  },
+  {
+    "start": 31.2,
+    "end": 38,
     "en": "Instead of writing a script, build your own Flow. Choose a website and the report you need.",
     "spoken": "Instead of writing a script, build your own Flow. Choose a website and the report you need."
   },
   {
-    "start": 23.4,
-    "end": 29.5,
+    "start": 38.4,
+    "end": 44.5,
     "en": "Choose where the data goes and when it runs.",
     "spoken": "Choose where the data goes and when it runs."
   },
   {
-    "start": 30,
-    "end": 38.6,
+    "start": 45,
+    "end": 53.6,
     "en": "While the script is still being written, your Flow is ready. No code needed.",
     "spoken": "While the script is still being written, your Flow is ready. No code needed."
   },
   {
-    "start": 37.2,
-    "end": 48.7,
+    "start": 52.2,
+    "end": 63.7,
     "en": "At two AM, local AI agents keep working across your reports and pipelines, checking missing data, refresh issues, and blank rows.",
     "spoken": "At two a.m., local AI agents keep working across your reports and pipelines, checking missing data, refresh issues, and blank rows."
   },
   {
-    "start": 49.2,
-    "end": 56.7,
+    "start": 64.2,
+    "end": 71.7,
     "en": "By morning, five issues are flagged. Open one to see the evidence and a proposed fix.",
     "spoken": "By morning, five issues are flagged. Open one to see the evidence and a proposed fix."
   },
   {
-    "start": 57.2,
-    "end": 63.7,
+    "start": 72.2,
+    "end": 78.7,
     "en": "There are two ways to use Metronome. Open it in your browser, just like any other website.",
     "spoken": "There are two ways to use Metronome. Open it in your browser, just like any other website."
   },
   {
-    "start": 64,
-    "end": 69.8,
+    "start": 79,
+    "end": 84.8,
     "en": "Or connect Metronome MCP to your AI, and create flows with a prompt.",
     "spoken": "Or connect Metronome M C P to your AI, and create flows with a prompt."
   },
   {
-    "start": 70.2,
-    "end": 78.4,
+    "start": 85.2,
+    "end": 93.4,
     "en": "Without that connection, your AI may take wrong turns, retry steps, or return the wrong reporting period.",
     "spoken": "Without that connection, your AI may take wrong turns, retry steps, or return the wrong reporting period."
   },
   {
-    "start": 78.7,
-    "end": 87,
+    "start": 93.7,
+    "end": 102,
     "en": "With Metronome MCP, it can follow the portal workflow, create your Flow, and check the result.",
     "spoken": "With Metronome M C P, it can follow the portal workflow, create your Flow, and check the result."
   },
   {
-    "start": 87.5,
-    "end": 94.7,
+    "start": 102.5,
+    "end": 109.7,
     "en": "Fewer retries. Less time and fewer tokens. Accurate data, in your own repeatable Flow.",
     "spoken": "Fewer retries. Less time and fewer tokens. Accurate data, in your own repeatable Flow."
   }

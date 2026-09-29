@@ -1,132 +1,144 @@
 {
   "title": "Metronome — Your data, connected",
-  "version": 9,
-  "durationSeconds": 95,
+  "version": 10,
+  "durationSeconds": 110,
   "width": 1920,
   "height": 1080,
   "fps": 30,
-  "duration": 95,
+  "duration": 110,
   "scenes": [
     {
       "id": "s1",
       "start": 0,
-      "end": 6,
-      "name": "Reports across portals"
+      "end": 9,
+      "name": "Where reports start"
+    },
+    {
+      "id": "sETL",
+      "start": 9,
+      "end": 20,
+      "name": "The work behind reporting"
     },
     {
       "id": "s2",
-      "start": 6,
-      "end": 16,
-      "name": "Your own flows"
+      "start": 20,
+      "end": 31,
+      "name": "Meet Metronome"
     },
     {
       "id": "s4",
-      "start": 16,
-      "end": 37,
+      "start": 31,
+      "end": 52,
       "name": "Code vs no-code"
     },
     {
       "id": "s5",
-      "start": 37,
-      "end": 49,
-      "name": "Continuous overnight agents"
+      "start": 52,
+      "end": 64,
+      "name": "Overnight agents — in testing"
     },
     {
       "id": "s6",
-      "start": 49,
-      "end": 57,
-      "name": "Five findings"
+      "start": 64,
+      "end": 72,
+      "name": "Findings — in testing"
     },
     {
       "id": "s8",
-      "start": 57,
-      "end": 70,
+      "start": 72,
+      "end": 85,
       "name": "Two ways to use Metronome"
     },
     {
       "id": "s9",
-      "start": 70,
-      "end": 95,
+      "start": 85,
+      "end": 110,
       "name": "AI before and after MCP"
     }
   ],
   "narration": [
     {
       "start": 0.2,
-      "end": 5.8,
-      "en": "Your reports are spread across portals like ASAP and GSCM.",
-      "spoken": "Your reports are spread across portals like A S A P and G S C M."
+      "end": 8.8,
+      "en": "Our data comes from interactive portals like ASAP and GSCM, where we download ready-made reports.",
+      "spoken": "Our data comes from interactive portals like A S A P and G S C M, where we download ready-made reports."
     },
     {
-      "start": 6.2,
-      "end": 15.7,
-      "en": "Metronome lets everyone create their own flows in minutes, without code. Connect your sources and organize your data.",
-      "spoken": "Metronome lets everyone create their own flows in minutes, without code. Connect your sources and organize your data."
+      "start": 9.15,
+      "end": 19.75,
+      "en": "But downloads alone aren't ready for analysis or scheduled reporting. We still need to extract the data, standardize its format, and load it into a destination.",
+      "spoken": "But downloads alone aren't ready for analysis or scheduled reporting. We still need to extract the data, standardize its format, and load it into a destination."
     },
     {
-      "start": 16.2,
-      "end": 23,
+      "start": 20.15,
+      "end": 30.8,
+      "en": "Meet Metronome. Build data pipelines in minutes, without code. Schedule them, trigger a run when you need it, and track every run in one place.",
+      "spoken": "Meet Metronome. Build data pipelines in minutes, without code. Schedule them, trigger a run when you need it, and track every run in one place."
+    },
+    {
+      "start": 31.2,
+      "end": 38,
       "en": "Instead of writing a script, build your own Flow. Choose a website and the report you need.",
       "spoken": "Instead of writing a script, build your own Flow. Choose a website and the report you need."
     },
     {
-      "start": 23.4,
-      "end": 29.5,
+      "start": 38.4,
+      "end": 44.5,
       "en": "Choose where the data goes and when it runs.",
       "spoken": "Choose where the data goes and when it runs."
     },
     {
-      "start": 30,
-      "end": 38.6,
+      "start": 45,
+      "end": 53.6,
       "en": "While the script is still being written, your Flow is ready. No code needed.",
       "spoken": "While the script is still being written, your Flow is ready. No code needed."
     },
     {
-      "start": 37.2,
-      "end": 48.7,
+      "start": 52.2,
+      "end": 63.7,
       "en": "At two AM, local AI agents keep working across your reports and pipelines, checking missing data, refresh issues, and blank rows.",
       "spoken": "At two a.m., local AI agents keep working across your reports and pipelines, checking missing data, refresh issues, and blank rows."
     },
     {
-      "start": 49.2,
-      "end": 56.7,
+      "start": 64.2,
+      "end": 71.7,
       "en": "By morning, five issues are flagged. Open one to see the evidence and a proposed fix.",
       "spoken": "By morning, five issues are flagged. Open one to see the evidence and a proposed fix."
     },
     {
-      "start": 57.2,
-      "end": 63.7,
+      "start": 72.2,
+      "end": 78.7,
       "en": "There are two ways to use Metronome. Open it in your browser, just like any other website.",
       "spoken": "There are two ways to use Metronome. Open it in your browser, just like any other website."
     },
     {
-      "start": 64,
-      "end": 69.8,
+      "start": 79,
+      "end": 84.8,
       "en": "Or connect Metronome MCP to your AI, and create flows with a prompt.",
       "spoken": "Or connect Metronome M C P to your AI, and create flows with a prompt."
     },
     {
-      "start": 70.2,
-      "end": 78.4,
+      "start": 85.2,
+      "end": 93.4,
       "en": "Without that connection, your AI may take wrong turns, retry steps, or return the wrong reporting period.",
       "spoken": "Without that connection, your AI may take wrong turns, retry steps, or return the wrong reporting period."
     },
     {
-      "start": 78.7,
-      "end": 87,
+      "start": 93.7,
+      "end": 102,
       "en": "With Metronome MCP, it can follow the portal workflow, create your Flow, and check the result.",
       "spoken": "With Metronome M C P, it can follow the portal workflow, create your Flow, and check the result."
     },
     {
-      "start": 87.5,
-      "end": 94.7,
+      "start": 102.5,
+      "end": 109.7,
       "en": "Fewer retries. Less time and fewer tokens. Accurate data, in your own repeatable Flow.",
       "spoken": "Fewer retries. Less time and fewer tokens. Accurate data, in your own repeatable Flow."
     }
   ],
   "closingCues": {
-    "segment": 12,
-    "segmentStart": 87.5,
+    "segment": 13,
+    "segmentStart": 102.5,
     "voiceCacheHash": "93812f605c6dc44e",
     "sourceAudioSha256": "1cb7a00def899aa20d9da8282a4880308cc2806a24dac8050f4ca939b09a20fa",
     "source": "Cached synthesis WordBoundary events, corrected by the same PCM leading trim as audio/score.py. No speech regeneration.",
@@ -138,28 +150,28 @@
         "topic": "retries",
         "word": "Fewer",
         "wordOffsetSeconds": 0.116,
-        "start": 87.511229
+        "start": 102.511229
       },
       {
         "row": 1,
         "topic": "time and tokens",
         "word": "Less",
         "wordOffsetSeconds": 1.366,
-        "start": 88.761229
+        "start": 103.761229
       },
       {
         "row": 2,
         "topic": "data accuracy",
         "word": "Accurate",
         "wordOffsetSeconds": 3.4665,
-        "start": 90.861729
+        "start": 105.861729
       },
       {
         "row": 3,
         "topic": "repeatable Flow",
         "word": "in",
         "wordOffsetSeconds": 4.548958,
-        "start": 91.944187
+        "start": 106.944187
       }
     ]
   },
@@ -170,5 +182,14 @@
       "<svg class=\"ai-logo\" height=\"1em\" style=\"flex:none;line-height:1\" viewBox=\"0 0 24 24\" width=\"1em\" xmlns=\"http://www.w3.org/2000/svg\"><title>Gemini</title><path d=\"M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z\" fill=\"#3186FF\"></path><path d=\"M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z\" fill=\"url(#lobe-icons-gemini-0-_R_0_-6)\"></path><path d=\"M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z\" fill=\"url(#lobe-icons-gemini-1-_R_0_-6)\"></path><path d=\"M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z\" fill=\"url(#lobe-icons-gemini-2-_R_0_-6)\"></path><defs><linearGradient gradientUnits=\"userSpaceOnUse\" id=\"lobe-icons-gemini-0-_R_0_-6\" x1=\"7\" x2=\"11\" y1=\"15.5\" y2=\"12\"><stop stop-color=\"#08B962\"></stop><stop offset=\"1\" stop-color=\"#08B962\" stop-opacity=\"0\"></stop></linearGradient><linearGradient gradientUnits=\"userSpaceOnUse\" id=\"lobe-icons-gemini-1-_R_0_-6\" x1=\"8\" x2=\"11.5\" y1=\"5.5\" y2=\"11\"><stop stop-color=\"#F94543\"></stop><stop offset=\"1\" stop-color=\"#F94543\" stop-opacity=\"0\"></stop></linearGradient><linearGradient gradientUnits=\"userSpaceOnUse\" id=\"lobe-icons-gemini-2-_R_0_-6\" x1=\"3.5\" x2=\"17.5\" y1=\"13.5\" y2=\"12\"><stop stop-color=\"#FABC12\"></stop><stop offset=\".46\" stop-color=\"#FABC12\" stop-opacity=\"0\"></stop></linearGradient></defs></svg>"
     ],
     "mark": "<svg viewBox=\"0 0 32 32\" fill=\"none\" aria-label=\"Metronome\"><path d=\"M10 27h12L19 5h-6l-3 22Z\" fill=\"#e2f1ef\" stroke=\"#0d7377\" stroke-width=\"2\"/><path d=\"m16 8 5 13M8 27h16\" stroke=\"#0d7377\" stroke-width=\"2.2\" stroke-linecap=\"round\"/><rect x=\"17\" y=\"13\" width=\"5\" height=\"4\" rx=\"1\" fill=\"#0d7377\"/></svg>"
+  },
+  "openingCues": {
+    "extract": 14.1675,
+    "transform": 15.469041,
+    "load": 17.273166,
+    "build": 21.295146,
+    "schedule": 24.413687,
+    "trigger": 25.367312,
+    "track": 27.171437
   }
 }

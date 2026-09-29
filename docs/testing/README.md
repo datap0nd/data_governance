@@ -8,6 +8,7 @@ templates and the result vocabulary.
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-09-29: Clear problem statement and agent testing labels | [Test plan](releases/2026-09-29-film-problem-statement/test-plan.md) | [Test report](releases/2026-09-29-film-problem-statement/test-report.md) |
 | 2026-09-29: Visual AI-to-Metronome connection | [Test plan](releases/2026-09-29-film-ai-connection/test-plan.md) | [Test report](releases/2026-09-29-film-ai-connection/test-report.md) |
 | 2026-09-29: Two-column narrated closing comparison | [Test plan](releases/2026-09-29-film-synced-closing/test-plan.md) | [Test report](releases/2026-09-29-film-synced-closing/test-report.md) |
 | 2026-09-29: Clear film comparison labels and dashboard removal | [Test plan](releases/2026-09-29-film-comparison-labels/test-plan.md) | [Test report](releases/2026-09-29-film-comparison-labels/test-report.md) |
