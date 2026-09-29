@@ -1,0 +1,42 @@
+{
+  "video": {
+    "codec_name": "h264",
+    "width": 1920,
+    "height": 1080,
+    "r_frame_rate": "30/1",
+    "duration": "95.000000",
+    "nb_frames": "2850"
+  },
+  "audio": {
+    "codec_name": "aac",
+    "sample_rate": "48000",
+    "channels": 2,
+    "duration": "95.000000"
+  },
+  "duration": "95.000000",
+  "loudness": {
+    "input_i": "-16.19",
+    "input_tp": "-1.95",
+    "input_lra": "6.80",
+    "input_thresh": "-27.77",
+    "output_i": "-16.12",
+    "output_tp": "-1.60",
+    "output_lra": "6.70",
+    "output_thresh": "-27.52",
+    "normalization_type": "dynamic",
+    "target_offset": "0.12"
+  },
+  "decode": "PASS",
+  "narrationPhrases": 12,
+  "maxSpeechSpeed": 1,
+  "encodedFrameSamples": [
+    63.3,
+    64.25,
+    64.9,
+    66,
+    69.8,
+    70.1
+  ],
+  "browserValidation": "Connected Chrome: stages at 64.25, 64.9 and 66 seconds; all three path offsets zero at 66; no console errors/warnings.",
+  "unchangedAudioPacketHash": "SHA256=99a5256c58a458523a9cb9895bdbd448e998244ca5506b9fa2693e6520df3791"
+}
