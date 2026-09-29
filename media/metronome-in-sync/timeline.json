@@ -1,11 +1,11 @@
 {
   "title": "Metronome — Your data, connected",
-  "version": 6,
-  "durationSeconds": 104,
+  "version": 7,
+  "durationSeconds": 95,
   "width": 1920,
   "height": 1080,
   "fps": 30,
-  "duration": 104,
+  "duration": 95,
   "scenes": [
     {
       "id": "s1",
@@ -38,21 +38,15 @@
       "name": "Five findings"
     },
     {
-      "id": "s7",
-      "start": 57,
-      "end": 66,
-      "name": "Power HTML dashboards"
-    },
-    {
       "id": "s8",
-      "start": 66,
-      "end": 79,
+      "start": 57,
+      "end": 70,
       "name": "Two ways to use Metronome"
     },
     {
       "id": "s9",
-      "start": 79,
-      "end": 104,
+      "start": 70,
+      "end": 95,
       "name": "AI before and after MCP"
     }
   ],
@@ -101,37 +95,31 @@
     },
     {
       "start": 57.2,
-      "end": 65.6,
-      "en": "Metronome also powers your HTML dashboards, supplying fresh data through repeatable flows.",
-      "spoken": "Metronome also powers your HTML dashboards, supplying fresh data through repeatable flows."
-    },
-    {
-      "start": 66.2,
-      "end": 72.7,
+      "end": 63.7,
       "en": "There are two ways to use Metronome. Open it in your browser, just like any other website.",
       "spoken": "There are two ways to use Metronome. Open it in your browser, just like any other website."
     },
     {
-      "start": 73,
-      "end": 78.8,
+      "start": 64,
+      "end": 69.8,
       "en": "Or connect Metronome MCP to your AI, and create flows with a prompt.",
       "spoken": "Or connect Metronome M C P to your AI, and create flows with a prompt."
     },
     {
-      "start": 79.2,
-      "end": 87.4,
+      "start": 70.2,
+      "end": 78.4,
       "en": "Without that connection, your AI may take wrong turns, retry steps, or return the wrong reporting period.",
       "spoken": "Without that connection, your AI may take wrong turns, retry steps, or return the wrong reporting period."
     },
     {
-      "start": 87.7,
-      "end": 96,
+      "start": 78.7,
+      "end": 87,
       "en": "With Metronome MCP, it can follow the portal workflow, create your Flow, and check the result.",
       "spoken": "With Metronome M C P, it can follow the portal workflow, create your Flow, and check the result."
     },
     {
-      "start": 96.5,
-      "end": 103.7,
+      "start": 87.5,
+      "end": 94.7,
       "en": "Fewer retries. Less time and fewer tokens. Accurate data, in your own repeatable Flow.",
       "spoken": "Fewer retries. Less time and fewer tokens. Accurate data, in your own repeatable Flow."
     }

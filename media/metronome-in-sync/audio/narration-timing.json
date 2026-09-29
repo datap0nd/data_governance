@@ -51,42 +51,35 @@
   {
     "segment": 8,
     "start": 57.2,
-    "end": 63.3336875,
-    "speed": 1,
-    "naturalSeconds": 6.134
-  },
-  {
-    "segment": 9,
-    "start": 66.2,
-    "end": 71.3148125,
+    "end": 62.3148125,
     "speed": 1,
     "naturalSeconds": 5.115
   },
   {
-    "segment": 10,
-    "start": 73,
-    "end": 77.867375,
+    "segment": 9,
+    "start": 64,
+    "end": 68.867375,
     "speed": 1,
     "naturalSeconds": 4.867
   },
   {
-    "segment": 11,
-    "start": 79.2,
-    "end": 86.05702083333334,
+    "segment": 10,
+    "start": 70.2,
+    "end": 77.05702083333334,
     "speed": 1,
     "naturalSeconds": 6.857
   },
   {
-    "segment": 12,
-    "start": 87.7,
-    "end": 93.57181250000001,
+    "segment": 11,
+    "start": 78.7,
+    "end": 84.57181250000001,
     "speed": 1,
     "naturalSeconds": 5.872
   },
   {
-    "segment": 13,
-    "start": 96.5,
-    "end": 102.6219375,
+    "segment": 12,
+    "start": 87.5,
+    "end": 93.6219375,
     "speed": 1,
     "naturalSeconds": 6.122
   }

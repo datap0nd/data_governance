@@ -3,7 +3,7 @@
   "rate": "-3%",
   "reviewMethod": "Local Whisper base.en speech recognition, synthesis word boundaries and media timing. No human listening pass claimed.",
   "notes": [
-    "All 13 current phrases regenerated or identical cached source and recognized. ASAP/GSCM, two AM and MCP recognized.",
+    "Revision 7 removes the HTML dashboard sentence. The remaining 12 phrases use byte-identical cached audio from revision 6; recognition and word boundaries are retained.",
     "Recognition preserves in minutes as and minutes, and a proposed fix as in a proposed fix, and a trailing // artifact in phrase 3. These are recognition differences, not conclusive phoneme judgments.",
     "No time compression, truncation or overlapping speech."
   ],
@@ -732,86 +732,6 @@
     },
     {
       "segment": 8,
-      "script": "Metronome also powers your HTML dashboards, supplying fresh data through repeatable flows.",
-      "spoken": "Metronome also powers your HTML dashboards, supplying fresh data through repeatable flows.",
-      "recognized": "Metronome also powers your HTML dashboards, supplying fresh data through repeatable flows.",
-      "wordBoundaries": [
-        {
-          "type": "WordBoundary",
-          "offset": 1030830,
-          "duration": 4897080,
-          "text": "Metronome"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 7087500,
-          "duration": 3479580,
-          "text": "also"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 10695830,
-          "duration": 4897080,
-          "text": "powers"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 15721660,
-          "duration": 2061660,
-          "text": "your"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 18556660,
-          "duration": 6314580,
-          "text": "HTML"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 25000000,
-          "duration": 7602910,
-          "text": "dashboards"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 35438330,
-          "duration": 4767910,
-          "text": "supplying"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 40335000,
-          "duration": 3221660,
-          "text": "fresh"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 43685410,
-          "duration": 3479580,
-          "text": "data"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 48195830,
-          "duration": 1804160,
-          "text": "through"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 50128750,
-          "duration": 5412500,
-          "text": "repeatable"
-        },
-        {
-          "type": "WordBoundary",
-          "offset": 55670000,
-          "duration": 5412500,
-          "text": "flows"
-        }
-      ]
-    },
-    {
-      "segment": 9,
       "script": "There are two ways to use Metronome. Open it in your browser, just like any other website.",
       "spoken": "There are two ways to use Metronome. Open it in your browser, just like any other website.",
       "recognized": "There are two ways to use metronome. Open it in your browser, just like any other website.",
@@ -921,7 +841,7 @@
       ]
     },
     {
-      "segment": 10,
+      "segment": 9,
       "script": "Or connect Metronome MCP to your AI, and create flows with a prompt.",
       "spoken": "Or connect Metronome M C P to your AI, and create flows with a prompt.",
       "recognized": "or connect Metronome MCP to your AI and create flows with a prompt.",
@@ -1019,7 +939,7 @@
       ]
     },
     {
-      "segment": 11,
+      "segment": 10,
       "script": "Without that connection, your AI may take wrong turns, retry steps, or return the wrong reporting period.",
       "spoken": "Without that connection, your AI may take wrong turns, retry steps, or return the wrong reporting period.",
       "recognized": "Without that connection, your AI may take wrong turns, retry steps, or return the wrong reporting period.",
@@ -1129,7 +1049,7 @@
       ]
     },
     {
-      "segment": 12,
+      "segment": 11,
       "script": "With Metronome MCP, it can follow the portal workflow, create your Flow, and check the result.",
       "spoken": "With Metronome M C P, it can follow the portal workflow, create your Flow, and check the result.",
       "recognized": "With Metronome MCP, it can follow the portal workflow, create your flow, and check the result.",
@@ -1245,7 +1165,7 @@
       ]
     },
     {
-      "segment": 13,
+      "segment": 12,
       "script": "Fewer retries. Less time and fewer tokens. Accurate data, in your own repeatable Flow.",
       "spoken": "Fewer retries. Less time and fewer tokens. Accurate data, in your own repeatable Flow.",
       "recognized": "Fewer retries, less time and fewer tokens. Accurate data in your own repeatable flow.",

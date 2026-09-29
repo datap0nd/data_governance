@@ -1,7 +1,7 @@
 {
   "title": "Metronome — Your data, connected",
-  "status": "shorter continuous workflows and concrete AI comparison",
-  "durationSeconds": 104,
+  "status": "explicit code comparison; HTML dashboard scene removed",
+  "durationSeconds": 95,
   "width": 1920,
   "height": 1080,
   "framesPerSecond": 30,
@@ -9,16 +9,16 @@
   "editableProjectHyperFramesVersion": "0.8.81",
   "artifacts": {
     "renders/review/animatic.mp4": {
-      "bytes": 8943205,
-      "sha256": "93cfaf20f8fdf47ee3786a80108ebca6fe956e2d0be07124157092121280a935"
+      "bytes": 8531749,
+      "sha256": "29b12069bc55c487b33bb0ffdf75b64b72d5b58f3d755d30c3f4e132eb494d19"
     },
     "audio/score.wav": {
-      "bytes": 29952102,
-      "sha256": "15f844e816dc32b32ba7e4fe65c69ae42f16566bc96c4377964be11bac6e1397"
+      "bytes": 27360102,
+      "sha256": "a07194dd6af7eee6312376219812c03290c70ae6cfc2dcdf8ab2cf1fdf80838f"
     },
     "audio/narration.flac": {
-      "bytes": 2121047,
-      "sha256": "5177f9247c224b3451c08ab3c96acda1fd75896891cedb57e725f1fce37eb0aa"
+      "bytes": 1932561,
+      "sha256": "cc624a055e025c0e9dc2a34b86f567105fbe99ac27cd53f2701d2b59666034f9"
     },
     "audio/background.mp3": {
       "bytes": 2103552,

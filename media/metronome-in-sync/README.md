@@ -1,12 +1,12 @@
 # Metronome — Your data, connected
 
-Current cut: **104 seconds, 1920×1080, 30 fps**, English narration and background music, zero subtitles, light-mode UIs. Revision 6 is 40 seconds shorter than revision 5. Measured gaps between generated sentences fall from 63.067 to 31.154 seconds (50.6% reduction); speech is neither sped up nor cut.
+Current cut: **95 seconds, 1920×1080, 30 fps**, English narration and background music, zero subtitles, light-mode UIs. Revision 7 adds explicit Without Metronome / Write code and With Metronome / No code comparison headings, and removes the entire nine-second HTML dashboard section and its narration.
 
 [Watch](animatic-review.html) · [MP4](renders/review/animatic.mp4) · [Scene frames](review.html) · [Try the Flow builder](builder-demo.html) · [Narration](narration.json) · [Storyboard](STORYBOARD.md) · [QA](QA.md) · [Sources](assets/LEDGER.md)
 
 ## Story
 
-Eight scenes: reports across portals; organized data; slow code beside completed no-code creation; independent overnight agents; five actionable findings; powered HTML dashboards; browser or AI-prompt access; concrete ChatGPT before/after and a comparison table. The repeated Excel/AI-question scene, METO portal section, internal-server diagram and rotating AI-logo equation are removed.
+Seven scenes: reports across portals; organized data; slow code beside completed no-code creation; independent overnight agents; five actionable findings; browser or AI-prompt access; concrete ChatGPT before/after and a comparison table. The repeated Excel/AI-question scene, METO portal section, internal-server diagram and rotating AI-logo equation are removed.
 
 The builder uses actual input/dropdown/click handlers. It offers 12 reports, Shared drive / Documents / Local database and four schedules. The film replays those events with deterministic typing, pointer dwell and press/release timing. The standalone demo creates no backend Flow.
 
@@ -18,7 +18,7 @@ Edit scripts/build.mjs, compositions/film.css, compositions/builder.js, composit
 node scripts/build.mjs
 python audio/score.py
 $env:HYPERFRAMES_BROWSER_PATH='C:\Program Files\Google\Chrome\Application\chrome.exe'
-.\film.ps1 check --at '3,12,19.8,22.4,24.5,26,28,29,35.8,38,42,46,54,62,77,85,90,93,101' --strict --json
+.\film.ps1 check --at '16.1,22.4,24.5,29,35.8,54,56.9,57.2,64,69.9,70.2,84,92' --strict --json
 .\film.ps1 render --fps 30 --quality looks --workers 4 --output renders/review/animatic.mp4
 node scripts/serve-review.mjs
 ```
