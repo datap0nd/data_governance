@@ -1,0 +1,240 @@
+{
+  "cues": {
+    "extract": 14.1675,
+    "transform": 15.469041,
+    "load": 17.273166,
+    "build": 21.295146,
+    "schedule": 24.413687,
+    "trigger": 25.367312,
+    "track": 27.171437,
+    "questions": 51.033666,
+    "systems": 52.799166,
+    "meetWizard": 57.406229,
+    "plainLanguage": 59.828896,
+    "gemini": 61.452604,
+    "askQuestion": 68.201416,
+    "readSpend": 77.097124,
+    "readSellOut": 79.262083,
+    "loadedByMetronome": 80.370333,
+    "readShare": 82.290458,
+    "answer": 85.885896,
+    "egypt": 86.775062,
+    "source": 94.297604,
+    "checkData": 95.212562,
+    "evidence": 97.403271,
+    "closeMetronome": 101.598375,
+    "closeWizard": 103.686,
+    "verify": 105.528792,
+    "decision": 112.03775
+  },
+  "provenance": [
+    {
+      "key": "extract",
+      "word": "extract",
+      "segment": 2,
+      "rawOffset": 5.14175,
+      "trimSeconds": 0.12425,
+      "filmTime": 14.1675
+    },
+    {
+      "key": "transform",
+      "word": "standardize",
+      "segment": 2,
+      "rawOffset": 6.443291,
+      "trimSeconds": 0.12425,
+      "filmTime": 15.469041
+    },
+    {
+      "key": "load",
+      "word": "load",
+      "segment": 2,
+      "rawOffset": 8.247416,
+      "trimSeconds": 0.12425,
+      "filmTime": 17.273166
+    },
+    {
+      "key": "build",
+      "word": "Build",
+      "segment": 3,
+      "rawOffset": 1.25,
+      "trimSeconds": 0.10485416666666666,
+      "filmTime": 21.295146
+    },
+    {
+      "key": "schedule",
+      "word": "Schedule",
+      "segment": 3,
+      "rawOffset": 4.368541,
+      "trimSeconds": 0.10485416666666666,
+      "filmTime": 24.413687
+    },
+    {
+      "key": "trigger",
+      "word": "trigger",
+      "segment": 3,
+      "rawOffset": 5.322166,
+      "trimSeconds": 0.10485416666666666,
+      "filmTime": 25.367312
+    },
+    {
+      "key": "track",
+      "word": "track",
+      "segment": 3,
+      "rawOffset": 7.126291,
+      "trimSeconds": 0.10485416666666666,
+      "filmTime": 27.171437
+    },
+    {
+      "key": "questions",
+      "word": "questions",
+      "segment": 6,
+      "rawOffset": 3.956166,
+      "trimSeconds": 0.1225,
+      "filmTime": 51.033666
+    },
+    {
+      "key": "systems",
+      "word": "system",
+      "segment": 6,
+      "rawOffset": 5.721666,
+      "trimSeconds": 0.1225,
+      "filmTime": 52.799166
+    },
+    {
+      "key": "meetWizard",
+      "word": "Wizard",
+      "segment": 7,
+      "rawOffset": 0.309291,
+      "trimSeconds": 0.1030625,
+      "filmTime": 57.406229
+    },
+    {
+      "key": "plainLanguage",
+      "word": "Ask",
+      "segment": 7,
+      "rawOffset": 2.731958,
+      "trimSeconds": 0.1030625,
+      "filmTime": 59.828896
+    },
+    {
+      "key": "gemini",
+      "word": "Gemini",
+      "segment": 7,
+      "rawOffset": 4.355666,
+      "trimSeconds": 0.1030625,
+      "filmTime": 61.452604
+    },
+    {
+      "key": "askQuestion",
+      "word": "Ask",
+      "segment": 8,
+      "rawOffset": 0.103083,
+      "trimSeconds": 0.10166666666666667,
+      "filmTime": 68.201416
+    },
+    {
+      "key": "readSpend",
+      "word": "spend",
+      "segment": 9,
+      "rawOffset": 2.010291,
+      "trimSeconds": 0.11316666666666667,
+      "filmTime": 77.097124
+    },
+    {
+      "key": "readSellOut",
+      "word": "sell-out",
+      "segment": 9,
+      "rawOffset": 4.17525,
+      "trimSeconds": 0.11316666666666667,
+      "filmTime": 79.262083
+    },
+    {
+      "key": "loadedByMetronome",
+      "word": "Metronome",
+      "segment": 9,
+      "rawOffset": 5.2835,
+      "trimSeconds": 0.11316666666666667,
+      "filmTime": 80.370333
+    },
+    {
+      "key": "readShare",
+      "word": "share",
+      "segment": 9,
+      "rawOffset": 7.203625,
+      "trimSeconds": 0.11316666666666667,
+      "filmTime": 82.290458
+    },
+    {
+      "key": "answer",
+      "word": "answer",
+      "segment": 10,
+      "rawOffset": 0.798958,
+      "trimSeconds": 0.1130625,
+      "filmTime": 85.885896
+    },
+    {
+      "key": "egypt",
+      "word": "Egypt",
+      "segment": 10,
+      "rawOffset": 1.688125,
+      "trimSeconds": 0.1130625,
+      "filmTime": 86.775062
+    },
+    {
+      "key": "source",
+      "word": "source",
+      "segment": 11,
+      "rawOffset": 1.198458,
+      "trimSeconds": 0.10085416666666666,
+      "filmTime": 94.297604
+    },
+    {
+      "key": "checkData",
+      "word": "Check",
+      "segment": 11,
+      "rawOffset": 2.113416,
+      "trimSeconds": 0.10085416666666666,
+      "filmTime": 95.212562
+    },
+    {
+      "key": "evidence",
+      "word": "evidence",
+      "segment": 11,
+      "rawOffset": 4.304125,
+      "trimSeconds": 0.10085416666666666,
+      "filmTime": 97.403271
+    },
+    {
+      "key": "closeMetronome",
+      "word": "Metronome",
+      "segment": 12,
+      "rawOffset": 0.103083,
+      "trimSeconds": 0.10470833333333333,
+      "filmTime": 101.598375
+    },
+    {
+      "key": "closeWizard",
+      "word": "Wizard",
+      "segment": 12,
+      "rawOffset": 2.190708,
+      "trimSeconds": 0.10470833333333333,
+      "filmTime": 103.686
+    },
+    {
+      "key": "verify",
+      "word": "verify",
+      "segment": 12,
+      "rawOffset": 4.0335,
+      "trimSeconds": 0.10470833333333333,
+      "filmTime": 105.528792
+    },
+    {
+      "key": "decision",
+      "word": "decision",
+      "segment": 13,
+      "rawOffset": 1.95875,
+      "trimSeconds": 0.121,
+      "filmTime": 112.03775
+    }
+  ]
+}

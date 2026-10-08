@@ -25,5 +25,3 @@ export function capabilitySVG(time,cues){
  const icons=['M4 12h8v8H4Zm16 0h8v8h-8ZM12 16h8M16 16V4h8','M16 3a13 13 0 1 0 0 26 13 13 0 0 0 0-26Zm0 6v8l6 4','m9 4 19 12L9 28Z','M5 9a12 12 0 1 1-1 12M4 3v8h8M16 9v8l6 4'];
  return `<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="150" font-family="Outfit, sans-serif">${labels.map((label,i)=>{const p=introEase((time-cues[keys[i]])/.35),x=365+i*310;return `<g opacity="${p}" transform="translate(${x} ${12*(1-p)})"><rect y="25" width="280" height="90" rx="12" fill="#fff" stroke="#aacbbb"/><svg x="25" y="51" width="38" height="38" viewBox="0 0 32 32" fill="none" stroke="#0d7377" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="${icons[i]}"/></svg>${introText(84,82,label,31,'#215d4a',500,'start')}</g>`}).join('')}</svg>`;
 }
-
-export function testingBadgeSVG(){return `<svg xmlns="http://www.w3.org/2000/svg" width="230" height="58" font-family="Outfit, sans-serif"><rect x="1" y="1" width="228" height="56" rx="10" fill="#fff3d9" stroke="#c89946"/><circle cx="28" cy="29" r="6" fill="#93651f"/>${introText(52,39,'In testing',30,'#76521b',500,'start')}</svg>`}

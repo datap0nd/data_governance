@@ -1,29 +1,29 @@
 {
-  "title": "Metronome — Your data, connected",
-  "status": "clear problem statement; overnight feature marked in testing",
-  "durationSeconds": 110,
+  "title": "Metronome + Wizard — From portal to decision",
+  "status": "joint Metronome + Wizard showcase",
+  "durationSeconds": 120,
   "width": 1920,
   "height": 1080,
   "framesPerSecond": 30,
-  "editableProjectHyperFramesVersion": "0.8.81",
+  "editableProjectHyperFramesVersion": "0.8.142",
   "artifacts": {
     "renders/review/animatic.mp4": {
-      "bytes": 6979890,
-      "sha256": "37ee0d2dc82799643557baa8f42449242c5c7d2cad9bd23d52fa2534c3101707"
+      "bytes": 13081785,
+      "sha256": "b84a1ef861797cfdd7810e75e675f77e403d8d632541c693f0d3b449e18ca601"
     },
     "audio/score.wav": {
-      "bytes": 31680102,
-      "sha256": "441aa8c9284bd5455e5f868fb3c4895a6e6bdc2e14cba6b3f502b7bd30f43141"
+      "bytes": 34560102,
+      "sha256": "707bd2c8d5b721ed9db637262125f588d603b501700e53827f56197748c64c2b"
     },
     "audio/narration.flac": {
-      "bytes": 2327717,
-      "sha256": "fbe01858e547ecd3bd09a1da32c7709b18295299f05de4d3d53dc61bc5a18eca"
+      "bytes": 2591159,
+      "sha256": "0960c3a8e4d368215e563d830408509a8950707bb663214698f45dbf2e206a29"
     },
     "audio/background.mp3": {
       "bytes": 2103552,
       "sha256": "364a546834db4c0c2e3b3240eb6df03e98b7362230154b04c5c614442f6660d7"
     }
   },
-  "baseRenderHyperFramesVersion": "0.8.81",
-  "renderEngine": "FFmpeg 7.1 + resvg 2.6.2, shared SVG opening and testing badge, retimed revision 9 master"
+  "baseRenderHyperFramesVersion": "0.8.142",
+  "renderEngine": "HyperFrames 0.8.142 render (Chrome headless), audio/score.py master"
 }

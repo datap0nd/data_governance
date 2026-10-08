@@ -9,72 +9,82 @@
     "start": 9.15,
     "end": 19.75,
     "en": "But downloads alone aren't ready for analysis or scheduled reporting. We still need to extract the data, standardize its format, and load it into a destination.",
-    "spoken": "But downloads alone aren't ready for analysis or scheduled reporting. We still need to extract the data, standardize its format, and load it into a destination."
+    "spoken": "But downloads alone aren't ready for analysis or scheduled reporting. We still need to extract the data, standardize its format, and load it into a destination.",
+    "cues": {"extract": "extract", "transform": "standardize", "load": "load"}
   },
   {
     "start": 20.15,
     "end": 30.8,
     "en": "Meet Metronome. Build data pipelines in minutes, without code. Schedule them, trigger a run when you need it, and track every run in one place.",
-    "spoken": "Meet Metronome. Build data pipelines in minutes, without code. Schedule them, trigger a run when you need it, and track every run in one place."
+    "spoken": "Meet Metronome. Build data pipelines in minutes, without code. Schedule them, trigger a run when you need it, and track every run in one place.",
+    "cues": {"build": "Build", "schedule": "Schedule", "trigger": "trigger", "track": "track"}
   },
   {
     "start": 31.2,
-    "end": 38,
-    "en": "Instead of writing a script, build your own Flow. Choose a website and the report you need.",
-    "spoken": "Instead of writing a script, build your own Flow. Choose a website and the report you need."
+    "end": 38.8,
+    "en": "Instead of writing a script, build a Flow. Pick a website, a report, a destination and a schedule.",
+    "spoken": "Instead of writing a script, build a Flow. Pick a website, a report, a destination and a schedule."
   },
   {
-    "start": 38.4,
-    "end": 44.5,
-    "en": "Choose where the data goes and when it runs.",
-    "spoken": "Choose where the data goes and when it runs."
+    "start": 39.1,
+    "end": 46.7,
+    "en": "While the script is still being written, your Flow is ready, loading fresh data into PostgreSQL every morning.",
+    "spoken": "While the script is still being written, your Flow is ready, loading fresh data into Postgres every morning."
   },
   {
-    "start": 45,
-    "end": 53.6,
-    "en": "While the script is still being written, your Flow is ready. No code needed.",
-    "spoken": "While the script is still being written, your Flow is ready. No code needed."
+    "start": 47.2,
+    "end": 56.6,
+    "en": "But fresh data is only half the job. Leaders still ask questions that cut across every system.",
+    "spoken": "But fresh data is only half the job. Leaders still ask questions that cut across every system.",
+    "cues": {"questions": "questions", "systems": "system"}
   },
   {
-    "start": 52.2,
-    "end": 63.7,
-    "en": "At two AM, local AI agents keep working across your reports and pipelines, checking missing data, refresh issues, and blank rows.",
-    "spoken": "At two a.m., local AI agents keep working across your reports and pipelines, checking missing data, refresh issues, and blank rows."
+    "start": 57.2,
+    "end": 67.6,
+    "en": "Meet Wizard, your executive analyst. Ask in plain language, and Gemini checks every approved source, under your own sign-in.",
+    "spoken": "Meet Wizard, your executive analyst. Ask in plain language, and Gemini checks every approved source, under your own sign-in.",
+    "cues": {"meetWizard": "Wizard", "plainLanguage": "Ask", "gemini": "Gemini"}
   },
   {
-    "start": 64.2,
-    "end": 71.7,
-    "en": "By morning, five issues are flagged. Open one to see the evidence and a proposed fix.",
-    "spoken": "By morning, five issues are flagged. Open one to see the evidence and a proposed fix."
+    "start": 68.2,
+    "end": 74.8,
+    "en": "Ask which market got the most from its marketing spend last quarter.",
+    "spoken": "Ask which market got the most from its marketing spend last quarter.",
+    "cues": {"askQuestion": "Ask"}
   },
   {
-    "start": 72.2,
-    "end": 78.7,
-    "en": "There are two ways to use Metronome. Open it in your browser, just like any other website.",
-    "spoken": "There are two ways to use Metronome. Open it in your browser, just like any other website."
-  },
-  {
-    "start": 79,
+    "start": 75.2,
     "end": 84.8,
-    "en": "Or connect Metronome MCP to your AI, and create flows with a prompt.",
-    "spoken": "Or connect Metronome M C P to your AI, and create flows with a prompt."
+    "en": "Wizard decides what to read: spend from NERP, sell-out from the tables Metronome keeps fresh, and share from ASAP.",
+    "spoken": "Wizard decides what to read: spend from N E R P, sell-out from the tables Metronome keeps fresh, and share from A S A P.",
+    "cues": {"readSpend": "spend", "readSellOut": "sell-out", "loadedByMetronome": "Metronome", "readShare": "share"}
   },
   {
     "start": 85.2,
-    "end": 93.4,
-    "en": "Without that connection, your AI may take wrong turns, retry steps, or return the wrong reporting period.",
-    "spoken": "Without that connection, your AI may take wrong turns, retry steps, or return the wrong reporting period."
+    "end": 92.8,
+    "en": "Then it writes the answer: Egypt ranks first on investment efficiency, ahead of Saudi Arabia and the UAE.",
+    "spoken": "Then it writes the answer: Egypt ranks first on investment efficiency, ahead of Saudi Arabia and the U A E.",
+    "cues": {"answer": "answer", "egypt": "Egypt"}
   },
   {
-    "start": 93.7,
-    "end": 102,
-    "en": "With Metronome MCP, it can follow the portal workflow, create your Flow, and check the result.",
-    "spoken": "With Metronome M C P, it can follow the portal workflow, create your Flow, and check the result."
+    "start": 93.2,
+    "end": 101.2,
+    "en": "Every number links to its source. Check my data recomputes it. Open the evidence to see the exact query.",
+    "spoken": "Every number links to its source. Check my data recomputes it. Open the evidence to see the exact query.",
+    "cues": {"source": "source", "checkData": "Check", "evidence": "evidence"}
   },
   {
-    "start": 102.5,
-    "end": 109.7,
-    "en": "Fewer retries. Less time and fewer tokens. Accurate data, in your own repeatable Flow.",
-    "spoken": "Fewer retries. Less time and fewer tokens. Accurate data, in your own repeatable Flow."
+    "start": 101.6,
+    "end": 109.6,
+    "en": "Metronome keeps your data fresh. Wizard turns it into answers you can verify.",
+    "spoken": "Metronome keeps your data fresh. Wizard turns it into answers you can verify.",
+    "cues": {"closeMetronome": "Metronome", "closeWizard": "Wizard", "verify": "verify"}
+  },
+  {
+    "start": 110.2,
+    "end": 118.6,
+    "en": "From portal download to executive decision, in one connected workflow.",
+    "spoken": "From portal download to executive decision, in one connected workflow.",
+    "cues": {"decision": "decision"}
   }
 ]
