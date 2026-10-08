@@ -1,93 +1,93 @@
 [
   {
     "segment": 1,
-    "start": 0.2,
-    "end": 7.5160833333333334,
+    "start": 0.3,
+    "end": 8.354729166666667,
     "speed": 1,
-    "naturalSeconds": 7.316
+    "naturalSeconds": 8.055
   },
   {
     "segment": 2,
-    "start": 9.15,
-    "end": 18.819895833333334,
+    "start": 9.0,
+    "end": 17.247208333333333,
     "speed": 1,
-    "naturalSeconds": 9.67
+    "naturalSeconds": 8.247
   },
   {
     "segment": 3,
-    "start": 20.15,
-    "end": 29.158895833333332,
+    "start": 17.8,
+    "end": 24.910916666666665,
     "speed": 1,
-    "naturalSeconds": 9.009
+    "naturalSeconds": 7.111
   },
   {
     "segment": 4,
-    "start": 31.2,
-    "end": 37.78327083333333,
+    "start": 25.6,
+    "end": 29.7105625,
     "speed": 1,
-    "naturalSeconds": 6.583
+    "naturalSeconds": 4.111
   },
   {
     "segment": 5,
-    "start": 39.1,
-    "end": 45.731208333333335,
+    "start": 30.2,
+    "end": 35.0865,
     "speed": 1,
-    "naturalSeconds": 6.631
+    "naturalSeconds": 4.886
   },
   {
     "segment": 6,
-    "start": 47.2,
-    "end": 53.409645833333336,
+    "start": 36.0,
+    "end": 38.291020833333334,
     "speed": 1,
-    "naturalSeconds": 6.21
+    "naturalSeconds": 2.291
   },
   {
     "segment": 7,
-    "start": 57.2,
-    "end": 65.24966666666667,
+    "start": 41.0,
+    "end": 51.39516666666667,
     "speed": 1,
-    "naturalSeconds": 8.05
+    "naturalSeconds": 10.395
   },
   {
     "segment": 8,
-    "start": 68.2,
-    "end": 71.63414583333333,
+    "start": 52.0,
+    "end": 58.11239583333333,
     "speed": 1,
-    "naturalSeconds": 3.434
+    "naturalSeconds": 6.112
   },
   {
     "segment": 9,
-    "start": 75.2,
-    "end": 84.06027083333333,
+    "start": 58.6,
+    "end": 65.308875,
     "speed": 1,
-    "naturalSeconds": 8.86
+    "naturalSeconds": 6.709
   },
   {
     "segment": 10,
-    "start": 85.2,
-    "end": 92.29468750000001,
+    "start": 65.9,
+    "end": 69.56497916666667,
     "speed": 1,
-    "naturalSeconds": 7.095
+    "naturalSeconds": 3.665
   },
   {
     "segment": 11,
-    "start": 93.2,
-    "end": 99.61764583333334,
+    "start": 70.0,
+    "end": 74.82110416666667,
     "speed": 1,
-    "naturalSeconds": 6.418
+    "naturalSeconds": 4.821
   },
   {
     "segment": 12,
-    "start": 101.6,
-    "end": 106.32775,
+    "start": 75.8,
+    "end": 77.70954166666667,
     "speed": 1,
-    "naturalSeconds": 4.728
+    "naturalSeconds": 1.91
   },
   {
     "segment": 13,
-    "start": 110.2,
-    "end": 114.54808333333334,
+    "start": 78.3,
+    "end": 80.67125,
     "speed": 1,
-    "naturalSeconds": 4.348
+    "naturalSeconds": 2.371
   }
 ]

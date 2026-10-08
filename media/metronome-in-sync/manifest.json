@@ -1,23 +1,23 @@
 {
-  "title": "Metronome + Wizard — From portal to decision",
-  "status": "joint Metronome + Wizard showcase",
-  "durationSeconds": 120,
+  "title": "Wizard — Every source, one answer",
+  "status": "Wizard showcase for review",
+  "durationSeconds": 84,
   "width": 1920,
   "height": 1080,
   "framesPerSecond": 30,
   "editableProjectHyperFramesVersion": "0.8.142",
   "artifacts": {
     "renders/review/animatic.mp4": {
-      "bytes": 13081785,
-      "sha256": "b84a1ef861797cfdd7810e75e675f77e403d8d632541c693f0d3b449e18ca601"
+      "bytes": 21514712,
+      "sha256": "2549c5bb4f704a01308056f589ddbe0a90cfd7905f12735544753e1b4b844564"
     },
     "audio/score.wav": {
-      "bytes": 34560102,
-      "sha256": "707bd2c8d5b721ed9db637262125f588d603b501700e53827f56197748c64c2b"
+      "bytes": 24192102,
+      "sha256": "798abb83c92eec083da83898e0c71e6120d0b04817c11c4ee9f3670298911200"
     },
     "audio/narration.flac": {
-      "bytes": 2591159,
-      "sha256": "0960c3a8e4d368215e563d830408509a8950707bb663214698f45dbf2e206a29"
+      "bytes": 2063540,
+      "sha256": "7c1e28d887f6c4107f4754fd4f5bc68c46589c556b95422b470b11844d4b1dd0"
     },
     "audio/background.mp3": {
       "bytes": 2103552,
@@ -25,5 +25,5 @@
     }
   },
   "baseRenderHyperFramesVersion": "0.8.142",
-  "renderEngine": "HyperFrames 0.8.142 render (Chrome headless), audio/score.py master"
+  "renderEngine": "HyperFrames 0.8.142 render (bundled chrome-headless-shell 152), audio/score.py master"
 }

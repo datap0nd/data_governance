@@ -1,5 +1,5 @@
 # On-screen text policy
 
-No subtitle track, burned-in narration text, top-left chapter label or product-overview corner. No descriptive text below the central Metronome name in the Meet Metronome scene. No source sublabels, dataset key lists or shared-key claim.
+No subtitle track or burned-in narration text. The audience is non-technical: no SQL, query, model, API or vendor AI names on screen or in narration. Say "database", "local AI" and "authorized AI".
 
-Use only names, primary feature labels and meaningful interface content: portal tables and filters, Flow inputs, leader questions and the systems they need, Wizard's own interface text (questions, steps, answer, chart, Check my data, evidence), one "Loaded by Metronome" callout and the closing product names. Wizard's measure is always an investment-efficiency proxy, never ROI. The review page carries chapter navigation, product-scope notes and credits outside the film.
+Use only names, short labels and meaningful interface content: portal names and report counts, report and file names, the question, Wizard's screens (sources, reports found, summary, key numbers, chart labels, "checked" marks, "Secure by design") and the closing tagline "Every source. One answer." The review page carries chapter navigation, scope notes and credits outside the film.

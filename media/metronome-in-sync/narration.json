@@ -1,90 +1,142 @@
 [
   {
-    "start": 0.2,
-    "end": 8.8,
-    "en": "Our data comes from interactive portals like ASAP and GSCM, where we download ready-made reports.",
-    "spoken": "Our data comes from interactive portals like A S A P and G S C M, where we download ready-made reports."
+    "start": 0.3,
+    "end": 8.6,
+    "en": "Our data is everywhere. ASAP alone has about a hundred and fifty reports. GSCM has around two hundred.",
+    "spoken": "Our data is everywhere. A S A P alone has about a hundred and fifty reports. G S C M has around two hundred.",
+    "cues": {
+      "asap": "A",
+      "gscm": "G"
+    }
   },
   {
-    "start": 9.15,
-    "end": 19.75,
-    "en": "But downloads alone aren't ready for analysis or scheduled reporting. We still need to extract the data, standardize its format, and load it into a destination.",
-    "spoken": "But downloads alone aren't ready for analysis or scheduled reporting. We still need to extract the data, standardize its format, and load it into a destination.",
-    "cues": {"extract": "extract", "transform": "standardize", "load": "load"}
+    "start": 9.0,
+    "end": 17.5,
+    "en": "Then there's BDP, NERP, and endless Excel files, emails, presentations and PDFs.",
+    "spoken": "Then there's B D P, N E R P, and endless Excel files, emails, presentations and P D Fs.",
+    "cues": {
+      "bdp": "B",
+      "nerp": "N",
+      "excel": "Excel",
+      "emails": "emails",
+      "presentations": "presentations",
+      "pdfs": "P@3"
+    }
   },
   {
-    "start": 20.15,
-    "end": 30.8,
-    "en": "Meet Metronome. Build data pipelines in minutes, without code. Schedule them, trigger a run when you need it, and track every run in one place.",
-    "spoken": "Meet Metronome. Build data pipelines in minutes, without code. Schedule them, trigger a run when you need it, and track every run in one place.",
-    "cues": {"build": "Build", "schedule": "Schedule", "trigger": "trigger", "track": "track"}
+    "start": 17.8,
+    "end": 25.1,
+    "en": "Finding one answer means knowing where to look, then opening report after report, and piecing it together by hand.",
+    "spoken": "Finding one answer means knowing where to look, then opening report after report, and piecing it together by hand.",
+    "cues": {
+      "look": "look",
+      "opening": "opening",
+      "piecing": "piecing"
+    }
   },
   {
-    "start": 31.2,
-    "end": 38.8,
-    "en": "Instead of writing a script, build a Flow. Pick a website, a report, a destination and a schedule.",
-    "spoken": "Instead of writing a script, build a Flow. Pick a website, a report, a destination and a schedule."
+    "start": 25.6,
+    "end": 29.9,
+    "en": "Meet Wizard. It brings every source together, in one place.",
+    "spoken": "Meet Wizard. It brings every source together, in one place.",
+    "cues": {
+      "meetWizard": "Wizard",
+      "together": "together"
+    }
   },
   {
-    "start": 39.1,
-    "end": 46.7,
-    "en": "While the script is still being written, your Flow is ready, loading fresh data into PostgreSQL every morning.",
-    "spoken": "While the script is still being written, your Flow is ready, loading fresh data into Postgres every morning."
+    "start": 30.2,
+    "end": 35.3,
+    "en": "Wizard's local AI has learned our portals, so it knows where every answer lives.",
+    "spoken": "Wizard's local AI has learned our portals, so it knows where every answer lives.",
+    "cues": {
+      "localAI": "local",
+      "lives": "lives"
+    }
   },
   {
-    "start": 47.2,
-    "end": 56.6,
-    "en": "But fresh data is only half the job. Leaders still ask questions that cut across every system.",
-    "spoken": "But fresh data is only half the job. Leaders still ask questions that cut across every system.",
-    "cues": {"questions": "questions", "systems": "system"}
+    "start": 36.0,
+    "end": 38.5,
+    "en": "So you can simply ask, in plain words.",
+    "spoken": "So you can simply ask, in plain words.",
+    "cues": {
+      "ask": "ask"
+    }
   },
   {
-    "start": 57.2,
-    "end": 67.6,
-    "en": "Meet Wizard, your executive analyst. Ask in plain language, and Gemini checks every approved source, under your own sign-in.",
-    "spoken": "Meet Wizard, your executive analyst. Ask in plain language, and Gemini checks every approved source, under your own sign-in.",
-    "cues": {"meetWizard": "Wizard", "plainLanguage": "Ask", "gemini": "Gemini"}
+    "start": 41.0,
+    "end": 51.6,
+    "en": "Wizard finds the right reports for you: sell-out from GSCM, market share from ASAP, spend from NERP, and your targets in Excel.",
+    "spoken": "Wizard finds the right reports for you: sell-out from G S C M, market share from A S A P, spend from N E R P, and your targets in Excel.",
+    "cues": {
+      "finds": "finds",
+      "sellOut": "sell-out",
+      "share": "share",
+      "spend": "spend",
+      "targets": "targets"
+    }
   },
   {
-    "start": 68.2,
-    "end": 74.8,
-    "en": "Ask which market got the most from its marketing spend last quarter.",
-    "spoken": "Ask which market got the most from its marketing spend last quarter.",
-    "cues": {"askQuestion": "Ask"}
+    "start": 52.0,
+    "end": 58.3,
+    "en": "Seconds later, you have a complete answer: a clear summary, the key numbers, and charts you can share.",
+    "spoken": "Seconds later, you have a complete answer: a clear summary, the key numbers, and charts you can share.",
+    "cues": {
+      "seconds": "Seconds",
+      "summary": "summary",
+      "numbers": "numbers",
+      "charts": "charts"
+    }
   },
   {
-    "start": 75.2,
-    "end": 84.8,
-    "en": "Wizard decides what to read: spend from NERP, sell-out from the tables Metronome keeps fresh, and share from ASAP.",
-    "spoken": "Wizard decides what to read: spend from N E R P, sell-out from the tables Metronome keeps fresh, and share from A S A P.",
-    "cues": {"readSpend": "spend", "readSellOut": "sell-out", "loadedByMetronome": "Metronome", "readShare": "share"}
+    "start": 58.6,
+    "end": 65.5,
+    "en": "Sell-out is up eight percent, led by Saudi Arabia, and our market share grew to over thirty-one percent.",
+    "spoken": "Sell-out is up eight percent, led by Saudi Arabia, and our market share grew to over thirty-one percent.",
+    "cues": {
+      "eight": "eight",
+      "saudi": "Saudi",
+      "marketShare": "share"
+    }
   },
   {
-    "start": 85.2,
-    "end": 92.8,
-    "en": "Then it writes the answer: Egypt ranks first on investment efficiency, ahead of Saudi Arabia and the UAE.",
-    "spoken": "Then it writes the answer: Egypt ranks first on investment efficiency, ahead of Saudi Arabia and the U A E.",
-    "cues": {"answer": "answer", "egypt": "Egypt"}
+    "start": 65.9,
+    "end": 69.8,
+    "en": "Every number is checked against its source report, so you can trust it.",
+    "spoken": "Every number is checked against its source report, so you can trust it.",
+    "cues": {
+      "checked": "checked"
+    }
   },
   {
-    "start": 93.2,
-    "end": 101.2,
-    "en": "Every number links to its source. Check my data recomputes it. Open the evidence to see the exact query.",
-    "spoken": "Every number links to its source. Check my data recomputes it. Open the evidence to see the exact query.",
-    "cues": {"source": "source", "checkData": "Check", "evidence": "evidence"}
+    "start": 70.0,
+    "end": 75.0,
+    "en": "And your data stays safe, with authorized AI that only shows what you're allowed to see.",
+    "spoken": "And your data stays safe, with authorized AI that only shows what you're allowed to see.",
+    "cues": {
+      "safe": "safe",
+      "authorized": "authorized",
+      "allowed": "allowed"
+    }
   },
   {
-    "start": 101.6,
-    "end": 109.6,
-    "en": "Metronome keeps your data fresh. Wizard turns it into answers you can verify.",
-    "spoken": "Metronome keeps your data fresh. Wizard turns it into answers you can verify.",
-    "cues": {"closeMetronome": "Metronome", "closeWizard": "Wizard", "verify": "verify"}
+    "start": 75.8,
+    "end": 77.9,
+    "en": "Stop searching. Start asking.",
+    "spoken": "Stop searching. Start asking.",
+    "cues": {
+      "stop": "Stop",
+      "start": "Start"
+    }
   },
   {
-    "start": 110.2,
-    "end": 118.6,
-    "en": "From portal download to executive decision, in one connected workflow.",
-    "spoken": "From portal download to executive decision, in one connected workflow.",
-    "cues": {"decision": "decision"}
+    "start": 78.3,
+    "end": 80.9,
+    "en": "Wizard. Every source, one answer.",
+    "spoken": "Wizard. Every source, one answer.",
+    "cues": {
+      "endWizard": "Wizard",
+      "oneAnswer": "one"
+    }
   }
 ]

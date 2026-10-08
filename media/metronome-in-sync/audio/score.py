@@ -29,10 +29,11 @@ timing=[];cues={};provenance=[];overruns=[]
 norm=lambda w:''.join(ch for ch in w.lower() if ch.isalnum())
 def find_word(words,word):
  # Exact word first; then a boundary that starts with it, or a hyphenated word split by the synthesizer.
- target=norm(word)
+ # "P@2" names the second occurrence, for letters that repeat inside spelled-out acronyms.
+ word,_,nth=word.partition('@');target=norm(word);nth=int(nth or 1)
  for test in (lambda t:t==target,lambda t:t.startswith(target),lambda t:len(t)>=4 and target.startswith(t)):
-  hit=next((w for w in words if test(norm(w['text']))),None)
-  if hit:return hit
+  hits=[w for w in words if test(norm(w['text']))]
+  if len(hits)>=nth:return hits[nth-1]
 for i,s in enumerate(segments):
  p=voice_path(i,s)
  b=subprocess.check_output([FF,'-v','error','-i',str(p),'-f','f32le','-ar',str(rate),'-ac','2','-'])
