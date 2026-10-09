@@ -25,19 +25,39 @@ async def main():
 asyncio.run(main())
 rate=48000
 mix=np.zeros((duration*rate,2),np.float32)
-timing=[]
+timing=[];cues={};provenance=[];overruns=[]
+norm=lambda w:''.join(ch for ch in w.lower() if ch.isalnum())
+def find_word(words,word):
+ # Exact word first; then a boundary that starts with it, or a hyphenated word split by the synthesizer.
+ # "P@2" names the second occurrence, for letters that repeat inside spelled-out acronyms.
+ word,_,nth=word.partition('@');target=norm(word);nth=int(nth or 1)
+ for test in (lambda t:t==target,lambda t:t.startswith(target),lambda t:len(t)>=4 and target.startswith(t)):
+  hits=[w for w in words if test(norm(w['text']))]
+  if len(hits)>=nth:return hits[nth-1]
 for i,s in enumerate(segments):
  p=voice_path(i,s)
  b=subprocess.check_output([FF,'-v','error','-i',str(p),'-f','f32le','-ar',str(rate),'-ac','2','-'])
  a=np.frombuffer(b,dtype=np.float32).reshape(-1,2)
  # Keep a short lead/tail without changing the sentence's natural delivery.
  mono=np.max(np.abs(a),axis=1);active=np.flatnonzero(mono>.004)
- if len(active):a=a[max(0,active[0]-2400):min(len(a),active[-1]+4800)]
+ lead=max(0,active[0]-2400) if len(active) else 0
+ if len(active):a=a[lead:min(len(a),active[-1]+4800)]
  dur=len(a)/rate;budget=s['end']-s['start']
+ print(f'Segment {i+1}: {dur:.3f}s of {budget:.3f}s',flush=True)
  if dur>budget:
-  raise ValueError(f'Segment {i+1} needs {dur:.3f}s but has {budget:.3f}s. Revise the sentence or timing; do not accelerate or truncate speech.')
+  overruns.append(f'Segment {i+1} needs {dur:.3f}s but has {budget:.3f}s.');continue
  start=round(s['start']*rate);n=len(a);mix[start:start+n]+=a
  timing.append({'segment':i+1,'start':s['start'],'end':s['start']+n/rate,'speed':1,'naturalSeconds':round(dur,3)})
+ # Animation cues use the synthesizer's word boundaries, shifted by the same leading trim as the audio.
+ words=json.loads(p.with_suffix('.json').read_text(encoding='utf8'))
+ for key,word in s.get('cues',{}).items():
+  hit=find_word(words,word)
+  if hit is None:raise ValueError(f'Segment {i+1}: cue word {word!r} not found in its word boundaries.')
+  raw=hit['offset']/1e7;cues[key]=round(s['start']+raw-lead/rate,6)
+  provenance.append({'key':key,'word':hit['text'],'segment':i+1,'rawOffset':raw,'trimSeconds':lead/rate,'filmTime':cues[key]})
+if overruns:
+ raise ValueError('\n'.join(overruns)+'\nRevise the sentence or timing; do not accelerate or truncate speech.')
+(FILM/'assets/cues.json').write_text(json.dumps({'cues':cues,'provenance':provenance},indent=2)+'\n',encoding='utf-8')
 vo=tmp/'narration.wav'
 with wave.open(str(vo),'wb') as w:w.setparams((2,2,rate,0,'NONE','not compressed'));w.writeframes((np.clip(mix,-1,1)*32767).astype(np.int16).tobytes())
 subprocess.run([FF,'-y','-i',str(vo),'-c:a','flac',str(FILM/'audio/narration.flac'),'-loglevel','error'],check=True)

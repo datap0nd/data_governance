@@ -1,42 +1,132 @@
 (() => {
- const config=window.FILM_CONFIG,clamp=(x,a=0,b=1)=>Math.max(a,Math.min(b,x)),ease=x=>1-Math.pow(1-clamp(x),3);
- const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)],show=(el,on)=>el.style.visibility=on?'inherit':'hidden';
- const scenes=config.scenes.map(s=>({...s,el:document.getElementById(s.id)}));
- function cursorAt(el,t,points){let from=points[0],to=points.at(-1);for(let i=1;i<points.length;i++){if(t<points[i][0]){from=points[i-1];to=points[i];break;}from=points[i];}const p=ease((t-from[0])/Math.max(.001,to[0]-from[0]));el.style.transform=`translate(${from[1]+(to[1]-from[1])*p}px,${from[2]+(to[2]-from[2])*p}px)`;}
- const script='import requests\n\nsession = requests.Session()\nresponse = session.get(\n    "https://asap-portal.com"\n)\n\ndef parse_report(response):\n    rows = []\n    # Map every column';
- const laneBots=$$('[data-lane]').map(lane=>{const bot=lane.querySelector('.pipeline-agent');bot.style.setProperty('--agent-color',lane.style.getPropertyValue('--agent-color'));lane.parentElement.appendChild(bot);return bot;});
- function draw(realTime){
- const baseTime=realTime<9?realTime*6/9:realTime<20?6:realTime<31?6+(realTime-20)*10/11:realTime-15;
- const t=baseTime<37?baseTime:baseTime<57?baseTime+2:baseTime+13;
- if(realTime>=9&&realTime<20)$('.etl-scene').innerHTML=etlSVG(realTime,config.openingCues);
- if(realTime>=20&&realTime<31)$('.pipeline-controls').innerHTML=capabilitySVG(realTime,config.openingCues);
- show($('.testing-badge'),realTime>=52&&realTime<72);
- scenes.forEach(s=>{const active=realTime>=s.start&&realTime<s.end;s.el.style.visibility=active?'visible':'hidden';s.el.style.opacity=active?'1':'0';});
- $('.intro-asap').style.transform=`translateY(${(1-ease(t/.45))*25}px)`;
- $('.intro-gscm').style.opacity=ease((t-.8)/.6);$('.intro-gscm').style.transform=`translateX(${(1-ease((t-.8)/.6))*55}px)`;
- $$('.source-item').forEach((el,i)=>{const p=ease((t-6-i*.07)/.4);el.style.opacity=p;el.style.transform=`translateX(${(1-p)*-24}px)`;});
- $$('.dataset').forEach((el,i)=>{const p=ease((t-8-i*.3)/.5);el.style.opacity=p;el.style.transform=`translateX(${(1-p)*25}px)`;});
- $('.flow-dashes').style.strokeDashoffset=-(t-6)*33;
- window.FilmBuilder.draw(41.4+(t-16)*1.18);
- const code=script.slice(0,Math.floor(clamp((t-16)/25)*script.length));$('#slow-code').textContent=code;const codeLines=code.split('\n');
- $('.code-caret').style.left=(62+codeLines.at(-1).length*12.5)+'px';$('.code-caret').style.top=(37+(codeLines.length-1)*42)+'px';$('.code-caret').style.opacity=Math.floor(t*3)%2?1:0;
- // Different phases and report lanes keep every stage under continuous inspection.
- const xStops=[74,650.3,1254];
- $$('[data-lane]').forEach((lane,i)=>{const local=Math.max(0,t-39)+i*.71,routes=[[0,i],[1,i],[2,i],[1,(i+1)%6],[0,(i+1)%6],[2,(i+2)%6]],step=Math.floor(local/2.1),phase=local%2.1,from=routes[step%6],to=routes[(step+1)%6],p=ease((phase-.48)/1.62),bot=laneBots[i];
- bot.style.transform=`translate(${xStops[from[0]]+(xStops[to[0]]-xStops[from[0]])*p}px,${(from[1]+(to[1]-from[1])*p)*68}px)`;
- bot.classList.toggle('scanning',phase<.48);bot.querySelector('.agent-character').style.transform=`translateY(${Math.sin(local*7)*2}px)`;bot.querySelector('.agent-scan').style.opacity=phase<.48?'.65':'0';
- const complete=t>=44+i*.8;lane.classList.toggle('complete',complete);lane.classList.toggle('flagged',complete&&i<5);lane.querySelector('.lane-result').textContent=complete?(i<5?'!':'✓'):'';lane.querySelector('.lane-progress').style.width=(38+Math.sin(local*.7)*35)+'%';});
- const findings=clamp(Math.floor((t-44)/.8)+1,0,5);$('.findings-counter').textContent=findings?`${findings} finding${findings===1?'':'s'}`:'Scanning';$('.findings-counter').classList.toggle('has-findings',findings>0);$('.agent-launch').style.opacity=0;
- $$('[data-issue]').forEach((el,i)=>{show(el,t>=51.1+i*.2);el.classList.toggle('selected',i===1&&t>=54);});
- const expand=ease((t-54)/.5);$('.issue-list').style.width=(100-expand*48)+'%';$('.issue-detail').style.width=(expand*48)+'%';$('.issue-detail').style.opacity=expand;show($('.issue-detail'),t>=54);$$('[data-issue]>span:nth-last-child(2)').forEach(el=>show(el,t<54));
- cursorAt($('.issue-cursor'),t,[[52.5,1400,413],[53.8,460,119],[54.2,460,119],[55,720,360]]);show($('.issue-cursor'),t>=52.5&&t<55);const click=clamp((t-53.9)/.4);$('.issue-cursor>i').style.opacity=t>=53.9&&t<54.3?1-click:0;$('.issue-cursor>i').style.transform=`scale(${.5+click*2})`;
- $('.access-web').style.opacity=ease((t-70)/.45);if(realTime>=72&&realTime<85)$('.access-ai').innerHTML=connectionSVG(baseTime,config.aiConnection);
- show($('.chat-comparison'),t<100);show($('.outcome-table'),t>=100);const comparison=t-83;
- $$('[data-retry]').forEach((el,i)=>show(el,comparison>=[.4,2.3,4.6,6.4,7.7][i]));const right=ease((comparison-8.2)/.5);$('.connection-chip').style.opacity=right;$('.mcp-run').style.opacity=right;
- $$('[data-step]').forEach((el,i)=>{const p=ease((comparison-9-i*.8)/.45);el.style.opacity=p;el.style.transform=`translateY(${(1-p)*15}px)`;});const done=ease((comparison-13)/.5);$('.chat-result').style.opacity=done;$('.chat-result').style.transform=`scale(${.97+done*.03})`;
- $('.mcp-run').style.boxShadow=`0 0 ${18+Math.sin(comparison*3)*7}px rgba(45,155,112,${comparison>8.2&&comparison<14.5?.18:0})`;
- // Word-aligned paired reveals use real film time, so seek/backward playback is deterministic.
- $$('[data-compare-row]').forEach((el,i)=>{const p=ease((realTime-config.closingCues.cues[i].start)/config.closingCues.revealSeconds);el.style.opacity=p;el.style.transform=`translateY(${(1-p)*12}px)`;});
+ const config=window.FILM_CONFIG,cue=config.cues,L=config.layout,clamp=(x,a=0,b=1)=>Math.max(a,Math.min(b,x)),ease=x=>1-Math.pow(1-clamp(x),3),lerp=(a,b,p)=>a+(b-a)*p;
+ const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
+ const scenes=config.scenes.map(s=>({...s,el:document.getElementById(s.id)})),at=id=>config.scenes.find(s=>s.id===id);
+ const seg=config.narration;
+ const reveal=(el,p,dy=14)=>{el.style.opacity=p;el.style.transform=`translateY(${(1-p)*dy}px)`;};
+ const ROW=46,LOOP=14*ROW;
+ // A shared pointer helper: keyframes are [time,x,y]; clicks pulse the ring.
+ function pointer(el,t,path,clicks,from,to){
+  const visible=t>=from&&t<to;el.style.visibility=visible?'inherit':'hidden';if(!visible)return;
+  let a=path[0],b=path[0];for(let i=1;i<path.length;i++){b=path[i];if(t<=b[0])break;a=b;}
+  let p=clamp((t-a[0])/Math.max(.001,b[0]-a[0]));p=p*p*(3-2*p);
+  el.style.transform=`translate(${lerp(a[1],b[1],p)-4.3}px,${lerp(a[2],b[2],p)-3.25}px)`;
+  const last=clicks.filter(c=>c<=t).at(-1)??-100,age=t-last;el.querySelector('.pointer').style.transform=`scale(${age>=0&&age<.14?.87:1})`;
+  const ring=el.querySelector('i');if(ring){ring.style.opacity=age>=0&&age<.48?1-age/.48:0;ring.style.transform=`scale(${.4+clamp(age/.48)*1.3})`;}
+ }
+
+ // 1. Too many places to look.
+ const portalCues=[cue.asap,cue.gscm,cue.bdp,cue.nerp],fileCues=[cue.excel,cue.emails,cue.presentations,cue.pdfs];
+ // The hunt: each list scrolls to the report a person would need, then the pointer opens it.
+ const huntStart=cue.look-.4,SLOT=2,hunt=[[cue.look+.15,0,'Sell-out by country'],[cue.opening+.1,1,'Sell-in by account'],[cue.opening+1.3,3,'Marketing spend'],[cue.piecing-.1,'file',0],[cue.piecing+1.2,2,'Device activations']];
+ const rowIndex=(i,name)=>[...$$('[data-portal]')[i].querySelectorAll('.report-row span')].findIndex(s=>s.textContent===name)+14;
+ const huntFor=i=>hunt.find(h=>h[1]===i);
+ // Lists drift, then rush past on "packed with reports" so the volume reads without a number.
+ const travel=t=>{t=Math.min(t,huntStart);return t*20+140*clamp(t-cue.packed+.2,0,1.8);};
+ const scrollAt=(i,t)=>{const free=(travel(t)+i*137)%LOOP,h=huntFor(i);if(!h)return free;
+  const move=h[0]-1,target=(rowIndex(i,h[2])-SLOT)*ROW;return t<move?free:lerp((travel(move)+i*137)%LOOP,target,ease((t-move)/.6));};
+ const rowCenter=i=>[L.windows[i][0]+250,L.windows[i][1]+72+SLOT*ROW+23];
+ function mess(t){
+  const end=at('sMess').end,gather=ease((t-(end-.8))/.8);
+  $$('[data-portal]').forEach((el,i)=>{
+   const p=ease((t-.4-i*.45)/.6),focus=clamp(1-Math.abs(t-portalCues[i]-.7)/1.1);
+   const dx=(960-(L.windows[i][0]+232))*gather,dy=(500-(L.windows[i][1]+280))*gather;
+   el.style.opacity=p*(1-gather);el.style.transform=`translate(${dx}px,${dy+(1-p)*30}px) scale(${(1+focus*.025)*(1-gather*.6)})`;
+   el.style.zIndex=focus>.05?10:i;el.style.boxShadow=focus>.05?`0 0 0 ${5*focus}px ${['#1d4f91','#6551a8','#0e7490','#9a3412'][i]}33,0 24px 50px #18233b26`:'';
+   const offset=scrollAt(i,t);el.querySelector('.report-scroll').style.transform=`translateY(${-offset}px)`;
+   const sought=huntFor(i)?ease((t-huntFor(i)[0]+1)/.6):0;el.querySelector('.list-thumb').style.transform=`translateY(${8+clamp(travel(t)/700)*110+sought*24}px)`;
+   const rows=[...el.querySelectorAll('.report-row')],h=huntFor(i);rows.forEach(r=>r.classList.remove('hit'));
+   if(h&&t>=h[0])rows[rowIndex(i,h[2])].classList.add('hit');
+  });
+  $$('[data-file]').forEach((el,i)=>{
+   const p=ease((t-fileCues[i%4]-(i>3?.25:0)+.15)/.5),slot=L.files[i];
+   const dx=(960-(slot[0]+165))*gather,dy=(500-(slot[1]+37))*gather;
+   el.style.opacity=p*(1-gather);el.style.transform=`translate(${dx}px,${dy-(1-p)*40}px) rotate(${slot[2]*(1-gather)}deg) scale(${1-gather*.6})`;
+   el.classList.toggle('hit',hunt.some(([when,w,target])=>w==='file'&&target===i&&t>=when));
+  });
+  const q=ease((t-seg[2].start+.1)/.5)*(1-gather);$('.hunt-question').style.opacity=q;$('.hunt-question').style.transform=`translate(-50%,${(1-q)*-12}px)`;
+  const clock=ease((t-cue.look)/.4)*(1-gather);$('.hunt-clock').style.opacity=clock;
+  const minutes=Math.round(240*clamp((t-cue.look)/(seg[2].end-cue.look)));$('.hunt-clock span').textContent=minutes<60?`${minutes} min`:`${Math.floor(minutes/60)} h ${String(minutes%60).padStart(2,'0')} min`;
+  // Arrive, dwell, click, then move on.
+  const path=[[huntStart,960,90],...hunt.flatMap(([when,w,target])=>{const [x,y]=w==='file'?[L.files[target][0]+60,L.files[target][1]+37]:rowCenter(w);return [[when-.3,x,y],[when+.2,x,y]];})];
+  pointer($('.hunt-pointer'),t,path,hunt.map(h=>h[0]),huntStart,end-.8);
+ }
+
+ // 2. Everything comes together in Wizard.
+ const scattered=[...L.windows.map(([x,y])=>[x+232,y+280]),...L.files.slice(0,4).map(([x,y])=>[x+165,y+37])];
+ function join(t){
+  const start=at('sJoin').start,gather=ease((t-cue.together+.5)/1.3);
+  $$('[data-node]').forEach((el,i)=>{
+   const [sx,sy]=scattered[i],[rx,ry]=L.ring[i],x=lerp(sx,rx,gather),y=lerp(sy,ry,gather);
+   el.style.opacity=ease((t-start-i*.04)/.4);el.style.transform=`translate(${x-125}px,${y-42}px) scale(${lerp(.82,1,gather)})`;
+  });
+  const lines=ease((t-cue.together-.6)/.6);$$('[data-join-line]').forEach(el=>el.style.opacity=lines);
+  $('.join-flow').style.strokeDashoffset=-t*70;
+  const hub=ease((t-cue.meetWizard+.1)/.5),pulse=t>=cue.lives?Math.sin(clamp((t-cue.lives)/.8)*Math.PI)*.08:0;
+  $('.join-hub').style.opacity=hub;$('.join-hub').style.transform=`scale(${.6+.4*hub+pulse})`;
+  reveal($('.join-name'),ease((t-cue.meetWizard-.15)/.5));
+  const ai=ease((t-cue.localAI+.1)/.45);$('.join-ai').style.opacity=ai;$('.join-ai').style.transform=`translate(-50%,${(1-ai)*12}px)`;
+ }
+
+ // 3. Wizard: ask, find, answer, trust.
+ const question=config.question,typeStart=cue.ask+.35,typeEnd=typeStart+2.6,sent=typeEnd+.6;
+ const lit={gscm:cue.sellOut,asap:cue.share,nerp:cue.spend,excel:cue.targets},foundDone=cue.targets+.7,dash=cue.seconds-.35;
+ const bodyPoint=(sel,dx=0,dy=0)=>{const r=$(sel).getBoundingClientRect(),o=$('.app-body').getBoundingClientRect();return [r.left-o.left+r.width/2+dx,r.top-o.top+r.height/2+dy];};
+ function app(t){
+  const start=at('sApp').start,win=ease((t-start)/.6);$('.app-window').style.opacity=win;$('.app-window').style.transform=`translateY(${(1-win)*40}px) scale(${.98+.02*win})`;
+  const home=$('.wz-home');home.style.opacity=1-ease((t-sent)/.3);home.style.visibility=t<sent+.3?'inherit':'hidden';
+  $$('.home-mark,.home-hello,.wz-home>h1,.ask-box').forEach((el,i)=>reveal(el,ease((t-start-.25-i*.12)/.5)));
+  $$('.home-sources .src-chip').forEach((el,i)=>reveal(el,ease((t-start-.8-i*.07)/.4),10));reveal($('.home-sources-label'),ease((t-start-.7)/.4),8);
+  const typed=t>=sent?'':question.slice(0,Math.floor(clamp((t-typeStart)/(typeEnd-typeStart))*question.length));
+  $('.ask-typed').textContent=typed;$('.ask-placeholder').style.display=typed?'none':'';
+  const focused=t>=cue.ask-.3&&t<sent;$('.ask-box').classList.toggle('focused',focused);$('.ask-caret').style.opacity=focused&&Math.floor(t*2.5)%2===0?1:0;
+  $('.ask-send').classList.toggle('ready',typed.length===question.length);$('.ask-send').classList.toggle('pressed',t>=sent-.1&&t<sent+.05);
+  const send=bodyPoint('.ask-send');pointer($('.app-pointer'),t,[[typeEnd-.4,send[0]+160,send[1]+120],[sent-.25,send[0],send[1]],[sent+.6,send[0]-40,send[1]+140]],[sent-.1],typeEnd-.4,sent+.6);
+  // The question bubble steps aside when the security card opens beneath the badge.
+  reveal($('.wz-user'),ease((t-sent-.05)/.4)*(1-ease((t-cue.safe+.1)/.3)),10);
+  // Finding the right reports.
+  const find=$('.wz-find'),findIn=ease((t-sent-.2)/.4),findOut=ease((t-dash)/.35);find.style.opacity=findIn*(1-findOut);find.style.visibility=t>=sent&&t<dash+.4?'inherit':'hidden';
+  $('.find-spinner').style.transform=`rotate(${t*360}deg)`;$('.find-spinner').style.opacity=t<foundDone?1:0;
+  $('.find-title').textContent=t<foundDone?'Finding the right reports…':'Found 4 reports across 8 sources';
+  $$('[data-tile]').forEach((el,i)=>{const key=el.dataset.tile,on=lit[key]!==undefined&&t>=lit[key];reveal(el,ease((t-sent-.35-i*.06)/.4),12);
+   el.classList.toggle('lit',on);el.style.opacity=Math.min(+el.style.opacity,t>=foundDone&&!on?.45:1);
+   el.querySelector('.tile-ok').style.opacity=on?ease((t-lit[key])/.3):0;
+   const scan=t<foundDone&&!on;el.querySelector('.tile-scan').style.opacity=scan?1:0;el.querySelector('.tile-scan').style.transform=`translateX(${((t*1.4+i*.37)%1.6-.6)*280}px)`;});
+  $$('[data-found]').forEach((el,i)=>reveal(el,ease((t-[cue.sellOut,cue.share,cue.spend,cue.targets][i]-.1)/.4),16));
+  // The answer builds as it is named.
+  const dashEl=$('.wz-dash');dashEl.style.opacity=ease((t-dash-.1)/.4);dashEl.style.visibility=t>=dash?'inherit':'hidden';
+  reveal($('.dash-used'),ease((t-dash)/.4),8);reveal($('.dash-head'),ease((t-dash-.2)/.45),10);reveal($('.dash-summary'),ease((t-cue.summary+.2)/.5),10);
+  $$('[data-kpi]').forEach((el,i)=>{reveal(el,ease((t-cue.numbers-i*.13)/.45),16);
+   const hot=(i===0&&t>=cue.eight-.1&&t<cue.eight+1.6)||(i===1&&t>=cue.marketShare-.1&&t<cue.marketShare+1.8);el.classList.toggle('pulse',hot);});
+  $$('.chart-card').forEach((el,i)=>reveal(el,ease((t-cue.charts-i*.2)/.5),18));
+  const focusKsa=t>=cue.saudi-.1&&t<cue.checked;
+  $$('[data-bar]').forEach((el,i)=>{const p=ease((t-cue.charts-.35-i*.1)/.7);el.querySelector('.bar').style.transform=`scaleY(${p})`;el.querySelector('.bar-value').style.opacity=clamp((p-.6)/.4);
+   el.style.opacity=focusKsa&&i>0?.4:1;});
+  $('.bar-callout').style.opacity=ease((t-cue.saudi)/.35);
+  $$('[data-slice]').forEach((el,i)=>{const p=ease((t-cue.charts-.5)/1.1),len=+el.dataset.len,off=+el.dataset.off;
+   el.setAttribute('stroke-dasharray',`${Math.max(0,Math.min(len,100*p-off))} 100`);
+   const pop=i===0?ease((t-cue.marketShare+.1)/.4)*(1-ease((t-cue.checked)/.4)):0;el.style.transform=`scale(${1+pop*.07})`;});
+  $$('[data-legend]').forEach((el,i)=>reveal(el,ease((t-cue.charts-.9-i*.12)/.4),8));
+  // Trust: checked against sources, safe by design.
+  $('.dash-checked').style.opacity=ease((t-cue.checked)/.4);
+  $$('.kpi-src').forEach((el,i)=>el.style.opacity=ease((t-cue.checked-.2-i*.12)/.3));$$('.chart-src').forEach((el,i)=>el.style.opacity=ease((t-cue.checked-.6-i*.15)/.3));
+  const glow=t>=cue.safe-.2?.5+.5*Math.sin((t-cue.safe)*4):0;$('.app-secure').style.boxShadow=t>=cue.safe-.2?`0 0 0 ${3+glow*4}px #10b98133`:'';
+  reveal($('.secure-card'),ease((t-cue.safe)/.45),-10);
+  $$('.secure-card>div').forEach((el,i)=>reveal(el,ease((t-[cue.authorized,cue.authorized+.6,cue.allowed+.4][i]+.1)/.35),6));
+ }
+
+ // 4. End card.
+ function endCard(t){
+  const start=at('sEnd').start;
+  $$('[data-end-chip]').forEach((el,i)=>reveal(el,ease((t-start-.2-i*.08)/.45),12));
+  const mark=ease((t-start-.1)/.6);$('.end-mark').style.opacity=mark;$('.end-mark').style.transform=`scale(${.8+.2*mark})`;
+  const name=ease((t-cue.endWizard+.1)/.5);$('.end-lockup>b').style.opacity=name;$('.end-lockup>b').style.transform=`translateX(${(1-name)*-24}px)`;
+  reveal($('.end-tagline'),ease((t-cue.oneAnswer+.5)/.6),12);
+ }
+
+ function draw(t){
+  scenes.forEach(s=>{const active=t>=s.start&&t<s.end;s.el.style.visibility=active?'visible':'hidden';s.el.style.opacity=active?'1':'0';});
+  mess(t);join(t);app(t);endCard(t);
  }
  window.Film={draw,seek:draw};window.__timelines=window.__timelines||{};const clock={t:0},timeline=gsap.timeline({paused:true});timeline.to(clock,{t:config.duration,duration:config.duration,ease:'none',onUpdate:()=>draw(clock.t)},0);window.__timelines['metronome-your-data-connected']=timeline;window.addEventListener('hf-seek',e=>draw(e.detail.time));draw(0);
 })();

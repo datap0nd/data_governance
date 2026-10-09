@@ -1,0 +1,154 @@
+{
+  "ok": true,
+  "strict": false,
+  "browserSkipped": false,
+  "lint": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 1,
+    "infoCount": 0,
+    "findings": [
+      {
+        "code": "gsap_callback_dom_measurement",
+        "severity": "warning",
+        "message": "Timeline callback reaches DOM measurement (getBoundingClientRect/getTotalLength/getComputedStyle/...). The renderer seeks with suppressEvents=false, so callbacks re-fire on every seek — and a cold render worker runs them against whatever DOM state its own non-linear seek order produced. Measured geometry is seek-order-dependent, and values measured at build time (before the callback ran) are stale or zero.",
+        "selector": "onUpdate:()=>draw(clock.t)",
+        "dataAttributes": {},
+        "sourceFile": "index.html",
+        "bbox": {
+          "x": 0,
+          "y": 0,
+          "width": 0,
+          "height": 0
+        },
+        "time": 0,
+        "fixHint": "Do all measurement and DOM setup synchronously at build time, before registering the timeline — or derive geometry from fixed composition coordinates instead of measuring."
+      }
+    ],
+    "filesScanned": 1
+  },
+  "runtime": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": []
+  },
+  "layout": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 1,
+    "findings": [
+      {
+        "code": "content_overlap",
+        "severity": "info",
+        "time": 25.017,
+        "selector": "#sJoin > div:nth-of-type(6) > i:nth-of-type(1)",
+        "message": "Two text blocks overlap and may render unreadable.",
+        "rect": {
+          "left": 1058.3,
+          "top": 622.68,
+          "right": 1076.43,
+          "bottom": 644.45,
+          "width": 18.13,
+          "height": 21.77
+        },
+        "containerSelector": "div.join-name",
+        "text": "@",
+        "fixHint": "Give each block its own zone, or mark intentional layering with data-layout-allow-overlap.",
+        "dataAttributes": {},
+        "sourceFile": "index.html",
+        "bbox": {
+          "x": 1058.3,
+          "y": 622.68,
+          "width": 18.13,
+          "height": 21.77
+        },
+        "firstSeen": 25.017,
+        "lastSeen": 25.017,
+        "occurrences": 1,
+        "heldMs": 0,
+        "times": [
+          25.017
+        ]
+      }
+    ],
+    "duration": 81,
+    "samples": [
+      3,
+      7.5,
+      10,
+      14,
+      17.5,
+      19.5,
+      21.5,
+      23.5,
+      26,
+      30,
+      34,
+      36.5,
+      39,
+      41.5,
+      44,
+      47,
+      50,
+      53,
+      55,
+      58,
+      60.5,
+      64,
+      68,
+      71,
+      73.5,
+      76,
+      79.5
+    ],
+    "transitionSamples": [],
+    "transitionSamplesDropped": 0,
+    "tolerance": 2,
+    "totalIssueCount": 1,
+    "truncated": false
+  },
+  "motion": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": [],
+    "enabled": false,
+    "samples": 0
+  },
+  "contrast": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": [],
+    "enabled": true,
+    "samples": [
+      3,
+      21.5,
+      41.5,
+      58,
+      79.5
+    ],
+    "checked": 241,
+    "passed": 241
+  },
+  "hdr": {
+    "autoPromotion": null,
+    "inspection": "available"
+  },
+  "snapshots": {
+    "enabled": false,
+    "files": [],
+    "times": [],
+    "findingFiles": []
+  },
+  "_meta": {
+    "version": "0.8.142",
+    "latestVersion": "0.8.142",
+    "updateAvailable": false
+  }
+}

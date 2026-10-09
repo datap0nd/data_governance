@@ -1,29 +1,29 @@
 {
-  "title": "Metronome — Your data, connected",
-  "status": "clear problem statement; overnight feature marked in testing",
-  "durationSeconds": 110,
+  "title": "Wizard — Every source, one answer",
+  "status": "Wizard showcase for review",
+  "durationSeconds": 81,
   "width": 1920,
   "height": 1080,
   "framesPerSecond": 30,
-  "editableProjectHyperFramesVersion": "0.8.81",
+  "editableProjectHyperFramesVersion": "0.8.142",
   "artifacts": {
     "renders/review/animatic.mp4": {
-      "bytes": 6979890,
-      "sha256": "37ee0d2dc82799643557baa8f42449242c5c7d2cad9bd23d52fa2534c3101707"
+      "bytes": 18284842,
+      "sha256": "85b558107d446dca63496e01563c0f447749d4fbdf515ab3852689ec706044b7"
     },
     "audio/score.wav": {
-      "bytes": 31680102,
-      "sha256": "441aa8c9284bd5455e5f868fb3c4895a6e6bdc2e14cba6b3f502b7bd30f43141"
+      "bytes": 23328102,
+      "sha256": "65df40ca6c3b5dbaaed551bffb1923ce442e366634334b72e302cd98ee9d20b3"
     },
     "audio/narration.flac": {
-      "bytes": 2327717,
-      "sha256": "fbe01858e547ecd3bd09a1da32c7709b18295299f05de4d3d53dc61bc5a18eca"
+      "bytes": 1940423,
+      "sha256": "f977679f9ad7f500dd20c842bc26a229fa5826662b18901dbd13d1ff387a45d1"
     },
     "audio/background.mp3": {
       "bytes": 2103552,
       "sha256": "364a546834db4c0c2e3b3240eb6df03e98b7362230154b04c5c614442f6660d7"
     }
   },
-  "baseRenderHyperFramesVersion": "0.8.81",
-  "renderEngine": "FFmpeg 7.1 + resvg 2.6.2, shared SVG opening and testing badge, retimed revision 9 master"
+  "baseRenderHyperFramesVersion": "0.8.142",
+  "renderEngine": "HyperFrames 0.8.142 render (bundled chrome-headless-shell 152), audio/score.py master"
 }

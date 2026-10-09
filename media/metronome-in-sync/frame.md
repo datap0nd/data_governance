@@ -1,7 +1,7 @@
 # Film composition
 
-1920×1080, 30 fps, 144 seconds. Light mode; static Metronome brand icon. Nine scenes, timed by `timeline.json` and a deterministic GSAP draw function. No narration captions.
+1920×1080, 30 fps, 81 seconds. Light mode. Four scenes, timed by `timeline.json`, word cues in `assets/cues.json` and one deterministic draw function. No narration captions.
 
-Browser surfaces use the same code-built Chrome controls. Spreadsheet surfaces use the Scribble Excel ribbon with a newly authored worksheet. Report portals use embedded Korean text, period columns and variance triangles. The METO portal has its own violet identity. Brand SVGs are embedded locally and their gradient IDs are unique.
+The whole film uses Wizard's look: Inter, warm white surfaces, one cobalt accent (#315bd6), green only for "checked" and security, a soft cobalt and violet background glow. Each source has a consistent colour and letter badge (ASAP blue, GSCM violet, BDP teal, NERP rust, Excel green, Email blue, PowerPoint orange, PDF red); these are generic badges, not product logos. The muted grey is darkened slightly from Wizard's token so it passes AA contrast at video scale.
 
-Key motion: incoming data packets, a no-code transition, typed Flow fields, a click creating a pipeline, database scanning, five findings appearing and expanding, API data travel, server-to-browser access, and the three-tool MCP boost cycle. UI content is synthetic; no live service is accessed.
+Key motion: windows cascading in with lists rushing past, files dropping in, a pointer hunting through scrolling lists, everything gathering into the Wizard mark, a typed question, sources lighting up as reports are found, a dashboard building chart by chart, check marks and a security card, and the closing lockup. All content is synthetic; no live service is accessed.

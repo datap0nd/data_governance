@@ -1,12 +1,12 @@
-# Revision 10 validation
+# Revision 12 validation
 
-Opening: portals → downloaded reports → extract, transform and load → Metronome pipelines. Build, Schedule, Run now and Run history appear on narration cues. Top-right **In testing** remains throughout overnight agents and findings, 52–72 sec.
+Wizard concept film for review: data everywhere → hunting for one answer → everything in Wizard → ask → Wizard finds the reports → a complete, visual answer → checked and safe → every source, one answer.
 
-- **110 seconds / 1:50**, 1080p30 H.264, 3300 frames; stereo AAC 48 kHz. Full decode PASS. −16.14 LUFS / −1.91 dBTP. [Measurements](renders/revision10-validation.json).
-- Connected Chrome scenes and canonical playback checked: duration 110, source `why-metronome-10`, playback advanced to 9.627 sec. No scene-review console errors/warnings. [Encoded samples](renders/review/revision10-samples.jpg) confirm cuts and clear badge placement.
-- Three new voice phrases recognized correctly by ASR, including ASAP/GSCM. Ten later voice caches reused, shifted 15 sec. All 13 fit at speed 1 without overlap. [Speech evidence](audio/pronunciation-review.json).
-- Two package tests/seven syntax checks PASS: `20260929T110441221Z-5492-5eb82518`. Duration assertions updated to 110. HTTP 200 and range 206.
+- **81 seconds / 1:21**, 1080p30 H.264, 2430 frames; stereo AAC 48 kHz. Full decode PASS. −16.08 LUFS / −1.92 dBTP. [Measurements](renders/revision12-validation.json).
+- All 13 narration lines fit at speed 1, with the owner's pronunciation (ASAP as a word, N-ERP, smooth GSCM, BDP and PDF). 37 word cues come from the synthesizer's boundaries ([cues](assets/cues.json)); [encoded samples](renders/review/revision12-samples.jpg), taken half a second after each cue, show the matching reveal.
+- No report counts or dates appear; the lists rush past on "packed with reports".
+- HyperFrames 0.8.142 `check` at 27 times: pass, no errors; contrast 241/241 AA. One lint warning by design: the draw function measures layout for the pointer. [Check output](renders/revision12-check.json).
 
-Offline resvg/FFmpeg composition; connected Chrome is the only browser-control surface. No new HyperFrames or human listening pass claimed. Product readiness was not audited.
+No ASR or human listening pass. Figures are illustrative.
 
-[Plan](../../../docs/testing/releases/2026-09-29-film-problem-statement/test-plan.md) · [Report](../../../docs/testing/releases/2026-09-29-film-problem-statement/test-report.md).
+[Plan](../../docs/testing/releases/2026-10-09-film-wizard-showcase/test-plan.md) · [Report](../../docs/testing/releases/2026-10-09-film-wizard-showcase/test-report.md).

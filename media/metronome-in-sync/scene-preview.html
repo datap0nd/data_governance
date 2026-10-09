@@ -1,0 +1,10 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Wizard — Scene preview</title>
+<style>body{margin:0;background:#e9efeb;color:#173239;font:15px Arial,sans-serif}nav{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 14px}button,input{font:inherit;padding:6px 10px}#stage{position:relative;width:100%;overflow:hidden}iframe{position:absolute;left:0;top:0;border:0;width:1920px;height:1080px;transform-origin:top left}output{min-width:5em}</style>
+<nav><button data-at="7.6">Portals</button><button data-at="13.8">Files</button><button data-at="20.8">Hunting</button><button data-at="30">Wizard</button><button data-at="37.2">Ask</button><button data-at="47.8">Finding reports</button><button data-at="55">Dashboard</button><button data-at="59">Highlights</button><button data-at="71.6">Checked and safe</button><button data-at="79">End</button><button id="play">Play from here</button><label>Time <input id="time" type="number" min="0" max="80.96" step="0.1" value="55"></label><output id="stamp"></output></nav>
+<div id="stage"><iframe title="Wizard film" src="index.html"></iframe></div>
+<script>const film=document.querySelector('iframe'),stage=document.querySelector('#stage'),field=document.querySelector('#time'),stamp=document.querySelector('#stamp');let raf;
+function fit(){const s=Math.min(innerWidth/1920,(innerHeight-stage.offsetTop)/1080);film.style.transform=`scale(${s})`;stage.style.height=1080*s+'px'}addEventListener('resize',fit);fit();
+function seek(t){film.contentWindow.Film.draw(t);field.value=t.toFixed(2);stamp.textContent=t.toFixed(2)+' s'}
+const stop=()=>cancelAnimationFrame(raf);film.onload=()=>seek(+field.value);
+document.querySelectorAll('[data-at]').forEach(b=>b.onclick=()=>{stop();seek(+b.dataset.at)});field.oninput=()=>{stop();seek(+field.value)};
+document.querySelector('#play').onclick=()=>{stop();const from=+field.value,start=performance.now();const tick=now=>{const t=Math.min(80.96,from+(now-start)/1000);seek(t);if(t<80.96)raf=requestAnimationFrame(tick)};raf=requestAnimationFrame(tick)};</script>

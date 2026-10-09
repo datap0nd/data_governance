@@ -1,16 +1,16 @@
-# Storyboard — revision 10
+# Storyboard — revision 12
 
-110 seconds / 1:50. English narration and background music; zero narration subtitles, light-mode interfaces.
+81 seconds / 1:21. English narration and background music; no subtitles, light mode, plain language.
 
 | Scene | Time | Visual and purpose |
 | --- | --- | --- |
-| Where reports start | 0–9 | ASAP and GSCM interactive portals with downloadable, pre-made report tables. Establish where the inputs come from. |
-| The work behind reporting | 9–20 | Downloaded reports → Extract → Transform → Load. Dates visibly standardized into one format, then saved for analysis and scheduled reporting. Establish the work a download alone does not complete. |
-| Meet Metronome | 20–31 | Sources flow through Metronome to organized datasets. Build, Schedule, Run now and Run history appear on their spoken cues. Establish the tool’s purpose and one-place management. |
-| Code vs Flow | 31–52 | Existing Without/With comparison and working no-code builder. |
-| Overnight agents | 52–64 | Independent agents inspect reports/stages. Top-right In testing label remains visible for the entire scene. |
-| Findings | 64–72 | Five findings and expanded issue/fix. In testing remains visible. |
-| Two ways | 72–85 | Browser access and AI logos drawing connecting lines into Metronome MCP. |
-| AI comparison | 85–110 | Existing ChatGPT before/after. Two-column closing starts at 102; paired rows appear on shifted speech cues. |
+| Data everywhere | 0–15 | Four portal windows cascade in (ASAP, GSCM, BDP, NERP); each window glows as it is named and every list rushes past on "packed with reports", with a short scrollbar thumb for a long list. Excel files, emails, presentations and PDFs drop in below. No numbers. |
+| Hunting for one answer | 15–22.6 | A question appears; each list scrolls to the report someone would need and a pointer opens it, then a spreadsheet, while a clock runs past three hours. Everything then gathers to the centre. |
+| Everything in Wizard | 22.6–33.2 | Portals gather on the left, files on the right, all flowing into the Wizard mark; "Local AI" appears under its name. |
+| Just ask | 33.2–38.6 | A clean Wizard home: greeting, one question box, connected sources. "How did we do in the Gulf this quarter?" is typed and sent. |
+| Wizard finds the reports | 38.6–48.7 | Eight source tiles; GSCM, ASAP, NERP and Excel light up as each is named and the matching report joins "Reports found". |
+| A complete, visual answer | 48.7–62.8 | Summary, four key numbers, sell-out by country and a market-share donut build on their words; Saudi Arabia and Samsung's share are highlighted as the narration names them. |
+| Checked and safe | 62.8–72.5 | "Every number checked" and a source under every figure; the authorized-AI badge opens "Secure by design". |
+| Every source. One answer. | 72.5–81 | Wizard lockup with every source beneath and the tagline. |
 
-The ETL and capability reveals use synthesis word boundaries corrected for the exact PCM lead trim. See assets/opening-cues.json. Later animation/speech is shifted by 15 seconds. The prototype label covers both overnight monitoring and its findings to avoid implying rollout readiness. Other illustrative/demo limits remain in the review notes.
+Every speech-linked reveal reads its time from assets/cues.json, generated from the synthesizer's word boundaries.
