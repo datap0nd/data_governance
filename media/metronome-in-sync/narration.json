@@ -2,30 +2,31 @@
   {
     "start": 0.3,
     "end": 8.6,
-    "en": "Our data is everywhere. ASAP alone has about a hundred and fifty reports. GSCM has around two hundred.",
-    "spoken": "Our data is everywhere. A S A P alone has about a hundred and fifty reports. G S C M has around two hundred.",
+    "en": "Our data is spread across portals like ASAP, GSCM, BDP and NERP, each packed with reports.",
+    "spoken": "Our data is spread across portals like ASAP, GSCM, BDP and N-ERP, each packed with reports.",
     "cues": {
-      "asap": "A",
-      "gscm": "G"
+      "asap": "ASAP",
+      "gscm": "GSCM",
+      "bdp": "BDP",
+      "nerp": "N-ERP",
+      "packed": "packed"
     }
   },
   {
     "start": 9.0,
-    "end": 17.5,
-    "en": "Then there's BDP, NERP, and endless Excel files, emails, presentations and PDFs.",
-    "spoken": "Then there's B D P, N E R P, and endless Excel files, emails, presentations and P D Fs.",
+    "end": 14.3,
+    "en": "And then there are endless Excel files, emails, presentations and PDFs.",
+    "spoken": "And then there are endless Excel files, emails, presentations and PDFs.",
     "cues": {
-      "bdp": "B",
-      "nerp": "N",
       "excel": "Excel",
       "emails": "emails",
       "presentations": "presentations",
-      "pdfs": "P@3"
+      "pdfs": "PDFs"
     }
   },
   {
-    "start": 17.8,
-    "end": 25.1,
+    "start": 15.0,
+    "end": 22.3,
     "en": "Finding one answer means knowing where to look, then opening report after report, and piecing it together by hand.",
     "spoken": "Finding one answer means knowing where to look, then opening report after report, and piecing it together by hand.",
     "cues": {
@@ -35,8 +36,8 @@
     }
   },
   {
-    "start": 25.6,
-    "end": 29.9,
+    "start": 22.9,
+    "end": 27.2,
     "en": "Meet Wizard. It brings every source together, in one place.",
     "spoken": "Meet Wizard. It brings every source together, in one place.",
     "cues": {
@@ -45,8 +46,8 @@
     }
   },
   {
-    "start": 30.2,
-    "end": 35.3,
+    "start": 27.6,
+    "end": 32.7,
     "en": "Wizard's local AI has learned our portals, so it knows where every answer lives.",
     "spoken": "Wizard's local AI has learned our portals, so it knows where every answer lives.",
     "cues": {
@@ -55,8 +56,8 @@
     }
   },
   {
-    "start": 36.0,
-    "end": 38.5,
+    "start": 33.5,
+    "end": 36.0,
     "en": "So you can simply ask, in plain words.",
     "spoken": "So you can simply ask, in plain words.",
     "cues": {
@@ -64,10 +65,10 @@
     }
   },
   {
-    "start": 41.0,
-    "end": 51.6,
+    "start": 38.6,
+    "end": 48.2,
     "en": "Wizard finds the right reports for you: sell-out from GSCM, market share from ASAP, spend from NERP, and your targets in Excel.",
-    "spoken": "Wizard finds the right reports for you: sell-out from G S C M, market share from A S A P, spend from N E R P, and your targets in Excel.",
+    "spoken": "Wizard finds the right reports for you: sell-out from GSCM, market share from ASAP, spend from N-ERP, and your targets in Excel.",
     "cues": {
       "finds": "finds",
       "sellOut": "sell-out",
@@ -77,8 +78,8 @@
     }
   },
   {
-    "start": 52.0,
-    "end": 58.3,
+    "start": 48.7,
+    "end": 55.0,
     "en": "Seconds later, you have a complete answer: a clear summary, the key numbers, and charts you can share.",
     "spoken": "Seconds later, you have a complete answer: a clear summary, the key numbers, and charts you can share.",
     "cues": {
@@ -89,8 +90,8 @@
     }
   },
   {
-    "start": 58.6,
-    "end": 65.5,
+    "start": 55.4,
+    "end": 62.3,
     "en": "Sell-out is up eight percent, led by Saudi Arabia, and our market share grew to over thirty-one percent.",
     "spoken": "Sell-out is up eight percent, led by Saudi Arabia, and our market share grew to over thirty-one percent.",
     "cues": {
@@ -100,8 +101,8 @@
     }
   },
   {
-    "start": 65.9,
-    "end": 69.8,
+    "start": 62.8,
+    "end": 66.7,
     "en": "Every number is checked against its source report, so you can trust it.",
     "spoken": "Every number is checked against its source report, so you can trust it.",
     "cues": {
@@ -109,8 +110,8 @@
     }
   },
   {
-    "start": 70.0,
-    "end": 75.0,
+    "start": 67.0,
+    "end": 72.0,
     "en": "And your data stays safe, with authorized AI that only shows what you're allowed to see.",
     "spoken": "And your data stays safe, with authorized AI that only shows what you're allowed to see.",
     "cues": {
@@ -120,8 +121,8 @@
     }
   },
   {
-    "start": 75.8,
-    "end": 77.9,
+    "start": 72.8,
+    "end": 74.9,
     "en": "Stop searching. Start asking.",
     "spoken": "Stop searching. Start asking.",
     "cues": {
@@ -130,8 +131,8 @@
     }
   },
   {
-    "start": 78.3,
-    "end": 80.9,
+    "start": 75.3,
+    "end": 77.9,
     "en": "Wizard. Every source, one answer.",
     "spoken": "Wizard. Every source, one answer.",
     "cues": {

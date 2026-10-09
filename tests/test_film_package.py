@@ -25,7 +25,7 @@ class _References(HTMLParser):
 
 def test_film_artifacts_match_manifest():
     manifest = json.loads((FILM / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["durationSeconds"] == 84
+    assert manifest["durationSeconds"] == 81
     for relative, expected in manifest["artifacts"].items():
         path = FILM / relative
         assert path.is_file(), relative
@@ -37,7 +37,7 @@ def test_film_artifacts_match_manifest():
         assert score.getnchannels() == 2
         assert score.getframerate() == 48000
         assert score.getsampwidth() == 3
-        assert score.getnframes() == 84 * 48000
+        assert score.getnframes() == 81 * 48000
 
 
 def test_film_review_pages_resolve_local_media():

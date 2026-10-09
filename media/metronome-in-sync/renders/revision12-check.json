@@ -38,696 +38,76 @@
     "ok": true,
     "errorCount": 0,
     "warningCount": 0,
-    "infoCount": 16,
+    "infoCount": 1,
     "findings": [
       {
-        "code": "text_occluded",
-        "severity": "info",
-        "time": 3,
-        "selector": "#sMess > div:nth-of-type(2) > div:nth-of-type(1) > b:nth-of-type(1)",
-        "message": "Text is hidden beneath an opaque element.",
-        "rect": {
-          "left": 528,
-          "top": 255,
-          "right": 553.39,
-          "bottom": 304,
-          "width": 25.39,
-          "height": 49
-        },
-        "containerSelector": "#sMess > div:nth-of-type(1)",
-        "text": "0",
-        "fixHint": "Give the text its own zone, raise its stacking order above the covering element, or mark intentional layering with data-layout-allow-occlusion.",
-        "coveredFraction": 0.11,
-        "dataAttributes": {
-          "data-count": "200"
-        },
-        "sourceFile": "index.html",
-        "bbox": {
-          "x": 528,
-          "y": 255,
-          "width": 25.39,
-          "height": 49
-        },
-        "firstSeen": 3,
-        "lastSeen": 3,
-        "occurrences": 1,
-        "heldMs": 0,
-        "times": [
-          3
-        ]
-      },
-      {
         "code": "content_overlap",
         "severity": "info",
-        "time": 24.821,
-        "selector": "#sMess > div:nth-of-type(6) > div:nth-of-type(1) > b:nth-of-type(1)",
+        "time": 25.017,
+        "selector": "#sJoin > div:nth-of-type(6) > i:nth-of-type(1)",
         "message": "Two text blocks overlap and may render unreadable.",
         "rect": {
-          "left": 854.53,
-          "top": 569.57,
-          "right": 963.79,
-          "bottom": 581.75,
-          "width": 109.26,
-          "height": 12.18
+          "left": 1058.3,
+          "top": 622.68,
+          "right": 1076.43,
+          "bottom": 644.45,
+          "width": 18.13,
+          "height": 21.77
         },
-        "containerSelector": "#sMess > div:nth-of-type(7) > i:nth-of-type(1)",
-        "text": "RE: Kuwait stock levels",
+        "containerSelector": "div.join-name",
+        "text": "@",
         "fixHint": "Give each block its own zone, or mark intentional layering with data-layout-allow-overlap.",
         "dataAttributes": {},
         "sourceFile": "index.html",
         "bbox": {
-          "x": 854.53,
-          "y": 569.57,
-          "width": 109.26,
-          "height": 12.18
+          "x": 1058.3,
+          "y": 622.68,
+          "width": 18.13,
+          "height": 21.77
         },
-        "firstSeen": 24.821,
-        "lastSeen": 24.821,
+        "firstSeen": 25.017,
+        "lastSeen": 25.017,
         "occurrences": 1,
         "heldMs": 0,
         "times": [
-          24.821
-        ]
-      },
-      {
-        "code": "content_overlap",
-        "severity": "info",
-        "time": 24.821,
-        "selector": "#sMess > div:nth-of-type(10) > div:nth-of-type(1) > b:nth-of-type(1)",
-        "message": "Two text blocks overlap and may render unreadable.",
-        "rect": {
-          "left": 898.41,
-          "top": 595.86,
-          "right": 1007.85,
-          "bottom": 608.03,
-          "width": 109.44,
-          "height": 12.17
-        },
-        "containerSelector": "#sMess > div:nth-of-type(11) > i:nth-of-type(1)",
-        "text": "FW: Promo results UAE",
-        "fixHint": "Give each block its own zone, or mark intentional layering with data-layout-allow-overlap.",
-        "dataAttributes": {},
-        "sourceFile": "index.html",
-        "bbox": {
-          "x": 898.41,
-          "y": 595.86,
-          "width": 109.44,
-          "height": 12.17
-        },
-        "firstSeen": 24.821,
-        "lastSeen": 24.821,
-        "occurrences": 1,
-        "heldMs": 0,
-        "times": [
-          24.821
-        ]
-      },
-      {
-        "code": "content_overlap",
-        "severity": "info",
-        "time": 24.821,
-        "selector": "#sMess > div:nth-of-type(11) > div:nth-of-type(1) > span:nth-of-type(1)",
-        "message": "Two text blocks overlap and may render unreadable.",
-        "rect": {
-          "left": 1005.81,
-          "top": 604.99,
-          "right": 1088.86,
-          "bottom": 614.99,
-          "width": 83.05,
-          "height": 10
-        },
-        "containerSelector": "#sMess > div:nth-of-type(12) > i:nth-of-type(1)",
-        "text": "PowerPoint · 22 slides",
-        "fixHint": "Give each block its own zone, or mark intentional layering with data-layout-allow-overlap.",
-        "dataAttributes": {},
-        "sourceFile": "index.html",
-        "bbox": {
-          "x": 1005.81,
-          "y": 604.99,
-          "width": 83.05,
-          "height": 10
-        },
-        "firstSeen": 24.821,
-        "lastSeen": 24.821,
-        "occurrences": 1,
-        "heldMs": 0,
-        "times": [
-          24.821
-        ]
-      },
-      {
-        "code": "container_overflow",
-        "severity": "info",
-        "time": 42,
-        "selector": "div.find-grid > div:nth-of-type(1) > i:nth-of-type(2)",
-        "message": "Element extends outside a clipping layout container.",
-        "rect": {
-          "left": 360,
-          "top": 342,
-          "right": 502.19,
-          "bottom": 490,
-          "width": 142.19,
-          "height": 148
-        },
-        "containerSelector": "div.find-grid > div:nth-of-type(1)",
-        "fixHint": "Resize/reposition the child or container, or mark intentional overflow with data-layout-allow-overflow.",
-        "containerRect": {
-          "left": 191,
-          "top": 341,
-          "right": 430,
-          "bottom": 491,
-          "width": 239,
-          "height": 150
-        },
-        "overflow": {
-          "right": 72.19
-        },
-        "dataAttributes": {},
-        "sourceFile": "index.html",
-        "bbox": {
-          "x": 360,
-          "y": 342,
-          "width": 142.19,
-          "height": 148
-        },
-        "firstSeen": 42,
-        "lastSeen": 44.5,
-        "occurrences": 2,
-        "heldMs": 0,
-        "times": [
-          42,
-          44.5
-        ]
-      },
-      {
-        "code": "container_overflow",
-        "severity": "info",
-        "time": 42,
-        "selector": "div.find-grid > div:nth-of-type(2) > i:nth-of-type(2)",
-        "message": "Element extends outside a clipping layout container.",
-        "rect": {
-          "left": 720.6,
-          "top": 342,
-          "right": 862.79,
-          "bottom": 490,
-          "width": 142.19,
-          "height": 148
-        },
-        "containerSelector": "div.find-grid > div:nth-of-type(2)",
-        "fixHint": "Resize/reposition the child or container, or mark intentional overflow with data-layout-allow-overflow.",
-        "containerRect": {
-          "left": 448,
-          "top": 341,
-          "right": 687,
-          "bottom": 491,
-          "width": 239,
-          "height": 150
-        },
-        "overflow": {
-          "right": 175.79
-        },
-        "dataAttributes": {},
-        "sourceFile": "index.html",
-        "bbox": {
-          "x": 720.6,
-          "y": 342,
-          "width": 142.19,
-          "height": 148
-        },
-        "firstSeen": 42,
-        "lastSeen": 42,
-        "occurrences": 1,
-        "heldMs": 0,
-        "times": [
-          42
-        ]
-      },
-      {
-        "code": "container_overflow",
-        "severity": "info",
-        "time": 42,
-        "selector": "div.find-grid > div:nth-of-type(3) > i:nth-of-type(2)",
-        "message": "Element extends outside a clipping layout container.",
-        "rect": {
-          "left": 633.2,
-          "top": 342,
-          "right": 775.39,
-          "bottom": 490,
-          "width": 142.19,
-          "height": 148
-        },
-        "containerSelector": "div.find-grid > div:nth-of-type(3)",
-        "fixHint": "Resize/reposition the child or container, or mark intentional overflow with data-layout-allow-overflow.",
-        "containerRect": {
-          "left": 705,
-          "top": 341,
-          "right": 944,
-          "bottom": 491,
-          "width": 239,
-          "height": 150
-        },
-        "overflow": {
-          "left": 71.8
-        },
-        "dataAttributes": {},
-        "sourceFile": "index.html",
-        "bbox": {
-          "x": 633.2,
-          "y": 342,
-          "width": 142.19,
-          "height": 148
-        },
-        "firstSeen": 42,
-        "lastSeen": 50.5,
-        "occurrences": 2,
-        "heldMs": 0,
-        "times": [
-          42,
-          50.5
-        ]
-      },
-      {
-        "code": "container_overflow",
-        "severity": "info",
-        "time": 42,
-        "selector": "div.find-grid > div:nth-of-type(5) > i:nth-of-type(2)",
-        "message": "Element extends outside a clipping layout container.",
-        "rect": {
-          "left": 326.4,
-          "top": 510,
-          "right": 468.59,
-          "bottom": 658,
-          "width": 142.19,
-          "height": 148
-        },
-        "containerSelector": "div.find-grid > div:nth-of-type(5)",
-        "fixHint": "Resize/reposition the child or container, or mark intentional overflow with data-layout-allow-overflow.",
-        "containerRect": {
-          "left": 191,
-          "top": 509,
-          "right": 430,
-          "bottom": 659,
-          "width": 239,
-          "height": 150
-        },
-        "overflow": {
-          "right": 38.59
-        },
-        "dataAttributes": {},
-        "sourceFile": "index.html",
-        "bbox": {
-          "x": 326.4,
-          "y": 510,
-          "width": 142.19,
-          "height": 148
-        },
-        "firstSeen": 42,
-        "lastSeen": 47,
-        "occurrences": 3,
-        "heldMs": 0,
-        "times": [
-          42,
-          44.5,
-          47
-        ]
-      },
-      {
-        "code": "container_overflow",
-        "severity": "info",
-        "time": 42,
-        "selector": "div.find-grid > div:nth-of-type(6) > i:nth-of-type(2)",
-        "message": "Element extends outside a clipping layout container.",
-        "rect": {
-          "left": 687,
-          "top": 510,
-          "right": 829.19,
-          "bottom": 658,
-          "width": 142.19,
-          "height": 148
-        },
-        "containerSelector": "div.find-grid > div:nth-of-type(6)",
-        "fixHint": "Resize/reposition the child or container, or mark intentional overflow with data-layout-allow-overflow.",
-        "containerRect": {
-          "left": 448,
-          "top": 509,
-          "right": 687,
-          "bottom": 659,
-          "width": 239,
-          "height": 150
-        },
-        "overflow": {
-          "right": 142.19
-        },
-        "dataAttributes": {},
-        "sourceFile": "index.html",
-        "bbox": {
-          "x": 687,
-          "y": 510,
-          "width": 142.19,
-          "height": 148
-        },
-        "firstSeen": 42,
-        "lastSeen": 50.5,
-        "occurrences": 4,
-        "heldMs": 0,
-        "times": [
-          42,
-          44.5,
-          47,
-          50.5
-        ]
-      },
-      {
-        "code": "container_overflow",
-        "severity": "info",
-        "time": 42,
-        "selector": "div.find-grid > div:nth-of-type(7) > i:nth-of-type(2)",
-        "message": "Element extends outside a clipping layout container.",
-        "rect": {
-          "left": 599.6,
-          "top": 510,
-          "right": 741.79,
-          "bottom": 658,
-          "width": 142.19,
-          "height": 148
-        },
-        "containerSelector": "div.find-grid > div:nth-of-type(7)",
-        "fixHint": "Resize/reposition the child or container, or mark intentional overflow with data-layout-allow-overflow.",
-        "containerRect": {
-          "left": 705,
-          "top": 509,
-          "right": 944,
-          "bottom": 659,
-          "width": 239,
-          "height": 150
-        },
-        "overflow": {
-          "left": 105.4
-        },
-        "dataAttributes": {},
-        "sourceFile": "index.html",
-        "bbox": {
-          "x": 599.6,
-          "y": 510,
-          "width": 142.19,
-          "height": 148
-        },
-        "firstSeen": 42,
-        "lastSeen": 44.5,
-        "occurrences": 2,
-        "heldMs": 0,
-        "times": [
-          42,
-          44.5
-        ]
-      },
-      {
-        "code": "escaped_container",
-        "severity": "info",
-        "time": 42,
-        "selector": "div.find-grid > div:nth-of-type(7) > i:nth-of-type(2)",
-        "message": "Positioned element renders far outside its offset parent — its coordinates were likely computed in a different frame (canvas/viewport pixels).",
-        "rect": {
-          "left": 599.6,
-          "top": 510,
-          "right": 741.79,
-          "bottom": 658,
-          "width": 142.19,
-          "height": 148
-        },
-        "containerSelector": "div.find-grid > div:nth-of-type(7)",
-        "text": "",
-        "fixHint": "Compute left/top in the offset parent's frame (subtract its rect), or mark intentional placement with data-layout-allow-overflow.",
-        "containerRect": {
-          "left": 705,
-          "top": 509,
-          "right": 944,
-          "bottom": 659,
-          "width": 239,
-          "height": 150
-        },
-        "dataAttributes": {},
-        "sourceFile": "index.html",
-        "bbox": {
-          "x": 599.6,
-          "y": 510,
-          "width": 142.19,
-          "height": 148
-        },
-        "firstSeen": 42,
-        "lastSeen": 42,
-        "occurrences": 1,
-        "heldMs": 0,
-        "times": [
-          42
-        ]
-      },
-      {
-        "code": "container_overflow",
-        "severity": "info",
-        "time": 44.5,
-        "selector": "div.find-grid > div:nth-of-type(4) > i:nth-of-type(2)",
-        "message": "Element extends outside a clipping layout container.",
-        "rect": {
-          "left": 1077.8,
-          "top": 342,
-          "right": 1219.99,
-          "bottom": 490,
-          "width": 142.19,
-          "height": 148
-        },
-        "containerSelector": "div.find-grid > div:nth-of-type(4)",
-        "fixHint": "Resize/reposition the child or container, or mark intentional overflow with data-layout-allow-overflow.",
-        "containerRect": {
-          "left": 962,
-          "top": 341,
-          "right": 1201,
-          "bottom": 491,
-          "width": 239,
-          "height": 150
-        },
-        "overflow": {
-          "right": 18.99
-        },
-        "dataAttributes": {},
-        "sourceFile": "index.html",
-        "bbox": {
-          "x": 1077.8,
-          "y": 342,
-          "width": 142.19,
-          "height": 148
-        },
-        "firstSeen": 44.5,
-        "lastSeen": 47,
-        "occurrences": 2,
-        "heldMs": 0,
-        "times": [
-          44.5,
-          47
-        ]
-      },
-      {
-        "code": "escaped_container",
-        "severity": "info",
-        "time": 44.5,
-        "selector": "div.find-grid > div:nth-of-type(5) > i:nth-of-type(2)",
-        "message": "Positioned element renders far outside its offset parent — its coordinates were likely computed in a different frame (canvas/viewport pixels).",
-        "rect": {
-          "left": 410.4,
-          "top": 510,
-          "right": 552.59,
-          "bottom": 658,
-          "width": 142.19,
-          "height": 148
-        },
-        "containerSelector": "div.find-grid > div:nth-of-type(5)",
-        "text": "",
-        "fixHint": "Compute left/top in the offset parent's frame (subtract its rect), or mark intentional placement with data-layout-allow-overflow.",
-        "containerRect": {
-          "left": 191,
-          "top": 509,
-          "right": 430,
-          "bottom": 659,
-          "width": 239,
-          "height": 150
-        },
-        "dataAttributes": {},
-        "sourceFile": "index.html",
-        "bbox": {
-          "x": 410.4,
-          "y": 510,
-          "width": 142.19,
-          "height": 148
-        },
-        "firstSeen": 44.5,
-        "lastSeen": 44.5,
-        "occurrences": 1,
-        "heldMs": 0,
-        "times": [
-          44.5
-        ]
-      },
-      {
-        "code": "escaped_container",
-        "severity": "info",
-        "time": 44.5,
-        "selector": "div.find-grid > div:nth-of-type(6) > i:nth-of-type(2)",
-        "message": "Positioned element renders far outside its offset parent — its coordinates were likely computed in a different frame (canvas/viewport pixels).",
-        "rect": {
-          "left": 323,
-          "top": 510,
-          "right": 465.19,
-          "bottom": 658,
-          "width": 142.19,
-          "height": 148
-        },
-        "containerSelector": "div.find-grid > div:nth-of-type(6)",
-        "text": "",
-        "fixHint": "Compute left/top in the offset parent's frame (subtract its rect), or mark intentional placement with data-layout-allow-overflow.",
-        "containerRect": {
-          "left": 448,
-          "top": 509,
-          "right": 687,
-          "bottom": 659,
-          "width": 239,
-          "height": 150
-        },
-        "dataAttributes": {},
-        "sourceFile": "index.html",
-        "bbox": {
-          "x": 323,
-          "y": 510,
-          "width": 142.19,
-          "height": 148
-        },
-        "firstSeen": 44.5,
-        "lastSeen": 44.5,
-        "occurrences": 1,
-        "heldMs": 0,
-        "times": [
-          44.5
-        ]
-      },
-      {
-        "code": "container_overflow",
-        "severity": "info",
-        "time": 47,
-        "selector": "div.find-grid > div:nth-of-type(8) > i:nth-of-type(2)",
-        "message": "Element extends outside a clipping layout container.",
-        "rect": {
-          "left": 1128.2,
-          "top": 510,
-          "right": 1270.39,
-          "bottom": 658,
-          "width": 142.19,
-          "height": 148
-        },
-        "containerSelector": "div.find-grid > div:nth-of-type(8)",
-        "fixHint": "Resize/reposition the child or container, or mark intentional overflow with data-layout-allow-overflow.",
-        "containerRect": {
-          "left": 962,
-          "top": 509,
-          "right": 1201,
-          "bottom": 659,
-          "width": 239,
-          "height": 150
-        },
-        "overflow": {
-          "right": 69.39
-        },
-        "dataAttributes": {},
-        "sourceFile": "index.html",
-        "bbox": {
-          "x": 1128.2,
-          "y": 510,
-          "width": 142.19,
-          "height": 148
-        },
-        "firstSeen": 47,
-        "lastSeen": 50.5,
-        "occurrences": 2,
-        "heldMs": 0,
-        "times": [
-          47,
-          50.5
-        ]
-      },
-      {
-        "code": "escaped_container",
-        "severity": "info",
-        "time": 47,
-        "selector": "div.find-grid > div:nth-of-type(4) > i:nth-of-type(2)",
-        "message": "Positioned element renders far outside its offset parent — its coordinates were likely computed in a different frame (canvas/viewport pixels).",
-        "rect": {
-          "left": 1161.8,
-          "top": 342,
-          "right": 1303.99,
-          "bottom": 490,
-          "width": 142.19,
-          "height": 148
-        },
-        "containerSelector": "div.find-grid > div:nth-of-type(4)",
-        "text": "",
-        "fixHint": "Compute left/top in the offset parent's frame (subtract its rect), or mark intentional placement with data-layout-allow-overflow.",
-        "containerRect": {
-          "left": 962,
-          "top": 341,
-          "right": 1201,
-          "bottom": 491,
-          "width": 239,
-          "height": 150
-        },
-        "dataAttributes": {},
-        "sourceFile": "index.html",
-        "bbox": {
-          "x": 1161.8,
-          "y": 342,
-          "width": 142.19,
-          "height": 148
-        },
-        "firstSeen": 47,
-        "lastSeen": 47,
-        "occurrences": 1,
-        "heldMs": 0,
-        "times": [
-          47
+          25.017
         ]
       }
     ],
-    "duration": 84,
+    "duration": 81,
     "samples": [
       3,
       7.5,
-      12,
-      17,
-      20.5,
-      22.5,
-      24.2,
+      10,
+      14,
+      17.5,
+      19.5,
+      21.5,
+      23.5,
       26,
-      28.5,
-      32,
-      37,
-      39.5,
-      42,
-      44.5,
+      30,
+      34,
+      36.5,
+      39,
+      41.5,
+      44,
       47,
-      50.5,
+      50,
       53,
-      56,
+      55,
       58,
-      61.5,
+      60.5,
       64,
-      67,
+      68,
       71,
-      74.5,
-      77,
-      80,
-      83
+      73.5,
+      76,
+      79.5
     ],
     "transitionSamples": [],
     "transitionSamplesDropped": 0,
     "tolerance": 2,
-    "totalIssueCount": 16,
+    "totalIssueCount": 1,
     "truncated": false
   },
   "motion": {
@@ -742,48 +122,19 @@
   "contrast": {
     "ok": true,
     "errorCount": 0,
-    "warningCount": 1,
+    "warningCount": 0,
     "infoCount": 0,
-    "findings": [
-      {
-        "code": "contrast_aa_failure",
-        "severity": "warning",
-        "message": "Contrast is 4.01:1; WCAG AA requires 4.5:1.",
-        "text": "Sep 30",
-        "fg": "rgb(94,106,130)",
-        "bg": "rgb(219,221,228)",
-        "ratio": 4.01,
-        "requiredRatio": 4.5,
-        "suggestedColor": "rgb(87,98,120)",
-        "large": false,
-        "selector": "main > section:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div > div:nth-of-type(11) > time",
-        "dataAttributes": {
-          "data-layout-allow-occlusion": "",
-          "data-layout-allow-overlap": ""
-        },
-        "sourceFile": "index.html",
-        "bbox": {
-          "x": 458.41259765625,
-          "y": 686.974609375,
-          "width": 48.17230224609375,
-          "height": 17.3720703125
-        },
-        "time": 3,
-        "times": [
-          3
-        ]
-      }
-    ],
+    "findings": [],
     "enabled": true,
     "samples": [
       3,
-      24.2,
-      44.5,
-      61.5,
-      83
+      21.5,
+      41.5,
+      58,
+      79.5
     ],
-    "checked": 318,
-    "passed": 317
+    "checked": 241,
+    "passed": 241
   },
   "hdr": {
     "autoPromotion": null,

@@ -6,11 +6,11 @@ Replace the Metronome film with a concept film about Wizard for a non-technical 
 
 | Case | Procedure | Expected |
 | --- | --- | --- |
-| WZ-01 | Review the narration and on-screen text against the owner's brief and Wizard's repository. | Plain language; "database", "local AI" and "authorized AI", never SQL or vendor names. Claims stay within Wizard's behaviour: it finds reports across approved sources, links numbers to their source report, rechecks them, shows only what the user may see and never changes data. Counts and figures marked illustrative where they are placeholders. |
+| WZ-01 | Review the narration and on-screen text against the owner's brief and Wizard's repository. | Plain language; "database", "local AI" and "authorized AI", never SQL or vendor names. Claims stay within Wizard's behaviour: it finds reports across approved sources, links numbers to their source report, rechecks them, shows only what the user may see and never changes data. No report counts or dates on screen or in narration; figures marked illustrative. Acronyms follow the owner's pronunciation. |
 | WZ-02 | Synthesize all 13 lines; inspect budgets and `assets/cues.json`. | Every line fits at speed 1; every cue word, including repeated letters (`P@3`), resolves in its line's word boundaries. |
 | WZ-03 | Snapshots across every scene and the encoded samples after each cue. | Each reveal lands on its word; no clipped or overlapping text except the deliberate window cascade and the security card; the hunt highlights the reports a person would need. |
 | WZ-04 | `hyperframes check` at 27 sampled times on 0.8.142. | Check passes with no errors. |
-| WZ-05 | Render; probe and fully decode the MP4; measure loudness. | 84 s, 2520 frames, H.264 1080p30, stereo AAC 48 kHz; clean decode. |
+| WZ-05 | Render; probe and fully decode the MP4; measure loudness. | 81 s, 2430 frames, H.264 1080p30, stereo AAC 48 kHz; clean decode. |
 | WZ-06 | `tests/test_film_package.py` plus syntax checks for score.py, build.mjs, runtime.js, wizard.js and serve-review.mjs. | Pass; manifest hashes match; review pages resolve local media. |
 | WZ-07 | Owner review of the cut before merge. | Owner approves or requests changes; no merge before that. |
 | WZ-08 | Final-head CI; record tested SHA/run in the PR. | Merge ready passes before the head-pinned merge. |

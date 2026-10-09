@@ -18,12 +18,12 @@ const lucidePaths = {
 };
 export const lu = (name, cls = '') => `<svg class="lu ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${lucidePaths[name]}</svg>`;
 
-// Every place an answer can hide. Report counts for ASAP and GSCM are the owner's figures; BDP and NERP are placeholders.
+// Every place an answer can hide.
 export const sources = [
-  {key: 'asap', name: 'ASAP', sub: 'Sales & market', count: 150, color: '#1d4f91', glyph: 'A'},
-  {key: 'gscm', name: 'GSCM', sub: 'Supply chain', count: 200, color: '#6551a8', glyph: 'G'},
-  {key: 'bdp', name: 'BDP', sub: 'Big Data Portal', count: 120, color: '#0e7490', glyph: 'B'},
-  {key: 'nerp', name: 'NERP', sub: 'Finance & planning', count: 90, color: '#9a3412', glyph: 'N'},
+  {key: 'asap', name: 'ASAP', sub: 'Sales & market', color: '#1d4f91', glyph: 'A'},
+  {key: 'gscm', name: 'GSCM', sub: 'Supply chain', color: '#6551a8', glyph: 'G'},
+  {key: 'bdp', name: 'BDP', sub: 'Big Data Portal', color: '#0e7490', glyph: 'B'},
+  {key: 'nerp', name: 'NERP', sub: 'Finance & planning', color: '#9a3412', glyph: 'N'},
   {key: 'excel', name: 'Excel', sub: 'Spreadsheets', color: '#107c41', glyph: 'X'},
   {key: 'email', name: 'Email', sub: 'Inbox', color: '#2563eb', glyph: '@'},
   {key: 'ppt', name: 'PowerPoint', sub: 'Presentations', color: '#c2410c', glyph: 'P'},
@@ -49,8 +49,8 @@ export function messScene() {
   const windows = sources.slice(0, 4).map((s, i) => {
     // The lists scroll past their window edge and sit under the next window in the cascade on purpose.
     const layered = 'data-layout-allow-occlusion data-layout-allow-overlap';
-    const rows = [...reportNames[s.key], ...reportNames[s.key]].map(r => `<div class="report-row" ${layered}>${lu('file')}<span ${layered}>${r}</span><time ${layered}>Sep 30</time></div>`).join('');
-    return `<div class="portal-win" data-portal="${i}" style="left:${windowSlots[i][0]}px;top:${windowSlots[i][1]}px;--c:${s.color}"><header>${badge(s)}<div><b>${s.name}</b><span>${s.sub}</span></div></header><div class="portal-count"><b data-count="${s.count}">0</b><span>reports</span></div><div class="report-list" data-layout-allow-overflow><div class="report-scroll">${rows}</div></div></div>`;
+    const rows = [...reportNames[s.key], ...reportNames[s.key]].map(r => `<div class="report-row" ${layered}>${lu('file')}<span ${layered}>${r}</span></div>`).join('');
+    return `<div class="portal-win" data-portal="${i}" style="left:${windowSlots[i][0]}px;top:${windowSlots[i][1]}px;--c:${s.color}"><header>${badge(s)}<div><b>${s.name}</b><span>${s.sub}</span></div></header><div class="report-list" data-layout-allow-overflow><div class="report-scroll">${rows}</div><i class="list-thumb"></i></div></div>`;
   }).join('');
   const fileCards = files.map((f, i) => {
     const s = sources.find(x => x.key === f[0]);
@@ -66,7 +66,7 @@ export const ringSlots = sources.map((_, i) => [i < 4 ? 330 : 1590, [270, 423, 5
 export function joinScene() {
   const [cx, cy] = ringCenter;
   const lines = ringSlots.map(([x, y], i) => { const k = x < cx ? 1 : -1; return `<path data-join-line="${i}" d="M${x} ${y}C${x + k * 300} ${y} ${cx - k * 280} ${cy} ${cx} ${cy}"/>`; }).join('');
-  const nodes = sources.map((s, i) => `<div class="join-node" data-node="${i}">${badge(s)}<div><b>${s.name}</b><span>${s.count ? `${s.count} reports` : s.sub}</span></div></div>`).join('');
+  const nodes = sources.map((s, i) => `<div class="join-node" data-node="${i}">${badge(s)}<div><b>${s.name}</b><span>${s.sub}</span></div></div>`).join('');
   return `<svg class="join-lines" viewBox="0 0 1920 1080" aria-hidden="true"><g class="join-base" fill="none" stroke="#d5dcef" stroke-width="2.5">${lines}</g><g class="join-flow" fill="none" stroke="#315bd6" stroke-width="5" stroke-linecap="round" stroke-dasharray="6 46">${lines}</g></svg>
 ${nodes}<div class="join-hub"><div class="hub-glow"></div>${wizardMark}</div><div class="join-name">Wizard</div><div class="join-ai">${lu('cpu')}Local AI</div>`;
 }
@@ -87,7 +87,7 @@ export function appScene(cursor) {
   const home = `<div class="wz-home"><div class="home-mark">${wizardMark}</div><p class="home-hello">Good morning</p><h1>What would you like to know?</h1>
 <div class="ask-box">${lu('sparkles', 'ask-spark')}<span class="ask-input"><span class="ask-placeholder">Ask anything about our business</span><span class="ask-typed"></span><i class="ask-caret"></i></span><span class="ask-send">${lu('arrowUp')}</span></div>
 <p class="home-sources-label">Connected sources</p><div class="home-sources">${chips}</div></div>`;
-  const tiles = sources.map((s, i) => `<div class="find-tile" data-tile="${s.key}">${badge(s)}<div><b>${s.name}</b><span>${s.count ? `${s.count} reports` : s.sub}</span></div><i class="tile-scan"></i>${lu('circleCheck', 'tile-ok')}</div>`).join('');
+  const tiles = sources.map((s, i) => `<div class="find-tile" data-tile="${s.key}">${badge(s)}<div><b>${s.name}</b><span>${s.sub}</span></div><i class="tile-scan" data-layout-allow-overflow></i>${lu('circleCheck', 'tile-ok')}</div>`).join('');
   const foundCards = found.map((f, i) => {
     const s = sources.find(x => x.key === f[0]);
     return `<div class="found-card" data-found="${i}">${badge(s)}<div><b>${f[1]}</b><span>${f[2]}</span></div>${lu('check', 'found-ok')}</div>`;

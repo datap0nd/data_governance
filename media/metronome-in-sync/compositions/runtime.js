@@ -21,9 +21,11 @@
  const huntStart=cue.look-.4,SLOT=2,hunt=[[cue.look+.15,0,'Sell-out by country'],[cue.opening+.1,1,'Sell-in by account'],[cue.opening+1.3,3,'Marketing spend'],[cue.piecing-.1,'file',0],[cue.piecing+1.2,2,'Device activations']];
  const rowIndex=(i,name)=>[...$$('[data-portal]')[i].querySelectorAll('.report-row span')].findIndex(s=>s.textContent===name)+14;
  const huntFor=i=>hunt.find(h=>h[1]===i);
- const scrollAt=(i,t)=>{const free=(Math.min(t,huntStart)*20+i*137)%LOOP,h=huntFor(i);if(!h)return free;
-  const move=h[0]-1,target=(rowIndex(i,h[2])-SLOT)*ROW;return t<move?free:lerp((Math.min(move,huntStart)*20+i*137)%LOOP,target,ease((t-move)/.6));};
- const rowCenter=i=>[L.windows[i][0]+250,L.windows[i][1]+72+66+SLOT*ROW+23];
+ // Lists drift, then rush past on "packed with reports" so the volume reads without a number.
+ const travel=t=>{t=Math.min(t,huntStart);return t*20+140*clamp(t-cue.packed+.2,0,1.8);};
+ const scrollAt=(i,t)=>{const free=(travel(t)+i*137)%LOOP,h=huntFor(i);if(!h)return free;
+  const move=h[0]-1,target=(rowIndex(i,h[2])-SLOT)*ROW;return t<move?free:lerp((travel(move)+i*137)%LOOP,target,ease((t-move)/.6));};
+ const rowCenter=i=>[L.windows[i][0]+250,L.windows[i][1]+72+SLOT*ROW+23];
  function mess(t){
   const end=at('sMess').end,gather=ease((t-(end-.8))/.8);
   $$('[data-portal]').forEach((el,i)=>{
@@ -31,8 +33,8 @@
    const dx=(960-(L.windows[i][0]+232))*gather,dy=(500-(L.windows[i][1]+280))*gather;
    el.style.opacity=p*(1-gather);el.style.transform=`translate(${dx}px,${dy+(1-p)*30}px) scale(${(1+focus*.025)*(1-gather*.6)})`;
    el.style.zIndex=focus>.05?10:i;el.style.boxShadow=focus>.05?`0 0 0 ${5*focus}px ${['#1d4f91','#6551a8','#0e7490','#9a3412'][i]}33,0 24px 50px #18233b26`:'';
-   const n=el.querySelector('[data-count]');n.textContent=Math.round(+n.dataset.count*ease((t-portalCues[i]+.2)/1.3));
    const offset=scrollAt(i,t);el.querySelector('.report-scroll').style.transform=`translateY(${-offset}px)`;
+   const sought=huntFor(i)?ease((t-huntFor(i)[0]+1)/.6):0;el.querySelector('.list-thumb').style.transform=`translateY(${8+clamp(travel(t)/700)*110+sought*24}px)`;
    const rows=[...el.querySelectorAll('.report-row')],h=huntFor(i);rows.forEach(r=>r.classList.remove('hit'));
    if(h&&t>=h[0])rows[rowIndex(i,h[2])].classList.add('hit');
   });

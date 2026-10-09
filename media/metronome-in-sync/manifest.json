@@ -1,23 +1,23 @@
 {
   "title": "Wizard — Every source, one answer",
   "status": "Wizard showcase for review",
-  "durationSeconds": 84,
+  "durationSeconds": 81,
   "width": 1920,
   "height": 1080,
   "framesPerSecond": 30,
   "editableProjectHyperFramesVersion": "0.8.142",
   "artifacts": {
     "renders/review/animatic.mp4": {
-      "bytes": 21514712,
-      "sha256": "2549c5bb4f704a01308056f589ddbe0a90cfd7905f12735544753e1b4b844564"
+      "bytes": 18284842,
+      "sha256": "85b558107d446dca63496e01563c0f447749d4fbdf515ab3852689ec706044b7"
     },
     "audio/score.wav": {
-      "bytes": 24192102,
-      "sha256": "798abb83c92eec083da83898e0c71e6120d0b04817c11c4ee9f3670298911200"
+      "bytes": 23328102,
+      "sha256": "65df40ca6c3b5dbaaed551bffb1923ce442e366634334b72e302cd98ee9d20b3"
     },
     "audio/narration.flac": {
-      "bytes": 2063540,
-      "sha256": "7c1e28d887f6c4107f4754fd4f5bc68c46589c556b95422b470b11844d4b1dd0"
+      "bytes": 1940423,
+      "sha256": "f977679f9ad7f500dd20c842bc26a229fa5826662b18901dbd13d1ff387a45d1"
     },
     "audio/background.mp3": {
       "bytes": 2103552,
