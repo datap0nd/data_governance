@@ -17,7 +17,7 @@ from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
-from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationError, ValidationInfo, field_validator, model_validator
 
 from app.config import DB_PATH, UPLOAD_PGHOST, UPLOAD_PGPORT
 from app.database import get_db
@@ -31,13 +31,16 @@ from app.flow_asap_exports import (
 from app.flow_outlook import SUPPORTED_ATTACHMENT_EXTENSIONS
 from app.flow_publish import new_local_file_storage_key, normalize_target_path
 from app.freshness import (
+    additional_trigger_rules,
     flow_freshness,
+    flow_trigger_rules,
     host_timezone,
     iso_utc,
     localize_wall_time,
-    next_occurrence,
+    next_trigger_occurrence,
     rule_key,
     schedule_rule,
+    trigger_payload,
     utc_now,
 )
 from app.flow_retention import RUN_FOLDER_KEEP, tombstone_name as retention_tombstone_name
@@ -561,14 +564,19 @@ def _periods(values: list[str], size: int) -> list[list[str]]:
 
 def _schedule_next(
     schedule_type: str, schedule_time: str | None, schedule_days: list[str],
-    schedule_day: int | None = None,
+    schedule_day: int | None = None, additional_triggers: list[dict] | None = None,
 ) -> datetime | None:
     rule = schedule_rule(schedule_type, schedule_time, schedule_days, schedule_day)
     if rule is None:
         return None
-    zone = host_timezone()
+    return _rules_next([rule, *additional_trigger_rules(additional_triggers)])
+
+
+def _rules_next(rules: list[dict]) -> datetime | None:
+    """Return the earliest next run across a Flow's triggers as naive UTC."""
     after = _now().replace(tzinfo=timezone.utc)
-    return next_occurrence(rule, after=after).astimezone(timezone.utc).replace(tzinfo=None)
+    next_run = next_trigger_occurrence(rules, after=after)
+    return next_run.astimezone(timezone.utc).replace(tzinfo=None) if next_run else None
 
 
 def _next_weekly_scan(weekday: str, time_value: str, now: datetime | None = None) -> datetime:
@@ -735,6 +743,9 @@ class FlowWrite(BaseModel):
     schedule_time: str | None = None
     schedule_days: list[str] = Field(default_factory=list)
     schedule_day: int | None = Field(default=None, ge=1, le=31)
+    # Triggers after the main schedule, each {type, time, days, day}. None keeps
+    # the saved triggers, so an older client that omits the field keeps them.
+    additional_triggers: list[dict[str, Any]] | None = None
     transform_enabled: bool = False
     transform_script_path: str | None = Field(default=None, max_length=2000)
     sql_handoff_enabled: bool = False
@@ -758,6 +769,34 @@ class FlowWrite(BaseModel):
     @classmethod
     def validate_excel_worksheets(cls, value):
         return flow_excel.normalize_config(value)
+
+    @field_validator("additional_triggers")
+    @classmethod
+    def validate_additional_triggers(cls, value, info: ValidationInfo):
+        # A field validator keeps the field name in the 422 location, which
+        # the builder uses to open the Schedule step at the named trigger.
+        if value is None:
+            return None
+        triggers = [trigger_payload(rule) for rule in additional_trigger_rules(value)]
+        if not triggers:
+            return triggers
+        main_type = str(info.data.get("schedule_type") or "").strip().casefold()
+        if main_type in {"", "manual"}:
+            raise ValueError("Choose a daily, weekly, or monthly schedule before adding more triggers.")
+        try:
+            main_rule = schedule_rule(
+                main_type, info.data.get("schedule_time"),
+                info.data.get("schedule_days") or [], info.data.get("schedule_day"),
+            )
+        except ValueError:
+            main_rule = None  # The Flow validator reports the main schedule.
+        seen = [(1, trigger_payload(main_rule))] if main_rule else []
+        for number, trigger in enumerate(triggers, start=2):
+            repeated = next((earlier for earlier, payload in seen if payload == trigger), None)
+            if repeated is not None:
+                raise ValueError(f"Trigger {number} repeats trigger {repeated}.")
+            seen.append((number, trigger))
+        return triggers
 
     @field_validator("email_delivery")
     @classmethod
@@ -1035,7 +1074,7 @@ class FlowWrite(BaseModel):
         self.schedule_days = [str(day).strip().casefold() for day in self.schedule_days]
         if self.schedule_type != "monthly":
             self.schedule_day = None
-        _schedule_next(
+        schedule_rule(
             self.schedule_type, self.schedule_time, self.schedule_days, self.schedule_day,
         )
         if self.transform_enabled:
@@ -1357,6 +1396,8 @@ def _flow_out(db, flow_id: int, *, include_private_storage: bool = False) -> dic
         _loads(result.pop("python_script_values_json", None), []), len(result["python_scripts"]),
     )
     result["schedule_days"] = _loads(result.pop("schedule_days"), [])
+    additional_triggers = _loads(result.pop("additional_triggers_json", None), [])
+    result["additional_triggers"] = additional_triggers if result["schedule_type"] != "manual" else []
     freshness_rule, freshness_health = flow_freshness(row)
     result["freshness_rule"] = freshness_rule
     result["freshness_health"] = freshness_health
@@ -2102,10 +2143,7 @@ def queue_due_flows() -> dict:
                 "SELECT id FROM flow_runs WHERE flow_id=? AND status IN ('queued','claimed','running') LIMIT 1",
                 (row["id"],),
             ).fetchone()
-            days = _loads(row["schedule_days"], [])
-            next_run = _schedule_next(
-                row["schedule_type"], row["schedule_time"], days, row["schedule_day"],
-            )
+            next_run = _rules_next(flow_trigger_rules(row))
             db.execute(
                 "UPDATE flows SET next_run_at=?, updated_at=? WHERE id=?",
                 (_iso(next_run), now_text, row["id"]),
@@ -3413,8 +3451,10 @@ def create_flow(body: FlowWrite, request: Request):
     allocated = None
     flow_id = None
     now = _iso(_now())
+    body.additional_triggers = body.additional_triggers or []
     next_run = _iso(_schedule_next(
         body.schedule_type, body.schedule_time, body.schedule_days, body.schedule_day,
+        body.additional_triggers,
     )) if body.enabled else None
     try:
         with get_db() as db:
@@ -3457,6 +3497,8 @@ def create_flow(body: FlowWrite, request: Request):
             flow_id = cursor.lastrowid
             db.execute("UPDATE flows SET sql_assign_owner=? WHERE id=?",
                        (body.sql_assign_owner is not False, flow_id))
+            db.execute("UPDATE flows SET additional_triggers_json=? WHERE id=?",
+                       (_json(body.additional_triggers), flow_id))
             db.execute("UPDATE flows SET excel_worksheets_json=? WHERE id=?",
                        (_json(body.excel_worksheets), flow_id))
             db.execute('UPDATE flows SET execution_method=? WHERE id=?', (body.execution_method or 'catalog', flow_id))
@@ -3711,14 +3753,11 @@ async def add_transform_script(request: Request, file: UploadFile = File(...),
 @router.put("/{flow_id}")
 def update_flow(flow_id: int, body: FlowWrite, request: Request):
     now = _iso(_now())
-    next_run = _iso(_schedule_next(
-        body.schedule_type, body.schedule_time, body.schedule_days, body.schedule_day,
-    )) if body.enabled else None
     from app.flow_folder_rename import save_transaction
     with save_transaction(get_db, flow_id) as (db, folder_save):
         existing = db.execute(
             """SELECT source_type, enabled, schedule_type, schedule_time, schedule_days,
-                      schedule_day, freshness_effective_from_at,
+                      schedule_day, additional_triggers_json, freshness_effective_from_at,
                       sql_database, sql_schema, sql_table, sql_target_source_id, sql_assign_owner,
                       target_folder, local_file_path, local_file_worksheet, flow_folder,
                       local_file_last_identity, local_file_config_revision, download_parallelism, execution_method, recording_revision_id,
@@ -3730,6 +3769,21 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
             raise HTTPException(404, "Flow not found.")
         if body.sql_assign_owner is None:
             body.sql_assign_owner = bool(existing["sql_assign_owner"])
+        if body.additional_triggers is None:
+            # Saved triggers apply only while the main schedule is not Manual,
+            # and one that now equals the main schedule is redundant.
+            main_rule = schedule_rule(
+                body.schedule_type, body.schedule_time, body.schedule_days, body.schedule_day,
+            )
+            saved = additional_trigger_rules(_loads(existing["additional_triggers_json"], []))
+            body.additional_triggers = [] if main_rule is None else [
+                trigger for trigger in map(trigger_payload, saved)
+                if trigger != trigger_payload(main_rule)
+            ]
+        next_run = _iso(_schedule_next(
+            body.schedule_type, body.schedule_time, body.schedule_days, body.schedule_day,
+            body.additional_triggers,
+        )) if body.enabled else None
         if "excel_worksheets" not in body.model_fields_set and body.excel_worksheets is None:
             body.excel_worksheets = flow_excel.saved_config(existing["excel_worksheets_json"])
         if body.execution_method is None:
@@ -3813,17 +3867,15 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
             body,
             preserve_invalid_source_id=preserve_invalid_source_id,
         )
-        old_rule = schedule_rule(
-            existing["schedule_type"], existing["schedule_time"],
-            _loads(existing["schedule_days"], []), existing["schedule_day"],
-        )
+        old_rules = flow_trigger_rules(existing)
         new_rule = schedule_rule(
             body.schedule_type, body.schedule_time, body.schedule_days, body.schedule_day,
         )
+        new_rules = [new_rule, *additional_trigger_rules(body.additional_triggers)] if new_rule else []
         freshness_baseline = existing["freshness_effective_from_at"]
         if body.enabled and (
             not existing["enabled"]
-            or rule_key(old_rule) != rule_key(new_rule)
+            or {rule_key(rule) for rule in old_rules} != {rule_key(rule) for rule in new_rules}
             or not freshness_baseline
         ):
             freshness_baseline = iso_utc(utc_now())
@@ -3852,6 +3904,7 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
         if not cursor.rowcount:
             raise HTTPException(404, "Flow not found.")
         db.execute("UPDATE flows SET download_parallelism=? WHERE id=?", (body.download_parallelism, flow_id))
+        db.execute("UPDATE flows SET additional_triggers_json=? WHERE id=?", (_json(body.additional_triggers), flow_id))
         db.execute("UPDATE flows SET sql_assign_owner=? WHERE id=?", (body.sql_assign_owner, flow_id))
         db.execute("UPDATE flows SET excel_worksheets_json=? WHERE id=?", (_json(body.excel_worksheets), flow_id))
         db.execute("UPDATE flows SET post_sql_refresh_json=? WHERE id=?", (_json(body.post_sql_refresh), flow_id))
@@ -3949,13 +4002,7 @@ def set_flow_enabled(flow_id: int, body: FlowEnabledWrite, request: Request):
             _build_job(db, flow_id)
         if body.enabled and flow["schedule_type"] == "manual":
             raise HTTPException(400, "Choose a daily, weekly, or monthly schedule before activating this flow.")
-        next_run = (
-            _iso(_schedule_next(
-                flow["schedule_type"], flow["schedule_time"],
-                _loads(flow["schedule_days"], []), flow["schedule_day"],
-            ))
-            if body.enabled else None
-        )
+        next_run = _iso(_rules_next(flow_trigger_rules(flow))) if body.enabled else None
         baseline = iso_utc(utc_now()) if body.enabled else flow["freshness_effective_from_at"]
         db.execute(
             """UPDATE flows SET enabled=?, next_run_at=?,

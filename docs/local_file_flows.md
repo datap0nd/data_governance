@@ -2,8 +2,8 @@
 
 Metronome Flows can use one exact CSV or Excel file as their source. Choose
 **From file** when creating a Flow, enter an absolute local or UNC path, and
-configure the same schedule, owner, transformation, and SQL append/replace
-options used by other Flows.
+configure the same schedule (including **More triggers**), owner,
+transformation, and SQL append/replace options used by other Flows.
 
 The background worker reads the path with its Windows service account. There
 is an optional path policy in System > Paths: when enforcement is enabled the

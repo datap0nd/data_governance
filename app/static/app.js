@@ -10621,6 +10621,8 @@ function bindRefreshSchedulePage() {
 // ── Configurable website report flows ──
 
 const _FLOW_WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+// The schedule above is trigger 1; the API accepts 23 more.
+const _FLOW_MAX_TRIGGERS = 24;
 
 function _flowStatusBadge(status) {
     const key = String(status || "draft").toLowerCase();
@@ -10876,6 +10878,12 @@ function _flowSortHeaders() {
 }
 
 function _flowScheduleLabel(flow) {
+    const label = _flowMainScheduleLabel(flow);
+    const more = flow.schedule_type === "manual" ? 0 : (flow.additional_triggers || []).length;
+    return more ? `${label} + ${more} more trigger${more === 1 ? "" : "s"}` : label;
+}
+
+function _flowMainScheduleLabel(flow) {
     if (flow.schedule_type === "monthly") return `Monthly · day ${flow.schedule_day}`;
     if (flow.schedule_type === "weekly") {
         const names = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
@@ -11430,6 +11438,31 @@ function _flowBindExcel(form) {
     update();
 }
 
+function _flowTriggerRowHtml(number, trigger = {}) {
+    const type = ["daily", "weekly", "monthly"].includes(trigger.type) ? trigger.type : "daily";
+    const days = new Set(trigger.days || []);
+    const id = `flow-trigger-${number}`;
+    const options = [["daily", "Daily"], ["weekly", "Weekly"], ["monthly", "Monthly"]]
+        .map(([value, label]) => `<option value="${value}" ${value === type ? "selected" : ""}>${label}</option>`).join("");
+    return `<li class="flow-trigger" data-trigger="${number}"><span class="flow-trigger-name">Trigger ${number}</span><label><span>Schedule</span><select class="flow-trigger-type" id="${id}-type" aria-label="Trigger ${number} schedule">${options}</select></label><label><span>Run time</span><input class="flow-trigger-time" id="${id}-time" type="time" required value="${esc(trigger.time || "08:00")}" aria-label="Trigger ${number} run time"></label><button type="button" class="btn-secondary flow-trigger-remove" aria-label="Remove trigger ${number}">Remove</button><fieldset class="flow-trigger-weekdays" ${type === "weekly" ? "" : "hidden"}><legend>Weekdays</legend>${_FLOW_WEEKDAYS.map(day => `<label><input type="checkbox" value="${day}" ${days.has(day) ? "checked" : ""}> ${day.slice(0, 3)}</label>`).join("")}</fieldset><label class="flow-trigger-day-field" ${type === "monthly" ? "" : "hidden"}><span>Day of month</span><input class="flow-trigger-day" id="${id}-day" type="number" min="1" max="31" ${type === "monthly" ? "required" : ""} value="${esc(trigger.day || 1)}" aria-label="Trigger ${number} day of month"></label></li>`;
+}
+
+function _flowTriggersHtml(existing, noOpSources = false) {
+    const triggers = existing?.schedule_type === "manual" ? [] : (existing?.additional_triggers || []);
+    const help = "Run this Flow at more times, for example to check Outlook for a file several times a day. Trigger 1 is the schedule above; output freshness follows it."
+        + (noOpSources ? " A run that finds no new file finishes without changes." : "");
+    return `<fieldset id="flow-triggers" class="flow-triggers flow-span-2"><legend>More triggers</legend><ol id="flow-trigger-list" class="flow-trigger-list">${triggers.map((trigger, index) => _flowTriggerRowHtml(index + 2, trigger)).join("")}</ol><div class="flow-triggers-actions"><button type="button" class="btn-secondary" id="flow-trigger-add" ${triggers.length >= _FLOW_MAX_TRIGGERS - 1 ? "disabled" : ""}>Add trigger</button><span id="flow-trigger-limit" class="flow-dialog-help" ${triggers.length >= _FLOW_MAX_TRIGGERS - 1 ? "" : "hidden"}>A Flow can have at most ${_FLOW_MAX_TRIGGERS} triggers.</span></div><p class="flow-dialog-help" id="flow-triggers-help">${help}</p></fieldset>`;
+}
+
+/** Copy the previous trigger one hour later, so a new row is ready to adjust. */
+function _flowNextTrigger(previous) {
+    const [hour, minute] = String(previous?.time || "08:00").split(":").map(Number);
+    const total = ((Number.isFinite(hour) ? hour : 8) * 60 + (Number.isFinite(minute) ? minute : 0) + 60) % 1440;
+    const time = `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+    const type = ["daily", "weekly", "monthly"].includes(previous?.type) ? previous.type : "daily";
+    return {type, time, days: type === "weekly" ? [...(previous.days || [])] : [], day: type === "monthly" ? previous.day : null};
+}
+
 function _flowOutlookBuilderHtml(existing = null) {
     const isFile = existing?.source_type === "file" || existing?._source_type === "file";
     const scheduleDays = new Set(existing?.schedule_days || []);
@@ -11483,6 +11516,7 @@ function _flowOutlookBuilderHtml(existing = null) {
                         <label><span>Run time</span><input id="flow-schedule-time" type="time" value="${esc(existing?.schedule_time || "08:00")}"></label>
                         <fieldset class="flow-weekdays flow-span-2"><legend>Weekdays</legend>${_FLOW_WEEKDAYS.map(day => `<label><input type="checkbox" value="${day}" ${scheduleDays.has(day) ? "checked" : ""}> ${day.slice(0, 3)}</label>`).join("")}</fieldset>
                         <label id="flow-schedule-day-field"><span>Day of month</span><input id="flow-schedule-day" type="number" min="1" max="31" value="${esc(existing?.schedule_day || 1)}"><small>Months without that day are skipped.</small></label>
+                        ${_flowTriggersHtml(existing, true)}
                         <label class="flow-check flow-span-2"><input id="flow-sql-enabled" type="checkbox" ${existing?.sql_handoff_enabled ? "checked" : ""} ${!sqlCatalog.configured ? "disabled" : ""}><span>Insert the normalized CSV into SQL</span></label>
                         <div id="flow-sql-fields" class="flow-form-grid flow-span-2">
                             <label><span>Write behavior</span><select id="flow-sql-mode"><option value="append" ${existing?.sql_mode !== "replace" ? "selected" : ""}>Append rows</option><option value="replace" ${existing?.sql_mode === "replace" ? "selected" : ""}>Replace all rows</option></select></label>
@@ -11604,6 +11638,7 @@ function _flowPythonBuilderHtml(existing = null) {
                         <label><span>Run time</span><input id="flow-schedule-time" type="time" value="${esc(existing?.schedule_time || "08:00")}"></label>
                         <fieldset class="flow-weekdays flow-span-2"><legend>Weekdays</legend>${_FLOW_WEEKDAYS.map(day => `<label><input type="checkbox" value="${day}" ${scheduleDays.has(day) ? "checked" : ""}> ${day.slice(0, 3)}</label>`).join("")}</fieldset>
                         <label id="flow-schedule-day-field"><span>Day of month</span><input id="flow-schedule-day" type="number" min="1" max="31" value="${esc(existing?.schedule_day || 1)}"><small>Months without that day are skipped.</small></label>
+                        ${_flowTriggersHtml(existing)}
                     </div>
                 </div>
                 <div class="flow-form-section" id="flow-python-email-section" ${runMode ? "hidden" : ""}>
@@ -11763,6 +11798,7 @@ function _flowBuilderHtml(catalog, existing = null) {
                             <label><span>Run time</span><input id="flow-schedule-time" type="time" value="${esc(existing?.schedule_time || "08:00")}"></label>
                             <fieldset class="flow-weekdays flow-span-2"><legend>Weekdays</legend>${_FLOW_WEEKDAYS.map(day => `<label><input type="checkbox" value="${day}" ${scheduleDays.has(day) ? "checked" : ""}> ${day.slice(0, 3)}</label>`).join("")}</fieldset>
                             <label id="flow-schedule-day-field"><span>Day of month</span><input id="flow-schedule-day" type="number" min="1" max="31" value="${esc(existing?.schedule_day || 1)}"><small>Months without that day are skipped.</small></label>
+                            ${_flowTriggersHtml(existing)}
                             <label class="flow-check flow-span-2"><input id="flow-sql-enabled" type="checkbox" ${existing?.sql_handoff_enabled ? "checked" : ""} ${!sqlCatalog.configured ? "disabled" : ""}><span>Insert downloaded file into SQL after download</span></label>
                             <div id="flow-sql-fields" class="flow-form-grid flow-span-2">
                                 <label><span>Write behavior</span><select id="flow-sql-mode"><option value="append" ${existing?.sql_mode !== "replace" ? "selected" : ""}>Append rows</option><option value="replace" ${existing?.sql_mode === "replace" ? "selected" : ""}>Replace all rows</option></select><small>Replace all rows deletes every row in the table and loads the file from this run instead. The table itself is kept, with its grants, indexes, and constraints; a table that does not exist yet is created. New CSV columns are added as nullable TEXT and older target columns remain. The SQL account needs USAGE and CREATE on the schema, and ownership of an existing target.</small></label>
@@ -12289,6 +12325,7 @@ function _flowCollectBuilder() {
         schedule_time: scheduleType === "manual" ? null : $("#flow-schedule-time").value,
         schedule_days: scheduleType === "weekly" ? [...document.querySelectorAll(".flow-weekdays input:checked")].map(input => input.value) : [],
         schedule_day: scheduleType === "monthly" ? Number($("#flow-schedule-day").value) : null,
+        additional_triggers: scheduleType === "manual" ? [] : _flowReadTriggers(document),
         transform_enabled: transformEnabled,
         transform_script_path: transformEnabled ? $("#flow-transform-script").value.trim() : null,
         sql_handoff_enabled: sqlEnabled,
@@ -12405,6 +12442,19 @@ function _flowCollectBuilder() {
         end_week: periodStrategy === "fixed" ? ($("#flow-end-week").value || null) : null,
         filename_template: $("#flow-filename").value.trim(),
     };
+}
+
+/** The rows under More triggers, in order; the schedule above is trigger 1. */
+function _flowReadTriggers(root) {
+    return [...root.querySelectorAll(".flow-trigger")].map(row => {
+        const type = row.querySelector(".flow-trigger-type").value;
+        return {
+            type,
+            time: row.querySelector(".flow-trigger-time").value,
+            days: type === "weekly" ? [...row.querySelectorAll(".flow-trigger-weekdays input:checked")].map(input => input.value) : [],
+            day: type === "monthly" ? Number(row.querySelector(".flow-trigger-day").value) : null,
+        };
+    });
 }
 
 function _flowExcelRead() {
@@ -12590,8 +12640,11 @@ function _flowRevealServerError(form, error) {
     for (const item of error.validation || []) {
         ids.excel_worksheets = 'flow-excel-names';
         ids.local_file_worksheet = 'flow-excel-names';
+        ids.additional_triggers = 'flow-trigger-add';
         const field = item.loc?.find(part => ids[part]);
-        const input = field && form.querySelector(`#${ids[field]}`);
+        // "Trigger 3: ..." focuses that row; trigger 1 is the schedule above.
+        const trigger = field === 'additional_triggers' && /Trigger (\d+)/.exec(item.msg || '')?.[1];
+        const input = (trigger && form.querySelector(`#flow-trigger-${trigger}-time`)) || (field && form.querySelector(`#${ids[field]}`));
         if (field === 'excel_worksheets') {
             const enabled = form.querySelector('#flow-excel-enabled');
             enabled.checked = true;
@@ -13437,8 +13490,53 @@ function _bindFlowWorkspace() {
         $(".flow-weekdays").hidden = !weekly;
         $("#flow-schedule-day-field").hidden = !monthly;
         $("#flow-schedule-day").required = monthly;
+        // More triggers apply only to a scheduled Flow; hidden rows are not sent.
+        const triggers = $("#flow-triggers");
+        if (triggers) {
+            triggers.hidden = manual;
+            triggers.querySelectorAll("input, select").forEach(input => { input.disabled = manual; });
+        }
     });
     $("#flow-schedule-type")?.dispatchEvent(new Event("change"));
+    const triggerList = $("#flow-trigger-list");
+    if (triggerList) {
+        const renderTriggers = triggers => {
+            triggerList.innerHTML = triggers.map((trigger, index) => _flowTriggerRowHtml(index + 2, trigger)).join("");
+            const full = triggers.length >= _FLOW_MAX_TRIGGERS - 1;
+            $("#flow-trigger-add").disabled = full;
+            $("#flow-trigger-limit").hidden = !full;
+        };
+        $("#flow-trigger-add").addEventListener("click", () => {
+            const triggers = _flowReadTriggers(triggerList);
+            if (triggers.length >= _FLOW_MAX_TRIGGERS - 1) return;
+            const scheduleType = $("#flow-schedule-type").value;
+            const main = {
+                type: scheduleType, time: $("#flow-schedule-time").value,
+                days: [...document.querySelectorAll(".flow-weekdays input:checked")].map(input => input.value),
+                day: Number($("#flow-schedule-day").value) || 1,
+            };
+            renderTriggers([...triggers, _flowNextTrigger(triggers.at(-1) || main)]);
+            triggerList.lastElementChild.querySelector(".flow-trigger-time").focus();
+        });
+        triggerList.addEventListener("click", event => {
+            const row = event.target.closest(".flow-trigger");
+            if (!row || !event.target.closest(".flow-trigger-remove")) return;
+            const rows = [...triggerList.children];
+            const index = rows.indexOf(row);
+            const triggers = _flowReadTriggers(triggerList);
+            triggers.splice(index, 1);
+            renderTriggers(triggers);
+            (triggerList.children[Math.min(index, triggers.length - 1)]?.querySelector(".flow-trigger-remove") || $("#flow-trigger-add")).focus();
+        });
+        triggerList.addEventListener("change", event => {
+            const select = event.target.closest(".flow-trigger-type");
+            if (!select) return;
+            const row = select.closest(".flow-trigger");
+            row.querySelector(".flow-trigger-weekdays").hidden = select.value !== "weekly";
+            row.querySelector(".flow-trigger-day-field").hidden = select.value !== "monthly";
+            row.querySelector(".flow-trigger-day").required = select.value === "monthly";
+        });
+    }
     const methodControl = $('#flow-execution-method');
     if (methodControl) {
         const syncMethod = () => {

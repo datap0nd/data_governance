@@ -2043,6 +2043,9 @@ MIGRATIONS = [
            emitted_at TEXT NOT NULL,
            UNIQUE(run_id, line_no))""",
     "CREATE INDEX IF NOT EXISTS idx_flow_run_output_run ON flow_run_output(run_id, line_no)",
+    # Triggers after the main schedule: [{type, time, days, day}], each adding
+    # run times. The main schedule columns stay trigger 1 for older readers.
+    "ALTER TABLE flows ADD COLUMN additional_triggers_json TEXT NOT NULL DEFAULT '[]'",
 ]
 
 
