@@ -197,6 +197,8 @@ def test_trigger_limit_and_list_label(preview):
     expect(page.locator("#flow-trigger-limit")).to_be_hidden()
 
     page.locator('.preview-nav [data-screen="list"]').click()
+    page.locator(".flow-group-toggle", has_text="Outlook").click()
+    expect(page.locator("td", has_text="+ 2 more triggers")).to_be_visible()
     expect(page.locator("td", has_text="+ 2 more triggers")).to_have_count(1)
     shot(page, evidence, "list")
 
