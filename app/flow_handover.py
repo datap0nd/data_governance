@@ -65,6 +65,7 @@ def snapshot(db, flow_id):
         'created_by': flow.get('created_by'), 'created_at': flow.get('created_at'),
         'schedule': {'type': flow['schedule_type'], 'time': flow['schedule_time'],
                      'days': flow['schedule_days'], 'day': flow.get('schedule_day'),
+                     'additional_triggers': flow.get('additional_triggers', []),
                      'enabled': flow['enabled'], 'timezone': 'Asia/Dubai'},
         'source': {key: site.get(key) for key in ('id', 'name', 'adapter', 'base_url', 'auth_url')},
         'report': {key: report.get(key) for key in ('id', 'name', 'report_url', 'automation', 'filters',

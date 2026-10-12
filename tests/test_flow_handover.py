@@ -63,7 +63,8 @@ def test_owner_schedule_and_shared_changes_refresh_without_export(flow_db, tmp_p
     saved = flows.update_flow(saved['id'], body, _request())
     flows.set_flow_enabled(saved['id'], flows.FlowEnabledWrite(enabled=True), _request())
     assert manifest(saved)['configuration']['schedule'] == {
-        'type': 'daily', 'time': '10:30', 'days': [], 'day': None, 'enabled': True, 'timezone': 'Asia/Dubai'}
+        'type': 'daily', 'time': '10:30', 'days': [], 'day': None, 'additional_triggers': [],
+        'enabled': True, 'timezone': 'Asia/Dubai'}
     with database.get_db() as db:
         db.execute("INSERT OR REPLACE INTO app_settings(key,value) VALUES ('flows_recording_wait_seconds','35')")
     assert manifest(saved)['configuration']['defaults']['recording_wait_seconds'] == 35

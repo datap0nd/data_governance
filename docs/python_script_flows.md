@@ -258,9 +258,11 @@ bound for SQL fails the run.
 
 ## Scheduling, owner and alerts
 
-The schedule (daily, weekly or monthly day-of-month, Dubai time), the owner
-and the failure-alert and email-delivery settings are the shared blocks used
-by every Flow. Runs go to the headless worker; no browser is opened, and
+The schedule (daily, weekly or monthly day-of-month, Dubai time, with
+optional **More triggers** at other times), the owner and the failure-alert
+and email-delivery settings are the shared blocks used by every Flow. Every
+trigger runs the whole script chain: unlike Outlook and file Flows, a Python
+Flow has no built-in no-op when nothing new has arrived. Runs go to the headless worker; no browser is opened, and
 **Browser mode** does not apply. A **Just run the scripts** run then starts
 each script in the signed-in desktop session, as described above.
 

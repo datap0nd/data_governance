@@ -1,5 +1,20 @@
 # Recording journey previews
 
+The current Flow schedule preview is [flow-triggers.html](flow-triggers.html):
+**More triggers** under **Schedule and owner**, where one Flow runs at several
+times (for example a fictional Outlook Flow checking for a file on weekdays at
+08:00, 11:00 and 14:00). It shows Add (a copy of the previous trigger one hour
+later), per-row Daily/Weekly/Monthly fields, Remove with renumbering, the
+24-trigger limit, Manual hiding the block, the Python help without the
+Outlook/file no-op sentence, and the Flows list label `+ 2 more triggers`.
+Production `app.js` renders every screen; only the API layer is fictional
+(`flow-triggers.js`). The preview bar switches the save outcome to the
+validation error "Trigger N repeats trigger N-1." Serve `app` as below and
+open `http://127.0.0.1:8769/static/recording-preview/flow-triggers.html`.
+`tests/test_flow_triggers_preview.py` walks every control at 1280×900 and
+390×844, saves screenshots when `PREVIEW_EVIDENCE_DIR` is set, and skips when
+neither the Chrome channel nor the bundled Chromium can launch.
+
 The current usability checkpoint for recording replacement and template
 retargeting is [retarget.html](retarget.html). It uses fictional Country/Main
 buttons to demonstrate the visible **Record again** action, the distinction

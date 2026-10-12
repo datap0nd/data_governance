@@ -714,6 +714,26 @@ h2 {
 .flow-weekdays { border: 0; display: flex; flex-wrap: wrap; gap: var(--space-md); padding: 0; }
 .flow-weekdays legend { color: var(--text-secondary); font-size: 0.76rem; font-weight: 600; margin-bottom: var(--space-sm); }
 .flow-weekdays label { color: var(--text-muted); font-size: 0.75rem; font-weight: 500; }
+/* More triggers: each row repeats the schedule controls; trigger 1 is the schedule above. */
+.flow-triggers { border: 0; display: grid; gap: var(--space-md); margin: 0; padding: 0; min-width: 0; }
+.flow-triggers > legend { color: var(--text-secondary); font-size: 0.76rem; font-weight: 600; margin-bottom: var(--space-sm); padding: 0; }
+.flow-trigger-list { display: grid; gap: var(--space-md); list-style: none; margin: 0; padding: 0; }
+.flow-trigger-list:empty { display: none; }
+.flow-trigger { align-items: end; border-top: 1px solid var(--border); display: grid; gap: var(--space-sm) var(--space-lg); grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; padding-top: var(--space-md); }
+.flow-trigger-name { color: var(--text); font-size: 0.78rem; font-variant-numeric: tabular-nums; font-weight: 700; grid-column: 1 / -1; }
+.flow-trigger > label { color: var(--text-secondary); display: flex; flex-direction: column; font-size: 0.76rem; font-weight: 600; gap: 0.3rem; min-width: 0; }
+.flow-trigger input[type="time"] { font-variant-numeric: tabular-nums; }
+.flow-trigger-weekdays, .flow-trigger-day-field { grid-column: 1 / -1; }
+.flow-trigger-weekdays { border: 0; display: flex; flex-wrap: wrap; gap: var(--space-md); margin: 0; padding: 0; }
+.flow-trigger-weekdays legend { color: var(--text-secondary); font-size: 0.76rem; font-weight: 600; margin-bottom: var(--space-sm); padding: 0; }
+.flow-trigger-weekdays label { color: var(--text-muted); font-size: 0.75rem; font-weight: 500; }
+.flow-trigger-day-field { max-width: 50%; }
+.flow-triggers-actions { align-items: center; display: flex; flex-wrap: wrap; gap: var(--space-md); }
+@media (max-width: 620px) {
+    .flow-trigger { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+    .flow-trigger-remove { grid-column: 1 / -1; justify-self: start; }
+    .flow-trigger-day-field { max-width: none; }
+}
 
 .flow-builder-actions { display: flex; justify-content: flex-end; gap: var(--space-sm); margin-top: var(--space-xl); }
 .flow-source-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-md); }
