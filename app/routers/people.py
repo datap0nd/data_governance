@@ -2,7 +2,8 @@
 
 Everyone can read Users; only the host PC changes them, because a person's
 profile decides who signs in as whom, whose SQL user a Flow writes with and
-where Flow notifications go.
+where Flow notifications go. The one exception: each person can set or clear
+their own SQL password.
 """
 
 import logging
@@ -37,6 +38,13 @@ def require_host(request: Request, detail: str = "Only the host PC can change Us
     """Refuse a change that only the machine running Metronome may make."""
     _person_id, is_host = user_identity.request_identity(request)
     if not is_host:
+        raise HTTPException(status_code=403, detail=detail)
+
+
+def require_host_or_self(request: Request, person_id: int, detail: str) -> None:
+    """Refuse a change unless it comes from the host PC or that person's own computer."""
+    signed_in_as, is_host = user_identity.request_identity(request)
+    if not is_host and signed_in_as != person_id:
         raise HTTPException(status_code=403, detail=detail)
 
 
@@ -158,8 +166,11 @@ def update_person(person_id: int, req: PersonUpdate, request: Request):
 
 @router.put("/{person_id}/sql-password", response_model=PersonOut)
 def set_sql_password(person_id: int, body: SqlPasswordWrite, request: Request):
-    """Save a person's SQL password in the host PC's settings file."""
-    require_host(request, "Only the host PC can set SQL passwords.")
+    """Save a person's SQL password in the host PC's settings file.
+
+    The host PC sets anyone's; a signed-in person sets their own.
+    """
+    require_host_or_self(request, person_id, "Only the host PC or that person can set their SQL password.")
     if any(ord(char) < 32 or ord(char) == 127 for char in body.password):
         raise HTTPException(status_code=422, detail="SQL password cannot contain line breaks or control characters.")
     with get_db() as db:
@@ -175,8 +186,8 @@ def set_sql_password(person_id: int, body: SqlPasswordWrite, request: Request):
 
 @router.delete("/{person_id}/sql-password", response_model=PersonOut)
 def clear_sql_password(person_id: int, request: Request):
-    """Remove a person's SQL password from the settings file."""
-    require_host(request, "Only the host PC can clear SQL passwords.")
+    """Remove a person's SQL password from the settings file (host PC or that person)."""
+    require_host_or_self(request, person_id, "Only the host PC or that person can clear their SQL password.")
     with get_db() as db:
         row = db.execute("SELECT id, name FROM people WHERE id = ?", (person_id,)).fetchone()
         if not row:

@@ -14,6 +14,14 @@ function usersPasswordCell(person) {
     return `<span class="users-muted">${person.sql_username ? 'Not set' : '—'}</span>`;
 }
 
+// A colleague changes only their own SQL password; the host PC edits whole profiles.
+function usersActionCell(person, host) {
+    if (host) return `<td><button type="button" class="btn-sm btn-outline" data-edit-user="${person.id}" aria-label="Edit ${esc(person.name)}">Edit</button></td>`;
+    if (person.id !== window._currentUser?.person_id) return '<td></td>';
+    if (!person.sql_username) return '<td><span class="users-muted">Ask the host PC to add your SQL username</span></td>';
+    return `<td><button type="button" class="btn-sm btn-outline" data-own-password="${person.id}">Change SQL password</button></td>`;
+}
+
 function usersRowsHtml() {
     const query = usersState.query.trim().toLowerCase();
     const host = _isHostPc();
@@ -26,14 +34,14 @@ function usersRowsHtml() {
             ${usersState.people.length ? 'Try another name, email or SQL username, or choose Everyone.' : host ? 'Add your BI and business colleagues. Each person then chooses their name when they first open Metronome.' : 'Ask the host PC to add your BI and business colleagues.'}</div>`;
     }
     return `<div class="users-table-wrap" tabindex="0" role="region" aria-label="Users table, scroll for more columns"><table class="users-table">
-        <thead><tr><th scope="col">Person</th><th scope="col">Role</th><th scope="col">Email</th><th scope="col">SQL username</th><th scope="col">SQL password</th>${host ? '<th scope="col"><span class="sr-only">Actions</span></th>' : ''}</tr></thead>
+        <thead><tr><th scope="col">Person</th><th scope="col">Role</th><th scope="col">Email</th><th scope="col">SQL username</th><th scope="col">SQL password</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
         <tbody>${people.map(person => `<tr>
             <td><div class="users-person"><span class="users-avatar" aria-hidden="true">${esc(person.name.split(/\s+/).map(part => part[0]).slice(0, 2).join(''))}</span><strong>${esc(person.name)}</strong></div></td>
             <td><span class="badge ${person.role === 'BI' ? 'badge-blue' : 'badge-muted'}">${esc(person.role)}</span></td>
             <td>${person.email ? esc(person.email) : '<span class="users-muted">Not added</span>'}</td>
             <td>${person.sql_username ? `<code>${esc(person.sql_username)}</code>` : '<span class="users-muted">Not linked</span>'}</td>
             <td>${usersPasswordCell(person)}</td>
-            ${host ? `<td><button type="button" class="btn-sm btn-outline" data-edit-user="${person.id}" aria-label="Edit ${esc(person.name)}">Edit</button></td>` : ''}
+            ${usersActionCell(person, host)}
         </tr>`).join('')}</tbody></table></div>`;
 }
 
@@ -42,7 +50,7 @@ function usersPageHtml() {
     const host = _isHostPc();
     return `<div class="users-page" id="users-page">
         <header class="page-header users-header"><div><h1>Users</h1><p class="subtitle">Your team, flow owners and SQL identities.</p></div>${host ? `<button id="users-add" ${error ? 'disabled' : ''}>Add user</button>` : ''}</header>
-        ${host ? '' : '<p class="users-readonly" role="note">Only the host PC can add or change users and SQL passwords.</p>'}
+        ${host ? '' : '<p class="users-readonly" role="note">Only the host PC can add or change users. You can change your own SQL password from your row.</p>'}
         <div class="users-feedback" id="users-feedback" role="status" aria-live="polite"></div>
         ${error ? `<section class="users-panel users-load-error" role="alert"><h2>Could not load users</h2><p>${esc(error)}</p><button id="users-retry" class="btn-outline">Try again</button></section>` : `
         <div id="user-editor"></div>
@@ -50,7 +58,7 @@ function usersPageHtml() {
             ${[['all', 'Everyone'], ['BI', 'BI'], ['Business', 'Business']].map(([role, label]) => `<button type="button" class="btn-sm btn-outline" data-user-role="${role}" aria-pressed="${usersState.role === role}">${label}</button>`).join('')}
             <span class="users-muted" id="users-count">${usersCountText()}</span></div>
         <section class="users-panel" aria-label="User directory" id="users-list">${usersRowsHtml()}</section>
-        <p class="users-muted">Each Flow inserts into SQL as its owner, signing in with their SQL username and the password the host PC saved here. Passwords stay in the host PC's settings file and only show as asterisks. The owner's role also becomes the target table owner on the next successful SQL load when that Flow enables SQL table ownership, including existing tables. Already queued runs keep their saved owner.</p>`}
+        <p class="users-muted">Each Flow inserts into SQL as its owner, signing in with their SQL username and the password saved here by that person or the host PC. Passwords stay in the host PC's settings file and only show as asterisks. The owner's role also becomes the target table owner on the next successful SQL load when that Flow enables SQL table ownership, including existing tables. Already queued runs keep their saved owner.</p>`}
     </div>`;
 }
 
@@ -89,6 +97,80 @@ function bindUsersRows() {
     document.querySelectorAll('[data-edit-user]').forEach(button => button.onclick = () =>
         openUserEditor(usersState.people.find(person => person.id === Number(button.dataset.editUser)))
     );
+    document.querySelectorAll('[data-own-password]').forEach(button => button.onclick = () =>
+        openOwnPasswordEditor(usersState.people.find(person => person.id === Number(button.dataset.ownPassword)))
+    );
+}
+
+// The signed-in person's own SQL password: save or clear it, nothing else.
+function openOwnPasswordEditor(person) {
+    const editor = document.getElementById('user-editor');
+    if (!editor || !person || editor.querySelector('form[aria-busy="true"]')) return;
+    editor.innerHTML = `<section class="users-panel" aria-labelledby="own-password-title">
+        <div class="users-panel-head"><h2 id="own-password-title">Your SQL password</h2><button type="button" class="btn-sm btn-outline" id="own-password-close">Cancel</button></div>
+        <form class="users-form" id="own-password-form"><div class="users-form-grid">
+            <label for="own-sql-password" class="users-span-2"><span>New SQL password for <code>${esc(person.sql_username)}</code></span>
+                <input id="own-sql-password" name="password" type="password" autocomplete="new-password" spellcheck="false" maxlength="1024" placeholder="${person.sql_password_set ? '•••••••• saved · type to replace' : 'Not set'}">
+                <small>Your Flows sign in to SQL with it. It is saved in Metronome's settings file on the host PC and only shows as asterisks.</small></label>
+        </div><div class="users-feedback" id="own-password-feedback" role="status" aria-live="polite"></div>
+        <div class="users-actions"><button type="submit" id="own-password-save">Save password</button>${person.sql_password_set ? '<button type="button" class="btn-outline" id="own-password-clear">Clear SQL password</button>' : ''}</div>
+        </form></section>`;
+    const form = document.getElementById('own-password-form');
+    const input = document.getElementById('own-sql-password');
+    const feedback = document.getElementById('own-password-feedback');
+    const close = () => {
+        editor.innerHTML = '';
+        document.querySelector(`[data-own-password="${person.id}"]`)?.focus();
+    };
+    const setBusy = busy => {
+        form.setAttribute('aria-busy', String(busy));
+        [...form.elements].forEach(element => { element.disabled = busy; });
+        document.getElementById('own-password-close').disabled = busy;
+    };
+    const finish = (saved, message) => {
+        usersReplacePerson(saved);
+        refreshUsersList();
+        close();
+        document.getElementById('users-feedback').textContent = message;
+    };
+    const send = async (request, busyText, message, failure) => {
+        feedback.classList.remove('error');
+        feedback.textContent = busyText;
+        setBusy(true);
+        try {
+            const saved = await request();
+            if (form.isConnected) finish(saved, message);
+        } catch (error) {
+            if (!form.isConnected) return;
+            setBusy(false);
+            feedback.classList.add('error');
+            feedback.textContent = `${failure} ${error.message}`;
+            input.focus();
+        }
+    };
+    document.getElementById('own-password-close').onclick = close;
+    form.onsubmit = event => {
+        event.preventDefault();
+        if (!input.value) {
+            feedback.classList.add('error');
+            feedback.textContent = 'Enter your new SQL password.';
+            input.focus();
+            return;
+        }
+        if (/[\x00-\x1f\x7f]/.test(input.value)) {
+            feedback.classList.add('error');
+            feedback.textContent = 'SQL password cannot contain line breaks or control characters.';
+            input.focus();
+            return;
+        }
+        send(() => apiPut(`/api/people/${person.id}/sql-password`, { password: input.value }),
+            'Saving your SQL password…', 'Your SQL password was saved.', 'Could not save. Your entry is still here.');
+    };
+    const clear = document.getElementById('own-password-clear');
+    if (clear) clear.onclick = () => send(() => apiDelete(`/api/people/${person.id}/sql-password`),
+        'Clearing your SQL password…', 'Your SQL password was cleared. Your SQL Flows will not run until you save a new one.',
+        'Could not clear it.');
+    input.focus();
 }
 
 function refreshUsersList() {
