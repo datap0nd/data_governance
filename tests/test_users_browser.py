@@ -447,9 +447,14 @@ def test_colleagues_see_users_read_only(users_browser, tmp_path):
     state["me"] = {"person_id": 2, "name": "Omar Malik", "is_local": False, "is_host": False, "is_admin": True}
     page.reload()
     expect(page.get_by_role("heading", name="Users", exact=True)).to_be_visible()
-    expect(page.get_by_role("note")).to_have_text("Only the host PC can add or change users and SQL passwords.")
+    expect(page.get_by_role("note")).to_have_text(
+        "Only the host PC can add or change users. You can change your own SQL password from your row.")
     expect(page.get_by_role("button", name="Add user")).to_have_count(0)
     expect(page.locator("[data-edit-user]")).to_have_count(0)
+    # Omar has no SQL username yet, so his row explains the next step instead.
+    expect(page.locator("[data-own-password]")).to_have_count(0)
+    expect(page.locator("#users-list tbody tr").filter(has_text="Omar Malik")).to_contain_text(
+        "Ask the host PC to add your SQL username")
     expect(page.locator("#users-list tbody tr").filter(has_text="Maya Chen")).to_contain_text("••••••••")
     expect(page.locator("#connected-user")).to_have_text("Omar Malik")
     page.screenshot(path=str(_evidence(tmp_path) / "users-colleague-read-only.png"), full_page=True)
@@ -511,3 +516,54 @@ def test_host_pc_may_continue_without_a_user_and_switch_later(users_browser, tmp
     expect(page.locator("#connected-user")).to_have_text("Maya ChenHost PC")
     expect(page.get_by_role("button", name="Add user", exact=True)).to_be_visible()
     page.screenshot(path=str(_evidence(tmp_path) / "sign-in-host-switched.png"), full_page=True)
+
+
+def test_colleague_changes_only_their_own_sql_password(users_browser, tmp_path):
+    page, state, _base = users_browser
+    state["me"] = {"person_id": 1, "name": "Maya Chen", "is_local": False, "is_host": False, "is_admin": True}
+    page.reload()
+    rows = page.locator("#users-list tbody tr")
+    maya = rows.filter(has_text="Maya Chen")
+    change = maya.get_by_role("button", name="Change SQL password")
+    expect(change).to_be_visible()
+    expect(page.locator("[data-own-password]")).to_have_count(1)
+    expect(page.locator("[data-edit-user]")).to_have_count(0)
+
+    change.click()
+    expect(page.get_by_role("heading", name="Your SQL password")).to_be_visible()
+    password = page.get_by_label(re.compile(r"^New SQL password for"))
+    expect(password).to_be_focused()
+    expect(password).to_have_attribute("type", "password")
+    expect(password).to_have_attribute("placeholder", "•••••••• saved · type to replace")
+    page.get_by_role("button", name="Save password").click()
+    expect(page.locator("#own-password-feedback")).to_have_text("Enter your new SQL password.")
+    expect(password).to_be_focused()
+    password.fill("maya-new-secret")
+    state["fail_next"] = "PUT"
+    page.get_by_role("button", name="Save password").click()
+    expect(page.locator("#own-password-feedback")).to_contain_text("Could not save. Your entry is still here.")
+    expect(password).to_have_value("maya-new-secret")
+    expect(page.get_by_role("button", name="Save password")).to_be_enabled()
+    page.screenshot(path=str(_evidence(tmp_path) / "own-sql-password-retry.png"), full_page=True)
+    page.get_by_role("button", name="Save password").click()
+    expect(page.locator("#users-feedback")).to_have_text("Your SQL password was saved.")
+    expect(change).to_be_focused()
+    assert state["passwords"] == {1: "maya-new-secret"}
+    assert ("PUT", "/api/people/1/sql-password") in state["calls"]
+    assert "maya-new-secret" not in page.content()
+
+    change.click()
+    page.get_by_role("button", name="Clear SQL password").click()
+    expect(page.locator("#users-feedback")).to_contain_text("Your SQL password was cleared.")
+    expect(maya.locator("td").nth(4)).to_have_text("Not set")
+    assert state["passwords"] == {}
+    change.click()
+    page.get_by_role("button", name="Cancel", exact=True).click()
+    expect(page.locator("#user-editor")).to_be_empty()
+    expect(change).to_be_focused()
+
+    page.set_viewport_size({"width": 390, "height": 844})
+    change.click()
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), "Own password panel overflows"
+    page.screenshot(path=str(_evidence(tmp_path) / "own-sql-password-narrow.png"), full_page=True)
+    assert not any(path.endswith("/sql-password") and "/2/" in path for _method, path in state["calls"])

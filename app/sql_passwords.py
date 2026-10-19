@@ -1,12 +1,14 @@
 """Per-person SQL passwords, kept in the host PC's settings file (.env).
 
-Only the host PC saves or clears them (Users > SQL password). The API reports
-whether one is saved, never its value. A Flow job names its owner and the
-worker reads the password when it connects (``flow_sql.person_password``).
+The host PC saves or clears anyone's; each person saves or clears their own
+(Users > SQL password). The API reports whether one is saved, never its value.
+A Flow job names its owner and the worker reads the password when it connects
+(``flow_sql.person_password``).
 """
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 
 from app import config, env_file
@@ -22,12 +24,18 @@ def saved_ids() -> set[int]:
     }
 
 
+# Each save rewrites the whole file, so two people saving at once must not
+# interleave: the later rewrite would drop the earlier person's password.
+_write_lock = threading.Lock()
+
+
 def store(person_id: int, password: str | None) -> None:
     """Save one person's SQL password, or remove it when ``password`` is None."""
     if config.ENV_FILE is None:
         raise RuntimeError("Metronome has no settings file (.env), so it cannot keep SQL passwords. "
                            "Run setup on the host PC.")
     try:
-        env_file.write_value(Path(config.ENV_FILE), person_password_setting(person_id), password)
+        with _write_lock:
+            env_file.write_value(Path(config.ENV_FILE), person_password_setting(person_id), password)
     except FileNotFoundError as exc:
         raise RuntimeError(f"The settings file {config.ENV_FILE} does not exist. Run setup on the host PC.") from exc

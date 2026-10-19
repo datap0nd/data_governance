@@ -124,3 +124,68 @@ def test_without_a_settings_file_passwords_are_refused_not_lost(settings_file, m
     refused = client.put(f"/api/people/{maya['id']}/sql-password", json={"password": "secret"})
     assert refused.status_code == 409 and "does not exist" in refused.json()["detail"]
     assert not (settings_file.parent / "missing.env").exists()
+
+
+def test_people_change_only_their_own_sql_password(settings_file):
+    client = host()
+    maya = person(client, sql_username="maya_sql")
+    omar = person(client, name="Omar", sql_username="omar_sql")
+    sofia = person(client, name="Sofia")
+    browser = TestClient(main.app, client=COLLEAGUE, headers={"X-Client-Key": "maya-browser"})
+    assert browser.post("/api/register", json={"person_id": maya["id"]}).status_code == 200
+
+    saved = browser.put(f"/api/people/{maya['id']}/sql-password", json={"password": "maya secret"})
+    assert saved.status_code == 200 and saved.json()["sql_password_set"] is True
+    assert f'{SETTING.format(maya["id"])}="maya secret"' in contents(settings_file)
+    with database.get_db() as db:
+        actor = db.execute("SELECT actor FROM event_log WHERE action='sql_password_set'").fetchone()["actor"]
+    assert actor == "Maya"
+    cleared = browser.delete(f"/api/people/{maya['id']}/sql-password")
+    assert cleared.status_code == 200 and cleared.json()["sql_password_set"] is False
+
+    for method, path, body in [
+        ("put", f"/api/people/{omar['id']}/sql-password", {"password": "guess"}),
+        ("delete", f"/api/people/{omar['id']}/sql-password", None),
+        ("patch", f"/api/people/{maya['id']}", {"sql_username": "maya_admin"}),
+        ("delete", f"/api/people/{maya['id']}/sign-ins", None),
+    ]:
+        response = getattr(browser, method)(path, **({"json": body} if body is not None else {}))
+        assert response.status_code == 403, (method, path)
+        assert "host PC" in response.json()["detail"]
+    assert "guess" not in contents(settings_file)
+
+    other = TestClient(main.app, client=("203.0.113.10", 50000), headers={"X-Client-Key": "sofia-browser"})
+    assert other.post("/api/register", json={"person_id": sofia["id"]}).status_code == 200
+    missing = other.put(f"/api/people/{sofia['id']}/sql-password", json={"password": "secret"})
+    assert missing.status_code == 409 and "SQL username" in missing.json()["detail"]
+
+
+def test_concurrent_password_saves_never_lose_one(settings_file, monkeypatch):
+    import threading
+    import time
+
+    from app import env_file, sql_passwords
+
+    client = host()
+    people = [person(client, name=f"Person {index}", sql_username=f"sql_{index}") for index in range(6)]
+    write_value = env_file.write_value
+    active, overlaps = [0], []
+
+    def slow_write(path, name, value):
+        # Widen the read-then-rewrite window so interleaved writers would lose data.
+        active[0] += 1
+        overlaps.append(active[0])
+        time.sleep(0.02)
+        write_value(path, name, value)
+        active[0] -= 1
+    monkeypatch.setattr(env_file, "write_value", slow_write)
+    threads = [threading.Thread(target=sql_passwords.store, args=(item["id"], f"secret {item['id']}"))
+               for item in people]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert max(overlaps) == 1
+    saved = contents(settings_file)
+    for item in people:
+        assert f'{SETTING.format(item["id"])}="secret {item["id"]}"' in saved
