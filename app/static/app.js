@@ -10691,8 +10691,10 @@ function _flowListHtml(flows, workers, catalog, runs = []) {
     </div>`;
     const toolbar = `<div class="flow-list-toolbar">${classificationTabs}${ownerControl}</div>`;
     if (!classified.length) {
-        const someone = ownerFilter === "unassigned" ? "unassigned " : ownerFilter !== "all" ? "of this user's " : "";
-        return `${toolbar}<div class="flow-empty"><h2>No ${someone}${classification === "draft" ? "draft" : "production"} flows</h2><p>${ownerFilter === "all" ? "Move a Flow here from its More menu." : "Choose All users to see every Flow."}</p></div>`;
+        const kind = classification === "draft" ? "draft" : "production";
+        const person = (window._flowsState?.people || []).find(item => String(item.id) === ownerFilter);
+        const heading = ownerFilter === "unassigned" ? `No unassigned ${kind} flows` : person ? `No ${kind} flows for ${esc(person.name)}` : `No ${kind} flows`;
+        return `${toolbar}<div class="flow-empty"><h2>${heading}</h2><p>${ownerFilter === "all" ? "Move a Flow here from its More menu." : "Choose All users to see every Flow."}</p></div>`;
     }
     const opened = _flowOpenGroups();
     const rows = classified.map(flow => _flowRowModel(flow, runs, catalog));

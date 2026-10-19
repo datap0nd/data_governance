@@ -5,6 +5,7 @@ in [the testing workflow](../README.md); this file is the complete history.
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-10-19: Users sign-in, Flow ownership and owner SQL users | [Test plan](2026-10-19-user-flow-ownership/test-plan.md) | [Test report](2026-10-19-user-flow-ownership/test-report.md) |
 | 2026-10-12: Several schedule triggers per Flow | [Test plan](2026-10-12-flow-multiple-triggers/test-plan.md) | [Test report](2026-10-12-flow-multiple-triggers/test-report.md) |
 | 2026-09-29: Clear problem statement and agent testing labels | [Test plan](2026-09-29-film-problem-statement/test-plan.md) | [Test report](2026-09-29-film-problem-statement/test-report.md) |
 | 2026-09-29: Visual AI-to-Metronome connection | [Test plan](2026-09-29-film-ai-connection/test-plan.md) | [Test report](2026-09-29-film-ai-connection/test-report.md) |

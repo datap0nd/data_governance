@@ -86,7 +86,7 @@ def test_host_filters_unassigned_flows_and_reassigns_them_in_place(preview):
     page.get_by_label("Owner: Customer feedback files").select_option(label="Maya Chen")
     expect(page.locator("#preview-status")).to_contain_text("Omar Malik is emailed about the change")
     page.get_by_label("Show flows for user").select_option(label="Sofia Rivera (0)")
-    expect(page.locator(".flow-empty h2")).to_have_text("No of this user's production flows")
+    expect(page.locator(".flow-empty h2")).to_have_text("No production flows for Sofia Rivera")
     expect(page.locator(".flow-empty")).to_contain_text("Choose All users to see every Flow.")
 
 

@@ -363,7 +363,7 @@ main:has(.flow-page-header) { max-width: none; }
 .flow-worker-assignment { flex-shrink: 0; }
 .flow-progress-summary { margin-top: 0.5rem; }
 @media (prefers-reduced-motion: reduce) { .flow-worker-emoji { animation: none; } .flow-progress-phase > span { transition: none; } }
-#flow-workspace .flow-table:has(.flow-inline-edit) { min-width: 1250px; }
+#flow-workspace .flow-table:has(.flow-inline-edit, .flow-owner-name) { min-width: 1250px; }
 .flow-inline-edit {
     min-width: 100px;
     max-width: 190px;
@@ -550,6 +550,7 @@ h2 {
 .flow-owner-filter select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-color: var(--accent); }
 :root.dark .flow-owner-filter select { color-scheme: dark; }
 .flow-muted { color: var(--text-muted); }
+.flow-table .flow-owner-name { display: inline-block; min-width: 6.5rem; overflow-wrap: normal; word-break: normal; }
 .flow-owner-fixed { display: flex; flex-direction: column; gap: 0.3rem; }
 .flow-owner-fixed > span { font-size: 0.76rem; font-weight: 600; color: var(--text-muted); }
 .flow-owner-fixed strong { font-size: 0.88rem; }
