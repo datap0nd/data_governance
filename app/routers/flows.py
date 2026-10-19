@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field, ValidationError, ValidationInfo, field_va
 from app.config import DB_PATH, UPLOAD_PGHOST, UPLOAD_PGPORT
 from app.database import get_db
 from app import flow_paths, flow_layout, flow_capacity, flow_tasks, flow_parallel, flow_browser, flow_recording, flow_view_refresh
-from app import flow_email_delivery, flow_excel, flow_python
+from app import flow_email_delivery, flow_excel, flow_python, user_identity
 from app.flow_credentials import asap_credential_status, save_asap_credentials
 from app.flow_asap_exports import (
     public_asap_download_types,
@@ -47,7 +47,7 @@ from app.flow_retention import RUN_FOLDER_KEEP, tombstone_name as retention_tomb
 from app.flow_local_runner import (
     HEADED_WORKER_ID, WORKER_ID as LOCAL_WORKER_ID, launch_local_worker, stop_local_worker,
 )
-from app.flow_sql import configuration_status as sql_configuration_status, discover_catalog as discover_sql_catalog, ownership_supported
+from app.flow_sql import configuration_status as sql_configuration_status, discover_catalog as discover_sql_catalog, ownership_supported, person_credentials_supported, connection_credentials as sql_connection_credentials
 from app.routers.eventlog import get_actor, log_event
 from app.scanner.findings import sync_managed_actions
 from app.source_identity import (
@@ -1621,6 +1621,203 @@ def _validate_owner(db, body: FlowWrite):
         raise HTTPException(400, "Choose a flow owner from Users.")
 
 
+def require_flow_edit(db, flow_id: int, request) -> sqlite3.Row:
+    """Only a Flow's owner or the host PC may change it; anyone may view and run it.
+
+    A Flow without an owner (one created before ownership, or whose owner was
+    deleted) is changed only on the host PC, which can assign it.
+    """
+    row = db.execute(
+        """SELECT f.id, f.name, f.owner_person_id, p.name AS owner_name
+           FROM flows f LEFT JOIN people p ON p.id = f.owner_person_id WHERE f.id = ?""",
+        (flow_id,),
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, "Flow not found.")
+    person_id, is_host = user_identity.request_identity(request)
+    if is_host or (row["owner_person_id"] is not None and row["owner_person_id"] == person_id):
+        return row
+    if row["owner_person_id"] is None:
+        raise HTTPException(403, "This Flow has no owner. Only the host PC can change it or assign it to someone.")
+    raise HTTPException(
+        403,
+        f"This Flow belongs to {row['owner_name']}. You can view and run it; "
+        f"only {row['owner_name']} or the host PC can change it.",
+    )
+
+
+def _assign_owner(body, request, *, current_owner_id: int | None = None, new_flow: bool) -> None:
+    """Apply the ownership rules to a Flow being created or saved.
+
+    The host PC chooses any owner. Everyone else creates Flows for
+    themselves and keeps the owner of a Flow they edit.
+    """
+    person_id, is_host = user_identity.request_identity(request)
+    if is_host:
+        # An omitted owner keeps the saved one; an explicit null unassigns.
+        if not new_flow and "owner_person_id" not in body.model_fields_set:
+            body.owner_person_id = current_owner_id
+        return
+    if new_flow:
+        if person_id is None:
+            raise HTTPException(403, "Choose your user in Metronome before creating a Flow.")
+        if body.owner_person_id not in (None, person_id):
+            raise HTTPException(403, "Only the host PC can create a Flow for someone else.")
+        body.owner_person_id = person_id
+        return
+    if body.owner_person_id not in (None, current_owner_id):
+        raise HTTPException(403, "Only the host PC can assign a Flow to someone else.")
+    body.owner_person_id = current_owner_id
+
+
+# What a Flow owner is told when the host PC changes their Flow, in display order.
+CHANGE_NOTICE_FIELDS = (
+    ("name", "Name"), ("enabled", "Active"), ("owner_name", "Owner"), ("classification", "Classification"),
+    ("site_name", "Website"), ("report_name", "Report"), ("outlook_subject_contains", "Outlook subject contains"),
+    ("local_file_path", "File path"), ("local_file_worksheet", "Worksheet"), ("python_scripts", "Python scripts"),
+    ("python_script_arguments", "Script arguments"), ("python_script_values", "Script values"),
+    ("python_run_mode", "Python run mode"), ("selections", "Report filters"), ("export_views", "Export views"),
+    ("download_links", "Download links"), ("download_mode", "Download mode"), ("period_strategy", "Period"),
+    ("window_weeks", "Weeks per file"), ("start_week", "Start week"), ("end_week", "End week"),
+    ("file_format", "File format"), ("asap_download_type", "Download type"), ("excel_worksheets", "Excel worksheets"),
+    ("excel_trim", "Excel trim"), ("browser_mode", "Browser"), ("filename_template", "File name"),
+    ("output_mode", "Output files"), ("schedule_type", "Schedule"), ("schedule_time", "Schedule time"),
+    ("schedule_days", "Schedule days"), ("schedule_day", "Day of month"), ("additional_triggers", "More triggers"),
+    ("transform_enabled", "Transformation"), ("transform_script_path", "Transformation script"),
+    ("sql_handoff_enabled", "SQL insertion"), ("sql_mode", "SQL write mode"), ("sql_database", "SQL database"),
+    ("sql_schema", "SQL schema"), ("sql_table", "SQL table"), ("sql_uppercase", "Uppercase SQL columns"),
+    ("sql_assign_owner", "SQL table owner"), ("post_sql_refresh", "Materialized view refresh"),
+    ("email_delivery", "Email delivery"), ("recording_revision_id", "Active recording version"),
+)
+
+
+def _notice_value(value) -> str:
+    if value is None or value == "" or value == [] or value == {}:
+        return "—"
+    if isinstance(value, bool):
+        return "On" if value else "Off"
+    if isinstance(value, (list, dict)):
+        value = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    text = str(value)
+    return text if len(text) <= 300 else text[:297] + "..."
+
+
+def flow_changes(before: dict, after: dict | None) -> list[tuple[str, str, str]]:
+    """``(setting, before, after)`` for every owner-visible setting that changed."""
+    if after is None:
+        return [("Flow", before.get("name") or "—", "Deleted")]
+    return [
+        (label, _notice_value(before.get(key)), _notice_value(after.get(key)))
+        for key, label in CHANGE_NOTICE_FIELDS
+        if _notice_value(before.get(key)) != _notice_value(after.get(key))
+    ]
+
+
+def _owner_change_message(flow: dict, owner: sqlite3.Row, changes, changed_by: str, changed_at) -> dict:
+    """One Outlook email telling a Flow owner what the host PC changed."""
+    when = changed_at.strftime("%d %b %Y, %H:%M") + " (Dubai time)"
+    deleted = changes == [("Flow", flow.get("name") or "—", "Deleted")]
+
+    def cell(value: str, weight: int = 400) -> str:
+        return ('<td style="padding:9px 12px;border:1px solid #d5e2e0;font-size:12px;'
+                f'font-weight:{weight};vertical-align:top">{html.escape(value)}</td>')
+
+    rows = "".join(f"<tr>{cell(label, 700)}{cell(old)}{cell(new)}</tr>" for label, old, new in changes)
+    summary = (
+        "The host PC deleted this Flow. Its run history is gone; files it saved were kept."
+        if deleted else
+        f"The host PC changed {len(changes)} setting{'s' if len(changes) != 1 else ''} of a Flow assigned to you."
+    )
+    body = f"""
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0"
+           style="width:100%;border-collapse:collapse;background:#eef3f2;font-family:Segoe UI,Arial,sans-serif">
+      <tr><td align="center" style="padding:24px 12px">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0"
+               style="width:100%;max-width:760px;border-collapse:separate;background:#ffffff;
+                      border:1px solid #cfdedb;border-radius:12px">
+          <tr><td style="padding:24px 28px;background:#0f6b63;color:#ffffff;border-radius:12px 12px 0 0">
+            <div style="margin:0 0 7px;color:#d5efec;font-size:11px;font-weight:700;letter-spacing:1.2px">
+              {'FLOW DELETED' if deleted else 'FLOW CHANGED'} ON THE HOST PC
+            </div>
+            <div style="color:#ffffff;font-size:24px;font-weight:700;line-height:1.2">{html.escape(flow.get("name") or "")}</div>
+            <div style="margin-top:8px;color:#e6f4f2;font-size:14px;line-height:1.4">{html.escape(summary)}</div>
+          </td></tr>
+          <tr><td style="padding:22px 28px 6px">
+            <table width="100%" cellspacing="0" cellpadding="0" style="width:100%;border-collapse:collapse;color:#1a1814">
+              <tr>{cell("Changed by", 700)}{cell(changed_by)}</tr>
+              <tr>{cell("When", 700)}{cell(when)}</tr>
+            </table>
+          </td></tr>
+          <tr><td style="padding:14px 28px 26px">
+            <table width="100%" cellspacing="0" cellpadding="0" style="width:100%;border-collapse:collapse;color:#1a1814">
+              <tr>{cell("Setting", 700)}{cell("Before", 700)}{cell("After", 700)}</tr>
+              {rows}
+            </table>
+          </td></tr>
+          <tr><td style="padding:14px 28px;background:#f4f8f7;color:#5d6b69;border-top:1px solid #dde8e6;
+                         border-radius:0 0 12px 12px;font-size:11px;line-height:1.4">
+            Flow owner: {html.escape(owner["name"])}. Only you and the host PC can change this Flow.
+            Open Metronome &gt; Flows to review it.
+          </td></tr>
+        </table>
+      </td></tr>
+    </table>
+    """
+    subject = (f"Metronome: your Flow {flow.get('name')} was "
+               f"{'deleted' if deleted else 'changed'} on the host PC")
+    return {"to": owner["email"], "subject": subject[:500], "html_body": body}
+
+
+def _send_owner_change_notice(message: dict) -> None:
+    from app.routers.email import _launch_outlook_payload
+    _launch_outlook_payload([message], "send")
+
+
+def notify_owner_of_host_change(request, before: dict, after: dict | None) -> dict:
+    """Email a Flow's owner when the host PC changed or deleted it. Never raises.
+
+    Only a browser on the host PC triggers this: Metronome's own scheduled and
+    recovery work, and an owner editing their own Flow, notify nobody.
+    """
+    owner_id = before.get("owner_person_id")
+    state = getattr(request, "state", None)
+    if not owner_id or getattr(state, "is_host", False) is not True:
+        return {"status": "not_needed"}
+    if getattr(state, "person_id", None) == owner_id:
+        return {"status": "not_needed"}
+    changes = flow_changes(before, after)
+    if not changes:
+        return {"status": "not_needed"}
+    outcome = {"status": "failed"}
+    try:
+        with get_db() as db:
+            owner = db.execute("SELECT id, name, email FROM people WHERE id=?", (owner_id,)).fetchone()
+        if not owner:
+            outcome = {"status": "not_sent", "reason": "The owner no longer exists in Users."}
+        elif not str(owner["email"] or "").strip():
+            outcome = {"status": "not_sent", "reason": f"Owner {owner['name']} has no email in Users."}
+        else:
+            # Named as it is now; a rename shows as a Name change in the table.
+            _send_owner_change_notice(_owner_change_message(
+                after or before, owner, changes, get_actor(request) or user_identity.HOST_ACTOR, dubai_now(),
+            ))
+            outcome = {"status": "launched", "owner_email": owner["email"], "changes": len(changes)}
+    except Exception as exc:
+        logging.getLogger(__name__).exception("Could not notify the owner of Flow %s about a host change", before.get("id"))
+        outcome = {"status": "failed", "reason": str(exc).strip() or exc.__class__.__name__}
+    try:
+        with get_db() as db:
+            log_event(
+                db, "flow", before.get("id"), before.get("name"),
+                "owner_change_notified" if outcome["status"] == "launched" else "owner_change_notice_skipped",
+                outcome.get("reason") or f"{len(changes)} change(s) emailed to {outcome.get('owner_email')}",
+                get_actor(request),
+            )
+    except Exception:
+        logging.getLogger(__name__).exception("Could not record the owner change notice for Flow %s", before.get("id"))
+    return outcome
+
+
 def _normalize_new_sql_table(name: str) -> str:
     """Lowercase a new table name and convert whitespace to underscores.
 
@@ -2007,9 +2204,16 @@ def _build_job(db, flow_id: int, *, force_reprocess: bool = False, recording_dra
     }
     # Resolve after pending settings have been applied: the selected owner may
     # differ from the person joined by _flow_out. Freeze it with the run.
-    if job['sql_handoff']['enabled'] and flow.get('sql_assign_owner', True) and flow.get('owner_person_id'):
-        owner = db.execute('SELECT sql_username FROM people WHERE id=?', (flow['owner_person_id'],)).fetchone()
-        if owner and owner['sql_username']:
+    if job['sql_handoff']['enabled'] and flow.get('owner_person_id'):
+        owner = db.execute('SELECT name, sql_username FROM people WHERE id=?', (flow['owner_person_id'],)).fetchone()
+        if owner:
+            # An assigned Flow writes as its owner's SQL user; the worker reads
+            # the password from the settings file (flow_sql.connection_credentials).
+            job['sql_handoff']['connect_as'] = {
+                'person_id': int(flow['owner_person_id']), 'name': owner['name'],
+                'username': owner['sql_username'],
+            }
+        if flow.get('sql_assign_owner', True) and owner and owner['sql_username']:
             job['sql_handoff']['owner_username'] = owner['sql_username']
     from app.flow_view_refresh_discovery import build_plan
     job["post_sql_refresh"] = build_plan(db, flow.get("post_sql_refresh"), job["sql_handoff"], _flow_server_identity())
@@ -2056,6 +2260,21 @@ def active_view_refresh_run(db, key: str, *, exclude_run_id: int | None = None):
     return None
 
 
+def _assert_sql_credentials(job: dict) -> None:
+    """Refuse to queue an assigned Flow whose owner cannot sign in to SQL.
+
+    The worker checks again when it connects; this gives the person running
+    the Flow the reason before any download starts.
+    """
+    target = job.get("sql_handoff") or {}
+    if not target.get("enabled") or not target.get("connect_as"):
+        return
+    try:
+        sql_connection_credentials(target)
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
 def queue_flow_run_service(
     db,
     flow_id: int,
@@ -2083,6 +2302,7 @@ def queue_flow_run_service(
     if active:
         raise HTTPException(409, "This flow already has an active run.")
     job = _build_job(db, flow_id)
+    _assert_sql_credentials(job)
     from app.routers.pipelines import (
         assert_no_active_flow_publish_run,
         assert_no_active_flow_target_run,
@@ -2152,6 +2372,7 @@ def queue_due_flows() -> dict:
                 continue
             try:
                 job = _build_job(db, row["id"])
+                _assert_sql_credentials(job)
             except HTTPException as exc:
                 if exc.status_code != 409:
                     raise
@@ -2977,6 +3198,11 @@ def inspect_resume_eligibility(db, run_id: int) -> dict:
             f"The current Flow configuration cannot be queued: {exc}",
             http_status=409, _source=source,
         )
+    try:
+        _assert_sql_credentials(job)
+    except HTTPException as exc:
+        return _recovery_result("blocked", "sql_credentials_missing", str(exc.detail),
+                                http_status=409, _source=source)
     source_output_mode = (source_job.get("downloads") or {}).get("output_mode", "run_folders")
     current_output_mode = (job.get("downloads") or {}).get("output_mode", "run_folders")
     if source_output_mode != current_output_mode:
@@ -3110,6 +3336,7 @@ def inspect_fresh_run_eligibility(db, flow_id: int) -> dict:
                 active_run_id=int(active["id"]),
             )
         job = _build_job(db, flow_id)
+        _assert_sql_credentials(job)
         assert_flow_target_available(db, flow_target_resource_key_from_job(job))
         assert_no_active_flow_publish_run(db, job)
     except HTTPException as exc:
@@ -3150,6 +3377,7 @@ def retry_run_sql(run_id: int, request: Request):
         source = eligibility["_source"]
         job = eligibility["_job"]
         artifacts = eligibility["_artifacts"]
+        _assert_sql_credentials(job)
         cursor = db.execute(
             """INSERT INTO flow_runs
                (flow_id, trigger_type, status, requested_by, job_json, created_at)
@@ -3200,6 +3428,7 @@ def retry_run_views(run_id: int, request: Request):
         source = eligibility["_source"]
         job = eligibility["_job"]
         remaining = eligibility["_remaining"]
+        _assert_sql_credentials(job)
         cursor = db.execute(
             """INSERT INTO flow_runs (flow_id, trigger_type, status, requested_by, job_json, sql_outcome_json, created_at)
                VALUES (?, 'view_retry', 'queued', ?, ?, ?, ?)""",
@@ -3445,6 +3674,7 @@ def refresh_sql_catalog_now(request: Request):
 
 @router.post("")
 def create_flow(body: FlowWrite, request: Request):
+    _assign_owner(body, request, new_flow=True)
     # Destinations are owned by Metronome, including requests from older clients.
     managed = True
     body.target_folder = None
@@ -3552,6 +3782,7 @@ def adopt_flow_folder(flow_id: int, request: Request):
     try:
         with get_db() as db:
             db.execute("BEGIN IMMEDIATE")
+            require_flow_edit(db, flow_id, request)
             flow = _flow_out(db, flow_id, include_private_storage=True)
             from app.routers.pipelines import assert_resource_unlocked
             assert_resource_unlocked(db, "flow", str(flow_id))
@@ -3598,6 +3829,7 @@ def acknowledge_sql_reconciliation(flow_id: int, body: SQLReconciled, request: R
         flow = db.execute('SELECT name FROM flows WHERE id=?', (flow_id,)).fetchone()
         if not flow:
             raise HTTPException(404, 'Flow not found.')
+        require_flow_edit(db, flow_id, request)
         if db.execute("SELECT 1 FROM flow_runs WHERE flow_id=? AND status IN ('queued','claimed','running')", (flow_id,)).fetchone():
             raise HTTPException(409, 'Wait for the active run and its downloads to stop first.')
         db.execute('UPDATE flows SET sql_reconciliation_required=0 WHERE id=?', (flow_id,))
@@ -3666,6 +3898,7 @@ def standalone_status(flow_id: int):
 def repair_flow_layout(flow_id: int, request: Request):
     with get_db() as db:
         db.execute("BEGIN IMMEDIATE")
+        require_flow_edit(db, flow_id, request)
         flow = _flow_out(db, flow_id, include_private_storage=True)
         from app.routers.pipelines import assert_resource_unlocked
         assert_resource_unlocked(db, "flow", str(flow_id))
@@ -3767,6 +4000,9 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
         ).fetchone()
         if not existing:
             raise HTTPException(404, "Flow not found.")
+        owner = require_flow_edit(db, flow_id, request)
+        _assign_owner(body, request, current_owner_id=owner["owner_person_id"], new_flow=False)
+        before = _flow_out(db, flow_id)
         if body.sql_assign_owner is None:
             body.sql_assign_owner = bool(existing["sql_assign_owner"])
         if body.additional_triggers is None:
@@ -3936,6 +4172,7 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
         flow_groups.detach_if_scope_changed(db, flow_id)
         log_event(db, "flow", flow_id, body.name, "updated", actor=get_actor(request))
         saved = _flow_out(db, flow_id)
+    notify_owner_of_host_change(request, before, saved)
     return _generate_saved_standalone(saved)
 
 
@@ -3964,6 +4201,9 @@ def patch_flow(flow_id: int, body: FlowInlineWrite, request: Request):
         flow = db.execute("SELECT * FROM flows WHERE id=?", (flow_id,)).fetchone()
         if not flow:
             raise HTTPException(404, "Flow not found.")
+        require_flow_edit(db, flow_id, request)
+        if "owner_person_id" in changes and not user_identity.request_identity(request)[1]:
+            raise HTTPException(403, "Only the host PC can assign a Flow to someone else.")
         from app.routers.pipelines import assert_resource_unlocked
         assert_resource_unlocked(db, "flow", str(flow_id))
         if body.owner_person_id is not None and not db.execute(
@@ -3972,15 +4212,18 @@ def patch_flow(flow_id: int, body: FlowInlineWrite, request: Request):
             raise HTTPException(400, "Choose an existing user from Users.")
         if "browser_mode" in changes and (flow["source_type"] or "portal") != "portal":
             raise HTTPException(400, "Browser mode is supported only for website flows.")
+        before = _flow_out(db, flow_id)
         db.execute(
             f"UPDATE flows SET {', '.join(key + '=?' for key in changes)}, updated_at=? WHERE id=?",
             (*changes.values(), _iso(_now()), flow_id),
         )
+        after = _flow_out(db, flow_id)
         flow_groups.detach_if_scope_changed(db, flow_id)
         log_event(db, "flow", flow_id, flow["name"], "updated",
                   detail=json.dumps({key: {"before": flow[key], "after": value}
                                      for key, value in changes.items()}), actor=get_actor(request))
         saved = {'id': flow_id, 'flow_folder': flow['flow_folder']}
+    notify_owner_of_host_change(request, before, after)
     result = {"id": flow_id, **changes}
     if saved['flow_folder']:
         result['standalone'] = _generate_saved_standalone(saved)['standalone']
@@ -3994,6 +4237,8 @@ def set_flow_enabled(flow_id: int, body: FlowEnabledWrite, request: Request):
         flow = db.execute("SELECT * FROM flows WHERE id=?", (flow_id,)).fetchone()
         if not flow:
             raise HTTPException(404, "Flow not found.")
+        require_flow_edit(db, flow_id, request)
+        before = _flow_out(db, flow_id)
         from app.routers.pipelines import assert_resource_unlocked
         assert_resource_unlocked(db, "flow", str(flow_id))
         if body.enabled and flow['execution_method'] == 'recorded':
@@ -4026,6 +4271,7 @@ def set_flow_enabled(flow_id: int, body: FlowEnabledWrite, request: Request):
             "activated" if body.enabled else "deactivated", actor=get_actor(request),
         )
         saved = _flow_out(db, flow_id)
+    notify_owner_of_host_change(request, before, saved)
     return _generate_saved_standalone(saved)
 
 
@@ -4047,6 +4293,8 @@ def delete_flow(flow_id: int, body: FlowDeleteWrite, request: Request):
         ).fetchone()
         if not flow:
             raise HTTPException(404, "Flow not found.")
+        require_flow_edit(db, flow_id, request)
+        before = _flow_out(db, flow_id)
         from app.flow_recordings import assert_flow_idle
         assert_flow_idle(db, flow_id)
         if body.confirmation != flow["name"]:
@@ -4174,6 +4422,7 @@ def delete_flow(flow_id: int, body: FlowDeleteWrite, request: Request):
             ),
             get_actor(request),
         )
+    notify_owner_of_host_change(request, before, None)
     return {
         "id": flow_id,
         "name": flow["name"],
@@ -4194,6 +4443,7 @@ def _queue_new_manual_run(db, flow_id: int, *, actor, trigger_type, now):
     if not flow:
         raise HTTPException(404, "Flow not found.")
     job = _build_job(db, flow_id, force_reprocess=(flow["source_type"] or "portal") in {"outlook", "file"})
+    _assert_sql_credentials(job)
     assert_flow_target_available(db, flow_target_resource_key_from_job(job))
     assert_no_active_flow_publish_run(db, job)
     _assert_refresh_plan_runnable(db, job)
@@ -5871,6 +6121,7 @@ def claim_run(worker_id: str):
                 and (not flow_view_refresh.plan_views(job) or capabilities.get(flow_view_refresh.CAPABILITY))
                 and flow_excel.worker_supported(job, capabilities)
                 and ownership_supported(job, capabilities)
+                and person_credentials_supported(job, capabilities)
                 and set(execution.get("required_artifact_store_ids") or []).issubset(artifact_stores)
                 and (
                     not required_store
@@ -5905,6 +6156,7 @@ def claim_run(worker_id: str):
                 and (_loads(candidate['job_json'], {}).get('recording_version', 1) < 5 or capabilities.get('recorded_flows_v5'))
                 and (not _loads(candidate['job_json'], {}).get('requires_recording_engine_validation') or capabilities.get('recorded_validation_engine_v1'))
                 and ownership_supported(_loads(candidate['job_json'], {}), capabilities)
+                and person_credentials_supported(_loads(candidate['job_json'], {}), capabilities)
                 and flow_parallel.portal_available(db, _loads(candidate['job_json'], {}))
             )), None)
             if scan:

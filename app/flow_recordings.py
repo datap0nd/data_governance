@@ -146,6 +146,8 @@ def config_hash(job, *, legacy=False):
     # Ownership is checked transactionally by the SQL executor on every run.
     # Changing a profile must not require re-recording browser interactions.
     clean.get('sql_handoff', {}).pop('owner_username', None)
+    # Likewise the SQL user a run connects as follows the Flow owner.
+    clean.get('sql_handoff', {}).pop('connect_as', None)
     return flow_recording.digest(clean)
 
 

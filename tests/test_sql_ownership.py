@@ -15,6 +15,11 @@ def person(username='maya_reports'):
         return db.execute("INSERT INTO people(name,role,sql_username) VALUES ('Maya','BI',?)", (username,)).lastrowid
 
 
+def save_password(monkeypatch, person_id):
+    # Tests run without a settings file, so the process environment stands in.
+    monkeypatch.setenv(flow_sql.person_password_setting(person_id), 'fictional-password')
+
+
 def test_current_identity_is_frozen_per_job_and_can_be_cleared(flow_db, monkeypatch):
     monkeypatch.setattr(flows, 'UPLOAD_PGHOST', SERVER)
     identity = person()
@@ -36,17 +41,23 @@ def test_worker_claim_rejects_old_worker_and_preserves_queued_owner(flow_db, mon
     monkeypatch.setattr(flows, 'UPLOAD_PGHOST', SERVER)
     monkeypatch.setattr(flows, 'launch_local_worker', lambda *a, **k: {'status': 'launched'})
     identity = person()
+    save_password(monkeypatch, identity)
     saved = _sql_flow(owner_person_id=identity)
     queued = flows.queue_run(saved['id'], _request())
     with database.get_db() as db:
         db.execute('UPDATE people SET sql_username=? WHERE id=?', ('new_owner', identity))
-    for worker, capability in [('old', False), ('new', True)]:
+    # A worker needs both capabilities: one transfers table ownership, the
+    # other connects with the owner's own SQL user.
+    for worker, ownership, person_credentials in [('old', False, True), ('pre-person', True, False), ('new', True, True)]:
         flows.register_worker(flows.WorkerRegister(worker_id=worker, display_name=worker,
-            capabilities={'shared_flow_artifacts': True, flow_sql.OWNERSHIP_CAPABILITY: capability}))
+            capabilities={'shared_flow_artifacts': True, flow_sql.OWNERSHIP_CAPABILITY: ownership,
+                          flow_sql.PERSON_CREDENTIALS_CAPABILITY: person_credentials}))
         claimed = flows.claim_run(worker)['run']
-        if capability:
+        if ownership and person_credentials:
             assert claimed['id'] == queued['id']
             assert claimed['job']['sql_handoff']['owner_username'] == 'maya_reports'
+            assert claimed['job']['sql_handoff']['connect_as'] == {
+                'person_id': identity, 'name': 'Maya', 'username': 'maya_reports'}
         else:
             assert claimed is None
 
@@ -121,7 +132,9 @@ def test_invalid_owner_is_rejected_before_connecting(value, monkeypatch):
 def test_confirmed_owner_is_saved_in_run_outcome(flow_db, monkeypatch):
     monkeypatch.setattr(flows, 'UPLOAD_PGHOST', SERVER)
     monkeypatch.setattr(flows, 'launch_local_worker', lambda *a, **k: {'status': 'launched'})
-    saved = _sql_flow(owner_person_id=person())
+    identity = person()
+    save_password(monkeypatch, identity)
+    saved = _sql_flow(owner_person_id=identity)
     queued = flows.queue_run(saved['id'], _request())
     progress = flows.WorkerProgress(status='running', progress={'stage': 'sql_insertion_complete',
         'owner_username': 'maya_reports', 'previous_owner': 'loader', 'owner_changed': True,

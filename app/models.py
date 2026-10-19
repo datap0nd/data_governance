@@ -445,6 +445,13 @@ class PersonOut(BaseModel):
     email: str | None = None
     sql_username: str | None = None
     created_at: str | None = None
+    # Whether the host PC saved a SQL password; the password is never returned.
+    sql_password_set: bool = False
+    signed_in_computers: int = 0
+
+
+class SqlPasswordWrite(BaseModel):
+    password: str = Field(min_length=1, max_length=1024)
 
 class PersonCreate(BaseModel):
     name: str

@@ -143,6 +143,13 @@ def _launch(scan_id):
     return {'scan_id': scan_id, 'worker': worker}
 
 
+def _require_edit(flow_id: int, request) -> dict:
+    """Recording a Flow is changing it: only its owner or the host PC may."""
+    with get_db() as db:
+        flows.require_flow_edit(db, flow_id, request)
+        return flows._flow_out(db, flow_id)
+
+
 @router.post('/recordings/draft')
 def create_draft(body: RecordingDraft, request: Request):
     with get_db() as db:
@@ -262,7 +269,8 @@ def copy_template_revision(db, flow_id: int, body: TemplateCopy, *, now: str | N
 
 
 @router.post('/{flow_id}/recordings/revisions/copy')
-def copy_template(flow_id: int, body: TemplateCopy):
+def copy_template(flow_id: int, body: TemplateCopy, request: Request = None):
+    _require_edit(flow_id, request)
     with get_db() as db:
         db.execute('BEGIN IMMEDIATE')
         flow_recordings.assert_flow_idle(db, flow_id)
@@ -279,6 +287,7 @@ def recording_debug(flow_id: int, scan_id: int):
 
 @router.post('/{flow_id}/recordings/start')
 def start_recording(flow_id: int, request: Request):
+    _require_edit(flow_id, request)
     with get_db() as db:
         db.execute('BEGIN IMMEDIATE')
         scan_id = flow_recordings.queue_operation(db, flow_id, 'record', flows.get_actor(request))
@@ -287,6 +296,7 @@ def start_recording(flow_id: int, request: Request):
 
 @router.post('/{flow_id}/recordings/{scan_id}/cancel')
 def cancel_recording(flow_id: int, scan_id: int, request: Request):
+    _require_edit(flow_id, request)
     with get_db() as db:
         db.execute('BEGIN IMMEDIATE')
         row = db.execute('''SELECT c.* FROM flow_recording_sessions s JOIN flow_catalog_scans c ON c.id=s.scan_id
@@ -313,7 +323,8 @@ def cancel_recording(flow_id: int, scan_id: int, request: Request):
 
 
 @router.post('/{flow_id}/recordings/{scan_id}/finish')
-def finish_recording(flow_id: int, scan_id: int):
+def finish_recording(flow_id: int, scan_id: int, request: Request = None):
+    _require_edit(flow_id, request)
     with get_db() as db:
         db.execute('BEGIN IMMEDIATE')
         session = db.execute('''SELECT c.* FROM flow_recording_sessions s JOIN flow_catalog_scans c ON c.id=s.scan_id
@@ -333,7 +344,8 @@ def finish_recording(flow_id: int, scan_id: int):
 
 
 @router.post('/{flow_id}/recordings/revisions')
-def save_revision(flow_id: int, body: RevisionWrite):
+def save_revision(flow_id: int, body: RevisionWrite, request: Request = None):
+    _require_edit(flow_id, request)
     try:
         submitted = {**body.definition, 'timezone': 'Asia/Dubai'}
         version = submitted.get('version', 1)
@@ -365,7 +377,8 @@ def save_revision(flow_id: int, body: RevisionWrite):
 
 
 @router.post('/{flow_id}/recordings/revisions/{revision_id}/convert-single-range')
-def convert_single_range(flow_id: int, revision_id: int, body: SingleRangeWrite):
+def convert_single_range(flow_id: int, revision_id: int, body: SingleRangeWrite, request: Request = None):
+    _require_edit(flow_id, request)
     with get_db() as db:
         db.execute('BEGIN IMMEDIATE')
         flow_recordings.assert_flow_idle(db, flow_id)
@@ -398,6 +411,7 @@ def convert_single_range(flow_id: int, revision_id: int, body: SingleRangeWrite)
 
 @router.post('/{flow_id}/recordings/revisions/{revision_id}/validate')
 def validate_revision(flow_id: int, revision_id: int, request: Request, body: ValidationWrite | None = None):
+    _require_edit(flow_id, request)
     try:
         with get_db() as db:
             db.execute('BEGIN IMMEDIATE')
@@ -409,7 +423,8 @@ def validate_revision(flow_id: int, revision_id: int, request: Request, body: Va
 
 
 @router.post('/{flow_id}/recordings/revisions/{revision_id}/activate')
-def activate_revision(flow_id: int, revision_id: int):
+def activate_revision(flow_id: int, revision_id: int, request: Request = None):
+    before = _require_edit(flow_id, request)
     with get_db() as db:
         db.execute('BEGIN IMMEDIATE')
         flow_recordings.assert_flow_idle(db, flow_id)
@@ -426,4 +441,6 @@ def activate_revision(flow_id: int, revision_id: int):
             result = generate(job)
         except (ValueError, OSError) as exc:
             raise HTTPException(409, str(exc)) from exc
+        after = flows._flow_out(db, flow_id)
+    flows.notify_owner_of_host_change(request, before, after)
     return {'flow_id': flow_id, 'revision_id': revision_id, 'standalone': result}

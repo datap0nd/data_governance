@@ -8427,6 +8427,8 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
         # plan refreshes materialized views after SQL insertion.
         registration['capabilities']['post_sql_refresh_v1'] = True
         registration['capabilities']['sql_table_ownership_v1'] = True
+        # Older workers would write a person's Flow with the shared upload account.
+        registration['capabilities']['sql_person_credentials_v1'] = True
         registration['capabilities'][flow_python.ARGUMENTS_CAPABILITY] = True
         registration['capabilities'][flow_python.RUN_CAPABILITY] = True
         registration['capabilities'][flow_python.DESKTOP_CAPABILITY] = True

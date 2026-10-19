@@ -24,6 +24,17 @@ def _load_env_file() -> tuple[Path | None, dict]:
 
 ENV_FILE, ENV_FILE_STATUS = _load_env_file()
 
+
+def current_setting(name: str) -> str | None:
+    """One setting as the settings file holds it now; the environment without a file.
+
+    For values the host PC changes while Metronome runs (SQL passwords), so a
+    save or clear applies without restarting the service or its workers.
+    """
+    if ENV_FILE is None:
+        return os.environ.get(name) or None
+    return env_file.read(ENV_FILE)[0].get(name) or None
+
 # SQLite database file (the app's own database, not production)
 DB_PATH = os.environ.get("DG_DB_PATH", str(BASE_DIR / "governance.db"))
 PIPELINE_INSIGHTS_DB_PATH = os.environ.get(
