@@ -32,6 +32,9 @@
 .users-actions { display: flex; align-items: center; gap: var(--space-sm); flex-wrap: wrap; }
 .users-delete { margin-top: var(--space-lg); padding: var(--space-lg); background: var(--red-bg); font-size: .85rem; }
 .users-delete p { margin-bottom: var(--space-md); overflow-wrap: anywhere; }
+.users-form .users-span-2 { grid-column: 1 / -1; }
+.users-password { letter-spacing: .12em; font-weight: 600; color: var(--text); }
+.users-readonly { margin: 0 0 var(--space-lg); padding: var(--space-md) var(--space-lg); border-left: 3px solid var(--accent); background: var(--accent-bg); font-size: .82rem; color: var(--text); }
 @media (max-width: 600px) {
     .users-header { align-items: flex-start; flex-wrap: wrap; }
     .users-form-grid { grid-template-columns: minmax(0, 1fr); }

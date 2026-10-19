@@ -1,7 +1,10 @@
 """PostgreSQL catalog discovery and optional Flows artifact handoff.
 
-Credentials come from the existing dedicated DG_UPLOAD_* configuration. They
-are never returned by the API, written to SQLite, or embedded in a flow job.
+A Flow assigned to a person writes with that person's SQL user: its job names
+the person (``sql_handoff.connect_as``) and the worker reads their password
+from the settings file when it connects. Unassigned Flows and the catalog use
+the dedicated DG_UPLOAD_* account. Passwords are never returned by the API,
+written to SQLite, or embedded in a flow job.
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ from typing import Callable
 
 from app.config import (
     ENV_FILE,
+    current_setting,
     UPLOAD_PGDATABASE,
     UPLOAD_PGHOST,
     UPLOAD_PGPASSWORD,
@@ -35,6 +39,63 @@ SQL_LOCK_TIMEOUT_SECONDS = 10 * 60
 SQL_STATEMENT_TIMEOUT_SECONDS = 30 * 60
 SqlProgress = Callable[[dict], None]
 OWNERSHIP_CAPABILITY = 'sql_table_ownership_v1'
+# Workers without it would connect with the shared upload account instead.
+PERSON_CREDENTIALS_CAPABILITY = 'sql_person_credentials_v1'
+PERSON_PASSWORD_PREFIX = 'DG_USER_SQL_PASSWORD_'
+# Passwords used by this process, removed from any database error text.
+_REDACTED_PASSWORDS: set[str] = set()
+
+
+def person_password_setting(person_id) -> str:
+    """The settings-file name holding one person's SQL password."""
+    return f'{PERSON_PASSWORD_PREFIX}{int(person_id)}'
+
+
+def person_password(person_id) -> str | None:
+    """One person's SQL password, read from the settings file at connect time.
+
+    Read on every connection rather than at import, so a password the host PC
+    saves or clears applies to the next SQL step without restarting workers.
+    """
+    return current_setting(person_password_setting(person_id))
+
+
+def connection_credentials(target: dict) -> tuple[str, str] | None:
+    """``(username, password)`` for a job that connects as its Flow owner.
+
+    None means the shared DG_UPLOAD_* account (an unassigned Flow). A Flow
+    owner without a SQL username or saved password fails closed: it never
+    falls back to the shared account.
+    """
+    identity = target.get('connect_as')
+    if not identity:
+        return None
+    person = str(identity.get('name') or 'The Flow owner')
+    username = identity.get('username')
+    if not isinstance(username, str) or not username.strip():
+        raise RuntimeError(f'{person} has no SQL username in Users. Ask the host PC to add it, then run the Flow again.')
+    username = username.strip()
+    if any(ord(char) < 32 or ord(char) == 127 for char in username):
+        raise ValueError('SQL username cannot contain control characters.')
+    password = person_password(identity.get('person_id'))
+    if not password:
+        raise RuntimeError(f'The SQL password for {person} ({username}) is not saved on this computer. '
+                           'Ask the host PC to add it in Users, then run the Flow again.')
+    return username, password
+
+
+def engine_factory_for(target: dict) -> Callable | None:
+    """The engine factory for an owner's SQL user; None keeps the shared ``_engine``."""
+    credentials = connection_credentials(target)
+    if credentials is None:
+        return None
+    return lambda database: _engine(database, credentials)
+
+
+def person_credentials_supported(job: dict, capabilities: dict) -> bool:
+    target = (job.get('validation_job') or job).get('sql_handoff') or {}
+    return bool(not (target.get('enabled') and target.get('connect_as'))
+                or capabilities.get(PERSON_CREDENTIALS_CAPABILITY))
 
 
 def owner_username(target: dict) -> str | None:
@@ -71,14 +132,14 @@ def _ownership_preflight(connection, schema: str, table: str, owner: str) -> str
     ), {'owner': owner, 'schema': schema}).one()
     actor, inherited, can_create, can_use = privileges
     if not inherited:
-        raise RuntimeError(f'The Metronome SQL account must inherit privileges of {owner!r} so later SQL loads keep working. Ask your database administrator to grant inherited role membership.')
+        raise RuntimeError(f'The SQL user this Flow signs in with must inherit privileges of {owner!r} so later SQL loads keep working. Ask your database administrator to grant inherited role membership.')
     relation = connection.execute(text(
         "SELECT pg_get_userbyid(c.relowner), c.relkind, pg_has_role(current_user, c.relowner, 'USAGE') "
         "FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace "
         "WHERE n.nspname=:schema AND c.relname=:table"
     ), {'schema': schema, 'table': table}).first()
     if relation and (relation[1] not in {'r', 'p'} or not relation[2]):
-        raise RuntimeError('SQL ownership requires a table that the Metronome SQL account owns or whose owning role privileges it inherits.')
+        raise RuntimeError('SQL ownership requires a table that the SQL user this Flow signs in with owns or whose owning role privileges it inherits.')
     previous = relation[0] if relation else None
     if not can_use or (previous != owner and not can_create):
         raise RuntimeError(f'SQL owner role {owner!r} needs USAGE and, when ownership changes, CREATE on schema {schema!r}. Ask your database administrator to grant the required schema permissions.')
@@ -89,7 +150,7 @@ def _ownership_preflight(connection, schema: str, table: str, owner: str) -> str
         connection.exec_driver_sql(f'SET LOCAL ROLE {_quote_identifier(owner)}', execution_options={'no_parameters': True})
         connection.exec_driver_sql(f'SET LOCAL ROLE {_quote_identifier(actor)}', execution_options={'no_parameters': True})
     except Exception as exc:
-        raise RuntimeError('The Metronome SQL account needs SET ROLE permission for the selected owner. Ask your database administrator to grant it.') from exc
+        raise RuntimeError('The SQL user this Flow signs in with needs SET ROLE permission for the selected owner. Ask your database administrator to grant it.') from exc
     return previous
 
 
@@ -139,10 +200,14 @@ def configuration_status() -> dict:
     }
 
 
-def _engine(database: str):
+def _engine(database: str, credentials: tuple[str, str] | None = None):
     status = configuration_status()
-    if not status["configured"]:
-        raise RuntimeError(f"SQL handoff is not configured. Missing: {', '.join(status['missing'])}")
+    # A person's own SQL user needs only the server and default database.
+    missing = status["missing"] if credentials is None else [
+        item for item in status["missing"] if item not in ("DG_UPLOAD_PGUSER", "DG_UPLOAD_PGPASSWORD")
+    ]
+    if missing:
+        raise RuntimeError(f"SQL handoff is not configured. Missing: {', '.join(missing)}")
     if not isinstance(database, str) or not database.strip() or len(database) > 200 or "\x00" in database:
         raise ValueError("Choose a valid database from the discovered SQL catalog.")
     try:
@@ -151,10 +216,13 @@ def _engine(database: str):
         from sqlalchemy.pool import NullPool
     except ImportError as exc:
         raise RuntimeError("sqlalchemy/psycopg2 are not installed. Re-run setup.ps1.") from exc
+    username, password = credentials or (UPLOAD_PGUSER, UPLOAD_PGPASSWORD)
+    if credentials:
+        _REDACTED_PASSWORDS.add(password)
     url = URL.create(
         "postgresql+psycopg2",
-        username=UPLOAD_PGUSER,
-        password=UPLOAD_PGPASSWORD,
+        username=username,
+        password=password,
         host=UPLOAD_PGHOST,
         port=int(UPLOAD_PGPORT),
         database=database,
@@ -349,8 +417,9 @@ def _database_error(exc: Exception) -> str:
     diagnostic = getattr(original, "diag", None)
     primary = getattr(diagnostic, "message_primary", None) if diagnostic is not None else None
     message = str(primary or original or exc).strip().replace("\r", " ").replace("\n", " ")
-    if UPLOAD_PGPASSWORD:
-        message = message.replace(UPLOAD_PGPASSWORD, "[redacted]")
+    for secret in (UPLOAD_PGPASSWORD, *_REDACTED_PASSWORDS):
+        if secret:
+            message = message.replace(secret, "[redacted]")
     message = re.sub(r"\s+", " ", message)[:4000]
     prefix = f"PostgreSQL SQLSTATE {sqlstate}: " if sqlstate else ""
     return prefix + (message or type(original).__name__)
@@ -383,6 +452,8 @@ def load_artifacts(
     uppercase = bool(target.get("uppercase"))
     owner = owner_username(target)
     ownership = {}
+    sql_user = (target.get("connect_as") or {}).get("username")
+    as_user = f" as {sql_user}" if sql_user else ""
     qualified = f"{_quote_identifier(schema)}.{_quote_identifier(table)}"
     target_name = f"{database}.{schema}.{table}"
     if not artifacts:
@@ -417,14 +488,16 @@ def load_artifacts(
     try:
         stage = "connection"
         _emit(
-            progress, "sql_connecting", f"Connecting to PostgreSQL database {database}.",
+            progress, "sql_connecting", f"Connecting to PostgreSQL database {database}{as_user}.",
             started, status="started", target=target_name,
             timeout_seconds=SQL_CONNECT_TIMEOUT_SECONDS,
+            **({"sql_user": sql_user} if sql_user else {}),
         )
-        engine = _engine(database)
+        credentials = connection_credentials(target)
+        engine = _engine(database, credentials) if credentials else _engine(database)
         connection = engine.connect()
         _emit(
-            progress, "sql_connected", f"Connected to PostgreSQL database {database}.",
+            progress, "sql_connected", f"Connected to PostgreSQL database {database}{as_user}.",
             started, status="completed", target=target_name,
         )
 
@@ -670,6 +743,7 @@ def load_artifacts(
     return {
         "rows_written": rows_written,
         **ownership,
+        **({"sql_user": sql_user} if sql_user else {}),
         "files_loaded": len(inspected),
         "mode": mode,
         "uppercase": uppercase,

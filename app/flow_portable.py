@@ -45,9 +45,12 @@ else:
         if (_parent / '.env').is_file():
             _env_path = _parent / '.env'
             break
-if _env_path is not None:
+
+
+def _read_settings(path):
+    values = {}
     try:
-        for _line in _env_path.read_text(encoding='utf-8-sig').splitlines():
+        for _line in path.read_text(encoding='utf-8-sig').splitlines():
             _line = _line.strip()
             if not _line or _line.startswith('#'):
                 continue
@@ -62,11 +65,23 @@ if _env_path is not None:
             if len(_value) >= 2 and _value[0] == _value[-1] and _value[0] in ('"', "'"):
                 _value = _value[1:-1]
             if _value:
-                os.environ[_name] = _value
+                values[_name] = _value
     except (OSError, UnicodeError):
-        pass
+        return {}
+    return values
+
+
+if _env_path is not None:
+    os.environ.update(_read_settings(_env_path))
 
 ENV_FILE = _env_path
+
+
+def current_setting(name):
+    """One setting as the settings file holds it now; the environment without a file."""
+    if ENV_FILE is None:
+        return os.environ.get(name) or None
+    return _read_settings(ENV_FILE).get(name) or None
 
 UPLOAD_PGDATABASE = os.getenv('DG_UPLOAD_PGDATABASE') or os.getenv('PGDATABASE', '')
 UPLOAD_PGHOST = os.getenv('DG_UPLOAD_PGHOST') or os.getenv('PGHOST', '')

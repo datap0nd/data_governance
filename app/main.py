@@ -2,7 +2,6 @@ import json
 import logging
 import os
 import re
-import socket
 import sqlite3
 import subprocess
 import threading
@@ -18,7 +17,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
 from pathlib import Path
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from urllib.parse import urlencode
 
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -30,7 +29,8 @@ from app import remote_flow_control
 from app.routers.system_paths import router as system_paths_router
 from app.routers.system_flows import router as system_flows_router
 from app.routers.flow_tasks import router as flow_tasks_router
-from app.local_access import is_server_machine, require_app_access
+from app.local_access import is_host_request, is_server_machine, require_app_access
+from app import user_identity
 from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, data_quality, tasks, eventlog, people, archive, documentation, email, email_schedules, usage, materialized_views, recurrences, flows, query_history, pipelines, pipeline_insights
 from app.settings import (
     get_overall_refresh_time,
@@ -50,166 +50,30 @@ from app.auditor import engine as auditor_engine, store as auditor_store
 # Show scanner logs in the console
 logging.basicConfig(level=logging.INFO, format="%(name)s | %(message)s")
 
-# In-memory caches for identity resolution (cleared on register)
-_identity_cache: dict[tuple[str, str | None], str | None] = {}
-_hostname_cache: dict[str, str | None] = {}
-
-
-def _ensure_identity_schema(conn: sqlite3.Connection):
-    """Create or repair the lightweight user identity tables."""
-    conn.execute(
-        """CREATE TABLE IF NOT EXISTS user_ips (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            ip_address  TEXT NOT NULL UNIQUE,
-            person_name TEXT NOT NULL,
-            created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
-        )"""
-    )
-    for stmt in (
-        "ALTER TABLE user_ips ADD COLUMN hostname TEXT",
-        "ALTER TABLE user_ips ADD COLUMN client_key TEXT",
-        "ALTER TABLE user_ips ADD COLUMN last_seen_at DATETIME",
-        "ALTER TABLE user_ips ADD COLUMN updated_at DATETIME",
-    ):
-        try:
-            conn.execute(stmt)
-        except sqlite3.OperationalError as exc:
-            if "duplicate column" not in str(exc).lower():
-                raise
-    conn.execute(
-        """CREATE TABLE IF NOT EXISTS user_devices (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            client_key      TEXT NOT NULL UNIQUE,
-            person_name     TEXT NOT NULL,
-            last_ip_address TEXT,
-            hostname        TEXT,
-            created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
-            last_seen_at    DATETIME DEFAULT CURRENT_TIMESTAMP
-        )"""
-    )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_user_devices_client_key ON user_devices(client_key)")
-
-
-def _clean_client_key(value: str | None) -> str | None:
-    if not value:
-        return None
-    value = value.strip()
-    if len(value) > 128:
-        return None
-    if not re.fullmatch(r"[A-Za-z0-9_.:-]+", value):
-        return None
-    return value
-
-
-def _resolve_hostname(ip: str) -> str | None:
-    """Best-effort reverse DNS lookup for LAN hostnames."""
-    if ip in _hostname_cache:
-        return _hostname_cache[ip]
-    try:
-        host = socket.gethostbyaddr(ip)[0]
-    except Exception:
-        host = None
-    _hostname_cache[ip] = host
-    return host
-
-
-def _resolve_identity(ip: str, client_key: str | None = None) -> str | None:
-    """Look up person_name by browser/device key first, then IP address."""
-    cache_key = (ip, client_key)
-    if cache_key in _identity_cache:
-        return _identity_cache[cache_key]
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA busy_timeout = 5000")
-        _ensure_identity_schema(conn)
-        row = None
-        if client_key:
-            row = conn.execute(
-                "SELECT person_name FROM user_devices WHERE client_key = ?",
-                (client_key,),
-            ).fetchone()
-        if row is None:
-            row = conn.execute(
-                "SELECT person_name FROM user_ips WHERE ip_address = ?", (ip,)
-            ).fetchone()
-        conn.close()
-        name = row["person_name"] if row else None
-        _identity_cache[cache_key] = name
-        return name
-    except Exception:
-        return None
-
-
-def _mark_identity_seen(ip: str, client_key: str | None, name: str | None, hostname: str | None):
-    """Update last-seen metadata without changing an existing person's name."""
-    if not name:
-        return
-    now = datetime.now(timezone.utc).isoformat()
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA busy_timeout = 5000")
-    try:
-        _ensure_identity_schema(conn)
-        existing_ip = conn.execute("SELECT id FROM user_ips WHERE ip_address = ? LIMIT 1", (ip,)).fetchone()
-        if existing_ip:
-            conn.execute(
-                """UPDATE user_ips
-                   SET person_name = ?,
-                       hostname = COALESCE(?, hostname),
-                       client_key = COALESCE(?, client_key),
-                       updated_at = ?,
-                       last_seen_at = ?
-                   WHERE id = ?""",
-                (name, hostname, client_key, now, now, existing_ip[0]),
-            )
-        else:
-            conn.execute(
-                """INSERT INTO user_ips
-                   (ip_address, person_name, hostname, client_key, created_at, updated_at, last_seen_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (ip, name, hostname, client_key, now, now, now),
-            )
-        if client_key:
-            existing_device = conn.execute("SELECT id FROM user_devices WHERE client_key = ? LIMIT 1", (client_key,)).fetchone()
-            if existing_device:
-                conn.execute(
-                    """UPDATE user_devices
-                       SET last_ip_address = ?,
-                           hostname = COALESCE(?, hostname),
-                           last_seen_at = ?
-                       WHERE id = ?""",
-                    (ip, hostname, now, existing_device[0]),
-                )
-            else:
-                conn.execute(
-                    """INSERT INTO user_devices
-                       (client_key, person_name, last_ip_address, hostname, created_at, updated_at, last_seen_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (client_key, name, ip, hostname, now, now, now),
-                )
-        conn.commit()
-    finally:
-        conn.close()
-
-
 def _is_localhost(ip: str) -> bool:
     """Check if a request came from the machine running the app."""
     return is_server_machine(ip)
 
 
 class UserIdentityMiddleware(BaseHTTPMiddleware):
-    """Resolve client IP to user identity on every request."""
+    """Resolve the browser's chosen person and host-PC status on every request."""
     async def dispatch(self, request: StarletteRequest, call_next):
         ip = request.client.host if request.client else "unknown"
-        client_key = _clean_client_key(
+        client_key = user_identity.clean_client_key(
             request.headers.get("x-client-key") or request.cookies.get("dg_client_key")
         )
+        identity = user_identity.resolve(ip, client_key)
         request.state.client_ip = ip
         request.state.client_key = client_key
         request.state.is_local = _is_localhost(ip)
+        request.state.is_host = is_host_request(request)
         request.state.is_admin = True
-        request.state.actor = _resolve_identity(ip, client_key)
+        request.state.identity = identity
+        request.state.person_id = identity["person_id"] if identity else None
+        request.state.actor = (
+            identity["name"] if identity
+            else user_identity.HOST_ACTOR if request.state.is_host else None
+        )
         response = await call_next(request)
         return response
 
@@ -2018,7 +1882,7 @@ def _system_update_status(*, force_check: bool = False) -> dict:
 # ── Multi-user identity endpoints ──
 
 class RegisterRequest(BaseModel):
-    name: str
+    person_id: int = Field(ge=1, strict=True)
     client_key: str | None = None
 
 
@@ -2034,23 +1898,28 @@ class RemoteFlowControlSettingsRequest(BaseModel):
     enabled: bool
 
 
-@app.get("/api/me")
-def get_me(request: Request):
-    """Return the current user's identity based on IP."""
+def _identity_payload(request: Request, identity: dict | None, client_key: str | None) -> dict:
     ip = request.state.client_ip
-    client_key = request.state.client_key
-    hostname = _resolve_hostname(ip)
-    name = request.state.actor
-    if name:
-        _mark_identity_seen(ip, client_key, name, hostname)
     return {
         "ip": ip,
         "client_key": client_key,
-        "hostname": hostname,
-        "name": name,
+        "hostname": user_identity.resolve_hostname(ip),
+        "person_id": identity["person_id"] if identity else None,
+        "name": identity["name"] if identity else None,
         "is_local": request.state.is_local,
+        "is_host": request.state.is_host,
         "is_admin": request.state.is_admin,
     }
+
+
+@app.get("/api/me")
+def get_me(request: Request):
+    """Return the person this browser chose in Users, and host-PC status."""
+    identity = request.state.identity
+    payload = _identity_payload(request, identity, request.state.client_key)
+    if identity:
+        user_identity.mark_seen(payload["ip"], payload["client_key"], identity, payload["hostname"])
+    return payload
 
 
 def _parse_refresh_time(value: str) -> tuple[int, int]:
@@ -2180,73 +2049,29 @@ def run_refresh_now(request: Request):
 
 @app.post("/api/register")
 def register_user(body: RegisterRequest, request: Request):
-    """Register or update the current IP's user identity."""
+    """Sign this browser in as a person chosen from Users.
+
+    A computer chooses once. Moving a signed-in computer to someone else is a
+    host-PC action (Users > Sign out), so nobody can take over another
+    person's Flows by picking their name.
+    """
     ip = request.state.client_ip
-    client_key = _clean_client_key(body.client_key) or request.state.client_key
-    hostname = _resolve_hostname(ip)
-    name = body.name.strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="Name cannot be empty")
-
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA busy_timeout = 5000")
-    try:
-        _ensure_identity_schema(conn)
-        existing_ip = conn.execute("SELECT id FROM user_ips WHERE ip_address = ? LIMIT 1", (ip,)).fetchone()
-        if existing_ip:
-            conn.execute(
-                """UPDATE user_ips
-                   SET person_name = ?,
-                       hostname = COALESCE(?, hostname),
-                       client_key = COALESCE(?, client_key),
-                       updated_at = CURRENT_TIMESTAMP,
-                       last_seen_at = CURRENT_TIMESTAMP
-                   WHERE id = ?""",
-                (name, hostname, client_key, existing_ip[0]),
-            )
-        else:
-            conn.execute(
-                """INSERT INTO user_ips (ip_address, person_name, hostname, client_key, created_at, updated_at, last_seen_at)
-                   VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)""",
-                (ip, name, hostname, client_key),
-            )
-        if client_key:
-            existing_device = conn.execute("SELECT id FROM user_devices WHERE client_key = ? LIMIT 1", (client_key,)).fetchone()
-            if existing_device:
-                conn.execute(
-                    """UPDATE user_devices
-                       SET person_name = ?,
-                           last_ip_address = ?,
-                           hostname = COALESCE(?, hostname),
-                           updated_at = CURRENT_TIMESTAMP,
-                           last_seen_at = CURRENT_TIMESTAMP
-                       WHERE id = ?""",
-                    (name, ip, hostname, existing_device[0]),
-                )
-            else:
-                conn.execute(
-                    """INSERT INTO user_devices
-                       (client_key, person_name, last_ip_address, hostname, created_at, updated_at, last_seen_at)
-                       VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)""",
-                    (client_key, name, ip, hostname),
-                )
-        conn.commit()
-    finally:
-        conn.close()
-
-    # Clear identity cache entries that may include this IP or client key.
-    for key in list(_identity_cache):
-        if key[0] == ip or key[1] == client_key:
-            _identity_cache.pop(key, None)
-
-    return {
-        "ip": ip,
-        "client_key": client_key,
-        "hostname": hostname,
-        "name": name,
-        "is_local": _is_localhost(ip),
-        "is_admin": True,
-    }
+    client_key = user_identity.clean_client_key(body.client_key) or request.state.client_key
+    with get_db() as db:
+        person = db.execute("SELECT id, name FROM people WHERE id = ?", (body.person_id,)).fetchone()
+    if not person:
+        raise HTTPException(status_code=404, detail="That user no longer exists. Choose another user.")
+    current = user_identity.resolve(ip, client_key)
+    if current and current["person_id"] != person["id"] and not request.state.is_host:
+        raise HTTPException(
+            status_code=409,
+            detail=f"This computer is already signed in as {current['name']}. "
+                   "Ask the host PC to sign it out in Users first.",
+        )
+    hostname = user_identity.resolve_hostname(ip)
+    user_identity.bind(ip, client_key, hostname, person["id"], person["name"])
+    identity = {"person_id": person["id"], "name": person["name"]}
+    return _identity_payload(request, identity, client_key)
 
 
 @app.get("/api/system/updates")

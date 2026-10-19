@@ -74,7 +74,7 @@ def fixture_server(source_type="outlook", port=0):
         def do_GET(self):
             path = urlsplit(self.path).path
             payloads = {
-                "/api/me": {"name": "Fictional Tester", "is_local": True, "is_admin": True},
+                "/api/me": {"person_id": 42, "name": "Fictional Tester", "is_local": True, "is_host": True, "is_admin": True},
                 "/api/version": {"version": "worksheet-fixture", "up_to_date": True},
                 "/api/ai/settings": {"mode": "disabled", "operations_investigator_enabled": False},
                 "/api/system/remote-flow-control": {"enabled": False},

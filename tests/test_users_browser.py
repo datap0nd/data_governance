@@ -12,7 +12,10 @@ from urllib.parse import urlsplit
 import pytest
 from playwright.sync_api import sync_playwright, expect
 
+from test_flow_triggers_preview import launch
+
 ROOT = Path(__file__).resolve().parents[1]
+HOST = {"person_id": 1, "name": "Maya Chen", "is_local": True, "is_host": True, "is_admin": True}
 
 
 @pytest.fixture
@@ -22,10 +25,14 @@ def users_browser():
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     state = {"people": [
-        {"id": 1, "name": "Maya Chen", "role": "BI", "email": "maya@example.test", "sql_username": "maya_chen"},
-        {"id": 2, "name": "Omar Malik", "role": "Business", "email": "omar@example.test", "sql_username": None},
-        {"id": 3, "name": "Sofia Rivera", "role": "BI", "email": None, "sql_username": None},
-    ], "next_id": 4, "fail_next": None, "calls": [], "unexpected": [], "defer": False}
+        {"id": 1, "name": "Maya Chen", "role": "BI", "email": "maya@example.test", "sql_username": "maya_chen",
+         "sql_password_set": True, "signed_in_computers": 2},
+        {"id": 2, "name": "Omar Malik", "role": "Business", "email": "omar@example.test", "sql_username": None,
+         "sql_password_set": False, "signed_in_computers": 0},
+        {"id": 3, "name": "Sofia Rivera", "role": "BI", "email": None, "sql_username": None,
+         "sql_password_set": False, "signed_in_computers": 0},
+    ], "next_id": 4, "fail_next": None, "calls": [], "unexpected": [], "defer": False,
+        "me": dict(HOST), "passwords": {}, "registered": []}
     base = f"http://127.0.0.1:{server.server_port}/static/index.html"
 
     def respond(route):
@@ -39,12 +46,33 @@ def users_browser():
             return
         if path == "/api/people" and method == "GET":
             payload = state["people"]
+        elif path.endswith("/sql-password") or path.endswith("/sign-ins"):
+            person = next(item for item in state["people"] if item["id"] == int(path.split("/")[3]))
+            if path.endswith("/sign-ins"):
+                person["signed_in_computers"] = 0
+            elif method == "PUT":
+                state["passwords"][person["id"]] = request.post_data_json["password"]
+                person["sql_password_set"] = True
+            else:
+                state["passwords"].pop(person["id"], None)
+                person["sql_password_set"] = False
+            payload = person
+        elif path == "/api/register" and method == "POST":
+            if state["fail_next"] == "REGISTER":
+                state["fail_next"] = None
+                route.fulfill(status=409, json={"detail": "This computer is already signed in as Omar Malik."})
+                return
+            person = next(item for item in state["people"] if item["id"] == request.post_data_json["person_id"])
+            state["registered"].append(request.post_data_json)
+            state["me"] = {**state["me"], "person_id": person["id"], "name": person["name"]}
+            payload = state["me"]
         elif path.startswith("/api/people") and method in {"POST", "PATCH", "DELETE"}:
             if state["defer"]:
                 state["pending"] = route
                 return
             if method == "POST":
-                payload = {**request.post_data_json, "id": state["next_id"]}
+                payload = {**request.post_data_json, "id": state["next_id"], "sql_password_set": False,
+                           "signed_in_computers": 0}
                 state["next_id"] += 1
                 state["people"].append(payload)
             elif method == "PATCH":
@@ -55,7 +83,7 @@ def users_browser():
                 state["people"] = [person for person in state["people"] if person["id"] != person_id]
                 payload = {"status": "deleted", "id": person_id}
         elif path == "/api/me":
-            payload = {"name": "Fictional Tester", "is_local": True, "is_admin": True}
+            payload = state["me"]
         elif path == "/api/version":
             payload = {"version": "users-ui-fixture", "up_to_date": True}
         elif path == "/api/ai/settings":
@@ -84,7 +112,7 @@ def users_browser():
 
     try:
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(channel="chrome", headless=True)
+            browser = launch(playwright)
             page = browser.new_page(viewport={"width": 1440, "height": 1000})
             errors = []
             page.on("pageerror", lambda error: errors.append(str(error)))
@@ -357,3 +385,129 @@ def test_sql_owner_help_and_run_log_confirm_only_committed_changes(users_browser
     expect(section).to_contain_text('Refresh table Properties in pgAdmin')
     expect(page.get_by_role('heading', name='Final error')).to_have_count(0)
     page.screenshot(path=str(evidence / 'sql-owner-committed.png'), full_page=True)
+
+
+def _evidence(tmp_path):
+    folder = Path(os.environ.get("METRONOME_UI_EVIDENCE_DIR", str(tmp_path)))
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+def test_host_saves_and_clears_sql_passwords_shown_only_as_asterisks(users_browser, tmp_path):
+    page, state, _base = users_browser
+    rows = page.locator("#users-list tbody tr")
+    expect(page.get_by_role("columnheader", name="SQL password")).to_be_visible()
+    expect(rows.filter(has_text="Maya Chen").locator("td").nth(4)).to_have_text("••••••••")
+    omar = rows.filter(has_text="Omar Malik")
+    expect(omar.locator("td").nth(4)).to_have_text("—")
+
+    page.get_by_role("button", name="Edit Omar Malik").click()
+    password = page.get_by_label(re.compile(r"^SQL password"))
+    sql = page.get_by_label(re.compile(r"^SQL username"))
+    expect(password).to_have_attribute("type", "password")
+    expect(page.locator("#user-editor")).to_contain_text("Changing it clears the saved SQL password")
+    password.fill("omar-secret")
+    page.locator("#user-save").click()
+    expect(page.locator("#user-form-feedback")).to_have_text("Add a SQL username before saving a SQL password.")
+    expect(sql).to_be_focused()
+    sql.fill("omar_sql")
+
+    # The profile saves but the password request fails: say exactly that and keep the entry.
+    state["fail_next"] = "PUT"
+    page.locator("#user-save").click()
+    expect(page.locator("#user-form-feedback")).to_contain_text("Omar Malik was saved, but the SQL password was not")
+    expect(password).to_have_value("omar-secret")
+    expect(omar).to_contain_text("omar_sql")
+    page.locator("#user-save").click()
+    expect(page.locator("#users-feedback")).to_have_text("Omar Malik updated.")
+    assert state["passwords"] == {2: "omar-secret"}
+    expect(omar.locator("td").nth(4)).to_have_text("••••••••")
+    assert "omar-secret" not in page.content()
+
+    page.get_by_role("button", name="Edit Omar Malik").click()
+    expect(password).to_have_value("")
+    expect(password).to_have_attribute("placeholder", "•••••••• saved · type to replace")
+    page.screenshot(path=str(_evidence(tmp_path) / "users-sql-password-saved.png"), full_page=True)
+    page.get_by_role("button", name="Clear SQL password").click()
+    expect(page.locator("#user-form-feedback")).to_have_text("SQL password cleared.")
+    expect(omar.locator("td").nth(4)).to_have_text("Not set")
+    expect(page.get_by_role("button", name="Clear SQL password")).to_have_count(0)
+    assert state["passwords"] == {}
+    page.get_by_role("button", name="Cancel", exact=True).click()
+
+    page.get_by_role("button", name="Edit Maya Chen").click()
+    page.get_by_role("button", name="Sign out 2 computers").click()
+    expect(page.locator("#user-form-feedback")).to_contain_text("Those computers choose a user again")
+    expect(page.get_by_role("button", name=re.compile(r"^Sign out \d"))).to_have_count(0)
+    assert ("DELETE", "/api/people/1/sign-ins") in state["calls"]
+
+
+def test_colleagues_see_users_read_only(users_browser, tmp_path):
+    page, state, _base = users_browser
+    state["me"] = {"person_id": 2, "name": "Omar Malik", "is_local": False, "is_host": False, "is_admin": True}
+    page.reload()
+    expect(page.get_by_role("heading", name="Users", exact=True)).to_be_visible()
+    expect(page.get_by_role("note")).to_have_text("Only the host PC can add or change users and SQL passwords.")
+    expect(page.get_by_role("button", name="Add user")).to_have_count(0)
+    expect(page.locator("[data-edit-user]")).to_have_count(0)
+    expect(page.locator("#users-list tbody tr").filter(has_text="Maya Chen")).to_contain_text("••••••••")
+    expect(page.locator("#connected-user")).to_have_text("Omar Malik")
+    page.screenshot(path=str(_evidence(tmp_path) / "users-colleague-read-only.png"), full_page=True)
+
+
+def test_first_visit_chooses_a_user_from_users(users_browser, tmp_path):
+    page, state, _base = users_browser
+    state["me"] = {"person_id": None, "name": None, "ip": "203.0.113.9", "is_local": False, "is_host": False, "is_admin": True}
+    page.reload()
+    dialog = page.get_by_role("dialog", name="Welcome to Metronome")
+    expect(dialog).to_contain_text("Choose your name. Flows you create are assigned to you.")
+    select = dialog.get_by_label("I am")
+    expect(select).to_be_focused()
+    expect(select.locator("option")).to_have_text(
+        ["Choose your user…", "Maya Chen (BI)", "Omar Malik (Business)", "Sofia Rivera (BI)"])
+    expect(dialog.get_by_role("button", name="Continue as host PC")).to_have_count(0)
+    page.screenshot(path=str(_evidence(tmp_path) / "sign-in-choose-user.png"), full_page=True)
+    dialog.get_by_role("button", name="Continue", exact=True).click()
+    expect(dialog.locator("#register-error")).to_have_text("Choose your user to continue.")
+    select.select_option(label="Omar Malik (Business)")
+    state["fail_next"] = "REGISTER"
+    dialog.get_by_role("button", name="Continue", exact=True).click()
+    expect(dialog.locator("#register-error")).to_contain_text("already signed in as Omar Malik")
+    expect(select).to_have_value("2")
+    expect(select).to_be_enabled()
+    dialog.get_by_role("button", name="Continue", exact=True).click()
+    expect(dialog).to_have_count(0)
+    expect(page.locator("#connected-user")).to_have_text("Omar Malik")
+    assert state["registered"][-1]["person_id"] == 2 and state["registered"][-1]["client_key"]
+    expect(page.locator("[data-edit-user]")).to_have_count(0)  # Users re-renders for the colleague.
+
+    page.set_viewport_size({"width": 390, "height": 844})
+    state["me"] = {"person_id": None, "name": None, "ip": "203.0.113.10", "is_local": False, "is_host": False, "is_admin": True}
+    state["people"] = []
+    page.reload()
+    expect(dialog).to_contain_text("No users exist yet. Ask the host PC to add you in Users")
+    expect(dialog.get_by_role("combobox")).to_have_count(0)
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), "Sign-in overflows"
+
+
+def test_host_pc_may_continue_without_a_user_and_switch_later(users_browser, tmp_path):
+    page, state, _base = users_browser
+    state["me"] = {"person_id": None, "name": None, "is_local": True, "is_host": True, "is_admin": True}
+    page.evaluate("localStorage.clear()")
+    page.reload()
+    dialog = page.get_by_role("dialog", name="Welcome to Metronome")
+    expect(dialog).to_contain_text("This is the host PC.")
+    dialog.get_by_role("button", name="Continue as host PC").click()
+    expect(dialog).to_have_count(0)
+    expect(page.locator("#connected-user")).to_have_text("Host PC")
+    page.reload()
+    expect(page.get_by_role("heading", name="Users", exact=True)).to_be_visible()
+    expect(dialog).to_have_count(0)  # Remembered for this browser.
+
+    page.locator("#connected-user-switch").click()
+    expect(dialog.get_by_label("I am")).to_be_focused()
+    dialog.get_by_label("I am").select_option(label="Maya Chen (BI)")
+    dialog.get_by_role("button", name="Continue", exact=True).click()
+    expect(page.locator("#connected-user")).to_have_text("Maya ChenHost PC")
+    expect(page.get_by_role("button", name="Add user", exact=True)).to_be_visible()
+    page.screenshot(path=str(_evidence(tmp_path) / "sign-in-host-switched.png"), full_page=True)

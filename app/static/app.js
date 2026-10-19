@@ -10678,6 +10678,9 @@ function _flowSourcePickerHtml(catalog) {
 
 function _flowListHtml(flows, workers, catalog, runs = []) {
     if (!flows.length) return _flowEmptyState(catalog);
+    const ownerFilter = _flowOwnerFilter();
+    const ownerControl = _flowOwnerFilterHtml(flows, ownerFilter);
+    flows = flows.filter(flow => _flowMatchesOwner(flow, ownerFilter));
     const classification = window._flowsState?.classification === "draft" ? "draft" : "production";
     const classified = flows.filter(flow => (flow.classification || "production") === classification);
     const productionCount = flows.filter(flow => (flow.classification || "production") === "production").length;
@@ -10686,12 +10689,18 @@ function _flowListHtml(flows, workers, catalog, runs = []) {
         <button type="button" role="tab" data-flow-classification="production" aria-selected="${classification === "production"}" class="${classification === "production" ? "active" : ""}">Production <span>${productionCount}</span></button>
         <button type="button" role="tab" data-flow-classification="draft" aria-selected="${classification === "draft"}" class="${classification === "draft" ? "active" : ""}">Draft flows <span>${draftCount}</span></button>
     </div>`;
-    if (!classified.length) return `${classificationTabs}<div class="flow-empty"><h2>No ${classification === "draft" ? "draft" : "production"} flows</h2><p>Move a Flow here from its More menu.</p></div>`;
+    const toolbar = `<div class="flow-list-toolbar">${classificationTabs}${ownerControl}</div>`;
+    if (!classified.length) {
+        const kind = classification === "draft" ? "draft" : "production";
+        const person = (window._flowsState?.people || []).find(item => String(item.id) === ownerFilter);
+        const heading = ownerFilter === "unassigned" ? `No unassigned ${kind} flows` : person ? `No ${kind} flows for ${esc(person.name)}` : `No ${kind} flows`;
+        return `${toolbar}<div class="flow-empty"><h2>${heading}</h2><p>${ownerFilter === "all" ? "Move a Flow here from its More menu." : "Choose All users to see every Flow."}</p></div>`;
+    }
     const opened = _flowOpenGroups();
     const rows = classified.map(flow => _flowRowModel(flow, runs, catalog));
     const online = workers.filter(worker => worker.status !== "offline").length;
     const executing = rows.filter(row => row.activeRun);
-    return `${classificationTabs}<section id="flow-execution-pane" class="flow-execution-pane" aria-labelledby="flow-execution-heading" ${executing.length ? "" : "hidden"}>
+    return `${toolbar}<section id="flow-execution-pane" class="flow-execution-pane" aria-labelledby="flow-execution-heading" ${executing.length ? "" : "hidden"}>
             <div class="flow-execution-heading"><h2 id="flow-execution-heading">Flows in execution</h2><span id="flow-execution-count">${executing.length} active</span></div>
             <div id="flow-execution-scroll" class="flow-table-wrap flow-execution-scroll" role="region" aria-label="Flows in execution" tabindex="0">
                 <table class="flow-table flow-execution-table"><thead><tr>${_flowSortColumns().map(([,label]) => `<th scope="col">${label}</th>`).join("")}<th scope="col">Actions</th></tr></thead>
@@ -10709,6 +10718,56 @@ function _flowListHtml(flows, workers, catalog, runs = []) {
             return `<tbody class="flow-group-heading"><tr><th colspan="9" scope="rowgroup"><div class="group-source-heading"><button type="button" class="flow-group-toggle" id="flow-group-${group}" data-group="${group}" aria-expanded="${opened.has(group)}" aria-controls="flow-group-rows-${group}"><span aria-hidden="true">${opened.has(group) ? "▾" : "▸"}</span> ${group} <span class="flow-group-count">${items.length}</span><small class="flow-group-active" ${active ? "" : "hidden"}>${active} active runs</small><small class="flow-group-failed" ${failed ? "" : "hidden"}>${failed} failed</small></button>${window.FlowGroups?.sourceAction(group) || ''}</div></th></tr></tbody>
             <tbody id="flow-group-rows-${group}" ${opened.has(group) ? "" : "hidden"}>${window.FlowGroups ? window.FlowGroups.rowsHtml(group, items) : items.filter(row => !row.activeRun).map(_flowRowHtml).join("")}</tbody>`;
         }).join("")}</table></div>`;
+}
+
+// The host PC (the machine running Metronome) manages Users and every Flow.
+// The server enforces both rules; an unknown identity (previews) shows all controls.
+function _isHostPc() {
+    const me = window._currentUser;
+    return !me || me.is_host !== false;
+}
+
+function _flowCanEdit(flow) {
+    const me = window._currentUser;
+    if (_isHostPc()) return true;
+    return !!flow?.owner_person_id && flow.owner_person_id === me.person_id;
+}
+
+// "all", "unassigned" or a person's id, kept for this browser tab.
+function _flowOwnerFilter() {
+    if (!Object.prototype.hasOwnProperty.call(window, "_flowOwnerFilterMemory")) {
+        let value = "all";
+        try { value = sessionStorage.getItem("metronome.flowOwner") || "all"; } catch (_) {}
+        window._flowOwnerFilterMemory = value;
+    }
+    const value = window._flowOwnerFilterMemory;
+    const people = window._flowsState?.people || [];
+    return value === "unassigned" || people.some(person => String(person.id) === value) ? value : "all";
+}
+
+function _flowMatchesOwner(flow, filter) {
+    if (filter === "all") return true;
+    if (filter === "unassigned") return !flow.owner_person_id;
+    return String(flow.owner_person_id || "") === filter;
+}
+
+function _flowOwnerFilterHtml(flows, filter) {
+    const people = window._flowsState?.people || [];
+    const me = window._currentUser;
+    const count = value => flows.filter(flow => _flowMatchesOwner(flow, value)).length;
+    const option = (value, label) => `<option value="${esc(value)}" data-label="${esc(label)}" ${filter === value ? "selected" : ""}>${esc(label)} (${count(value)})</option>`;
+    return `<label class="flow-owner-filter"><span>User</span><select id="flow-owner-filter" aria-label="Show flows for user">
+        ${option("all", "All users")}${people.map(person => option(String(person.id), person.id === me?.person_id ? `${person.name} (you)` : person.name)).join("")}${option("unassigned", "Unassigned")}
+    </select></label>`;
+}
+
+// After an inline reassignment the row stays put, so the host can keep working
+// down a filtered list; only the per-user counts change.
+function _flowRefreshOwnerFilterCounts() {
+    const flows = window._flowsState?.flows || [];
+    document.querySelectorAll("#flow-owner-filter option").forEach(option => {
+        option.textContent = `${option.dataset.label} (${flows.filter(flow => _flowMatchesOwner(flow, option.value)).length})`;
+    });
 }
 
 function _flowSizeExecutionPane() {
@@ -10814,17 +10873,19 @@ function _flowPythonScriptNames(flow) {
 
 function _flowRowHtml(row) {
     const {flow, activeRun} = row;
+    const editable = _flowCanEdit(flow);
+    const locked = editable ? "" : `disabled title="${esc(flow.owner_name ? `Only ${flow.owner_name} or the host PC can change this Flow` : "Only the host PC can change an unassigned Flow")}"`;
     const button = (cls, label, extra = "") => `<button type="button" class="btn-sm ${cls}" data-id="${flow.id}" data-flow-focus="${cls}-${flow.id}" ${extra}>${label}</button>`;
     return `<tr data-flow-id="${flow.id}" data-flow-group="${row.group}">
         <td class="flow-name-cell"><strong>${esc(flow.name)}</strong>${window._remoteFlowControlStatus?.enabled && flow.enabled ? `<small class="remote-control-code">Remote target: ${esc(window._remoteFlowControlStatus.installation_id)}:${esc(flow.id)}</small>` : ""}<div class="flow-row-progress" ${activeRun ? "" : "hidden"}>${_flowRowProgressHtml(activeRun)}</div></td>
-        <td><label class="flow-switch" title="${flow.schedule_type === "manual" ? "Choose a schedule to activate this flow" : "Activate or pause this flow"}"><input class="flow-enabled-switch" data-flow-focus="active-${flow.id}" type="checkbox" aria-label="Active: ${esc(flow.name)}" data-id="${flow.id}" ${flow.enabled ? "checked" : ""} ${flow.schedule_type === "manual" ? "disabled" : ""}><span aria-hidden="true"></span></label></td>
-        <td><select class="flow-inline-edit" data-id="${flow.id}" data-field="owner_person_id" data-flow-focus="owner-${flow.id}" aria-label="Owner: ${esc(flow.name)}"><option value="">Unassigned</option>${(window._flowsState?.people || []).map(person => `<option value="${person.id}" ${person.id === flow.owner_person_id ? "selected" : ""}>${esc(person.name)}</option>`).join("")}</select></td>
+        <td><label class="flow-switch" title="${flow.schedule_type === "manual" ? "Choose a schedule to activate this flow" : "Activate or pause this flow"}"><input class="flow-enabled-switch" data-flow-focus="active-${flow.id}" type="checkbox" aria-label="Active: ${esc(flow.name)}" data-id="${flow.id}" ${flow.enabled ? "checked" : ""} ${flow.schedule_type === "manual" || !editable ? "disabled" : ""}><span aria-hidden="true"></span></label></td>
+        <td>${_isHostPc() ? `<select class="flow-inline-edit" data-id="${flow.id}" data-field="owner_person_id" data-flow-focus="owner-${flow.id}" aria-label="Owner: ${esc(flow.name)}"><option value="">Unassigned</option>${(window._flowsState?.people || []).map(person => `<option value="${person.id}" ${person.id === flow.owner_person_id ? "selected" : ""}>${esc(person.name)}</option>`).join("")}</select>` : `<span class="flow-owner-name">${flow.owner_name ? esc(flow.owner_name) : '<span class="flow-muted">Unassigned</span>'}</span>`}</td>
         <td class="flow-path-cell">${esc(row.source || "—")}</td>
         <td>${flow.source_type === "python" ? flow.python_run_mode === "run" ? `Runs ${_flowPythonScriptNames(flow).length} script(s)<small>No output file</small>` : `${_flowPythonScriptNames(flow).length} Python script(s)<small>${flow.sql_handoff_enabled ? "Final CSV → SQL" : `Final ${esc(String(flow.file_format || "csv").toUpperCase())} file`}</small>` : flow.source_type === "outlook" ? `CSV or Excel attachment<small>Original filename · default Inbox</small>` : flow.source_type === "file" ? `CSV or Excel file<small>${flow.local_file_worksheet ? `Worksheet: ${esc(flow.local_file_worksheet)} · ` : ""}Private snapshots · latest 3</small>` : `${esc(flow.download_mode === "one_per_period" || flow.download_mode === "one_per_week" ? `One ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} every ${flow.window_weeks || 1} week(s)` : `${flow.export_views?.length || 1} ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} export(s)`)}<small>${flow.period_strategy === "none" ? "No period prompt" : flow.period_strategy === "latest" ? "Start to latest available" : flow.period_strategy === "rolling" ? "Rolling window" : "Fixed start + end"}</small>`}${flow.source_type === "python" && flow.python_run_mode === "run" ? "" : `<small>${flow.output_mode === "direct_replace" ? "Direct files · exact-name replacement" : "Run folders · newest 3"}</small>`}<small>${esc(row.to || "")}${flow.sql_handoff_enabled ? ` · SQL ${esc(flow.sql_mode)}` : ""}${flow.email_delivery?.enabled ? ` · Email ${flow.email_delivery.recipients?.length || 0} recipient(s)` : ""}</small></td>
-        <td>${["outlook", "file", "python"].includes(flow.source_type) ? "—" : `<select class="flow-inline-edit" data-id="${flow.id}" data-field="browser_mode" data-flow-focus="browser-${flow.id}" aria-label="Browser: ${esc(flow.name)}"><option value="headless" ${flow.browser_mode !== "headed" ? "selected" : ""}>Headless</option><option value="headed" ${flow.browser_mode === "headed" ? "selected" : ""}>Headed</option></select>`}</td>
+        <td>${["outlook", "file", "python"].includes(flow.source_type) ? "—" : `<select class="flow-inline-edit" data-id="${flow.id}" data-field="browser_mode" data-flow-focus="browser-${flow.id}" aria-label="Browser: ${esc(flow.name)}" ${locked}><option value="headless" ${flow.browser_mode !== "headed" ? "selected" : ""}>Headless</option><option value="headed" ${flow.browser_mode === "headed" ? "selected" : ""}>Headed</option></select>`}</td>
         <td>${esc(_flowScheduleLabel(flow))}</td>
         <td><div class="flow-last-run">${_flowLastRunHtml(activeRun || { status: flow.last_status, created_at: flow.last_run_at })}</div>${flow.sql_reconciliation_required && flow.sql_mode === "append" ? '<small class="flow-error">SQL reconciliation required</small>' : ""}</td>
-        <td class="flow-row-actions">${button("flow-run", activeRun?.status === "queued" ? "Start now" : activeRun ? "Running" : "Run", activeRun && activeRun.status !== "queued" ? "disabled" : "")}<button class="btn-sm btn-outline btn-danger-outline flow-stop" type="button" data-id="${flow.id}" data-flow-focus="flow-stop-${flow.id}" ${activeRun ? "" : "hidden"}>Stop</button>${button("flow-edit", "Edit")}<details class="flow-row-menu"><summary aria-label="More actions: ${esc(flow.name)}" data-flow-focus="more-${flow.id}">More</summary><div>${button("flow-history", "Run history")}${button("flow-open-folder", "Open folder")}${flow.flow_folder ? button("flow-standalone-status", "Flow files") : ""}${button("flow-classification", (flow.classification || "production") === "draft" ? "Move to Production" : "Move to Draft", `data-classification="${(flow.classification || "production") === "draft" ? "production" : "draft"}"`)}${flow.sql_reconciliation_required && flow.sql_mode === "append" ? button('flow-sql-reconciled', 'Acknowledge SQL reconciliation') : ''}<button class="btn-sm btn-outline btn-danger-outline flow-delete" type="button" data-id="${flow.id}" data-flow-focus="flow-delete-${flow.id}">Delete</button></div></details></td>
+        <td class="flow-row-actions">${button("flow-run", activeRun?.status === "queued" ? "Start now" : activeRun ? "Running" : "Run", activeRun && activeRun.status !== "queued" ? "disabled" : "")}<button class="btn-sm btn-outline btn-danger-outline flow-stop" type="button" data-id="${flow.id}" data-flow-focus="flow-stop-${flow.id}" ${activeRun ? "" : "hidden"}>Stop</button>${button("flow-edit", editable ? "Edit" : "View", editable ? "" : `aria-label="View ${esc(flow.name)} (read only)"`)}<details class="flow-row-menu"><summary aria-label="More actions: ${esc(flow.name)}" data-flow-focus="more-${flow.id}">More</summary><div>${button("flow-history", "Run history")}${button("flow-open-folder", "Open folder")}${flow.flow_folder ? button("flow-standalone-status", "Flow files") : ""}${editable ? button("flow-classification", (flow.classification || "production") === "draft" ? "Move to Production" : "Move to Draft", `data-classification="${(flow.classification || "production") === "draft" ? "production" : "draft"}"`) : ""}${editable && flow.sql_reconciliation_required && flow.sql_mode === "append" ? button('flow-sql-reconciled', 'Acknowledge SQL reconciliation') : ''}${editable ? `<button class="btn-sm btn-outline btn-danger-outline flow-delete" type="button" data-id="${flow.id}" data-flow-focus="flow-delete-${flow.id}">Delete</button>` : ""}</div></details></td>
     </tr>`;
 }
 
@@ -11122,16 +11183,54 @@ function _flowOwnerOptions(people, selectedId) {
 }
 
 function _flowOwnerHelp(owner, assignSqlOwner = true) {
-    if (!owner) return 'Choose a person managed in Users. Without an owner, nobody is emailed when this flow fails and SQL table ownership is unchanged.';
+    if (!owner) return 'Choose a person managed in Users. Without an owner, nobody is emailed when this flow fails, SQL insertion uses the shared Metronome SQL account and SQL table ownership is unchanged.';
     const email = owner.email
         ? `Failure alerts are sent to ${esc(owner.email)} through Outlook on the app host.`
         : `${esc(owner.name)} has no email in Users. Add one so failure alerts can be delivered.`;
-    const sql = !assignSqlOwner
-        ? 'SQL table ownership is unchanged for this Flow.'
-        : owner.sql_username
-        ? `SQL table owner: <code>${esc(owner.sql_username)}</code>. When SQL loading is enabled, the next successful load assigns this role to the target table, including an existing table. The role must exist and the Metronome SQL account must have permission. Already queued runs keep their saved owner.`
-        : 'No SQL username is linked in Users; SQL table ownership will not be changed.';
-    return `${email} ${sql}`;
+    if (!owner.sql_username) return `${email} ${esc(owner.name)} has no SQL username in Users, so this Flow cannot insert into SQL until the host PC adds one, and SQL table ownership will not be changed.`;
+    const login = owner.sql_password_set === false
+        ? `SQL insertion signs in as <code>${esc(owner.sql_username)}</code>, whose password is not saved yet: the host PC must add it in Users before this Flow can insert into SQL.`
+        : `SQL insertion signs in as <code>${esc(owner.sql_username)}</code>, ${esc(owner.name)}'s own SQL user.`;
+    const ownership = assignSqlOwner
+        ? 'With SQL table ownership on, the next successful load also makes this role the owner of an existing target table. Already queued runs keep their saved owner.'
+        : 'SQL table ownership is unchanged for this Flow.';
+    return `${email} ${login} ${ownership}`;
+}
+
+// The host PC picks any owner; everyone else owns the Flows they create.
+function _flowOwnerFieldHtml(existing, people) {
+    const me = window._currentUser;
+    const assign = existing?.sql_assign_owner !== false;
+    if (_isHostPc()) {
+        const selected = existing?.id ? existing.owner_person_id : (existing?.owner_person_id ?? me?.person_id);
+        const owner = people.find(person => person.id === selected);
+        return `<label class="flow-span-2"><span>Flow owner</span><select id="flow-owner">${_flowOwnerOptions(people, selected)}</select><small id="flow-owner-help">${_flowOwnerHelp(owner, assign)}</small></label>`;
+    }
+    const ownerId = existing?.id ? existing.owner_person_id : me?.person_id;
+    const owner = people.find(person => person.id === ownerId);
+    const name = owner ? `${esc(owner.name)}${ownerId === me?.person_id ? " (you)" : ""}` : "Unassigned";
+    const rule = existing?.id ? "Only the host PC can assign this Flow to someone else." : "Flows you create are assigned to you.";
+    return `<div class="flow-span-2 flow-owner-fixed"><span>Flow owner</span><strong id="flow-owner-name">${name}</strong><small id="flow-owner-help">${rule} ${_flowOwnerHelp(owner, assign)}</small></div>`;
+}
+
+// Someone else's Flow opens view-only: every setting is visible, nothing saves.
+function _flowLockBuilder(flow) {
+    const form = document.getElementById("flow-builder-form");
+    if (!form) return;
+    const owner = flow.owner_name;
+    const reason = owner
+        ? `This Flow belongs to ${esc(owner)}. You can view and run it; only ${esc(owner)} or the host PC can change it.`
+        : "This Flow has no owner. Only the host PC can change it or assign it to someone.";
+    form.insertAdjacentHTML("afterbegin", `<div class="flow-readonly-banner" id="flow-readonly-banner" role="note"><strong>View only.</strong> ${reason}</div>`);
+    form.dataset.readonly = "true";
+    form.querySelectorAll("input, select, textarea").forEach(element => { element.disabled = true; });
+    form.querySelectorAll('button[type="submit"]').forEach(button => button.remove());
+    form.querySelectorAll("button").forEach(button => {
+        if (button.id === "flow-builder-cancel" || button.matches(".flow-step-toggle, .flow-step-next")) return;
+        button.disabled = true;
+    });
+    const cancel = form.querySelector("#flow-builder-cancel");
+    if (cancel) cancel.textContent = "Back to Flows";
 }
 
 function _flowOwnerSummary(owner) {
@@ -11333,7 +11432,7 @@ function _flowBindViewRefresh() {
 }
 
 function _flowSqlOwnerHtml(existing) {
-    return `<label class="flow-check flow-span-2 flow-sql-owner-check"><input id="flow-sql-assign-owner" type="checkbox" ${existing?.sql_assign_owner === false ? "" : "checked"}><span class="flow-sql-owner-copy"><span>Set SQL table owner from Flow owner</span><small>Turn off for a database without the owner's SQL role. The Flow owner still receives failure alerts. Existing tables keep their owner; a new table belongs to the upload account.</small></span></label>`;
+    return `<label class="flow-check flow-span-2 flow-sql-owner-check"><input id="flow-sql-assign-owner" type="checkbox" ${existing?.sql_assign_owner === false ? "" : "checked"}><span class="flow-sql-owner-copy"><span>Set SQL table owner from Flow owner</span><small>SQL insertion always signs in as the Flow owner's SQL user, so a new table belongs to them. This also hands an existing target table to that role. Turn off to leave existing tables with their current owner.</small></span></label>`;
 }
 
 function _flowSqlLinkHtml(existing) {
@@ -11474,7 +11573,6 @@ function _flowOutlookBuilderHtml(existing = null) {
     const selectedSchema = existing?.sql_schema || sqlSchemas[0] || "";
     const sqlTables = targets.filter(item => item.database === selectedDatabase && item.schema === selectedSchema).map(item => item.table);
     const people = window._flowsState?.people || [];
-    const owner = people.find(person => person.id === existing?.owner_person_id);
     return `
         <div class="flow-builder-shell"><div class="flow-builder-main">
             <form id="flow-builder-form" data-id="${existing?.id || ""}" data-source-type="${isFile ? "file" : "outlook"}">
@@ -11507,7 +11605,7 @@ function _flowOutlookBuilderHtml(existing = null) {
                 </div>
                 <div class="flow-form-section">
                     <div class="flow-section-head"><h2>Ownership and failure alerts</h2></div>
-                    <div class="flow-form-grid"><label class="flow-span-2"><span>Flow owner</span><select id="flow-owner">${_flowOwnerOptions(people, existing?.owner_person_id)}</select><small id="flow-owner-help">${_flowOwnerHelp(owner, existing?.sql_assign_owner !== false)}</small></label></div>
+                    <div class="flow-form-grid">${_flowOwnerFieldHtml(existing, people)}</div>
                 </div>
                 <div class="flow-form-section">
                     <div class="flow-section-head"><h2>Schedule and SQL handoff</h2></div>
@@ -11562,7 +11660,6 @@ function _flowPythonBuilderHtml(existing = null) {
     const selectedSchema = existing?.sql_schema || sqlSchemas[0] || "";
     const sqlTables = targets.filter(item => item.database === selectedDatabase && item.schema === selectedSchema).map(item => item.table);
     const people = window._flowsState?.people || [];
-    const owner = people.find(person => person.id === existing?.owner_person_id);
     const scripts = Array.isArray(existing?.python_scripts) && existing.python_scripts.length ? existing.python_scripts : [""];
     const scriptArguments = Array.isArray(existing?.python_script_arguments) ? existing.python_script_arguments : [];
     const scriptValues = Array.isArray(existing?.python_script_values) ? existing.python_script_values : [];
@@ -11629,7 +11726,7 @@ function _flowPythonBuilderHtml(existing = null) {
                 </div>
                 <div class="flow-form-section">
                     <div class="flow-section-head"><h2>Ownership and failure alerts</h2></div>
-                    <div class="flow-form-grid"><label class="flow-span-2"><span>Flow owner</span><select id="flow-owner">${_flowOwnerOptions(people, existing?.owner_person_id)}</select><small id="flow-owner-help">${_flowOwnerHelp(owner, existing?.sql_assign_owner !== false)}</small></label></div>
+                    <div class="flow-form-grid">${_flowOwnerFieldHtml(existing, people)}</div>
                 </div>
                 <div class="flow-form-section">
                     <div class="flow-section-head"><h2>Schedule</h2></div>
@@ -11708,7 +11805,6 @@ function _flowBuilderHtml(catalog, existing = null) {
     // changeable setting rather than a hardcoded behavior.
     const excelTrim = existing?.excel_trim || (isGscm ? "first_row_and_column" : "none");
     const people = window._flowsState?.people || [];
-    const owner = people.find(person => person.id === existing?.owner_person_id);
     const exportViewCount = _flowExportViewLabels(report).length;
     const downloadLinkCount = _flowDownloadLinkLabels(report).length;
     const isDashboard = downloadLinkCount > 0 && exportViewCount === 0;
@@ -11788,7 +11884,7 @@ function _flowBuilderHtml(catalog, existing = null) {
                     <div class="flow-form-section">
                         <div class="flow-section-head"><h2>Ownership and failure alerts</h2></div>
                         <div class="flow-form-grid">
-                            <label class="flow-span-2"><span>Flow owner</span><select id="flow-owner">${_flowOwnerOptions(people, existing?.owner_person_id)}</select><small id="flow-owner-help">${_flowOwnerHelp(owner, existing?.sql_assign_owner !== false)}</small></label>
+                            ${_flowOwnerFieldHtml(existing, people)}
                         </div>
                     </div>
                     <div class="flow-form-section">
@@ -11996,6 +12092,7 @@ async function _flowLoadRuns(append = false) {
 
 async function renderFlows() {
     const requestId = navigationRequestId;
+    await (window._currentUserReady || Promise.resolve());
     const [catalog, flows, runs, workers, scans, estimates, sqlCatalog, people, remoteControl, groups] = await Promise.all([
         api("/api/flows/catalog"), api("/api/flows"), api("/api/flows/runs"), api("/api/flows/workers"),
         api("/api/flows/scans"), api("/api/flows/estimates"), api("/api/flows/sql/catalog"), api("/api/people"),
@@ -12052,6 +12149,7 @@ function _flowShowView(view, payload = null) {
     else if (view === "builder") workspace.innerHTML = _flowBuilderHtml(state.catalog, payload);
     else workspace.innerHTML = _flowListHtml(state.flows, state.workers, state.catalog, state.activity?.active_runs || state.runs);
     _bindFlowWorkspace();
+    if (view === "builder" && payload?.id && !_flowCanEdit(payload)) _flowLockBuilder(payload);
     if (view === "list") {
         const next = focusId ? document.getElementById(focusId) : focusKey ? [...workspace.querySelectorAll("[data-flow-focus]")].find(item => item.dataset.flowFocus === focusKey) : null;
         if (next) { const menu = next.closest("details"); if (menu) menu.open = true; next.focus(); }
@@ -12622,7 +12720,7 @@ function _flowStepSummary(form, key) {
     if (key === "download") return [label("flow-file-format"), label("flow-period-strategy")].filter(Boolean).join(" · ");
     if (key === "destination") return form.dataset.sourceType === "file" ? "Private snapshots · source unchanged" : label("flow-output-mode") || "Managed Downloads folder";
     if (key === "after") { const refresh = control("flow-sql-enabled")?.checked ? _flowViewRefreshRead() : null; return `${control("flow-transform-enabled")?.checked ? "Transform enabled" : "No transformation"} · ${control("flow-sql-enabled")?.checked ? [value("flow-sql-database"), value("flow-sql-schema"), value("flow-sql-table")].filter(Boolean).join(".") : "No SQL handoff"}${refresh && refresh.mode !== "off" ? ` · refresh views: ${refresh.mode === "manual" ? `${refresh.views.length} chosen` : "automatic"}` : ""}${control("flow-email-enabled")?.checked ? ` · email: ${_flowEmailRecipients(value("flow-email-recipients")).length} recipient(s)` : ""}`; }
-    return [label("flow-schedule-type"), value("flow-schedule-type") !== "manual" ? value("flow-schedule-time") : "", label("flow-owner")].filter(Boolean).join(" · ");
+    return [label("flow-schedule-type"), value("flow-schedule-type") !== "manual" ? value("flow-schedule-time") : "", label("flow-owner") || control("flow-owner-name")?.textContent].filter(Boolean).join(" · ");
 }
 
 function _flowRevealStep(form, target) {
@@ -12661,7 +12759,7 @@ function _flowBuildSteps(form) {
     form.dataset.stepsReady = "1";
     const section = id => form.querySelector(`#${id}`)?.closest(".flow-form-section");
     const python = form.dataset.sourceType === "python";
-    const source = section("flow-name"), transform = section("flow-transform-enabled"), schedule = section("flow-schedule-type"), owner = section("flow-owner");
+    const source = section("flow-name"), transform = section("flow-transform-enabled"), schedule = section("flow-schedule-type"), owner = section("flow-owner-help");
     const download = python ? null : section("flow-file-format");
     const recorded = form.querySelector('#flow-execution-method')?.value === 'recorded';
     const sourceGrid = source?.querySelector('.flow-form-grid');
@@ -12883,6 +12981,8 @@ function _bindFlowWorkspace() {
                 const person = (state.people || []).find(item => item.id === value);
                 flow.owner_name = person?.name || null;
                 flow.owner_email = person?.email || null;
+                flow.owner_sql_username = person?.sql_username || null;
+                window._flowOwnerCountsChanged?.();
             }
         } catch (err) {
             select.value = String(previous);
@@ -12896,6 +12996,14 @@ function _bindFlowWorkspace() {
         try { sessionStorage.setItem("metronome.flowSort", JSON.stringify(window._flowSortMemory)); } catch (_) {}
         _flowShowView("list");
     }));
+    const ownerFilter = document.getElementById("flow-owner-filter");
+    if (ownerFilter) ownerFilter.onchange = () => {
+        window._flowOwnerFilterMemory = ownerFilter.value;
+        try { sessionStorage.setItem("metronome.flowOwner", ownerFilter.value); } catch (_) {}
+        _flowShowView("list");
+        document.getElementById("flow-owner-filter")?.focus();
+    };
+    window._flowOwnerCountsChanged = _flowRefreshOwnerFilterCounts;
     document.querySelectorAll(".flow-group-toggle").forEach(button => button.addEventListener("click", () => {
         const opened = _flowOpenGroups();
         if (opened.has(button.dataset.group)) opened.delete(button.dataset.group); else opened.add(button.dataset.group);
@@ -15323,8 +15431,14 @@ function _showConnectedUser(user) {
     const el = document.getElementById("connected-user");
     if (!el) return;
     const title = [user.hostname, user.ip].filter(Boolean).join(" - ");
-    el.title = title ? `Connected from ${title}` : "";
-    el.innerHTML = `<span class="user-name">${esc(user.name)}</span>`;
+    const name = user.name || (user.is_host ? "Host PC" : "");
+    el.title = user.is_host
+        ? "This is the host PC: it manages Users and can change every Flow. Click to switch user."
+        : (title ? `Connected from ${title}` : "");
+    el.innerHTML = user.is_host
+        ? `<button type="button" class="connected-user-switch" id="connected-user-switch"><span class="user-name">${esc(name)}</span>${user.name ? '<span class="user-local">Host PC</span>' : ""}</button>`
+        : `<span class="user-name">${esc(name)}</span>`;
+    document.getElementById("connected-user-switch")?.addEventListener("click", () => _showRegistrationModal(user));
 }
 
 function _applyAccessUi(user) {
@@ -15339,53 +15453,99 @@ function _applyAccessUi(user) {
     }
 }
 
-function _showRegistrationModal(ip) {
+const _HOST_WITHOUT_USER_KEY = "metronome.hostWithoutUser";
+
+function _hostChoseNoUser() {
+    try { return localStorage.getItem(_HOST_WITHOUT_USER_KEY) === "1"; } catch (_) { return false; }
+}
+
+// Everyone picks who they are from Users; the choice binds this browser and IP.
+// Only the host PC may skip the choice or switch later.
+async function _showRegistrationModal(me) {
+    if (document.querySelector(".register-overlay")) return;
     const overlay = document.createElement("div");
     overlay.className = "register-overlay";
-    overlay.innerHTML = `
-        <div class="register-modal">
-            <h2>Welcome to Metronome</h2>
-            <p>Enter your name to get started. This will be remembered for this browser and IP address (${esc(ip)}) so the system knows who you are.</p>
-            <input type="text" id="register-name" placeholder="Your name" autocomplete="off" autofocus>
-            <button id="register-submit">Continue</button>
-        </div>
-    `;
+    overlay.innerHTML = `<div class="register-modal" role="dialog" aria-modal="true" aria-labelledby="register-title" aria-describedby="register-help">
+            <h2 id="register-title">Welcome to Metronome</h2>
+            <p id="register-help">Loading users…</p>
+            <div id="register-body"></div>
+        </div>`;
     document.body.appendChild(overlay);
+    const help = overlay.querySelector("#register-help");
+    const body = overlay.querySelector("#register-body");
+    let people = [];
+    try {
+        people = await api("/api/people");
+    } catch (error) {
+        help.textContent = `Could not load users. ${error.message}`;
+        body.innerHTML = '<button type="button" id="register-retry">Try again</button>';
+        body.querySelector("#register-retry").onclick = () => { overlay.remove(); _showRegistrationModal(me); };
+        body.querySelector("#register-retry").focus();
+        return;
+    }
+    const skip = me.is_host
+        ? `<button type="button" class="register-secondary" id="register-skip">${me.name ? "Keep current user" : "Continue as host PC"}</button>`
+        : "";
+    if (!people.length) {
+        help.textContent = me.is_host
+            ? "No users exist yet. Continue as the host PC, then add your team in Users."
+            : "No users exist yet. Ask the host PC to add you in Users, then reload this page.";
+        body.innerHTML = skip;
+    } else {
+        help.textContent = me.is_host
+            ? "This is the host PC. Choose who is using it, or continue as the host PC. The host PC can change every Flow either way."
+            : "Choose your name. Flows you create are assigned to you. This computer stays signed in as you; only the host PC can change that.";
+        body.innerHTML = `<label class="register-label" for="register-person">I am</label>
+            <select id="register-person"><option value="">Choose your user…</option>${people.map(person =>
+                `<option value="${person.id}" ${person.id === me.person_id ? "selected" : ""}>${esc(person.name)} (${esc(person.role)})</option>`).join("")}</select>
+            <p class="register-error" id="register-error" role="alert"></p>
+            <button type="button" id="register-submit">Continue</button>${skip}`;
+    }
+    const select = body.querySelector("#register-person");
+    const btn = body.querySelector("#register-submit");
+    const error = body.querySelector("#register-error");
+    const finish = user => {
+        window._currentUser = user;
+        _showConnectedUser(user);
+        _applyAccessUi(user);
+        overlay.remove();
+        if (["flows", "users"].includes(currentPage)) navigate(currentPage);
+    };
+    body.querySelector("#register-skip")?.addEventListener("click", () => {
+        if (!me.person_id) try { localStorage.setItem(_HOST_WITHOUT_USER_KEY, "1"); } catch (_) {}
+        finish(me);
+    });
+    if (!select) { body.querySelector("button")?.focus(); return; }
 
-    const input = document.getElementById("register-name");
-    const btn = document.getElementById("register-submit");
-
-    function doRegister() {
-        const name = input.value.trim();
-        if (!name) { input.focus(); return; }
+    async function doRegister() {
+        const personId = Number(select.value);
+        if (!personId) { error.textContent = "Choose your user to continue."; select.focus(); return; }
+        error.textContent = "";
         btn.disabled = true;
-        btn.textContent = "Saving...";
-        fetch("/api/register", {
-            method: "POST",
-            headers: apiHeaders({ "Content-Type": "application/json" }),
-            body: JSON.stringify({ name, client_key: _getClientKey() }),
-        })
-        .then(async r => {
-            const payload = await r.json().catch(() => ({}));
-            if (!r.ok) throw new Error(payload.detail || `API error: ${r.status}`);
-            return payload;
-        })
-        .then(me => {
-            window._currentUser = me;
-            _showConnectedUser(me);
-            _applyAccessUi(me);
-            overlay.remove();
-        })
-        .catch((err) => {
+        select.disabled = true;
+        btn.textContent = "Signing in…";
+        try {
+            const response = await fetch("/api/register", {
+                method: "POST",
+                headers: apiHeaders({ "Content-Type": "application/json" }),
+                body: JSON.stringify({ person_id: personId, client_key: _getClientKey() }),
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(payload.detail || `API error: ${response.status}`);
+            try { localStorage.removeItem(_HOST_WITHOUT_USER_KEY); } catch (_) {}
+            finish(payload);
+        } catch (err) {
             btn.disabled = false;
+            select.disabled = false;
             btn.textContent = "Continue";
-            toast("Registration failed: " + err.message);
-        });
+            error.textContent = `Could not sign in. ${err.message}`;
+            select.focus();
+        }
     }
 
     btn.addEventListener("click", doRegister);
-    input.addEventListener("keydown", e => { if (e.key === "Enter") doRegister(); });
-    setTimeout(() => input.focus(), 50);
+    select.addEventListener("keydown", e => { if (e.key === "Enter") doRegister(); });
+    setTimeout(() => select.focus(), 50);
 }
 
 function updateThemeIcon() {
@@ -15452,15 +15612,12 @@ document.addEventListener("DOMContentLoaded", () => {
         if (pages[page] && page !== currentPage) navigate(page);
     });
 
-    // ── Identity check: fetch /api/me, show registration if needed ──
+    // ── Identity check: fetch /api/me, ask who this is if needed ──
     window._currentUser = null;
-    fetch("/api/me", { headers: apiHeaders() }).then(r => r.json()).then(me => {
-        if (me.name) {
-            window._currentUser = me;
-            _showConnectedUser(me);
-        } else {
-            _showRegistrationModal(me.ip);
-        }
+    window._currentUserReady = fetch("/api/me", { headers: apiHeaders() }).then(r => r.json()).then(me => {
+        window._currentUser = me;
+        if (me.person_id || (me.is_host && _hostChoseNoUser())) _showConnectedUser(me);
+        else _showRegistrationModal(me);
         _applyAccessUi(me);
     }).catch(() => {});
 

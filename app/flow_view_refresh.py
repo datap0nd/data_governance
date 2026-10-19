@@ -361,6 +361,8 @@ def execute_after_sql(job: dict, progress, artifacts, timings, state, *, checkpo
     views = plan_views(job)
     if not views:
         return None
+    # The refresh belongs to the Flow, so it runs as the same SQL user as its load.
+    engine_factory = engine_factory or flow_sql.engine_factory_for(job.get('sql_handoff') or {})
     retry = job.get('job_type') == RETRY_JOB_TYPE
     completed = list((job.get('view_retry') or {}).get('completed') or []) if retry else []
     if checkpoint is not None:
@@ -393,7 +395,7 @@ def precheck_before_sql(job: dict, progress, artifacts, timings, *, engine_facto
         return
     progress('running', {'stage': 'view_refresh_precheck',
                          'message': f'Checking {len(views)} materialized view(s) before SQL insertion.'}, artifacts, timings)
-    verify_views(views, engine_factory=engine_factory)
+    verify_views(views, engine_factory=engine_factory or flow_sql.engine_factory_for(job.get('sql_handoff') or {}))
 
 
 def checkpoint_path(job: dict) -> Path | None:
