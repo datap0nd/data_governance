@@ -158,3 +158,34 @@ def test_people_change_only_their_own_sql_password(settings_file):
     assert other.post("/api/register", json={"person_id": sofia["id"]}).status_code == 200
     missing = other.put(f"/api/people/{sofia['id']}/sql-password", json={"password": "secret"})
     assert missing.status_code == 409 and "SQL username" in missing.json()["detail"]
+
+
+def test_concurrent_password_saves_never_lose_one(settings_file, monkeypatch):
+    import threading
+    import time
+
+    from app import env_file, sql_passwords
+
+    client = host()
+    people = [person(client, name=f"Person {index}", sql_username=f"sql_{index}") for index in range(6)]
+    write_value = env_file.write_value
+    active, overlaps = [0], []
+
+    def slow_write(path, name, value):
+        # Widen the read-then-rewrite window so interleaved writers would lose data.
+        active[0] += 1
+        overlaps.append(active[0])
+        time.sleep(0.02)
+        write_value(path, name, value)
+        active[0] -= 1
+    monkeypatch.setattr(env_file, "write_value", slow_write)
+    threads = [threading.Thread(target=sql_passwords.store, args=(item["id"], f"secret {item['id']}"))
+               for item in people]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert max(overlaps) == 1
+    saved = contents(settings_file)
+    for item in people:
+        assert f'{SETTING.format(item["id"])}="secret {item["id"]}"' in saved
