@@ -1239,6 +1239,46 @@ def test_invalid_rendered_arguments_fail_the_step_with_a_record(tmp_path):
     assert not any(detail["stage"] in ("python_step", "python_complete") for detail in events)
 
 
+def test_worker_claim_requires_the_email_dir_capability_only_when_the_email_step_is_on(flow_db, tmp_path):
+    scripts = _write_scripts(tmp_path / "scripts")
+    plain = flows.create_flow(_python_flow(scripts, name="No email"), _request())
+    emailed = flows.create_flow(_python_flow(
+        scripts, name="Emailed", email_delivery={"enabled": True, "recipients": ["a@example.test"], "subject": None},
+    ), _request())
+    with database.get_db() as db:
+        for saved in (emailed, plain):
+            job = flows._build_job(db, saved["id"])
+            db.execute(
+                """INSERT INTO flow_runs(flow_id, trigger_type, status, job_json, created_at)
+                   VALUES (?, 'scheduled', 'queued', ?, ?)""",
+                (saved["id"], json.dumps(job), flows._iso(flows._now())),
+            )
+        plain_job = flows._build_job(db, plain["id"])
+        emailed_job = flows._build_job(db, emailed["id"])
+    assert flow_python.requires_email_dir_capability(plain_job) is False
+    assert flow_python.requires_email_dir_capability(emailed_job) is True
+    assert flow_python.requires_email_dir_capability(
+        {**emailed_job, "python_source": {**emailed_job["python_source"], "mode": "run"}}) is False
+
+    # A worker from the previous release never names the email folder: it may
+    # take the Flow without email, never the one whose script may write the body.
+    flows.register_worker(flows.WorkerRegister(
+        worker_id="before-email", display_name="Before email",
+        capabilities={"adapters": ["web_export", "python_script"], "headed": False, "shared_flow_artifacts": True},
+    ))
+    first = flows.claim_run("before-email")["run"]
+    assert first["flow_id"] == plain["id"]
+    flows.update_run("before-email", first["id"], flows.WorkerProgress(status="cancelled", progress={"stage": "cancelled"}))
+    assert flows.claim_run("before-email")["run"] is None
+
+    flows.register_worker(flows.WorkerRegister(
+        worker_id="current-email", display_name="Current worker",
+        capabilities={"adapters": ["web_export", "python_script"], flow_python.EMAIL_DIR_CAPABILITY: True,
+                      "headed": False, "shared_flow_artifacts": True},
+    ))
+    assert flows.claim_run("current-email")["run"]["flow_id"] == emailed["id"]
+
+
 def test_worker_claim_requires_the_arguments_capability_only_when_arguments_or_values_are_used(flow_db, tmp_path):
     scripts = _write_scripts(tmp_path / "scripts")
     plain = flows.create_flow(_python_flow(scripts, name="Plain chain"), _request())

@@ -34,6 +34,10 @@ RUN_CAPABILITY = "python_script_run_v1"
 # would: on Windows in the signed-in desktop session with the account's
 # standard rights, never inside the session-0 worker service.
 DESKTOP_CAPABILITY = "python_script_desktop_v1"
+# Workers advertise this once they name METRONOME_FLOW_EMAIL_DIR; a job whose
+# Email step is on is never claimed by an older worker, whose scripts would
+# not find the variable.
+EMAIL_DIR_CAPABILITY = "python_script_email_dir_v1"
 # Per-script arguments are one line typed by the owner; values are one short
 # line each and the same script runs once per value.
 MAX_ARGUMENT_CHARS = 2000
@@ -814,6 +818,15 @@ def run_scripts_only(scripts: list[Path], *, environment: dict, flow_name: str,
         if step_result is not None:
             step_result(record)
     return records
+
+
+def requires_email_dir_capability(job: dict) -> bool:
+    """True for a file-producing Python job whose Email step is on: its last
+    script row is promised METRONOME_FLOW_EMAIL_DIR."""
+    source = (job or {}).get("python_source") or {}
+    return bool(source.get("enabled")) and source.get("mode") != "run" and bool(
+        ((job or {}).get("email_delivery") or {}).get("enabled")
+    )
 
 
 def requires_arguments_capability(section: dict) -> bool:

@@ -15,6 +15,7 @@ from pydantic import ValidationError
 
 import app.database as database
 from app import flow_email_delivery as delivery
+from app import flow_python
 from app import flow_handover, flow_recordings, flow_standalone
 from app.routers import email as email_router
 from app.routers import flows
@@ -386,7 +387,8 @@ def test_python_source_label_names_the_scripts_in_order(flow_db, monkeypatch, tm
     flows.register_worker(flows.WorkerRegister(
         worker_id="py-worker", display_name="Python worker",
         # The current worker also honours per-script arguments and values.
-        capabilities={"adapters": ["python_script"], "python_script_arguments_v1": True, "shared_flow_artifacts": True},
+        capabilities={"adapters": ["python_script"], "python_script_arguments_v1": True, "shared_flow_artifacts": True,
+                      flow_python.EMAIL_DIR_CAPABILITY: True},
     ))
     assert flows.claim_run("py-worker")["run"]["id"] == queued["id"]
     bundle = [
@@ -416,7 +418,8 @@ def _python_run_with_folder(monkeypatch, tmp_path, *, worker="body-worker"):
     queued = flows.queue_run(saved["id"], _request())
     flows.register_worker(flows.WorkerRegister(
         worker_id=worker, display_name="Brief worker",
-        capabilities={"adapters": ["python_script"], "shared_flow_artifacts": True},
+        capabilities={"adapters": ["python_script"], "shared_flow_artifacts": True,
+                      flow_python.EMAIL_DIR_CAPABILITY: True},
     ))
     assert flows.claim_run(worker)["run"]["id"] == queued["id"]
     folder = tmp_path / "Downloads" / f"#{queued['id']}"

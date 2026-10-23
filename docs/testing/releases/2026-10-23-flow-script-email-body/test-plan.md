@@ -1,7 +1,8 @@
 # 2026-10-23: Python Flows write their own email body: test plan
 
 - Change/PR: link in the PR's testing section. A Python-script Flow with the
-  Email step on gives its last script row `METRONOME_FLOW_EMAIL_DIR`; when the
+  Email step on gives its last script row `METRONOME_FLOW_EMAIL_DIR` (only
+  workers advertising `python_script_email_dir_v1` claim such a job); when the
   script writes `body.html` and its `cid:` images there, the Email step sends
   that body with the images inline and the final file attached, plus one
   Metronome footer line. A body that breaks a rule falls back to the standard
@@ -28,6 +29,7 @@ captured by the existing `outlook` fixture in `tests/test_flow_email_delivery.py
 | E-05 | Same, but the body references a missing image | Standard "Flow file" message with the file; email detail and event explain the fallback | `test_unusable_script_body_falls_back_to_the_standard_message` |
 | E-06 | `script_body` with a portal source, no run folder, `cid:../secret.png`, `cid:chart.svg`, an empty body, a symlinked image, non-UTF-8 bytes, an oversized body, oversized images and too many images | `None` for the first two; a `ScriptBodyError` naming the rule for each of the others | `test_script_body_rules` |
 | E-07 | `_with_footer` with and without `</body>` | Footer before the closing tag (any case), else appended | `test_script_footer_goes_before_the_closing_body_tag` |
+| E-08 | Queued runs of a Python Flow with the Email step on and one without; a worker without `python_script_email_dir_v1`, then one with it | The older worker takes only the Flow without email; the current worker takes the emailed one; run-only jobs never need the capability | `test_worker_claim_requires_the_email_dir_capability_only_when_the_email_step_is_on` |
 | R-01 | Existing email delivery, Python worker, portable and standalone script tests, and the worker-never-deletes invariants (`test_worker_source_contains_no_delete_or_overwrite_operation`, `test_retention_module_is_the_only_deletion_site_and_gates_every_path`) | Unchanged behavior | Affected suites below |
 
 ## Automated checks
@@ -35,11 +37,14 @@ captured by the existing `outlook` fixture in `tests/test_flow_email_delivery.py
 ```bash
 python tools/check.py verify --test tests/test_flow_email_delivery.py --test tests/test_flow_python.py \
   --syntax app/flow_email_delivery.py --syntax app/flow_python.py --syntax app/flow_worker.py
-python tools/check.py verify --test tests/test_flow_portable_script.py --test tests/test_flow_handover.py \
-  --test tests/test_flow_standalone.py
-python tools/check.py verify \
+python tools/check.py verify --test tests/test_flow_email_delivery.py --test tests/test_flow_python.py \
+  --test tests/test_flow_desktop_session.py \
   --test tests/test_flows.py::test_worker_source_contains_no_delete_or_overwrite_operation \
-  --test tests/test_flows.py::test_retention_module_is_the_only_deletion_site_and_gates_every_path
+  --test tests/test_flows.py::test_retention_module_is_the_only_deletion_site_and_gates_every_path \
+  --syntax app/flow_email_delivery.py --syntax app/flow_python.py --syntax app/flow_worker.py \
+  --syntax app/routers/flows.py
+python tools/check.py verify --test tests/test_flow_run_mode.py --test tests/test_flow_portable_script.py \
+  --test tests/test_flow_handover.py --test tests/test_flow_standalone.py
 ```
 
 Final-head CI (`Merge ready`) is the full regression.

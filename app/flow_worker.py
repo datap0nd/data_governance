@@ -8438,6 +8438,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
         registration['capabilities'][flow_python.ARGUMENTS_CAPABILITY] = True
         registration['capabilities'][flow_python.RUN_CAPABILITY] = True
         registration['capabilities'][flow_python.DESKTOP_CAPABILITY] = True
+        registration['capabilities'][flow_python.EMAIL_DIR_CAPABILITY] = True
         registration['capabilities']['flow_recorder_v1'] = headed
         registration['capabilities']['flow_recorder_controls_v1'] = headed
         # Metronome can take several minutes to boot after an update (service
