@@ -7205,31 +7205,47 @@ def execute_python_job(
             attempt += 1
         reserved.add(str(candidate).casefold())
         finals.append(candidate)
-    with timings.measure("python_scripts", report_id=job.get("report", {}).get("id")):
-        steps = flow_python.run_scripts(
-            scripts, finals, steps_folder,
-            environment=os.environ.copy(),
-            flow_name=job["flow"]["name"], run_id=run_id,
-            output_format=output_format, arguments=arguments, values=values,
-            # The same calendar date the filename template renders.
-            date=job.get('_runtime_task_date') or dubai_today().isoformat(),
-            timeout_seconds=timeout_seconds,
-            progress=lambda record: (
-                live_observer.start_step(record) if live_observer is not None else None,
-                report_progress("running", {
-                "stage": "python_step",
-                "message": f"Running script {record['index']} of {record['steps']}: {_python_step_label(record)}.",
-                "step": record["index"], "steps": record["steps"], "row": record["row"],
-                "script": record["script_name"], "checksum": record["script_checksum"],
-                "arguments": list(record["arguments"]), "arguments_text": record["arguments_text"],
-                "value": record["value"],
-            })),
-            step_result=lambda record: report_progress("running", _python_step_event(record)),
-            observer_factory=script_observer_factory,
-            on_line=(live_observer.line if live_observer is not None else None),
-            on_tick=(live_observer.tick if live_observer is not None else None),
-            stop_requested=(live_observer.stop_requested if live_observer is not None else None),
-        )
+    # With the Email step on, the last script row may write the email body
+    # itself (docs/python_script_flows.md); an unused folder is removed.
+    email_dir = None
+    if (job.get("email_delivery") or {}).get("enabled"):
+        email_dir = run_folder / flow_python.EMAIL_DIR_NAME
+        email_dir.mkdir(exist_ok=True)
+        if email_dir.is_symlink() or not email_dir.is_dir():
+            raise RuntimeError(f"Python email folder is not a regular directory: {email_dir}")
+    try:
+        with timings.measure("python_scripts", report_id=job.get("report", {}).get("id")):
+            steps = flow_python.run_scripts(
+                scripts, finals, steps_folder,
+                environment=os.environ.copy(),
+                flow_name=job["flow"]["name"], run_id=run_id,
+                output_format=output_format, arguments=arguments, values=values,
+                # The same calendar date the filename template renders.
+                date=job.get('_runtime_task_date') or dubai_today().isoformat(),
+                timeout_seconds=timeout_seconds,
+                progress=lambda record: (
+                    live_observer.start_step(record) if live_observer is not None else None,
+                    report_progress("running", {
+                    "stage": "python_step",
+                    "message": f"Running script {record['index']} of {record['steps']}: {_python_step_label(record)}.",
+                    "step": record["index"], "steps": record["steps"], "row": record["row"],
+                    "script": record["script_name"], "checksum": record["script_checksum"],
+                    "arguments": list(record["arguments"]), "arguments_text": record["arguments_text"],
+                    "value": record["value"],
+                })),
+                step_result=lambda record: report_progress("running", _python_step_event(record)),
+                observer_factory=script_observer_factory,
+                on_line=(live_observer.line if live_observer is not None else None),
+                on_tick=(live_observer.tick if live_observer is not None else None),
+                stop_requested=(live_observer.stop_requested if live_observer is not None else None),
+                email_dir=email_dir,
+            )
+    finally:
+        if email_dir is not None:
+            try:
+                email_dir.rmdir()  # only when the scripts left it empty
+            except OSError:
+                pass
     artifacts: list[dict] = []
     with timings.measure("file_normalization", report_id=job.get("report", {}).get("id")):
         for position, final in enumerate(finals, start=1):

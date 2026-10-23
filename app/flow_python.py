@@ -42,6 +42,13 @@ MAX_VALUE_CHARS = 500
 # Tail of a script's stdout/stderr kept in the failure message and step record.
 OUTPUT_TAIL_CHARS = 4000
 
+# A run whose Email step is on gives the last script row this folder (inside
+# the run folder) for an email body of its own: body.html plus the images it
+# references as cid:<file name>. The Email step checks and uses it
+# (app.flow_email_delivery.script_body); an empty folder is removed.
+EMAIL_DIR_NAME = "email"
+EMAIL_BODY_NAME = "body.html"
+
 ARGUMENT_TOKEN_RE = re.compile(r"\{(flow|run_id|date|value)\}")
 VALUE_TOKEN = "{value}"
 
@@ -380,10 +387,11 @@ def script_command(script: Path, input_path: Path | None, output_path: Path, arg
 
 
 def step_environment(base: dict, *, input_path, output_path, results_dir, step, steps,
-                     output_format, flow_name, run_id, inputs=None, value=None) -> dict:
+                     output_format, flow_name, run_id, inputs=None, value=None, email_dir=None) -> dict:
     environment = dict(base)
     environment.pop("METRONOME_FLOW_INPUT", None)
     environment.pop("METRONOME_FLOW_INPUTS", None)
+    environment.pop("METRONOME_FLOW_EMAIL_DIR", None)
     environment.update({
         "METRONOME_FLOW_OUTPUT": str(output_path),
         "METRONOME_FLOW_RESULTS_DIR": str(results_dir),
@@ -399,6 +407,8 @@ def step_environment(base: dict, *, input_path, output_path, results_dir, step, 
         environment["METRONOME_FLOW_INPUT"] = str(input_path)
     if inputs:
         environment["METRONOME_FLOW_INPUTS"] = os.pathsep.join(str(item) for item in inputs)
+    if email_dir is not None:
+        environment["METRONOME_FLOW_EMAIL_DIR"] = str(email_dir)
     return environment
 
 
@@ -576,7 +586,7 @@ def run_scripts(scripts: list[Path], final_outputs, steps_folder: Path, *, envir
                 flow_name: str, run_id: int, output_format: str, arguments=None, values=None,
                 date: str | None = None, timeout_seconds: int = SCRIPT_TIMEOUT_SECONDS,
                 progress=None, step_result=None, observer_factory=None,
-                on_line=None, on_tick=None, stop_requested=None) -> list[dict]:
+                on_line=None, on_tick=None, stop_requested=None, email_dir=None) -> list[dict]:
     """Run every script row in order, once per value; each run must write its ``--output``.
 
     ``final_outputs`` holds one reserved final path per run of the last row (a
@@ -586,7 +596,8 @@ def run_scripts(scripts: list[Path], final_outputs, steps_folder: Path, *, envir
     starts; ``step_result`` receives it as soon as the run ends: the same dict
     that is returned for a successful run, or one carrying ``error`` for the
     failed run before the failure is raised, so a broken chain still leaves a
-    structured record per run that happened.
+    structured record per run that happened. ``email_dir``, when given, reaches
+    the last row's runs as ``METRONOME_FLOW_EMAIL_DIR``.
     """
     scripts = check_scripts(scripts)
     plan = run_plan(scripts, arguments, values)
@@ -650,6 +661,7 @@ def run_scripts(scripts: list[Path], final_outputs, steps_folder: Path, *, envir
             environment, input_path=previous_output, output_path=output, results_dir=steps_folder,
             step=index, steps=total, output_format=output_format, flow_name=flow_name, run_id=run_id,
             inputs=row_outputs.get(run["row"] - 1), value=run["value"],
+            email_dir=email_dir if run["row"] == last_row else None,
         )
         started = time.perf_counter()
         try:
@@ -690,7 +702,8 @@ def run_scripts(scripts: list[Path], final_outputs, steps_folder: Path, *, envir
 
 # File-producing variables that a run-only script must never inherit.
 RUN_MODE_STALE_VARIABLES = ("METRONOME_FLOW_OUTPUT", "METRONOME_FLOW_INPUT", "METRONOME_FLOW_INPUTS",
-                            "METRONOME_FLOW_RESULTS_DIR", "METRONOME_FLOW_OUTPUT_FORMAT")
+                            "METRONOME_FLOW_RESULTS_DIR", "METRONOME_FLOW_OUTPUT_FORMAT",
+                            "METRONOME_FLOW_EMAIL_DIR")
 
 
 def run_variables(*, flow_name, run_id, step, steps, value=None) -> dict:

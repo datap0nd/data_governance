@@ -221,6 +221,7 @@ scripts should be configured.
 | `METRONOME_FLOW_OUTPUT_FORMAT` | `csv` or `xlsx`, the configured final file type. |
 | `METRONOME_FLOW_NAME` | The Flow name. |
 | `METRONOME_FLOW_RUN_ID` | The run ID. |
+| `METRONOME_FLOW_EMAIL_DIR` | Only for the last script row of a Flow whose Email step is on: the run folder's `email` folder, where the script may write the email body (below). |
 | `PYTHONIOENCODING` | `utf-8`. |
 
 Script output is captured as UTF-8 text with undecodable bytes replaced, and
@@ -255,6 +256,29 @@ headers, at least one data row); a BOM or a `;` delimiter is accepted and
 normalized to UTF-8 comma-separated rows. A CSV kept as a file is delivered as
 written. An `.xlsx` file must be a valid workbook container. A header-less CSV
 bound for SQL fails the run.
+
+## Writing the email body
+
+When the Email step is on, the last script row may write the message itself
+instead of Metronome's standard "Flow file" message. It writes `body.html` into
+`METRONOME_FLOW_EMAIL_DIR`, and every image the body shows as
+`<img src="cid:chart.png">` beside it, under the same file name. Outlook shows
+those images inside the message; the final file is still attached, and
+Metronome adds one footer line naming the run, the Flow and its owner. Wizard's
+recurring briefs use this.
+
+The rules, checked when the email is sent:
+
+- `body.html` is UTF-8 HTML of at most 1 MB.
+- Every `cid:` reference names a `.png`, `.jpg`, `.jpeg` or `.gif` file in the
+  same folder (letters, digits, `.`, `_` and `-`; no folders, no links); at
+  most 20 images and 10 MB in all, counted toward the 20 MB attachment limit.
+- Images the body does not reference are not sent.
+
+A body that breaks a rule is not used: the standard message goes out with the
+file, and the run's email detail says why. A run that writes no body sends the
+standard message, and the empty folder is removed. Write the HTML for Outlook:
+tables and inline styles, no scripts and no SVG.
 
 ## Scheduling, owner and alerts
 

@@ -382,6 +382,56 @@ def test_scripts_run_in_order_with_the_worker_interpreter(tmp_path):
     assert [item["phase"] for item in timings] == ["python_scripts", "file_normalization", "total"]
 
 
+EMAIL_BODY_SCRIPT = textwrap.dedent('''
+    import argparse, os
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input")
+    parser.add_argument("--output", required=True)
+    args = parser.parse_args()
+    folder = os.environ.get("METRONOME_FLOW_EMAIL_DIR")
+    with open(args.output, "w", encoding="utf-8", newline="") as handle:
+        handle.write("Code,Units\\nA,7\\n")
+    if folder and os.environ.get("WRITE_BODY") == "1":
+        with open(os.path.join(folder, "body.html"), "w", encoding="utf-8") as handle:
+            handle.write("<html><body><img src=\\"cid:chart.png\\"></body></html>")
+        with open(os.path.join(folder, "chart.png"), "wb") as handle:
+            handle.write(b"\\x89PNG")
+    print("email folder", folder or "none")
+''')
+
+
+def test_email_step_gives_only_the_last_script_row_an_email_folder(tmp_path, monkeypatch):
+    first, last = tmp_path / "scripts" / "first.py", tmp_path / "scripts" / "last.py"
+    first.parent.mkdir()
+    first.write_text(EMAIL_BODY_SCRIPT, encoding="utf-8")
+    last.write_text(EMAIL_BODY_SCRIPT, encoding="utf-8")
+    target = tmp_path / "Downloads"
+    job = {**_worker_job([first, last], target), "email_delivery": {"enabled": True, "recipients": ["a@example.test"]}}
+    monkeypatch.setenv("WRITE_BODY", "1")
+    (artifacts, _timings, _outcome), _events, registered = _run(job, target, tmp_path / "profile")
+    folder = Path(registered[0]) / flow_python.EMAIL_DIR_NAME
+    steps = artifacts[0]["python_steps"]
+    assert steps[0]["stdout"] == "email folder none"
+    assert steps[1]["stdout"] == f"email folder {folder}"
+    assert (folder / "body.html").read_text(encoding="utf-8").startswith("<html>")
+    assert (folder / "chart.png").is_file()
+
+    # A script that writes no body leaves no empty folder behind.
+    monkeypatch.setenv("WRITE_BODY", "0")
+    (_artifacts, _timings, _outcome), _events, registered = _run(job, target, tmp_path / "profile", run_id=32)
+    assert not (Path(registered[0]) / flow_python.EMAIL_DIR_NAME).exists()
+
+    # Without the Email step the variable is never set.
+    monkeypatch.setenv("WRITE_BODY", "1")
+    (artifacts, _timings, _outcome), _events, registered = _run(
+        _worker_job([first, last], target), target, tmp_path / "profile", run_id=33,
+    )
+    assert [item["stdout"] for item in artifacts[0]["python_steps"]] == ["email folder none"] * 2
+    assert not (Path(registered[0]) / flow_python.EMAIL_DIR_NAME).exists()
+    # Run-only scripts never inherit it either.
+    assert "METRONOME_FLOW_EMAIL_DIR" in flow_python.RUN_MODE_STALE_VARIABLES
+
+
 def test_failing_script_names_step_and_stderr(tmp_path):
     scripts = _write_scripts(tmp_path / "scripts")
     failing = tmp_path / "scripts" / "clean_orders.py"
