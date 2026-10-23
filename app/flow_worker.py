@@ -7205,6 +7205,11 @@ def execute_python_job(
             attempt += 1
         reserved.add(str(candidate).casefold())
         finals.append(candidate)
+    # With the Email step on, the last script row may write the email body
+    # itself into this folder, which it creates (docs/python_script_flows.md).
+    email_dir = None
+    if (job.get("email_delivery") or {}).get("enabled"):
+        email_dir = run_folder / flow_python.EMAIL_DIR_NAME
     with timings.measure("python_scripts", report_id=job.get("report", {}).get("id")):
         steps = flow_python.run_scripts(
             scripts, finals, steps_folder,
@@ -7229,6 +7234,7 @@ def execute_python_job(
             on_line=(live_observer.line if live_observer is not None else None),
             on_tick=(live_observer.tick if live_observer is not None else None),
             stop_requested=(live_observer.stop_requested if live_observer is not None else None),
+            email_dir=email_dir,
         )
     artifacts: list[dict] = []
     with timings.measure("file_normalization", report_id=job.get("report", {}).get("id")):
@@ -8432,6 +8438,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
         registration['capabilities'][flow_python.ARGUMENTS_CAPABILITY] = True
         registration['capabilities'][flow_python.RUN_CAPABILITY] = True
         registration['capabilities'][flow_python.DESKTOP_CAPABILITY] = True
+        registration['capabilities'][flow_python.EMAIL_DIR_CAPABILITY] = True
         registration['capabilities']['flow_recorder_v1'] = headed
         registration['capabilities']['flow_recorder_controls_v1'] = headed
         # Metronome can take several minutes to boot after an update (service

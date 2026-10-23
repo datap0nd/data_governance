@@ -2,6 +2,8 @@
 
 The file is exactly what SQL insertion receives, so the recipient gets the
 normalized CSV (or the transformation result) rather than a notification.
+A Python-script Flow may write the message body itself: ``body.html`` and the
+images it shows, in the run folder's ``email`` folder (``script_body``).
 The API process hands the message to Outlook through the same interactive
 scheduled task the alert emails use; the run keeps the worker's data result
 and records the email outcome separately, mirroring the Outlook receipt later.
@@ -14,6 +16,7 @@ import json
 import logging
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from app import flow_python
@@ -24,6 +27,13 @@ MAX_RECIPIENTS = 20
 MAX_ADDRESS_LENGTH = 254
 MAX_SUBJECT_LENGTH = 200
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
+# A script-written body: at most 1 MB of HTML and 20 images of at most 10 MB in
+# all, which also count toward the attachment cap.
+MAX_BODY_BYTES = 1024 * 1024
+MAX_INLINE_IMAGES = 20
+MAX_INLINE_IMAGE_BYTES = 10 * 1024 * 1024
+INLINE_IMAGE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\.(?:png|jpe?g|gif)$", re.IGNORECASE)
+CID_REFERENCE = re.compile(r"cid:([^\s\"'()<>]+)", re.IGNORECASE)
 PURPOSE = "flow_file"
 STATUSES = ("pending", "submitted", "failed", "unknown", "skipped")
 STATUS_LABELS = {
@@ -165,9 +175,11 @@ def _megabytes(size: int) -> str:
     return f"{size / (1024 * 1024):.1f}"
 
 
-def attachment_plan(files: list[dict]) -> tuple[bool, int, str | None]:
-    """Attach everything within the cap; otherwise describe the location instead."""
-    total = sum(int(item.get("file_size") or 0) for item in files)
+def attachment_plan(files: list[dict], extra_bytes: int = 0) -> tuple[bool, int, str | None]:
+    """Attach everything within the cap; otherwise describe the location instead.
+
+    ``extra_bytes`` is what a script-written body's images already take."""
+    total = sum(int(item.get("file_size") or 0) for item in files) + int(extra_bytes)
     if total <= MAX_ATTACHMENT_BYTES:
         return True, total, None
     return False, total, (
@@ -207,8 +219,111 @@ def _file_line(item: dict) -> str:
     return f"{html.escape(item.get('filename') or 'file')}{detail}"
 
 
-def build_message(context: dict, *, attach: bool, warning: str | None = None) -> dict:
-    """One Outlook message carrying the run's final file(s)."""
+class ScriptBodyError(ValueError):
+    """The script's email body cannot be sent; the message says why."""
+
+
+def script_body(context: dict) -> dict | None:
+    """The body a Python-script run wrote for its email, or ``None`` when it wrote none.
+
+    ``<run folder>/email/body.html`` is the HTML; every ``cid:<name>`` in it
+    names an image file beside it, sent inline. Raises ``ScriptBodyError``
+    when the body or an image breaks a rule, so the standard message goes out
+    instead and the run log says why.
+    """
+    if context.get("source_type") != "python" or not context.get("run_folder"):
+        return None
+    folder = Path(str(context["run_folder"])) / flow_python.EMAIL_DIR_NAME
+    body_path = folder / flow_python.EMAIL_BODY_NAME
+    if not body_path.exists() and not body_path.is_symlink():
+        return None
+    if folder.is_symlink() or not folder.is_dir():
+        raise ScriptBodyError(f"{folder} is not a regular folder.")
+    if body_path.is_symlink() or not body_path.is_file():
+        raise ScriptBodyError(f"{body_path.name} is not a regular file.")
+    size = body_path.stat().st_size
+    if size > MAX_BODY_BYTES:
+        raise ScriptBodyError(
+            f"{body_path.name} is {_megabytes(size)} MB; the limit is {MAX_BODY_BYTES // (1024 * 1024)} MB."
+        )
+    try:
+        text = body_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        raise ScriptBodyError(f"{body_path.name} is not UTF-8 text.") from None
+    if not text.strip():
+        raise ScriptBodyError(f"{body_path.name} is empty.")
+    root = folder.resolve()
+    images: list[dict] = []
+    total = 0
+    for name in dict.fromkeys(CID_REFERENCE.findall(text)):
+        if not INLINE_IMAGE_NAME.fullmatch(name):
+            raise ScriptBodyError(
+                f"cid:{name[:100]} must name a .png, .jpg or .gif file in the email folder "
+                "(letters, digits, '.', '_' or '-')."
+            )
+        path = folder / name
+        if path.is_symlink() or not path.is_file() or path.resolve().parent != root:
+            raise ScriptBodyError(f"The image {name} for cid:{name} is missing from the email folder.")
+        total += path.stat().st_size
+        images.append({"path": str(path), "cid": name})
+    if len(images) > MAX_INLINE_IMAGES:
+        raise ScriptBodyError(f"{len(images)} images; the limit is {MAX_INLINE_IMAGES}.")
+    if total > MAX_INLINE_IMAGE_BYTES:
+        raise ScriptBodyError(
+            f"The images take {_megabytes(total)} MB; the limit is {MAX_INLINE_IMAGE_BYTES // (1024 * 1024)} MB."
+        )
+    return {"html": text, "inline_images": images, "image_bytes": total}
+
+
+def _with_footer(document: str, footer: str) -> str:
+    """Put Metronome's footer at the end of the script's body."""
+    end = document.lower().rfind("</body>")
+    return document + footer if end < 0 else document[:end] + footer + document[end:]
+
+
+def _script_message(context: dict, body: dict, *, attach: bool, warning: str | None) -> dict:
+    config = context["config"]
+    files = context["files"]
+    run_id = context["run_id"]
+    flow_name = context["flow_name"]
+    owner = context.get("owner_name") or "no owner assigned"
+    lines = [
+        f"Sent by Metronome after run #{run_id} of the Flow {html.escape(flow_name)}. "
+        f"Flow owner: {html.escape(str(owner))}. Run history in Metronome &gt; Flows keeps the complete log."
+    ]
+    if not attach:
+        locations = "<br>".join(
+            html.escape(str(item.get("published_file_path") or item.get("file_path") or ""))
+            for item in files
+        )
+        lines.append(f"The files were not attached ({html.escape(str(warning or ''))}). Open them from:<br>"
+                     f"{locations or 'Not recorded'}")
+    footer = (
+        '<div style="max-width:600px;margin:0 auto;padding:12px 16px 20px;color:#6b7280;'
+        'font-family:Segoe UI,Arial,sans-serif;font-size:11px;line-height:1.45">'
+        + "<br>".join(lines) + "</div>"
+    )
+    message = {
+        "to": "; ".join(config["recipients"]),
+        "subject": (config.get("subject") or default_subject(flow_name, run_id))[:500],
+        "html_body": _with_footer(body["html"], footer),
+        "inline_images": list(body["inline_images"]),
+    }
+    if attach:
+        message["attachments"] = [
+            {"path": item["file_path"], "filename": item["filename"]} for item in files
+        ]
+    return message
+
+
+def build_message(context: dict, *, attach: bool, warning: str | None = None,
+                  body: dict | None = None) -> dict:
+    """One Outlook message carrying the run's final file(s).
+
+    ``body`` is the script's own body (``script_body``); Metronome then adds
+    only its footer."""
+    if body is not None:
+        return _script_message(context, body, attach=attach, warning=warning)
     config = context["config"]
     files = context["files"]
     run_id = context["run_id"]
@@ -309,7 +424,7 @@ def run_context(db, run_id: int) -> dict | None:
     """Everything the Email step needs about one run, read in one connection."""
     row = db.execute(
         """SELECT r.id AS run_id, r.flow_id, r.status, r.trigger_type, r.requested_by,
-                  r.created_at, r.started_at, r.finished_at, r.job_json, r.progress_json,
+                  r.created_at, r.started_at, r.finished_at, r.job_json, r.progress_json, r.run_folder,
                   r.sql_outcome_json, r.email_status, r.email_detail, r.email_dispatch_id,
                   f.name AS flow_name, f.source_type, f.outlook_subject_contains,
                   f.local_file_path, f.python_scripts_json,
@@ -378,6 +493,7 @@ def _record_outcome(run_id: int, context: dict | None, outcome: dict, *, stage: 
                         "recipient_count": len(context["config"].get("recipients") or []),
                         "files": [item.get("filename") for item in context.get("files") or []],
                         "attached": bool(outcome.get("attached")),
+                        "script_body": bool(outcome.get("script_body")),
                     }),
                     outcome.get("detail") if outcome["status"] == "failed" else None,
                     now,
@@ -418,14 +534,21 @@ def deliver_run_file(run_id: int, *, resend: bool = False, actor: str | None = N
         files = context["files"]
         if not files:
             raise RuntimeError("No final file was recorded for this run.")
-        attach, total, warning = attachment_plan(files)
-        message = build_message(context, attach=attach, warning=warning)
+        body_problem = None
+        try:
+            body = script_body(context)
+        except (ScriptBodyError, OSError) as exc:
+            body = None
+            body_problem = f"The script's email body was not used: {exc}"
+        attach, total, warning = attachment_plan(files, body["image_bytes"] if body else 0)
+        message = build_message(context, attach=attach, warning=warning, body=body)
         from app.routers.email import launch_outlook_dispatch
 
         dispatch = launch_outlook_dispatch([message], "send", purpose=PURPOSE)
+        detail = " ".join(item for item in (body_problem, warning) if item) or None
         outcome = {
-            "status": "pending", "dispatch_id": int(dispatch["id"]), "detail": warning,
-            "attached": attach, "total_bytes": total,
+            "status": "pending", "dispatch_id": int(dispatch["id"]), "detail": detail,
+            "attached": attach, "total_bytes": total, "script_body": body is not None,
             "recipients": list(config["recipients"]),
             "files": [item["filename"] for item in files],
         }
@@ -434,6 +557,10 @@ def deliver_run_file(run_id: int, *, resend: bool = False, actor: str | None = N
             if attach else
             f"Email without attachments handed to Outlook for {len(config['recipients'])} recipient(s): {warning}"
         )
+        if body is not None:
+            summary += f" The script wrote the body ({len(body['inline_images'])} inline image(s))."
+        elif body_problem:
+            summary += f" {body_problem}; the standard message was sent instead."
         if resend:
             summary = "Send again: " + summary
         _record_outcome(run_id, context, outcome, stage="email_delivery", message=summary,

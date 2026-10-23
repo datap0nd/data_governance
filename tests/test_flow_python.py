@@ -382,6 +382,57 @@ def test_scripts_run_in_order_with_the_worker_interpreter(tmp_path):
     assert [item["phase"] for item in timings] == ["python_scripts", "file_normalization", "total"]
 
 
+EMAIL_BODY_SCRIPT = textwrap.dedent('''
+    import argparse, os
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input")
+    parser.add_argument("--output", required=True)
+    args = parser.parse_args()
+    folder = os.environ.get("METRONOME_FLOW_EMAIL_DIR")
+    with open(args.output, "w", encoding="utf-8", newline="") as handle:
+        handle.write("Code,Units\\nA,7\\n")
+    if folder and os.environ.get("WRITE_BODY") == "1":
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, "body.html"), "w", encoding="utf-8") as handle:
+            handle.write("<html><body><img src=\\"cid:chart.png\\"></body></html>")
+        with open(os.path.join(folder, "chart.png"), "wb") as handle:
+            handle.write(b"\\x89PNG")
+    print("email folder", folder or "none")
+''')
+
+
+def test_email_step_gives_only_the_last_script_row_an_email_folder(tmp_path, monkeypatch):
+    first, last = tmp_path / "scripts" / "first.py", tmp_path / "scripts" / "last.py"
+    first.parent.mkdir()
+    first.write_text(EMAIL_BODY_SCRIPT, encoding="utf-8")
+    last.write_text(EMAIL_BODY_SCRIPT, encoding="utf-8")
+    target = tmp_path / "Downloads"
+    job = {**_worker_job([first, last], target), "email_delivery": {"enabled": True, "recipients": ["a@example.test"]}}
+    monkeypatch.setenv("WRITE_BODY", "1")
+    (artifacts, _timings, _outcome), _events, registered = _run(job, target, tmp_path / "profile")
+    folder = Path(registered[0]) / flow_python.EMAIL_DIR_NAME
+    steps = artifacts[0]["python_steps"]
+    assert steps[0]["stdout"] == "email folder none"
+    assert steps[1]["stdout"] == f"email folder {folder}"
+    assert (folder / "body.html").read_text(encoding="utf-8").startswith("<html>")
+    assert (folder / "chart.png").is_file()
+
+    # The worker only names the folder: a script that writes no body leaves none.
+    monkeypatch.setenv("WRITE_BODY", "0")
+    (_artifacts, _timings, _outcome), _events, registered = _run(job, target, tmp_path / "profile", run_id=32)
+    assert not (Path(registered[0]) / flow_python.EMAIL_DIR_NAME).exists()
+
+    # Without the Email step the variable is never set.
+    monkeypatch.setenv("WRITE_BODY", "1")
+    (artifacts, _timings, _outcome), _events, registered = _run(
+        _worker_job([first, last], target), target, tmp_path / "profile", run_id=33,
+    )
+    assert [item["stdout"] for item in artifacts[0]["python_steps"]] == ["email folder none"] * 2
+    assert not (Path(registered[0]) / flow_python.EMAIL_DIR_NAME).exists()
+    # Run-only scripts never inherit it either.
+    assert "METRONOME_FLOW_EMAIL_DIR" in flow_python.RUN_MODE_STALE_VARIABLES
+
+
 def test_failing_script_names_step_and_stderr(tmp_path):
     scripts = _write_scripts(tmp_path / "scripts")
     failing = tmp_path / "scripts" / "clean_orders.py"
@@ -1186,6 +1237,46 @@ def test_invalid_rendered_arguments_fail_the_step_with_a_record(tmp_path):
     failed = [detail for detail in events if detail["stage"] == "python_step_failed"]
     assert len(failed) == 1 and failed[0]["value"] == 'a"b' and failed[0]["arguments"] == []
     assert not any(detail["stage"] in ("python_step", "python_complete") for detail in events)
+
+
+def test_worker_claim_requires_the_email_dir_capability_only_when_the_email_step_is_on(flow_db, tmp_path):
+    scripts = _write_scripts(tmp_path / "scripts")
+    plain = flows.create_flow(_python_flow(scripts, name="No email"), _request())
+    emailed = flows.create_flow(_python_flow(
+        scripts, name="Emailed", email_delivery={"enabled": True, "recipients": ["a@example.test"], "subject": None},
+    ), _request())
+    with database.get_db() as db:
+        for saved in (emailed, plain):
+            job = flows._build_job(db, saved["id"])
+            db.execute(
+                """INSERT INTO flow_runs(flow_id, trigger_type, status, job_json, created_at)
+                   VALUES (?, 'scheduled', 'queued', ?, ?)""",
+                (saved["id"], json.dumps(job), flows._iso(flows._now())),
+            )
+        plain_job = flows._build_job(db, plain["id"])
+        emailed_job = flows._build_job(db, emailed["id"])
+    assert flow_python.requires_email_dir_capability(plain_job) is False
+    assert flow_python.requires_email_dir_capability(emailed_job) is True
+    assert flow_python.requires_email_dir_capability(
+        {**emailed_job, "python_source": {**emailed_job["python_source"], "mode": "run"}}) is False
+
+    # A worker from the previous release never names the email folder: it may
+    # take the Flow without email, never the one whose script may write the body.
+    flows.register_worker(flows.WorkerRegister(
+        worker_id="before-email", display_name="Before email",
+        capabilities={"adapters": ["web_export", "python_script"], "headed": False, "shared_flow_artifacts": True},
+    ))
+    first = flows.claim_run("before-email")["run"]
+    assert first["flow_id"] == plain["id"]
+    flows.update_run("before-email", first["id"], flows.WorkerProgress(status="cancelled", progress={"stage": "cancelled"}))
+    assert flows.claim_run("before-email")["run"] is None
+
+    flows.register_worker(flows.WorkerRegister(
+        worker_id="current-email", display_name="Current worker",
+        capabilities={"adapters": ["web_export", "python_script"], flow_python.EMAIL_DIR_CAPABILITY: True,
+                      "headed": False, "shared_flow_artifacts": True},
+    ))
+    assert flows.claim_run("current-email")["run"]["flow_id"] == emailed["id"]
 
 
 def test_worker_claim_requires_the_arguments_capability_only_when_arguments_or_values_are_used(flow_db, tmp_path):

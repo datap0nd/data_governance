@@ -6114,6 +6114,8 @@ def claim_run(worker_id: str):
                 and (not required_adapter or required_adapter in adapters)
                 and (not flow_python.requires_arguments_capability(job.get("python_source") or {})
                      or capabilities.get(flow_python.ARGUMENTS_CAPABILITY))
+                and (not flow_python.requires_email_dir_capability(job)
+                     or capabilities.get(flow_python.EMAIL_DIR_CAPABILITY))
                 and ((job.get("python_source") or {}).get("mode") != "run"
                      or (capabilities.get(flow_python.RUN_CAPABILITY)
                          and capabilities.get(flow_python.DESKTOP_CAPABILITY)))
