@@ -221,7 +221,7 @@ scripts should be configured.
 | `METRONOME_FLOW_OUTPUT_FORMAT` | `csv` or `xlsx`, the configured final file type. |
 | `METRONOME_FLOW_NAME` | The Flow name. |
 | `METRONOME_FLOW_RUN_ID` | The run ID. |
-| `METRONOME_FLOW_EMAIL_DIR` | Only for the last script row of a Flow whose Email step is on: the run folder's `email` folder, where the script may write the email body (below). |
+| `METRONOME_FLOW_EMAIL_DIR` | Only for the last script row of a Flow whose Email step is on: the run folder's `email` folder, which the script creates to write the email body (below). |
 | `PYTHONIOENCODING` | `utf-8`. |
 
 Script output is captured as UTF-8 text with undecodable bytes replaced, and
@@ -260,8 +260,8 @@ bound for SQL fails the run.
 ## Writing the email body
 
 When the Email step is on, the last script row may write the message itself
-instead of Metronome's standard "Flow file" message. It writes `body.html` into
-`METRONOME_FLOW_EMAIL_DIR`, and every image the body shows as
+instead of Metronome's standard "Flow file" message. It creates the folder named
+by `METRONOME_FLOW_EMAIL_DIR`, writes `body.html` into it, and every image the body shows as
 `<img src="cid:chart.png">` beside it, under the same file name. Outlook shows
 those images inside the message; the final file is still attached, and
 Metronome adds one footer line naming the run, the Flow and its owner. Wizard's
@@ -277,7 +277,8 @@ The rules, checked when the email is sent:
 
 A body that breaks a rule is not used: the standard message goes out with the
 file, and the run's email detail says why. A run that writes no body sends the
-standard message, and the empty folder is removed. Write the HTML for Outlook:
+standard message. Metronome never deletes the folder: run-folder retention
+removes it with its run folder. Write the HTML for Outlook:
 tables and inline styles, no scripts and no SVG.
 
 ## Scheduling, owner and alerts

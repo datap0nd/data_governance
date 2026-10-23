@@ -22,13 +22,13 @@ captured by the existing `outlook` fixture in `tests/test_flow_email_delivery.py
 | ID | Prerequisites and exact actions | Expected result | Evidence |
 | --- | --- | --- | --- |
 | E-01 | Two-row Python job with the Email step on; the last script writes `body.html` and `chart.png` into `METRONOME_FLOW_EMAIL_DIR` | Only the last row sees the variable; the files are in `<run folder>/email` | `test_email_step_gives_only_the_last_script_row_an_email_folder` |
-| E-02 | Same job, the script writes no body | No empty `email` folder is left | same test |
+| E-02 | Same job, the script writes no body | No `email` folder exists: the worker names it and never creates or deletes it | same test |
 | E-03 | Same scripts, Email step off | Neither row sees the variable; no folder; run-only steps drop the variable | same test |
 | E-04 | Succeeded Python run with a registered run folder holding `body.html` and two referenced images plus one unreferenced image | Outlook message body is the script's HTML with the Metronome footer before `</body>`; only the two referenced images are inline, each once, with their `cid`; the final file is attached; event says the script wrote the body | `test_python_script_body_is_sent_with_inline_images_and_the_file` |
 | E-05 | Same, but the body references a missing image | Standard "Flow file" message with the file; email detail and event explain the fallback | `test_unusable_script_body_falls_back_to_the_standard_message` |
 | E-06 | `script_body` with a portal source, no run folder, `cid:../secret.png`, `cid:chart.svg`, an empty body, a symlinked image, non-UTF-8 bytes, an oversized body, oversized images and too many images | `None` for the first two; a `ScriptBodyError` naming the rule for each of the others | `test_script_body_rules` |
 | E-07 | `_with_footer` with and without `</body>` | Footer before the closing tag (any case), else appended | `test_script_footer_goes_before_the_closing_body_tag` |
-| R-01 | Existing email delivery, Python worker, portable and standalone script tests | Unchanged behavior | Affected suites below |
+| R-01 | Existing email delivery, Python worker, portable and standalone script tests, and the worker-never-deletes invariants (`test_worker_source_contains_no_delete_or_overwrite_operation`, `test_retention_module_is_the_only_deletion_site_and_gates_every_path`) | Unchanged behavior | Affected suites below |
 
 ## Automated checks
 
@@ -37,6 +37,9 @@ python tools/check.py verify --test tests/test_flow_email_delivery.py --test tes
   --syntax app/flow_email_delivery.py --syntax app/flow_python.py --syntax app/flow_worker.py
 python tools/check.py verify --test tests/test_flow_portable_script.py --test tests/test_flow_handover.py \
   --test tests/test_flow_standalone.py
+python tools/check.py verify \
+  --test tests/test_flows.py::test_worker_source_contains_no_delete_or_overwrite_operation \
+  --test tests/test_flows.py::test_retention_module_is_the_only_deletion_site_and_gates_every_path
 ```
 
 Final-head CI (`Merge ready`) is the full regression.
@@ -46,4 +49,4 @@ Final-head CI (`Merge ready`) is the full regression.
 Accepted when E-01 to E-07 and R-01 pass locally and final-head CI passes.
 Nothing to clean up: fixtures live in pytest temporary folders. Rollback:
 revert the PR; Flows then send the standard message again, and a script that
-still writes into `METRONOME_FLOW_EMAIL_DIR` finds the variable unset.
+still looks for `METRONOME_FLOW_EMAIL_DIR` finds the variable unset.

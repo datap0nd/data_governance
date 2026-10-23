@@ -392,6 +392,7 @@ EMAIL_BODY_SCRIPT = textwrap.dedent('''
     with open(args.output, "w", encoding="utf-8", newline="") as handle:
         handle.write("Code,Units\\nA,7\\n")
     if folder and os.environ.get("WRITE_BODY") == "1":
+        os.makedirs(folder, exist_ok=True)
         with open(os.path.join(folder, "body.html"), "w", encoding="utf-8") as handle:
             handle.write("<html><body><img src=\\"cid:chart.png\\"></body></html>")
         with open(os.path.join(folder, "chart.png"), "wb") as handle:
@@ -416,7 +417,7 @@ def test_email_step_gives_only_the_last_script_row_an_email_folder(tmp_path, mon
     assert (folder / "body.html").read_text(encoding="utf-8").startswith("<html>")
     assert (folder / "chart.png").is_file()
 
-    # A script that writes no body leaves no empty folder behind.
+    # The worker only names the folder: a script that writes no body leaves none.
     monkeypatch.setenv("WRITE_BODY", "0")
     (_artifacts, _timings, _outcome), _events, registered = _run(job, target, tmp_path / "profile", run_id=32)
     assert not (Path(registered[0]) / flow_python.EMAIL_DIR_NAME).exists()

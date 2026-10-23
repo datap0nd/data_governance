@@ -42,10 +42,10 @@ MAX_VALUE_CHARS = 500
 # Tail of a script's stdout/stderr kept in the failure message and step record.
 OUTPUT_TAIL_CHARS = 4000
 
-# A run whose Email step is on gives the last script row this folder (inside
-# the run folder) for an email body of its own: body.html plus the images it
-# references as cid:<file name>. The Email step checks and uses it
-# (app.flow_email_delivery.script_body); an empty folder is removed.
+# A run whose Email step is on names this folder (inside the run folder) to the
+# last script row for an email body of its own: body.html plus the images it
+# references as cid:<file name>. The script creates the folder when it writes
+# a body; the Email step checks and uses it (app.flow_email_delivery.script_body).
 EMAIL_DIR_NAME = "email"
 EMAIL_BODY_NAME = "body.html"
 
