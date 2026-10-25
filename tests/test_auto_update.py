@@ -529,6 +529,21 @@ def test_disabling_keeps_an_already_launched_attempt_without_a_drain(
     assert active["attempt_id"] == attempt["attempt_id"]
 
 
+def _record_flow_catch_up(monkeypatch):
+    """Keep each startup's background Flow refresh joinable by the test."""
+    from app import flow_handover
+
+    threads = []
+    start = flow_handover.catch_up_in_background
+
+    def recorded(db_path):
+        threads.append(start(db_path))
+        return threads[-1]
+
+    monkeypatch.setattr(flow_handover, "catch_up_in_background", recorded)
+    return threads
+
+
 def test_lifespan_reconciles_and_drains_active_update_before_runtime_start(
     update_env, monkeypatch
 ):
@@ -602,12 +617,15 @@ def test_lifespan_reconciles_and_drains_active_update_before_runtime_start(
     monkeypatch.setattr(main.scanner, "shutdown_scanner_executor", lambda: None)
     monkeypatch.setattr(operations_agent, "shutdown_executor", lambda: None)
     monkeypatch.setattr(main.pipelines, "shutdown_pipeline_executor", lambda: None)
+    catch_ups = _record_flow_catch_up(monkeypatch)
 
     async def run_lifespan():
         async with main.lifespan(main.app):
             assert main._AUTO_UPDATE_DRAIN_EVENT.is_set()
 
     asyncio.run(run_lifespan())
+    for thread in catch_ups:
+        thread.join(30)
 
     assert calls.index("init_db") < calls.index("reconcile_update")
     assert calls.index("reconcile_update") < calls.index("request_drain")
@@ -653,14 +671,80 @@ def test_lifespan_keeps_web_available_when_optional_startup_repairs_fail(
     monkeypatch.setattr(main.scanner, "shutdown_scanner_executor", lambda: None)
     monkeypatch.setattr(operations_agent, "shutdown_executor", lambda: None)
     monkeypatch.setattr(main.pipelines, "shutdown_pipeline_executor", lambda: None)
+    catch_ups = _record_flow_catch_up(monkeypatch)
 
     async def run_lifespan():
         async with main.lifespan(main.app):
             entered.append(True)
 
     asyncio.run(run_lifespan())
+    for thread in catch_ups:
+        thread.join(30)
 
     assert entered == [True]
+
+
+def test_lifespan_opens_web_before_flow_files_are_refreshed(update_env, monkeypatch):
+    from app import flow_handover
+    from app.ai import operations_agent, runtime_config
+    from app.scanner import jobs
+
+    # Refreshing every Flow's files after an update can take many minutes on
+    # the office share; the worker gives up registering after ten.
+    release = threading.Event()
+    refreshed = []
+
+    def slow_synchronize(db_path, **_kwargs):
+        release.wait(30)
+        refreshed.append(db_path)
+        return {}
+
+    def startup_commit():
+        # A startup repair that saves a Flow must not refresh files inline.
+        flow_handover.after_commit(database.DB_PATH)
+        return {"total": 1, "changed": 1, "confirmed": 0, "ambiguous": 0, "unresolved": 0}
+
+    monkeypatch.setattr(flow_handover, "synchronize", slow_synchronize)
+    monkeypatch.setattr(main, "init_db", lambda: None)
+    monkeypatch.setattr(main, "_reconcile_update_attempts", lambda: None)
+    monkeypatch.setattr(
+        runtime_config,
+        "initialize_runtime_settings",
+        lambda: SimpleNamespace(
+            mode="mock",
+            model="test",
+            qwen_enabled=False,
+            feature_enabled=lambda _name: False,
+        ),
+    )
+    monkeypatch.setattr(jobs, "recover_interrupted_jobs", lambda: 0)
+    monkeypatch.setattr(main, "_recover_startup_pbi_syncs", lambda: 0)
+    monkeypatch.setattr(main, "_recover_startup_scan_runs", lambda: 0)
+    monkeypatch.setattr(main, "_reconcile_startup_flow_targets", startup_commit)
+    monkeypatch.setattr(main, "_configure_scheduler_jobs", lambda: None)
+    monkeypatch.setattr(main.flows, "ensure_local_worker", lambda: None)
+    monkeypatch.setattr(main.pipelines, "pipeline_tick", lambda: None)
+    monkeypatch.setattr(operations_agent, "recover_and_start", lambda: 0)
+    monkeypatch.setattr(main, "_scheduled_alert_ai_enrichment", lambda: None)
+    monkeypatch.setattr(main.scanner, "shutdown_scanner_executor", lambda: None)
+    monkeypatch.setattr(operations_agent, "shutdown_executor", lambda: None)
+    monkeypatch.setattr(main.pipelines, "shutdown_pipeline_executor", lambda: None)
+    catch_ups = _record_flow_catch_up(monkeypatch)
+
+    async def run_lifespan():
+        async with main.lifespan(main.app):
+            assert refreshed == []
+
+    try:
+        asyncio.run(run_lifespan())
+    finally:
+        release.set()
+        for thread in catch_ups:
+            thread.join(30)
+
+    assert len(catch_ups) == 1 and not catch_ups[0].is_alive()
+    # One background pass covers the startup commit as well.
+    assert refreshed == [database.DB_PATH]
 
 
 def test_failed_receipt_releases_reservation_and_redacts_error(

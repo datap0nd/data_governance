@@ -643,14 +643,8 @@ def _run_optional_startup_step(name: str, function, *, default=None):
         return default
 
 
-@asynccontextmanager
-async def lifespan(app):
-    logging.getLogger(__name__).info("Database path: %s", DB_PATH)
-    init_db()
-    auditor_store.recover()
-    import asyncio
-    from app.flow_handover import after_commit as refresh_flow_files
-    await asyncio.to_thread(refresh_flow_files, DB_PATH)
+def _start_runtime():
+    """Recover interrupted work, then start the scheduler and Flow workers."""
     from app.pipeline_insights_db import init_pipeline_insights_db
     init_pipeline_insights_db()
     startup_update_attempt = _run_optional_startup_step(
@@ -782,6 +776,23 @@ async def lifespan(app):
         logging.getLogger(__name__).error(
             "Metronome web is available, but background scheduling did not start"
         )
+
+
+@asynccontextmanager
+async def lifespan(app):
+    logging.getLogger(__name__).info("Database path: %s", DB_PATH)
+    init_db()
+    auditor_store.recover()
+    from app import flow_handover
+    # Refreshing every Flow's continuity files can take many minutes on a
+    # shared folder, and an update rewrites all of them. The web port opens
+    # only once this yields, so hold the refreshes startup commits would
+    # trigger and do one pass in the background instead.
+    flow_handover.hold()
+    try:
+        _start_runtime()
+    finally:
+        flow_handover.catch_up_in_background(DB_PATH)
 
     yield
 
