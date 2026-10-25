@@ -627,6 +627,19 @@ def test_upstream_mv_uses_linked_report_owner_and_impact_context(query_db, monke
     assert mv_action.report_names == ["Impact Report"]
 
 
+def test_startup_restores_counter_dropped_by_the_retired_removal(query_db):
+    # Databases that ran the late-August removal lost this column, and the
+    # scanner and Alert analysis read it again.
+    with database.get_db() as db:
+        db.execute("ALTER TABLE scan_runs DROP COLUMN changed_queries")
+    database.init_db()
+    with database.get_db() as db:
+        db.execute("INSERT INTO scan_runs (status, changed_queries) VALUES ('completed', 2)")
+        assert db.execute(
+            "SELECT changed_queries FROM scan_runs ORDER BY id DESC LIMIT 1"
+        ).fetchone()["changed_queries"] == 2
+
+
 def test_frontend_contains_query_history_and_diff_controls():
     app_js = (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text(encoding="utf-8")
     css = (Path(__file__).resolve().parents[1] / "app" / "static" / "style.css").read_text(encoding="utf-8")

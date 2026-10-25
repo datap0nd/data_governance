@@ -5,6 +5,7 @@ in [the testing workflow](../README.md); this file is the complete history.
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-10-26: Metronome starts promptly after an update | [Test plan](2026-10-26-startup-after-update/test-plan.md) | [Test report](2026-10-26-startup-after-update/test-report.md) |
 | 2026-10-23: Python Flows write their own email body | [Test plan](2026-10-23-flow-script-email-body/test-plan.md) | [Test report](2026-10-23-flow-script-email-body/test-report.md) |
 | 2026-10-19: People change their own SQL password | [Test plan](2026-10-19-own-sql-password/test-plan.md) | [Test report](2026-10-19-own-sql-password/test-report.md) |
 | 2026-10-19: AGENTS.md Flow SQL write invariant | [Test plan](2026-10-19-agents-sql-invariant/test-plan.md) | [Test report](2026-10-19-agents-sql-invariant/test-report.md) |

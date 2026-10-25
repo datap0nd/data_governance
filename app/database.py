@@ -1646,6 +1646,9 @@ MIGRATIONS = [
     "ALTER TABLE flows ADD COLUMN sql_uppercase INTEGER NOT NULL DEFAULT 0",
     # Per-component scan lifecycle details (NULL for legacy scan rows).
     "ALTER TABLE scan_runs ADD COLUMN components_json TEXT",
+    # The query-change counter came back after the short-lived query-history
+    # removal had dropped it from existing databases.
+    "ALTER TABLE scan_runs ADD COLUMN changed_queries INTEGER",
     """CREATE TABLE IF NOT EXISTS scanner_module_runs (
         id                       INTEGER PRIMARY KEY AUTOINCREMENT,
         scanner_job_id           INTEGER REFERENCES scanner_jobs(id) ON DELETE SET NULL,
