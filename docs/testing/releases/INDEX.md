@@ -6,6 +6,12 @@ in [the testing workflow](../README.md); this file is the complete history.
 | Release | What to test | Results |
 | --- | --- | --- |
 | 2026-10-26: Wizard film revision 13, the real Wizard app | [Test plan](2026-10-26-film-real-wizard-ui/test-plan.md) | [Test report](2026-10-26-film-real-wizard-ui/test-report.md) |
+| 2026-10-26: Metronome starts promptly after an update | [Test plan](2026-10-26-startup-after-update/test-plan.md) | [Test report](2026-10-26-startup-after-update/test-report.md) |
+| 2026-10-23: Python Flows write their own email body | [Test plan](2026-10-23-flow-script-email-body/test-plan.md) | [Test report](2026-10-23-flow-script-email-body/test-report.md) |
+| 2026-10-19: People change their own SQL password | [Test plan](2026-10-19-own-sql-password/test-plan.md) | [Test report](2026-10-19-own-sql-password/test-report.md) |
+| 2026-10-19: AGENTS.md Flow SQL write invariant | [Test plan](2026-10-19-agents-sql-invariant/test-plan.md) | [Test report](2026-10-19-agents-sql-invariant/test-report.md) |
+| 2026-10-19: Users sign-in, Flow ownership and owner SQL users | [Test plan](2026-10-19-user-flow-ownership/test-plan.md) | [Test report](2026-10-19-user-flow-ownership/test-report.md) |
+| 2026-10-12: Several schedule triggers per Flow | [Test plan](2026-10-12-flow-multiple-triggers/test-plan.md) | [Test report](2026-10-12-flow-multiple-triggers/test-report.md) |
 | 2026-10-09: Wizard showcase film | [Test plan](2026-10-09-film-wizard-showcase/test-plan.md) | [Test report](2026-10-09-film-wizard-showcase/test-report.md) |
 | 2026-09-29: Clear problem statement and agent testing labels | [Test plan](2026-09-29-film-problem-statement/test-plan.md) | [Test report](2026-09-29-film-problem-statement/test-report.md) |
 | 2026-09-29: Visual AI-to-Metronome connection | [Test plan](2026-09-29-film-ai-connection/test-plan.md) | [Test report](2026-09-29-film-ai-connection/test-report.md) |

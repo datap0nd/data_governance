@@ -28,7 +28,9 @@ data. Scratch files stay out of commits.
 Each protects something a PR cannot undo:
 
 - PostgreSQL probe credentials are read-only: no writes, no DDL. Flow SQL writes
-  use the separate `DG_UPLOAD_PG*` credentials.
+  go to the `DG_UPLOAD_PG*` server as the Flow owner's own SQL user, or as the
+  shared `DG_UPLOAD_PGUSER` account for an unassigned Flow; an owner's missing
+  SQL credentials fail closed and never fall back to the shared account.
 - Schedules, calendar maths and displayed instants use Dubai time; monitoring
   timestamps stay UTC.
 - Scheduled execution fails closed when a saved page, visual, column or rule

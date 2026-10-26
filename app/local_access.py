@@ -98,6 +98,32 @@ def is_local_request(request: Request) -> bool:
     return not fetch_site or fetch_site in {"same-origin", "none"}
 
 
+def is_host_request(request: Request) -> bool:
+    """Return True for a same-site request from the host PC itself.
+
+    The host PC is the machine running Metronome, reached by any of its own
+    addresses (localhost, 127.0.0.1 or its LAN name). It administers Users,
+    SQL passwords and every Flow. A page on another site open in the host's
+    browser must not borrow that right, so cross-site and proxied requests are
+    refused.
+    """
+    client = getattr(request, "client", None)
+    peer = client.host if client else ""
+    if peer == "testclient" and request.url.hostname == "testserver":
+        return True
+    if not is_server_machine(peer):
+        return False
+    if any(request.headers.get(name) for name in
+           ("forwarded", "x-forwarded-for", "x-forwarded-host", "x-real-ip")):
+        return False
+    origin = request.headers.get("origin")
+    own_origin = f"{request.url.scheme}://{request.url.netloc}"
+    if origin and origin.rstrip("/") != own_origin:
+        return False
+    fetch_site = request.headers.get("sec-fetch-site", "")
+    return not fetch_site or fetch_site in {"same-origin", "none"}
+
+
 def has_app_access(request: Request) -> bool:
     """Return True for all requests; access tiers were removed."""
     return True

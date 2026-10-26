@@ -1,5 +1,36 @@
 # Recording journey previews
 
+The current Flow ownership preview is [flow-owners.html](flow-owners.html). The
+preview bar switches who is signed in: the host PC without a person, the host
+PC signed in as a fictional person, or a colleague on their own computer. It
+shows the **User** filter above the Flows list (All users, each person with a
+count, Unassigned), the host's owner list on every row with counts that update
+after a reassignment, a colleague's read-only rows (**View**, a disabled Active
+switch, no Delete), the view-only builder banner, and the builder's owner field:
+a list on the host PC, "Flows you create are assigned to you" for a colleague.
+Production `app.js` renders every screen; only the API layer and the viewer are
+fictional (`flow-owners.js`). Serve `app` as below and open
+`http://127.0.0.1:8769/static/recording-preview/flow-owners.html`.
+`tests/test_flow_owners_preview.py` walks it at 1280×900 and 390×844 and saves
+screenshots when `PREVIEW_EVIDENCE_DIR` is set. The sign-in chooser and the
+Users page (SQL password column, host-only editing) are walked against
+production `users.js` by `tests/test_users_browser.py`.
+
+The current Flow schedule preview is [flow-triggers.html](flow-triggers.html):
+**More triggers** under **Schedule and owner**, where one Flow runs at several
+times (for example a fictional Outlook Flow checking for a file on weekdays at
+08:00, 11:00 and 14:00). It shows Add (a copy of the previous trigger one hour
+later), per-row Daily/Weekly/Monthly fields, Remove with renumbering, the
+24-trigger limit, Manual hiding the block, the Python help without the
+Outlook/file no-op sentence, and the Flows list label `+ 2 more triggers`.
+Production `app.js` renders every screen; only the API layer is fictional
+(`flow-triggers.js`). The preview bar switches the save outcome to the
+validation error "Trigger N repeats trigger N-1." Serve `app` as below and
+open `http://127.0.0.1:8769/static/recording-preview/flow-triggers.html`.
+`tests/test_flow_triggers_preview.py` walks every control at 1280×900 and
+390×844, saves screenshots when `PREVIEW_EVIDENCE_DIR` is set, and skips when
+neither the Chrome channel nor the bundled Chromium can launch.
+
 The current usability checkpoint for recording replacement and template
 retargeting is [retarget.html](retarget.html). It uses fictional Country/Main
 buttons to demonstrate the visible **Record again** action, the distinction

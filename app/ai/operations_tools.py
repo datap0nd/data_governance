@@ -980,7 +980,7 @@ def _get_alert_context(args: AlertContextArgs) -> ToolEnvelope:
             ).fetchall()
             linked_flows = db.execute(
                 """SELECT id, name, enabled, source_type, schedule_type,
-                          schedule_time, schedule_days, schedule_day,
+                          schedule_time, schedule_days, schedule_day, additional_triggers_json,
                           last_run_at, last_success_at, last_execution_success_at,
                           freshness_effective_from_at, last_status, last_error
                      FROM flows
@@ -1029,8 +1029,8 @@ def _get_alert_context(args: AlertContextArgs) -> ToolEnvelope:
                 "linked_flows": _safe_rows(
                     linked_flows,
                     ("id", "name", "enabled", "source_type", "schedule_type",
-                     "schedule_time", "schedule_days", "schedule_day", "last_run_at",
-                     "last_success_at", "last_status", "last_error"),
+                     "schedule_time", "schedule_days", "schedule_day", "additional_triggers_json",
+                     "last_run_at", "last_success_at", "last_status", "last_error"),
                     limit=10,
                 ),
                 "prior_alerts": _safe_rows(
@@ -1092,6 +1092,7 @@ def _get_alert_context(args: AlertContextArgs) -> ToolEnvelope:
             flow = db.execute(
                 """SELECT id, name, source_type, enabled, filename_template,
                           schedule_type, schedule_time, schedule_days, schedule_day,
+                          additional_triggers_json,
                           last_run_at, last_success_at, last_status, last_error,
                           transform_enabled, sql_handoff_enabled, sql_mode,
                           sql_database, sql_schema, sql_table, sql_target_source_id,

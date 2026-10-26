@@ -207,7 +207,7 @@ Outlook attachment flows search the signed-in user's default, top-level Inbox fo
 
 Python-script flows run one or more Python scripts in the saved order on the headless worker with its own interpreter. The first script receives `--output`; every later script receives the previous step's file as `--input` and its own `--output`, with `METRONOME_FLOW_*` environment variables describing the step, the run and the configured final file type. The last script writes the final CSV or XLSX file, which is validated and either kept as the Flow's deliverable (run folders or fixed file path) or, as CSV, inserted into a SQL table with the usual materialized-view refresh. Scripts run in place and are never copied; every script must exist and end in `.py` before the run starts, a non-zero exit, a missing output or a 3600-second timeout fails the run with the script name, step number and stderr, and each step records the script's SHA-256. Each script row can carry an arguments line, added to the command exactly as typed before `--input`/`--output` with `{flow}`, `{run_id}`, `{date}` and `{value}` tokens, and a list of values that runs the script once per value; every run of the last script is a deliverable, so a last row with several values produces a bundle of final files named with `{value}` or `{index}`. These runs cannot be resumed, but Retry SQL reuses the saved final CSV. A Python Flow set to **Just run the scripts** instead runs each script exactly as typed with the computer's Python, and starts it through the `Metronome_Python_Desktop` scheduled task in the signed-in BI desktop session with the account's standard rights, so Excel and other COM programs, mapped drives and the account's environment behave as they do when the script is run from PowerShell. See [Python-script flows](docs/python_script_flows.md).
 
-Automatic execution is controlled from the Flows list with an Active/Inactive switch. The builder stores a daily, weekly, or monthly day-of-month schedule but does not activate it. Months that do not contain the configured day are skipped. Run history provides an Expanded logs link for each run. New runs retain every progress event, phase timing, source export view, downloaded artifact, SQL target and mode, final error, and complete worker traceback in the local SQLite database. Long portal waits stay visible there: while a report renders or a download transfers, the worker posts a `report_rendering`, `download_waiting`, `download_progress` or `download_stall_warning` event every 5 minutes with the file name, its size and the bytes added since the last check. A growing download is never capped, however long it takes; the worker gives up only after 15 minutes (three 5-minute checks) without any growth, and a report keeps rendering as long as its page stays open.
+Automatic execution is controlled from the Flows list with an Active/Inactive switch. The builder stores a daily, weekly, or monthly day-of-month schedule but does not activate it. Months that do not contain the configured day are skipped. Under **Schedule and owner > More triggers**, a scheduled Flow can add up to 23 more triggers, each daily, weekly, or monthly at its own Dubai time; the Flow runs at whichever trigger comes next, the list shows the count (for example `Daily + 2 more triggers`), and choosing **Manual** removes them. A trigger that comes due while the Flow already has a queued or running run is skipped, and the next trigger is scheduled. Outlook and file Flows finish as a no-op when nothing new has arrived, so several triggers a day can check for a file that has no fixed delivery time. The Flow's own health requires a successful run after its most recent due trigger; the freshness rule that output Sources inherit follows the main schedule (trigger 1) only. Run history provides an Expanded logs link for each run. New runs retain every progress event, phase timing, source export view, downloaded artifact, SQL target and mode, final error, and complete worker traceback in the local SQLite database. Long portal waits stay visible there: while a report renders or a download transfers, the worker posts a `report_rendering`, `download_waiting`, `download_progress` or `download_stall_warning` event every 5 minutes with the file name, its size and the bytes added since the last check. A growing download is never capped, however long it takes; the worker gives up only after 15 minutes (three 5-minute checks) without any growth, and a report keeps rendering as long as its page stays open.
 
 All new Flows receive a managed folder under the configured Flows root and source module (for example, GSCM). Edit Flow has no destination picker. Saving or recording a legacy flow adopts a managed folder without moving historical files. Each Flow chooses an **Output files** mode. The default, **Separate runs · keep last 3**, keeps the existing `#<run>_<dd-mm-yyyy>` folders visible under the configured target and retains the newest three unpinned runs. **Fixed file path · replace previous output** keeps those same immutable run artifacts in `<browser-profile>/run_artifacts/<target-hash>` and publishes only the validated configured deliverables into the target folder. Use a filename without date or period tokens for a Power BI or Excel file connection. An identical resolved filename is replaced; filename tokens such as `{date}` and `{week}` deliberately create additional stable files, and a changed extension leaves the older basename untouched with a warning in the run log. Outlook v1 retains the attachment's original basename, so dated attachment names accumulate. Changing mode, target, or template never deletes prior stable files or visible run folders.
 
@@ -251,16 +251,33 @@ The scheduler checks for due recurrences every minute and interprets the saved t
 
 Each recurrence has an alert owner. New recurrences default to the selected report's owner, and the owner's current email is resolved from Users. The builder requires a valid user email before saving. When an actual send run fails before delivery is launched, Metronome sends that owner a separate failure email with the reason, latest refresh status when available, the report/page/visual, and a link to the Power BI report. Draft-test failures are recorded but do not notify the owner. Failure notifications use the same Outlook delivery path, so if Outlook itself is unavailable the notification attempt is recorded in the run detail but cannot be delivered by email.
 
-### Users and SQL identities
+### Users, sign-in and Flow ownership
 
-Use **Users** in the main navigation to add, edit, search or delete BI and Business
-profiles. Name, role, email and an optional SQL username are managed together.
-Flows keep their existing owner-person association, so editing a profile updates
-the owner information without assigning the Flow to a new person. Deleting a
-user retains their Flows and makes those Flows unassigned.
+The first time someone opens Metronome, they choose their name from **Users**.
+The choice is remembered for that browser and IP address. Only the host PC (the
+machine running Metronome, opened at `http://localhost:8000` or its own address)
+can sign a computer out again, from the person's profile in Users. The host PC
+can also continue without choosing a person. Upgrading clears the old typed-name
+sign-ins once, so everyone chooses again.
 
-The SQL username is identity metadata for future table permissions. Saving it
-does not create a PostgreSQL role, connect as that user, or execute a GRANT.
+Everyone can read **Users**; only the host PC adds, edits or deletes profiles.
+Each profile has a name, role, email, optional SQL username and SQL password.
+Each person sets or clears their own SQL password with **Change SQL password**
+on their row (once the host PC has added their SQL username), and the host PC
+can set anyone's. Metronome keeps the password in the project `.env`
+settings file as `DG_USER_SQL_PASSWORD_<person id>` (written in place, so the
+file keeps the access list setup gave it) and shows it only as asterisks.
+Changing a person's SQL username clears their saved password. Deleting a user
+removes their password and sign-ins, keeps their Flows and makes those Flows
+unassigned.
+
+A Flow belongs to the person who created it. Its owner and the host PC can
+change it; everyone else can view and run it. The host PC can create a Flow for
+anyone and reassign any Flow from the owner list in **Flows** or in the builder,
+and the **User** filter above the Flows list shows one person's Flows or the
+unassigned ones. When the host PC changes or deletes a Flow assigned to someone
+else, Metronome emails that person through Outlook with each changed setting
+(before and after), who made the change and the date in Dubai time.
 Create Artifacts now manages assets only. TMDL Checker is retired from navigation
 and scans; PBIX/TMDL parsing for report metadata and lineage remains active.
 The existing Dashboard is unchanged.
@@ -275,8 +292,8 @@ The saved source uses Power BI's technical page and visual identifiers. Renaming
 
 ### Flow SQL and materialized-view refresh
 
-Optional Flow SQL handoffs use the dedicated write credentials `DG_UPLOAD_PGUSER` and `DG_UPLOAD_PGPASSWORD`. Fill them in in the project `.env` file beside `governance.db`, then restart Metronome. Setup creates this file from `.env.example` only when it is missing. Non-empty values in `.env` override Windows environment variables; blank placeholders are ignored. Set the target server with `DG_UPLOAD_PGHOST`, `DG_UPLOAD_PGPORT`, and `DG_UPLOAD_PGDATABASE`; host and database fall back to the read-only probe connection values when omitted. Each Flow stores its own database, schema, table, and append or managed-snapshot behavior.
-The Flow builder's **Set SQL table owner from Flow owner** option is on by default for existing and new Flows. Turn it off for a target database without the selected person's SQL role. The person remains the Flow owner and receives failure alerts. SQL loading then preserves ownership of existing tables, while new tables belong to the upload account. The upload account still needs the normal privileges to create or load the target table.
+A Flow assigned to a person inserts into SQL as that person: it signs in with their SQL username from Users and the SQL password saved there (by that person or the host PC), read from `.env` when the worker connects (so a new password applies to the next run without a restart). If the owner has no SQL username or saved password, the run is refused before it starts (a scheduled run records the reason as the Flow's last error); it never falls back to another account. Its post-SQL materialized-view refresh uses the same SQL user. Workers must advertise `sql_person_credentials_v1`; update them before relying on this. Unassigned Flows, the SQL catalog and the Pipelines refreshes use the dedicated write credentials `DG_UPLOAD_PGUSER` and `DG_UPLOAD_PGPASSWORD`. Fill them in in the project `.env` file beside `governance.db`, then restart Metronome. Setup creates this file from `.env.example` only when it is missing. Non-empty values in `.env` override Windows environment variables; blank placeholders are ignored. Set the target server with `DG_UPLOAD_PGHOST`, `DG_UPLOAD_PGPORT`, and `DG_UPLOAD_PGDATABASE`; host and database fall back to the read-only probe connection values when omitted. Each Flow stores its own database, schema, table, and append or managed-snapshot behavior.
+The Flow builder's **Set SQL table owner from Flow owner** option is on by default for existing and new Flows. Because the load already signs in as the owner, a table it creates belongs to the owner; the option additionally hands an existing target table to the owner's role, which needs that role to own the table already or inherit its owner's privileges. Turn it off to leave existing tables with their current owner. The owner's SQL user needs the normal privileges to create or load the target table.
 
 **Refresh materialized views** is an optional step directly below SQL insertion (Off by default). Automatic mode starts from the exact SQL server, database, schema and table, walks the PostgreSQL dependency metadata the Pipelines feature maintains through every downstream relation (ordinary views included), and refreshes each physical materialized view once, upstream first; the list is recalculated when a run is queued and frozen into that run. The editor shows the discovered list and metadata timestamp, and distinguishes a verified empty list from missing, incomplete, stale or cyclic lineage, with actions to refresh the metadata or switch to Manual. Manual mode refreshes exactly the chosen views (catalog picker or an explicit database, schema and view name), verified against PostgreSQL for existence, type and refresh permission and ordered by dependency. The refresh runs only after PostgreSQL confirmed the insertion commit, never during **Test recording**, and each view commits separately; a failing view stops the run, keeps the committed insertion, records every view's status, duration and error, and offers **Retry view refresh**, which refreshes only the unfinished views from the frozen plan without downloading, transforming or inserting again. Full-pipeline runs take over each Flow's configured views and refresh them once after every upstream Flow. Workers must advertise `post_sql_refresh_v1`; generated scripts carry the frozen list (`--dry-run` prints it), honour `--no-sql` for both stages and support `--retry-views` from a local checkpoint.
 
@@ -410,7 +427,8 @@ Set by `setup.ps1`; override them only for a manual run.
 | `DG_FLOWS_ROOT` | Root of the per-Flow folders; see [Flow paths](docs/flow_paths.md) |
 | `DG_AI_MOCK`, `DG_AI_API_URL`, `DG_AI_API_KEY`, `DG_AI_MODEL` | Assistant provider settings |
 | `PGHOST`, `PGUSER`, `PGPASSWORD`, `PGDATABASE` | Read-only probe connection to PostgreSQL |
-| `DG_UPLOAD_PGHOST`, `DG_UPLOAD_PGPORT`, `DG_UPLOAD_PGDATABASE`, `DG_UPLOAD_PGUSER`, `DG_UPLOAD_PGPASSWORD` | Separate write credentials used only by Flow SQL handoffs |
+| `DG_UPLOAD_PGHOST`, `DG_UPLOAD_PGPORT`, `DG_UPLOAD_PGDATABASE`, `DG_UPLOAD_PGUSER`, `DG_UPLOAD_PGPASSWORD` | Separate write credentials used only by Flow SQL handoffs; the user and password apply to unassigned Flows |
+| `DG_USER_SQL_PASSWORD_<person id>` | A person's SQL password, saved by the host PC from Users; assigned Flows sign in with it |
 
 `endpoint_url.txt`, placed in the project root one level above the code folder,
 holds the assistant endpoint URL on a single line and takes priority over
@@ -421,8 +439,9 @@ holds the assistant endpoint URL on a single line and takes priority over
 The `PG*` credentials are for `SELECT` only — never `INSERT`, `UPDATE`,
 `DELETE`, `DROP`, `CREATE`, `ALTER` or `TRUNCATE`. The prober enforces this at
 the connection level with `SET default_transaction_read_only = ON`, and the code
-must contain no write query against them either. Flow SQL writes use the
-separate `DG_UPLOAD_PG*` credentials and their own configured target.
+must contain no write query against them either. Flow SQL writes never use
+them: they go to the `DG_UPLOAD_PG*` server and database, signed in as the Flow
+owner's own SQL user or, for an unassigned Flow, the `DG_UPLOAD_PGUSER` account.
 
 ## Expected Folder Structure for TMDL Exports
 

@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -63,7 +64,8 @@ def test_owner_schedule_and_shared_changes_refresh_without_export(flow_db, tmp_p
     saved = flows.update_flow(saved['id'], body, _request())
     flows.set_flow_enabled(saved['id'], flows.FlowEnabledWrite(enabled=True), _request())
     assert manifest(saved)['configuration']['schedule'] == {
-        'type': 'daily', 'time': '10:30', 'days': [], 'day': None, 'enabled': True, 'timezone': 'Asia/Dubai'}
+        'type': 'daily', 'time': '10:30', 'days': [], 'day': None, 'additional_triggers': [],
+        'enabled': True, 'timezone': 'Asia/Dubai'}
     with database.get_db() as db:
         db.execute("INSERT OR REPLACE INTO app_settings(key,value) VALUES ('flows_recording_wait_seconds','35')")
     assert manifest(saved)['configuration']['defaults']['recording_wait_seconds'] == 35
@@ -204,6 +206,53 @@ def test_status_detects_old_files_when_failed_share_write_could_not_record_error
     assert (Path(saved['flow_folder']) / 'flow.json').read_bytes() == before  # read-only status
     flow_handover.after_commit(database.DB_PATH)
     assert flows.standalone_status(saved['id'])['state'] == 'current'
+
+
+def test_held_commits_are_refreshed_in_background_then_inline_again(flow_db, tmp_path):
+    saved, _ = local_job(tmp_path)
+    flow_handover.hold()
+    try:
+        with database.get_db() as db:
+            db.execute('UPDATE flows SET name=? WHERE id=?', ('Renamed while starting', saved['id']))
+        assert manifest(saved)['configuration']['name'] == saved['name']
+    finally:
+        thread = flow_handover.catch_up_in_background(database.DB_PATH)
+        thread.join(120)
+    assert not thread.is_alive()
+    assert manifest(saved)['configuration']['name'] == 'Renamed while starting'
+    with database.get_db() as db:
+        db.execute('UPDATE flows SET name=? WHERE id=?', ('Saved after startup', saved['id']))
+    assert manifest(saved)['configuration']['name'] == 'Saved after startup'
+
+
+def test_save_during_background_refresh_does_not_wait_and_is_refreshed(flow_db, tmp_path, monkeypatch):
+    saved, _ = local_job(tmp_path)
+    started, release = threading.Event(), threading.Event()
+    synchronize = flow_handover.synchronize
+    passes = []
+
+    def slow_first_pass(db_path, **kwargs):
+        passes.append(db_path)
+        if len(passes) == 1:
+            started.set()
+            release.wait(30)
+        return synchronize(db_path, **kwargs)
+
+    monkeypatch.setattr(flow_handover, 'synchronize', slow_first_pass)
+    flow_handover.hold()
+    thread = flow_handover.catch_up_in_background(database.DB_PATH)
+    try:
+        assert started.wait(30)
+        with database.get_db() as db:
+            db.execute('UPDATE flows SET name=? WHERE id=?', ('Saved during refresh', saved['id']))
+        # The save returned without refreshing files on this thread.
+        assert len(passes) == 1
+    finally:
+        release.set()
+        thread.join(120)
+    assert not thread.is_alive()
+    assert len(passes) == 2
+    assert manifest(saved)['configuration']['name'] == 'Saved during refresh'
 
 
 def test_snapshot_fingerprint_is_stable_across_python_hash_seeds():

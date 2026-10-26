@@ -15,6 +15,7 @@ from pydantic import ValidationError
 
 import app.database as database
 from app import flow_email_delivery as delivery
+from app import flow_python
 from app import flow_handover, flow_recordings, flow_standalone
 from app.routers import email as email_router
 from app.routers import flows
@@ -386,7 +387,8 @@ def test_python_source_label_names_the_scripts_in_order(flow_db, monkeypatch, tm
     flows.register_worker(flows.WorkerRegister(
         worker_id="py-worker", display_name="Python worker",
         # The current worker also honours per-script arguments and values.
-        capabilities={"adapters": ["python_script"], "python_script_arguments_v1": True, "shared_flow_artifacts": True},
+        capabilities={"adapters": ["python_script"], "python_script_arguments_v1": True, "shared_flow_artifacts": True,
+                      flow_python.EMAIL_DIR_CAPABILITY: True},
     ))
     assert flows.claim_run("py-worker")["run"]["id"] == queued["id"]
     bundle = [
@@ -403,6 +405,130 @@ def test_python_source_label_names_the_scripts_in_order(flow_db, monkeypatch, tm
     body = delivery.build_message(context, attach=False)["html_body"]
     assert "Python_orders_T.csv" in body and "Python_orders_U.csv" in body
     assert [item["filename"] for item in outlook.messages()[0]["attachments"]] == ["Python_orders_T.csv", "Python_orders_U.csv"]
+
+
+def _python_run_with_folder(monkeypatch, tmp_path, *, worker="body-worker"):
+    """A succeeded Python-script run whose worker registered ``run_folder``; returns (run_id, result, folder)."""
+    monkeypatch.setattr(flows, "launch_local_worker", lambda mode, **kwargs: {"status": "starting"})
+    saved = flows.create_flow(flows.FlowWrite(
+        name="Weekly brief", source_type="python", python_scripts=[str(tmp_path / "brief.py")],
+        schedule_type="weekly", schedule_time="08:00", schedule_days=["monday"], email_delivery=EMAIL,
+        file_format="xlsx",
+    ), _request())
+    queued = flows.queue_run(saved["id"], _request())
+    flows.register_worker(flows.WorkerRegister(
+        worker_id=worker, display_name="Brief worker",
+        capabilities={"adapters": ["python_script"], "shared_flow_artifacts": True,
+                      flow_python.EMAIL_DIR_CAPABILITY: True},
+    ))
+    assert flows.claim_run(worker)["run"]["id"] == queued["id"]
+    folder = tmp_path / "Downloads" / f"#{queued['id']}"
+    (folder / "email").mkdir(parents=True)
+    flows.register_run_folder(worker, queued["id"], flows.FolderRegister(run_folder=str(folder)))
+    return saved, queued["id"], folder
+
+
+def _succeed(worker, run_id, folder, *, size=2048):
+    final = folder / "Weekly brief 2026-10-26.xlsx"
+    final.write_bytes(b"PK" + b"0" * 10)
+    return flows.update_run(worker, run_id, flows.WorkerProgress(
+        status="succeeded", error=None,
+        artifacts=[{"file_path": str(final), "filename": final.name, "file_size": size, "row_count": None,
+                    "status": "saved", "period_key": None}],
+        progress={"stage": "complete", "message": "Ran 1 Python script run(s).", "no_op": False},
+    ))
+
+
+def test_python_script_body_is_sent_with_inline_images_and_the_file(flow_db, monkeypatch, tmp_path, outlook):
+    saved, run_id, folder = _python_run_with_folder(monkeypatch, tmp_path)
+    (folder / "email" / "body.html").write_text(
+        '<html><body><h1>Weekly brief</h1><img src="cid:units.png" alt="Units">'
+        "<img src='cid:trend.png'><img src=\"cid:units.png\"></body></html>", encoding="utf-8",
+    )
+    (folder / "email" / "units.png").write_bytes(b"\x89PNG" + b"0" * 100)
+    (folder / "email" / "trend.png").write_bytes(b"\x89PNG" + b"0" * 50)
+    (folder / "email" / "unused.png").write_bytes(b"\x89PNG")
+
+    result = _succeed("body-worker", run_id, folder)
+
+    assert result["email"]["status"] == "pending" and result["email"]["script_body"] is True
+    assert result["email"]["detail"] is None and result["email"]["attached"] is True
+    message = outlook.messages()[0]
+    assert message["html_body"].startswith("<html><body><h1>Weekly brief</h1>")
+    assert "FLOW FILE" not in message["html_body"]
+    # Metronome's footer goes inside the body, naming the run and the owner.
+    footer = message["html_body"].index(f"Sent by Metronome after run #{run_id} of the Flow Weekly brief.")
+    assert footer < message["html_body"].index("</body></html>")
+    assert message["inline_images"] == [
+        {"path": str(folder / "email" / "units.png"), "cid": "units.png"},
+        {"path": str(folder / "email" / "trend.png"), "cid": "trend.png"},
+    ]
+    assert [item["filename"] for item in message["attachments"]] == ["Weekly brief 2026-10-26.xlsx"]
+    assert message["subject"] == f"Metronome flow file: Weekly brief (run #{run_id})"
+    assert _events(run_id)[-1]["message"].endswith("The script wrote the body (2 inline image(s)).")
+
+
+def test_unusable_script_body_falls_back_to_the_standard_message(flow_db, monkeypatch, tmp_path, outlook):
+    saved, run_id, folder = _python_run_with_folder(monkeypatch, tmp_path)
+    (folder / "email" / "body.html").write_text('<p>Chart</p><img src="cid:missing.png">', encoding="utf-8")
+
+    result = _succeed("body-worker", run_id, folder)
+
+    assert result["email"]["status"] == "pending" and result["email"]["script_body"] is False
+    assert result["email"]["detail"] == (
+        "The script's email body was not used: The image missing.png for cid:missing.png is missing from the "
+        "email folder."
+    )
+    message = outlook.messages()[0]
+    assert "FLOW FILE" in message["html_body"] and "inline_images" not in message
+    assert [item["filename"] for item in message["attachments"]] == ["Weekly brief 2026-10-26.xlsx"]
+    assert "the standard message was sent instead" in _events(run_id)[-1]["message"]
+    assert _run_row(run_id)["email_detail"].startswith("The script's email body was not used")
+
+
+def test_script_body_rules(tmp_path, monkeypatch):
+    folder = tmp_path / "run" / "email"
+    folder.mkdir(parents=True)
+    context = {"source_type": "python", "run_folder": str(tmp_path / "run")}
+    # No body, another source type or no recorded folder: the standard message.
+    assert delivery.script_body(context) is None
+    (folder / "body.html").write_text("<p>Hello</p>", encoding="utf-8")
+    assert delivery.script_body({**context, "source_type": "portal"}) is None
+    assert delivery.script_body({**context, "run_folder": None}) is None
+    assert delivery.script_body(context) == {"html": "<p>Hello</p>", "inline_images": [], "image_bytes": 0}
+
+    def problem(text):
+        (folder / "body.html").write_text(text, encoding="utf-8")
+        with pytest.raises(delivery.ScriptBodyError) as error:
+            delivery.script_body(context)
+        return str(error.value)
+
+    assert "must name a .png, .jpg or .gif file" in problem('<img src="cid:../secret.png">')
+    assert "must name a .png, .jpg or .gif file" in problem('<img src="cid:chart.svg">')
+    assert problem("  ") == "body.html is empty."
+    (tmp_path / "outside.png").write_bytes(b"\x89PNG")
+    try:
+        (folder / "linked.png").symlink_to(tmp_path / "outside.png")
+    except OSError:
+        pass  # symlinks need privileges on some Windows hosts
+    else:
+        assert "missing from the email folder" in problem('<img src="cid:linked.png">')
+    (folder / "body.html").write_bytes(b"\xff\xfe<p>")
+    with pytest.raises(delivery.ScriptBodyError, match="not UTF-8"):
+        delivery.script_body(context)
+    monkeypatch.setattr(delivery, "MAX_BODY_BYTES", 10)
+    assert "the limit is 0 MB" in problem("<p>" + "x" * 20 + "</p>")
+    monkeypatch.setattr(delivery, "MAX_BODY_BYTES", 1024 * 1024)
+    (folder / "big.png").write_bytes(b"0" * 64)
+    monkeypatch.setattr(delivery, "MAX_INLINE_IMAGE_BYTES", 32)
+    assert "The images take" in problem('<img src="cid:big.png">')
+    monkeypatch.setattr(delivery, "MAX_INLINE_IMAGES", 0)
+    assert "1 images; the limit is 0." == problem('<img src="CID:big.png">')
+
+
+def test_script_footer_goes_before_the_closing_body_tag():
+    assert delivery._with_footer("<html><BODY>x</BODY></html>", "<f>") == "<html><BODY>x<f></BODY></html>"
+    assert delivery._with_footer("<p>x</p>", "<f>") == "<p>x</p><f>"
 
 
 def test_retry_runs_resolve_the_source_files(flow_db, monkeypatch):

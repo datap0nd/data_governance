@@ -9,6 +9,7 @@ different timezone conventions.
 from __future__ import annotations
 
 import calendar
+import json
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Iterable
 from zoneinfo import ZoneInfo
@@ -157,6 +158,56 @@ def schedule_rule(
     }
 
 
+# Every Flow trigger after the main schedule. The cap keeps the builder usable
+# and bounds the scheduler's per-Flow next-occurrence work.
+MAX_ADDITIONAL_TRIGGERS = 23
+
+
+def additional_trigger_rules(
+    values: Iterable[dict] | None,
+    *,
+    timezone_name: str | None = None,
+) -> list[dict]:
+    """Return schedule rules for a Flow's additional triggers.
+
+    Each item is ``{"type", "time", "days", "day"}`` with a daily, weekly or
+    monthly type. The main schedule keeps its own columns; these triggers only
+    add run times. Invalid items raise ``ValueError`` naming the trigger, which
+    is numbered from 2 because the main schedule is trigger 1.
+    """
+    items = list(values or [])
+    if len(items) > MAX_ADDITIONAL_TRIGGERS:
+        raise ValueError(f"A Flow can have at most {MAX_ADDITIONAL_TRIGGERS + 1} triggers.")
+    rules = []
+    for number, item in enumerate(items, start=2):
+        if not isinstance(item, dict):
+            raise ValueError(f"Trigger {number} is not a schedule.")
+        kind = str(item.get("type") or "").strip().casefold()
+        if kind not in {"daily", "weekly", "monthly"}:
+            raise ValueError(f"Trigger {number} must be daily, weekly, or monthly.")
+        try:
+            rule = schedule_rule(
+                kind, item.get("time"),
+                item.get("days") or [] if kind == "weekly" else [],
+                item.get("day") if kind == "monthly" else None,
+                timezone_name=timezone_name,
+            )
+        except ValueError as exc:
+            raise ValueError(f"Trigger {number}: {exc}") from None
+        rules.append(rule)
+    return rules
+
+
+def trigger_payload(rule: dict) -> dict:
+    """Return the stored/API shape of one additional trigger."""
+    return {
+        "type": rule["type"],
+        "time": rule["time"],
+        "days": list(rule.get("days") or []) if rule["type"] == "weekly" else [],
+        "day": rule.get("day") if rule["type"] == "monthly" else None,
+    }
+
+
 def rule_key(rule: dict | None) -> tuple | None:
     if not rule:
         return None
@@ -247,9 +298,32 @@ def evaluate_timed_rule(
     baseline_at: datetime | None,
     as_of: datetime | None = None,
 ) -> dict:
-    occurrence, deadline = latest_enforceable_occurrence(
-        rule, as_of=as_of, baseline=baseline_at,
+    return evaluate_timed_rules(
+        [rule], evidence_at=evidence_at, baseline_at=baseline_at, as_of=as_of,
     )
+
+
+def evaluate_timed_rules(
+    rules: list[dict],
+    *,
+    evidence_at: datetime | None,
+    baseline_at: datetime | None,
+    as_of: datetime | None = None,
+) -> dict:
+    """Evaluate evidence against the latest enforceable occurrence of any rule.
+
+    With several triggers, the evidence must be at or after the most recent
+    occurrence whose grace deadline has passed, whichever trigger it belongs to.
+    """
+    as_of = as_of or utc_now()
+    occurrence = deadline = None
+    for rule in rules:
+        candidate, candidate_deadline = latest_enforceable_occurrence(
+            rule, as_of=as_of, baseline=baseline_at,
+        )
+        if candidate is not None and (occurrence is None or candidate > occurrence):
+            occurrence, deadline = candidate, candidate_deadline
+    rule = rules[0]
     if occurrence is None:
         status = "pending"
     elif evidence_at is not None and evidence_at.astimezone(UTC) >= occurrence:
@@ -266,6 +340,37 @@ def evaluate_timed_rule(
     }
 
 
+def stored_additional_trigger_rules(flow) -> list[dict]:
+    """Return a saved Flow's additional trigger rules; none while it is manual."""
+    if str(_row_value(flow, "schedule_type", "manual") or "manual") == "manual":
+        return []
+    raw = _row_value(flow, "additional_triggers_json")
+    if raw in (None, ""):
+        return []
+    return additional_trigger_rules(json.loads(raw) if isinstance(raw, str) else raw)
+
+
+def flow_trigger_rules(flow) -> list[dict]:
+    """Return every schedule rule of a saved Flow: the main schedule first."""
+    days_raw = _row_value(flow, "schedule_days") or []
+    if isinstance(days_raw, str):
+        try:
+            days_raw = json.loads(days_raw)
+        except (TypeError, ValueError):
+            days_raw = [item.strip() for item in days_raw.split(",") if item.strip()]
+    rule = schedule_rule(
+        _row_value(flow, "schedule_type"), _row_value(flow, "schedule_time"),
+        days_raw, _row_value(flow, "schedule_day"),
+    )
+    return [rule, *stored_additional_trigger_rules(flow)] if rule else []
+
+
+def next_trigger_occurrence(rules: Iterable[dict], *, after: datetime | None = None) -> datetime | None:
+    """Return the earliest next occurrence across a Flow's triggers."""
+    after = after or utc_now()
+    return min((next_occurrence(rule, after=after) for rule in rules), default=None)
+
+
 def flow_freshness(flow, *, as_of: datetime | None = None) -> tuple[dict | None, dict]:
     schedule_type = str(_row_value(flow, "schedule_type", "manual") or "manual")
     if schedule_type == "manual":
@@ -274,19 +379,8 @@ def flow_freshness(flow, *, as_of: datetime | None = None) -> tuple[dict | None,
             "grace_deadline_at": None, "evidence_at": None,
             "baseline_at": None, "timezone": FLOW_TIMEZONE,
         }
-    days_raw = _row_value(flow, "schedule_days") or []
-    if isinstance(days_raw, str):
-        import json
-        try:
-            days_raw = json.loads(days_raw)
-        except (TypeError, ValueError):
-            days_raw = [item.strip() for item in days_raw.split(",") if item.strip()]
-    rule = schedule_rule(
-        schedule_type,
-        _row_value(flow, "schedule_time"),
-        days_raw,
-        _row_value(flow, "schedule_day"),
-    )
+    rules = flow_trigger_rules(flow)
+    rule = rules[0]
     baseline = parse_monitoring_timestamp(_row_value(flow, "freshness_effective_from_at"))
     evidence = parse_monitoring_timestamp(_row_value(flow, "last_execution_success_at"))
     if not bool(_row_value(flow, "enabled")):
@@ -295,6 +389,6 @@ def flow_freshness(flow, *, as_of: datetime | None = None) -> tuple[dict | None,
             "grace_deadline_at": None, "evidence_at": iso_utc(evidence),
             "baseline_at": iso_utc(baseline), "timezone": FLOW_TIMEZONE,
         }
-    return rule, evaluate_timed_rule(
-        rule, evidence_at=evidence, baseline_at=baseline, as_of=as_of,
+    return rule, evaluate_timed_rules(
+        rules, evidence_at=evidence, baseline_at=baseline, as_of=as_of,
     )

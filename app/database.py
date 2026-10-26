@@ -1066,6 +1066,9 @@ MIGRATIONS = [
         last_seen_at    DATETIME DEFAULT CURRENT_TIMESTAMP
     )""",
     "CREATE INDEX IF NOT EXISTS idx_user_devices_client_key ON user_devices(client_key)",
+    # Sign-ins name a person chosen from Users (see app.user_identity).
+    "ALTER TABLE user_ips ADD COLUMN person_id INTEGER",
+    "ALTER TABLE user_devices ADD COLUMN person_id INTEGER",
     # Power BI sync run tracking for stale-email safeguards
     """CREATE TABLE IF NOT EXISTS pbi_sync_runs (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1643,6 +1646,9 @@ MIGRATIONS = [
     "ALTER TABLE flows ADD COLUMN sql_uppercase INTEGER NOT NULL DEFAULT 0",
     # Per-component scan lifecycle details (NULL for legacy scan rows).
     "ALTER TABLE scan_runs ADD COLUMN components_json TEXT",
+    # The query-change counter came back after the short-lived query-history
+    # removal had dropped it from existing databases.
+    "ALTER TABLE scan_runs ADD COLUMN changed_queries INTEGER",
     """CREATE TABLE IF NOT EXISTS scanner_module_runs (
         id                       INTEGER PRIMARY KEY AUTOINCREMENT,
         scanner_job_id           INTEGER REFERENCES scanner_jobs(id) ON DELETE SET NULL,
@@ -2043,6 +2049,9 @@ MIGRATIONS = [
            emitted_at TEXT NOT NULL,
            UNIQUE(run_id, line_no))""",
     "CREATE INDEX IF NOT EXISTS idx_flow_run_output_run ON flow_run_output(run_id, line_no)",
+    # Triggers after the main schedule: [{type, time, days, day}], each adding
+    # run times. The main schedule columns stay trigger 1 for older readers.
+    "ALTER TABLE flows ADD COLUMN additional_triggers_json TEXT NOT NULL DEFAULT '[]'",
 ]
 
 
@@ -2093,6 +2102,9 @@ def init_db():
     initialize_time_policy(conn)
     from app.recording_v2_migration import initialize_recording_v2
     initialize_recording_v2(conn)
+    # Typed-name sign-ins are cleared once; everyone then picks from Users.
+    from app.user_identity import initialize as initialize_user_identity
+    initialize_user_identity(conn)
     # Old query-change actions were attached only to a deduplicated source and
     # cannot be mapped reliably to the report table whose M expression changed.
     # Any v2 action has at least one query_versions row, so this cleanup is safe

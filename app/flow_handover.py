@@ -65,6 +65,7 @@ def snapshot(db, flow_id):
         'created_by': flow.get('created_by'), 'created_at': flow.get('created_at'),
         'schedule': {'type': flow['schedule_type'], 'time': flow['schedule_time'],
                      'days': flow['schedule_days'], 'day': flow.get('schedule_day'),
+                     'additional_triggers': flow.get('additional_triggers', []),
                      'enabled': flow['enabled'], 'timezone': 'Asia/Dubai'},
         'source': {key: site.get(key) for key in ('id', 'name', 'adapter', 'base_url', 'auth_url')},
         'report': {key: report.get(key) for key in ('id', 'name', 'report_url', 'automation', 'filters',
@@ -191,7 +192,50 @@ def synchronize(db_path, *, flow_id=None, force=False):
     return results
 
 
+_HOLD_LOCK = threading.Lock()
+_holds = 0
+_missed = False
+
+
+def hold():
+    """Skip commit-triggered syncs until ``catch_up_in_background`` lifts the hold."""
+    global _holds
+    with _HOLD_LOCK:
+        _holds += 1
+
+
+def catch_up_in_background(db_path):
+    """Sync every Flow on a background thread, then lift one hold.
+
+    Commits made meanwhile are skipped rather than queued behind a refresh of
+    every Flow; the thread syncs again until a pass finishes with none missed.
+    """
+    def run():
+        global _holds, _missed
+        while True:
+            # A pass reads everything committed before it starts.
+            with _HOLD_LOCK:
+                _missed = False
+            _synchronize_logged(db_path)
+            with _HOLD_LOCK:
+                if not _missed:
+                    _holds -= 1
+                    return
+    thread = threading.Thread(target=run, name='flow-continuity-catch-up', daemon=True)
+    thread.start()
+    return thread
+
+
 def after_commit(db_path):
+    global _missed
+    with _HOLD_LOCK:
+        if _holds:
+            _missed = True
+            return
+    _synchronize_logged(db_path)
+
+
+def _synchronize_logged(db_path):
     try:
         synchronize(db_path)
     except Exception as exc:

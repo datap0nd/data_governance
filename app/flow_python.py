@@ -34,6 +34,10 @@ RUN_CAPABILITY = "python_script_run_v1"
 # would: on Windows in the signed-in desktop session with the account's
 # standard rights, never inside the session-0 worker service.
 DESKTOP_CAPABILITY = "python_script_desktop_v1"
+# Workers advertise this once they name METRONOME_FLOW_EMAIL_DIR; a job whose
+# Email step is on is never claimed by an older worker, whose scripts would
+# not find the variable.
+EMAIL_DIR_CAPABILITY = "python_script_email_dir_v1"
 # Per-script arguments are one line typed by the owner; values are one short
 # line each and the same script runs once per value.
 MAX_ARGUMENT_CHARS = 2000
@@ -41,6 +45,13 @@ MAX_VALUES = 200
 MAX_VALUE_CHARS = 500
 # Tail of a script's stdout/stderr kept in the failure message and step record.
 OUTPUT_TAIL_CHARS = 4000
+
+# A run whose Email step is on names this folder (inside the run folder) to the
+# last script row for an email body of its own: body.html plus the images it
+# references as cid:<file name>. The script creates the folder when it writes
+# a body; the Email step checks and uses it (app.flow_email_delivery.script_body).
+EMAIL_DIR_NAME = "email"
+EMAIL_BODY_NAME = "body.html"
 
 ARGUMENT_TOKEN_RE = re.compile(r"\{(flow|run_id|date|value)\}")
 VALUE_TOKEN = "{value}"
@@ -380,10 +391,11 @@ def script_command(script: Path, input_path: Path | None, output_path: Path, arg
 
 
 def step_environment(base: dict, *, input_path, output_path, results_dir, step, steps,
-                     output_format, flow_name, run_id, inputs=None, value=None) -> dict:
+                     output_format, flow_name, run_id, inputs=None, value=None, email_dir=None) -> dict:
     environment = dict(base)
     environment.pop("METRONOME_FLOW_INPUT", None)
     environment.pop("METRONOME_FLOW_INPUTS", None)
+    environment.pop("METRONOME_FLOW_EMAIL_DIR", None)
     environment.update({
         "METRONOME_FLOW_OUTPUT": str(output_path),
         "METRONOME_FLOW_RESULTS_DIR": str(results_dir),
@@ -399,6 +411,8 @@ def step_environment(base: dict, *, input_path, output_path, results_dir, step, 
         environment["METRONOME_FLOW_INPUT"] = str(input_path)
     if inputs:
         environment["METRONOME_FLOW_INPUTS"] = os.pathsep.join(str(item) for item in inputs)
+    if email_dir is not None:
+        environment["METRONOME_FLOW_EMAIL_DIR"] = str(email_dir)
     return environment
 
 
@@ -576,7 +590,7 @@ def run_scripts(scripts: list[Path], final_outputs, steps_folder: Path, *, envir
                 flow_name: str, run_id: int, output_format: str, arguments=None, values=None,
                 date: str | None = None, timeout_seconds: int = SCRIPT_TIMEOUT_SECONDS,
                 progress=None, step_result=None, observer_factory=None,
-                on_line=None, on_tick=None, stop_requested=None) -> list[dict]:
+                on_line=None, on_tick=None, stop_requested=None, email_dir=None) -> list[dict]:
     """Run every script row in order, once per value; each run must write its ``--output``.
 
     ``final_outputs`` holds one reserved final path per run of the last row (a
@@ -586,7 +600,8 @@ def run_scripts(scripts: list[Path], final_outputs, steps_folder: Path, *, envir
     starts; ``step_result`` receives it as soon as the run ends: the same dict
     that is returned for a successful run, or one carrying ``error`` for the
     failed run before the failure is raised, so a broken chain still leaves a
-    structured record per run that happened.
+    structured record per run that happened. ``email_dir``, when given, reaches
+    the last row's runs as ``METRONOME_FLOW_EMAIL_DIR``.
     """
     scripts = check_scripts(scripts)
     plan = run_plan(scripts, arguments, values)
@@ -650,6 +665,7 @@ def run_scripts(scripts: list[Path], final_outputs, steps_folder: Path, *, envir
             environment, input_path=previous_output, output_path=output, results_dir=steps_folder,
             step=index, steps=total, output_format=output_format, flow_name=flow_name, run_id=run_id,
             inputs=row_outputs.get(run["row"] - 1), value=run["value"],
+            email_dir=email_dir if run["row"] == last_row else None,
         )
         started = time.perf_counter()
         try:
@@ -690,7 +706,8 @@ def run_scripts(scripts: list[Path], final_outputs, steps_folder: Path, *, envir
 
 # File-producing variables that a run-only script must never inherit.
 RUN_MODE_STALE_VARIABLES = ("METRONOME_FLOW_OUTPUT", "METRONOME_FLOW_INPUT", "METRONOME_FLOW_INPUTS",
-                            "METRONOME_FLOW_RESULTS_DIR", "METRONOME_FLOW_OUTPUT_FORMAT")
+                            "METRONOME_FLOW_RESULTS_DIR", "METRONOME_FLOW_OUTPUT_FORMAT",
+                            "METRONOME_FLOW_EMAIL_DIR")
 
 
 def run_variables(*, flow_name, run_id, step, steps, value=None) -> dict:
@@ -801,6 +818,15 @@ def run_scripts_only(scripts: list[Path], *, environment: dict, flow_name: str,
         if step_result is not None:
             step_result(record)
     return records
+
+
+def requires_email_dir_capability(job: dict) -> bool:
+    """True for a file-producing Python job whose Email step is on: its last
+    script row is promised METRONOME_FLOW_EMAIL_DIR."""
+    source = (job or {}).get("python_source") or {}
+    return bool(source.get("enabled")) and source.get("mode") != "run" and bool(
+        ((job or {}).get("email_delivery") or {}).get("enabled")
+    )
 
 
 def requires_arguments_capability(section: dict) -> bool:

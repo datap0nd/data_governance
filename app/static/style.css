@@ -363,7 +363,7 @@ main:has(.flow-page-header) { max-width: none; }
 .flow-worker-assignment { flex-shrink: 0; }
 .flow-progress-summary { margin-top: 0.5rem; }
 @media (prefers-reduced-motion: reduce) { .flow-worker-emoji { animation: none; } .flow-progress-phase > span { transition: none; } }
-#flow-workspace .flow-table:has(.flow-inline-edit) { min-width: 1250px; }
+#flow-workspace .flow-table:has(.flow-inline-edit, .flow-owner-name) { min-width: 1250px; }
 .flow-inline-edit {
     min-width: 100px;
     max-width: 190px;
@@ -383,6 +383,8 @@ main:has(.flow-page-header) { max-width: none; }
 .flow-inline-edit:hover:not(:disabled) { border-color: var(--border-light); }
 .flow-inline-edit:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-color: var(--accent); }
 .flow-inline-edit:disabled { opacity: 0.6; cursor: wait; }
+/* Someone else's Flow: the title explains who may change it. */
+.flow-inline-edit:disabled[title] { cursor: not-allowed; }
 :root.dark .flow-inline-edit { color-scheme: dark; }
 @media (prefers-color-scheme: dark) {
     :root:not(.light) .flow-inline-edit { color-scheme: dark; }
@@ -516,6 +518,50 @@ h2 {
 .flow-classification-tabs button:hover { color: var(--text); }
 .flow-classification-tabs button.active { background: var(--surface); color: var(--accent); box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
 .flow-classification-tabs button span { color: var(--text-dim); margin-left: 0.25rem; }
+
+.flow-list-toolbar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-md) var(--space-lg);
+    margin-bottom: var(--space-lg);
+}
+.flow-list-toolbar .flow-classification-tabs { margin-bottom: 0; }
+.flow-owner-filter {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-sm);
+    font-size: 0.76rem;
+    font-weight: 600;
+    color: var(--text-muted);
+}
+.flow-owner-filter select {
+    min-width: 12rem;
+    max-width: 100%;
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.4rem 0.55rem;
+    font-family: inherit;
+    font-size: 0.82rem;
+    font-weight: 500;
+}
+.flow-owner-filter select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-color: var(--accent); }
+:root.dark .flow-owner-filter select { color-scheme: dark; }
+.flow-muted { color: var(--text-muted); }
+.flow-table .flow-owner-name { display: inline-block; min-width: 6.5rem; overflow-wrap: normal; word-break: normal; }
+.flow-owner-fixed { display: flex; flex-direction: column; gap: 0.3rem; }
+.flow-owner-fixed > span { font-size: 0.76rem; font-weight: 600; color: var(--text-muted); }
+.flow-owner-fixed strong { font-size: 0.88rem; }
+.flow-readonly-banner {
+    margin-bottom: var(--space-lg);
+    padding: var(--space-md) var(--space-lg);
+    border-left: 3px solid var(--yellow);
+    background: var(--yellow-bg);
+    font-size: 0.82rem;
+    color: var(--text);
+}
 
 .flow-status-strip {
     display: flex;
@@ -714,6 +760,26 @@ h2 {
 .flow-weekdays { border: 0; display: flex; flex-wrap: wrap; gap: var(--space-md); padding: 0; }
 .flow-weekdays legend { color: var(--text-secondary); font-size: 0.76rem; font-weight: 600; margin-bottom: var(--space-sm); }
 .flow-weekdays label { color: var(--text-muted); font-size: 0.75rem; font-weight: 500; }
+/* More triggers: each row repeats the schedule controls; trigger 1 is the schedule above. */
+.flow-triggers { border: 0; display: grid; gap: var(--space-md); margin: 0; padding: 0; min-width: 0; }
+.flow-triggers > legend { color: var(--text-secondary); font-size: 0.76rem; font-weight: 600; margin-bottom: var(--space-sm); padding: 0; }
+.flow-trigger-list { display: grid; gap: var(--space-md); list-style: none; margin: 0; padding: 0; }
+.flow-trigger-list:empty { display: none; }
+.flow-trigger { align-items: end; border-top: 1px solid var(--border); display: grid; gap: var(--space-sm) var(--space-lg); grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; padding-top: var(--space-md); }
+.flow-trigger-name { color: var(--text); font-size: 0.78rem; font-variant-numeric: tabular-nums; font-weight: 700; grid-column: 1 / -1; }
+.flow-trigger > label { color: var(--text-secondary); display: flex; flex-direction: column; font-size: 0.76rem; font-weight: 600; gap: 0.3rem; min-width: 0; }
+.flow-trigger input[type="time"] { font-variant-numeric: tabular-nums; }
+.flow-trigger-weekdays, .flow-trigger-day-field { grid-column: 1 / -1; }
+.flow-trigger-weekdays { border: 0; display: flex; flex-wrap: wrap; gap: var(--space-md); margin: 0; padding: 0; }
+.flow-trigger-weekdays legend { color: var(--text-secondary); font-size: 0.76rem; font-weight: 600; margin-bottom: var(--space-sm); padding: 0; }
+.flow-trigger-weekdays label { color: var(--text-muted); font-size: 0.75rem; font-weight: 500; }
+.flow-trigger-day-field { max-width: 50%; }
+.flow-triggers-actions { align-items: center; display: flex; flex-wrap: wrap; gap: var(--space-md); }
+@media (max-width: 620px) {
+    .flow-trigger { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+    .flow-trigger-remove { grid-column: 1 / -1; justify-self: start; }
+    .flow-trigger-day-field { max-width: none; }
+}
 
 .flow-builder-actions { display: flex; justify-content: flex-end; gap: var(--space-sm); margin-top: var(--space-xl); }
 .flow-source-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-md); }
@@ -8109,3 +8175,49 @@ body.remote-flow-control-enabled { padding-top: 32px; }
 .flow-excel-chips button[aria-pressed=true] { color: var(--accent); border-color: var(--accent); background: var(--accent-bg); }
 .flow-log-failure code { white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 720px) { #flow-excel-fields { margin-left: 0; } }
+.register-label {
+    display: block;
+    font-size: 0.76rem;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 0.35rem;
+}
+.register-modal select {
+    width: 100%;
+    padding: 0.55rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 0.88rem;
+    font-family: inherit;
+    background: var(--bg);
+    color: var(--text);
+    margin-bottom: 0.5rem;
+}
+.register-modal select:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-bg);
+}
+.register-modal .register-error {
+    min-height: 1.1rem;
+    margin-bottom: 0.5rem;
+    font-size: 0.78rem;
+    color: var(--red);
+}
+.register-modal button.register-secondary {
+    margin-top: 0.5rem;
+    background: transparent;
+    color: var(--accent);
+    border: 1px solid var(--border);
+}
+.connected-user-switch {
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+}
+.connected-user-switch:hover .user-name {
+    text-decoration: underline;
+}

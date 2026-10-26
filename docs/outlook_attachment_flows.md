@@ -5,6 +5,12 @@ signed-in user's desktop Outlook profile. The flow stores a free-text subject
 substring, an automatically created managed folder, an optional transformation, the existing
 daily/weekly/monthly schedule, and the normal optional SQL handoff.
 
+When the sender has no fixed delivery time, add **More triggers** in the
+Schedule step (for example weekdays at 08:00, 11:00 and 14:00). Each trigger
+checks the Inbox; a check that finds no new attachment is the no-op described
+below, so only the first new file runs the transformation, SQL and email
+steps. Inherited Source freshness follows the main schedule (trigger 1).
+
 ## Message selection
 
 - Only the default profile's top-level Inbox is searched. Subfolders and other
