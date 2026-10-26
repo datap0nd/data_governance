@@ -71,8 +71,8 @@
     "voice": "rev12"
   },
   {
-    "start": 38.5,
-    "end": 48.1,
+    "start": 43.5,
+    "end": 53.1,
     "en": "Wizard finds the right reports for you: sell-out from GSCM, market share from ASAP, spend from NERP, and your targets in Excel.",
     "spoken": "Wizard finds the right reports for you: sell-out from GSCM, market share from ASAP, spend from N-ERP, and your targets in Excel.",
     "cues": {
@@ -85,8 +85,8 @@
     "voice": "rev12"
   },
   {
-    "start": 49.4,
-    "end": 55.7,
+    "start": 55.0,
+    "end": 61.3,
     "en": "Seconds later, you have a complete answer: a clear summary, the key numbers, and charts you can share.",
     "spoken": "Seconds later, you have a complete answer: a clear summary, the key numbers, and charts you can share.",
     "cues": {
@@ -98,8 +98,8 @@
     "voice": "rev12"
   },
   {
-    "start": 66.4,
-    "end": 70.3,
+    "start": 83.92,
+    "end": 87.82,
     "en": "Every number is checked against its source report, so you can trust it.",
     "spoken": "Every number is checked against its source report, so you can trust it.",
     "cues": {
@@ -108,8 +108,8 @@
     "voice": "rev12"
   },
   {
-    "start": 70.6,
-    "end": 75.6,
+    "start": 88.2,
+    "end": 93.2,
     "en": "And your data stays safe, with authorized AI that only shows what you're allowed to see.",
     "spoken": "And your data stays safe, with authorized AI that only shows what you're allowed to see.",
     "cues": {
@@ -120,8 +120,8 @@
     "voice": "rev12"
   },
   {
-    "start": 76.2,
-    "end": 78.3,
+    "start": 94.0,
+    "end": 96.1,
     "en": "Stop searching. Start asking.",
     "spoken": "Stop searching. Start asking.",
     "cues": {
@@ -131,8 +131,8 @@
     "voice": "rev12"
   },
   {
-    "start": 78.6,
-    "end": 81.2,
+    "start": 96.5,
+    "end": 99.1,
     "en": "Wizard. Every source, one answer.",
     "spoken": "Wizard. Every source, one answer.",
     "cues": {

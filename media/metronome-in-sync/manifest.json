@@ -1,23 +1,23 @@
 {
   "title": "Wizard — Every source, one answer",
   "status": "Wizard film revision 13 (real Wizard app) for review",
-  "durationSeconds": 84,
+  "durationSeconds": 102,
   "width": 1920,
   "height": 1080,
   "framesPerSecond": 30,
   "editableProjectHyperFramesVersion": "0.8.142",
   "artifacts": {
     "renders/review/animatic.mp4": {
-      "bytes": 42811224,
-      "sha256": "fbdbe1d63c1563c23f569ef2d4b95e15d3400713897b0235292a96f2b08fa65e"
+      "bytes": 54782724,
+      "sha256": "f9893374423830977216b6484719d0e97b3d2f659e94e4ff48a74ba5f49f6274"
     },
     "audio/score.wav": {
-      "bytes": 24192102,
-      "sha256": "df8af2214fdad2567fe51f7d6672b38c9a2672b5596ee17d56cf3385aab7ea56"
+      "bytes": 29376102,
+      "sha256": "db0190a8e7c31fbb2b684de0e81d0002ec44ab9c2dc6d4b6c410090c22d05eb5"
     },
     "audio/narration.flac": {
-      "bytes": 1766367,
-      "sha256": "95b699de31fdefff626f5fd2e6887ae661ae329f91bb1b716794e96d913812b9"
+      "bytes": 1768889,
+      "sha256": "e8edb0d7031e6be4625b640bd6fd00141464045af11b5f70581fbf40cb656d40"
     },
     "audio/background.mp3": {
       "bytes": 2103552,
@@ -28,16 +28,16 @@
       "sha256": "f977679f9ad7f500dd20c842bc26a229fa5826662b18901dbd13d1ff387a45d1"
     },
     "assets/screen/ask.mp4": {
-      "bytes": 7546324,
-      "sha256": "14cb722b77f4575f64fa57348d4b486d88b5787c0885a9913b71b1860707609c"
+      "bytes": 8703702,
+      "sha256": "7ff0ee7fbe6fe01e4785d2e4e4e68c8469ee910c4236e5f9fe626b96767fbad0"
     },
     "assets/screen/stock.mp4": {
-      "bytes": 3473387,
-      "sha256": "dbe41dfe43b6eef8c19ff61a45471836224f18911cc9b7c4a0e10c874a9bd7d5"
+      "bytes": 5324313,
+      "sha256": "a885babcfc3c4fc9712b151476062e1825307d5c76dbd4ecf550ca2cfe4481f9"
     },
     "assets/screen/check.mp4": {
-      "bytes": 3561725,
-      "sha256": "a431346688d9ece7f0724e91d2e18c1f89360c6066e639a48c6f7b97c536468d"
+      "bytes": 5235661,
+      "sha256": "e0417fa6f2cd2f52cc577034c67031bd29547636277fb6bb65933d8d89e935a4"
     }
   },
   "baseRenderHyperFramesVersion": "0.8.142",

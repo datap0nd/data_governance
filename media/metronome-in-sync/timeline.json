@@ -1,11 +1,11 @@
 {
   "title": "Wizard — Every source, one answer",
   "version": 13,
-  "durationSeconds": 84,
+  "durationSeconds": 102,
   "width": 1920,
   "height": 1080,
   "fps": 30,
-  "duration": 84,
+  "duration": 102,
   "scenes": [
     {
       "id": "sMess",
@@ -22,13 +22,13 @@
     {
       "id": "sApp",
       "start": 33.2,
-      "end": 75.9,
+      "end": 93.7,
       "name": "The real Wizard: ask, timelapse, check"
     },
     {
       "id": "sEnd",
-      "start": 75.9,
-      "end": 84,
+      "start": 93.7,
+      "end": 102,
       "name": "Every source. One answer."
     }
   ],
@@ -105,8 +105,8 @@
       "voice": "rev12"
     },
     {
-      "start": 38.5,
-      "end": 48.1,
+      "start": 43.5,
+      "end": 53.1,
       "en": "Wizard finds the right reports for you: sell-out from GSCM, market share from ASAP, spend from NERP, and your targets in Excel.",
       "spoken": "Wizard finds the right reports for you: sell-out from GSCM, market share from ASAP, spend from N-ERP, and your targets in Excel.",
       "cues": {
@@ -119,8 +119,8 @@
       "voice": "rev12"
     },
     {
-      "start": 49.4,
-      "end": 55.7,
+      "start": 55,
+      "end": 61.3,
       "en": "Seconds later, you have a complete answer: a clear summary, the key numbers, and charts you can share.",
       "spoken": "Seconds later, you have a complete answer: a clear summary, the key numbers, and charts you can share.",
       "cues": {
@@ -132,8 +132,8 @@
       "voice": "rev12"
     },
     {
-      "start": 66.4,
-      "end": 70.3,
+      "start": 83.92,
+      "end": 87.82,
       "en": "Every number is checked against its source report, so you can trust it.",
       "spoken": "Every number is checked against its source report, so you can trust it.",
       "cues": {
@@ -142,8 +142,8 @@
       "voice": "rev12"
     },
     {
-      "start": 70.6,
-      "end": 75.6,
+      "start": 88.2,
+      "end": 93.2,
       "en": "And your data stays safe, with authorized AI that only shows what you're allowed to see.",
       "spoken": "And your data stays safe, with authorized AI that only shows what you're allowed to see.",
       "cues": {
@@ -154,8 +154,8 @@
       "voice": "rev12"
     },
     {
-      "start": 76.2,
-      "end": 78.3,
+      "start": 94,
+      "end": 96.1,
       "en": "Stop searching. Start asking.",
       "spoken": "Stop searching. Start asking.",
       "cues": {
@@ -165,8 +165,8 @@
       "voice": "rev12"
     },
     {
-      "start": 78.6,
-      "end": 81.2,
+      "start": 96.5,
+      "end": 99.1,
       "en": "Wizard. Every source, one answer.",
       "spoken": "Wizard. Every source, one answer.",
       "cues": {
@@ -194,23 +194,23 @@
     "localAI": 27.988854,
     "lives": 31.893479,
     "ask": 34.235646,
-    "finds": 38.874646,
-    "sellOut": 40.975146,
-    "share": 43.088562,
-    "spend": 44.828228,
-    "targets": 46.709688,
-    "seconds": 49.410083,
-    "summary": 52.554374,
-    "numbers": 53.598208,
-    "charts": 54.435833,
-    "checked": 67.082145,
-    "safe": 71.411979,
-    "authorized": 72.275354,
-    "allowed": 74.427437,
-    "stop": 76.202354,
-    "start": 77.336396,
-    "endWizard": 78.596812,
-    "oneAnswer": 80.19477
+    "finds": 43.874646,
+    "sellOut": 45.975146,
+    "share": 48.088562,
+    "spend": 49.828228,
+    "targets": 51.709688,
+    "seconds": 55.010083,
+    "summary": 58.154374,
+    "numbers": 59.198208,
+    "charts": 60.035833,
+    "checked": 84.602145,
+    "safe": 89.011979,
+    "authorized": 89.875354,
+    "allowed": 92.027437,
+    "stop": 94.002354,
+    "start": 95.136396,
+    "endWizard": 96.496812,
+    "oneAnswer": 98.09477
   },
   "screen": {
     "page": [
@@ -221,72 +221,54 @@
       "ask": {
         "file": "assets/screen/ask.mp4",
         "start": 33.2,
-        "end": 56.7,
+        "end": 62.033,
         "take": "quarter",
         "anchors": [
           [
             33.2,
-            1.2
+            2.3
           ],
           [
-            34.25,
-            3.25
-          ],
-          [
-            35.45,
-            5.153
-          ],
-          [
-            35.75,
-            5.95
-          ],
-          [
-            37.45,
-            9.081
-          ],
-          [
-            38.2,
+            41.2,
             10.287
           ],
           [
-            40.825,
-            16.969
+            41.2,
+            10.287
           ],
           [
-            42.939,
-            21.276
+            44.4,
+            13.487
           ],
           [
-            44.678,
-            25.586
+            44.4,
+            13.487
           ],
           [
-            46.56,
+            51.7,
             29.897
           ],
           [
-            49.25,
+            51.7,
+            29.897
+          ],
+          [
+            54.267,
             41.46
           ],
           [
-            50.85,
-            44.661
+            54.267,
+            41.46
           ],
           [
-            51.95,
-            46.079
-          ],
-          [
-            56.7,
-            46.379
+            56.367,
+            43.56
           ]
         ],
         "timelapse": {
-          "from": 38.2,
-          "to": 49.25,
-          "clockFrom": 10.287,
-          "sourceFrom": 10.287,
-          "sourceTo": 41.46
+          "from": 44.4,
+          "to": 54.267,
+          "clockFrom": 10.287
         },
         "camera": [
           [
@@ -296,145 +278,97 @@
             1
           ],
           [
-            34,
+            33.916,
             800,
             450,
             1
           ],
           [
-            34.9,
+            35.116,
             936,
             780,
             1.55
           ],
           [
-            37.6,
+            41.4,
             936,
             780,
             1.55
           ],
           [
-            38.6,
+            42.6,
             936,
             417,
             1.45
           ],
           [
-            40.775,
+            51.7,
             936,
-            415,
-            1.46
+            393,
+            1.55
           ],
           [
-            41.475,
+            53.467,
             936,
-            405,
-            1.5
+            393,
+            1.55
           ],
           [
-            42.889,
+            54.467,
             936,
-            405,
-            1.5
-          ],
-          [
-            43.589,
-            936,
-            396,
-            1.54
-          ],
-          [
-            44.628,
-            936,
-            396,
-            1.54
-          ],
-          [
-            45.328,
-            936,
-            387,
-            1.58
-          ],
-          [
-            46.51,
-            936,
-            387,
-            1.58
-          ],
-          [
-            47.21,
-            936,
-            382,
-            1.6
-          ],
-          [
-            48.2,
-            936,
-            382,
-            1.6
-          ],
-          [
-            48.9,
-            936,
-            420,
+            430,
             1.12
           ],
           [
-            49.3,
-            936,
-            420,
-            1.12
-          ],
-          [
-            50.9,
+            56.367,
             936,
             450,
             1.05
           ],
           [
-            51.95,
+            58,
             936,
             450,
             1.1
           ],
           [
-            52.454,
+            57.954,
             936,
             300,
-            1.55
+            1.5
           ],
           [
-            53.348,
+            58.798,
             936,
             300,
-            1.55
+            1.5
           ],
           [
-            53.798,
+            59.698,
             936,
             725,
             1.45
           ],
           [
-            54.336,
+            59.836,
             936,
             725,
             1.45
           ],
           [
-            54.836,
+            60.736,
             936,
             470,
-            1.45
+            1.42
           ],
           [
-            55.7,
+            61.036,
             936,
             470,
-            1.38
+            1.4
           ],
           [
-            56.45,
+            61.736,
             800,
             450,
             1
@@ -443,107 +377,105 @@
       },
       "stock": {
         "file": "assets/screen/stock.mp4",
-        "start": 55.8,
-        "end": 66.4,
+        "start": 61.233,
+        "end": 78.633,
         "take": "stock",
         "anchors": [
           [
-            55.8,
-            2
+            61.233,
+            2.3
           ],
           [
-            56.3,
-            3.003
-          ],
-          [
-            57.9,
-            5.739
-          ],
-          [
-            58.5,
+            65.9,
             6.961
           ],
           [
-            62.1,
+            65.9,
+            6.961
+          ],
+          [
+            69,
+            10.061
+          ],
+          [
+            69,
+            10.061
+          ],
+          [
+            72.8,
             32.869
           ],
           [
-            63.3,
-            36.072
+            72.8,
+            32.869
           ],
           [
-            64.2,
-            37.497
-          ],
-          [
-            66.4,
-            37.597
+            74.7,
+            34.769
           ]
         ],
         "timelapse": {
-          "from": 58.5,
-          "to": 62.1,
-          "clockFrom": 6.961,
-          "sourceFrom": 6.961,
-          "sourceTo": 32.869
+          "from": 69,
+          "to": 72.8,
+          "clockFrom": 6.961
         },
         "camera": [
           [
-            55.8,
+            61.233,
             800,
             450,
             1
           ],
           [
-            56.2,
+            61.737,
             936,
             800,
             1.55
           ],
           [
-            57.9,
+            66.1,
             936,
             800,
             1.55
           ],
           [
-            58.7,
+            67.3,
             936,
             417,
             1.45
           ],
           [
-            61.6,
+            72.2,
             936,
-            391,
-            1.56
+            393,
+            1.55
           ],
           [
-            62.3,
+            73.1,
             936,
-            420,
+            430,
             1.12
           ],
           [
-            63.3,
+            74.7,
             936,
-            420,
-            1.1
+            450,
+            1.08
           ],
           [
-            64.2,
+            76.233,
             936,
-            370,
+            380,
+            1.4
+          ],
+          [
+            77.433,
+            936,
+            400,
             1.46
           ],
           [
-            65.4,
-            936,
-            400,
-            1.52
-          ],
-          [
-            66.1,
+            78.533,
             800,
             450,
             1.05
@@ -552,111 +484,105 @@
       },
       "check": {
         "file": "assets/screen/check.mp4",
-        "start": 65.7,
-        "end": 75.9,
+        "start": 77.833,
+        "end": 93.7,
         "take": "quarter",
         "anchors": [
           [
-            65.7,
-            53.312
+            77.833,
+            53.012
           ],
           [
-            66.55,
-            54.723
+            79.6,
+            54.783
           ],
           [
-            67.6,
+            79.6,
+            54.783
+          ],
+          [
+            82.6,
+            57.783
+          ],
+          [
+            82.6,
+            57.783
+          ],
+          [
+            84.433,
             66.944
           ],
           [
-            68.3,
-            70.961
+            84.433,
+            66.944
           ],
           [
-            68.9,
-            71.561
-          ],
-          [
-            68.9,
-            79.362
-          ],
-          [
-            69.6,
-            80.446
-          ],
-          [
-            71,
-            81.746
-          ],
-          [
-            75.9,
-            82.446
+            85.233,
+            67.744
           ]
         ],
         "timelapse": {
-          "from": 66.55,
-          "to": 67.6,
-          "clockFrom": 54.683,
-          "sourceFrom": 54.723,
-          "sourceTo": 66.944
+          "from": 82.6,
+          "to": 84.433,
+          "clockFrom": 54.683
         },
         "camera": [
           [
-            65.7,
+            77.833,
             700,
             640,
             1.35
           ],
           [
-            66.5,
+            79.2,
             700,
             690,
-            1.45
+            1.42
           ],
           [
-            66.95,
+            80.7,
             936,
             417,
             1.45
           ],
           [
-            67.55,
+            84.033,
             936,
             400,
             1.52
           ],
           [
-            68.3,
+            84.933,
             936,
             560,
             1.4
           ],
           [
-            68.85,
+            85.133,
             936,
             560,
             1.4
           ],
           [
-            68.95,
+            85.433,
             1180,
             420,
             1.15
           ],
           [
-            69.6,
+            86.325,
             1240,
             560,
             1.3
           ],
           [
-            71.2,
+            87.533,
             1240,
             600,
             1.38
           ],
           [
-            75.9,
+            93.692,
             1240,
             600,
             1.45

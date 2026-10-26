@@ -3,15 +3,16 @@
 Each line in narration.json with "voice": "rev12" is cut from audio/voice-rev12.flac (the same sentence, same voice
 and pronunciation, located by audio/voice-rev12.json) and placed at its new start. Word cues move with their line.
 The music bed and ducking are the same as audio/score.py, which remains the way to voice new or changed sentences."""
-import json, shutil, subprocess, wave
+import json, math, shutil, subprocess, wave
 from pathlib import Path
 import numpy as np
+import bed
 
 FILM = Path(__file__).resolve().parents[1]
 FF = shutil.which('ffmpeg')
 rate = 48000
 segments = json.loads((FILM / 'narration.json').read_text(encoding='utf-8'))
-duration = json.loads((FILM / 'timeline.json').read_text(encoding='utf-8'))['durationSeconds']
+duration = math.ceil(segments[-1]['end'] + 2.5)  # as scripts/build.mjs computes the film's length
 bank = json.loads((FILM / 'audio/voice-rev12.json').read_text(encoding='utf-8'))['lines']
 raw = subprocess.check_output([FF, '-v', 'error', '-i', str(FILM / 'audio/voice-rev12.flac'), '-f', 'f32le', '-ar', str(rate), '-ac', '2', '-'])
 track = np.frombuffer(raw, dtype=np.float32).reshape(-1, 2)
@@ -49,11 +50,11 @@ with wave.open(str(vo), 'wb') as w:
     w.writeframes((np.clip(mix, -1, 1) * 32767).astype(np.int16).tobytes())
 subprocess.run([FF, '-y', '-i', str(vo), '-c:a', 'flac', str(FILM / 'audio/narration.flac'), '-loglevel', 'error'], check=True)
 music = FILM / 'audio/background.mp3'
-# Same bed as audio/score.py: speech stays clearly above a continuous instrumental bed. The voice is padded to the
-# film's length after loudnorm, whose sidechain copy otherwise ends shortly after the last word and cuts the music.
-subprocess.run([FF, '-y', '-i', str(vo), '-stream_loop', '-1', '-i', str(music), '-filter_complex',
+# Same bed as audio/score.py (audio/bed.py): speech stays clearly above a continuous instrumental bed. The voice is padded
+# to the film's length after loudnorm, whose sidechain copy otherwise ends shortly after the last word and cuts the music.
+subprocess.run([FF, '-y', '-i', str(vo), '-i', str(music), '-filter_complex',
                 f'[0:a]loudnorm=I=-17:TP=-3:LRA=7,aresample=48000,apad=whole_dur={duration},asplit=2[v][sc];'
-                f'[1:a]atrim=0:{duration},asetpts=PTS-STARTPTS,volume=0.12,afade=t=in:d=1,afade=t=out:st={duration - 4}:d=4[m];'
+                f'{bed.music_filter(duration, bed.seconds(FF, music))};'
                 '[m][sc]sidechaincompress=threshold=0.018:ratio=4:attack=30:release=600[duck];'
                 '[v][duck]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.89[mix]',
                 '-map', '[mix]', '-ar', '48000', '-ac', '2', '-c:a', 'pcm_s24le', str(FILM / 'audio/score.wav'), '-loglevel', 'error'], check=True)

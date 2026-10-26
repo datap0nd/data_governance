@@ -17,23 +17,23 @@
     "localAI": 27.988854,
     "lives": 31.893479,
     "ask": 34.235646,
-    "finds": 38.874646,
-    "sellOut": 40.975146,
-    "share": 43.088562,
-    "spend": 44.828228,
-    "targets": 46.709688,
-    "seconds": 49.410083,
-    "summary": 52.554374,
-    "numbers": 53.598208,
-    "charts": 54.435833,
-    "checked": 67.082145,
-    "safe": 71.411979,
-    "authorized": 72.275354,
-    "allowed": 74.427437,
-    "stop": 76.202354,
-    "start": 77.336396,
-    "endWizard": 78.596812,
-    "oneAnswer": 80.19477
+    "finds": 43.874646,
+    "sellOut": 45.975146,
+    "share": 48.088562,
+    "spend": 49.828228,
+    "targets": 51.709688,
+    "seconds": 55.010083,
+    "summary": 58.154374,
+    "numbers": 59.198208,
+    "charts": 60.035833,
+    "checked": 84.602145,
+    "safe": 89.011979,
+    "authorized": 89.875354,
+    "allowed": 92.027437,
+    "stop": 94.002354,
+    "start": 95.136396,
+    "endWizard": 96.496812,
+    "oneAnswer": 98.09477
   },
   "provenance": [
     {
@@ -160,119 +160,119 @@
       "word": "finds",
       "segment": 7,
       "offset": 0.374646,
-      "filmTime": 38.874646
+      "filmTime": 43.874646
     },
     {
       "key": "sellOut",
       "word": "sell-out",
       "segment": 7,
       "offset": 2.475146,
-      "filmTime": 40.975146
+      "filmTime": 45.975146
     },
     {
       "key": "share",
       "word": "share",
       "segment": 7,
       "offset": 4.588562,
-      "filmTime": 43.088562
+      "filmTime": 48.088562
     },
     {
       "key": "spend",
       "word": "spend",
       "segment": 7,
       "offset": 6.328228,
-      "filmTime": 44.828228
+      "filmTime": 49.828228
     },
     {
       "key": "targets",
       "word": "targets",
       "segment": 7,
       "offset": 8.209688,
-      "filmTime": 46.709688
+      "filmTime": 51.709688
     },
     {
       "key": "seconds",
       "word": "Seconds",
       "segment": 8,
       "offset": 0.010083,
-      "filmTime": 49.410083
+      "filmTime": 55.010083
     },
     {
       "key": "summary",
       "word": "summary",
       "segment": 8,
       "offset": 3.154374,
-      "filmTime": 52.554374
+      "filmTime": 58.154374
     },
     {
       "key": "numbers",
       "word": "numbers",
       "segment": 8,
       "offset": 4.198208,
-      "filmTime": 53.598208
+      "filmTime": 59.198208
     },
     {
       "key": "charts",
       "word": "charts",
       "segment": 8,
       "offset": 5.035833,
-      "filmTime": 54.435833
+      "filmTime": 60.035833
     },
     {
       "key": "checked",
       "word": "checked",
       "segment": 9,
       "offset": 0.682145,
-      "filmTime": 67.082145
+      "filmTime": 84.602145
     },
     {
       "key": "safe",
       "word": "safe",
       "segment": 10,
       "offset": 0.811979,
-      "filmTime": 71.411979
+      "filmTime": 89.011979
     },
     {
       "key": "authorized",
       "word": "authorized",
       "segment": 10,
       "offset": 1.675354,
-      "filmTime": 72.275354
+      "filmTime": 89.875354
     },
     {
       "key": "allowed",
       "word": "allowed",
       "segment": 10,
       "offset": 3.827437,
-      "filmTime": 74.427437
+      "filmTime": 92.027437
     },
     {
       "key": "stop",
       "word": "Stop",
       "segment": 11,
       "offset": 0.002354,
-      "filmTime": 76.202354
+      "filmTime": 94.002354
     },
     {
       "key": "start",
       "word": "Start",
       "segment": 11,
       "offset": 1.136396,
-      "filmTime": 77.336396
+      "filmTime": 95.136396
     },
     {
       "key": "endWizard",
       "word": "Wizard",
       "segment": 12,
       "offset": -0.003188,
-      "filmTime": 78.596812
+      "filmTime": 96.496812
     },
     {
       "key": "oneAnswer",
       "word": "one",
       "segment": 12,
       "offset": 1.59477,
-      "filmTime": 80.19477
+      "filmTime": 98.09477
     }
   ]
 }

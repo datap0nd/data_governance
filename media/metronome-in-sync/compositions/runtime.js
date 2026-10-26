@@ -76,6 +76,7 @@
  const place=(fx,fy,z)=>{const w=clamp((z-1)/.3);let x=lerp(960-800*z,960-fx*z,w),y=lerp(540-450*z,540-fy*z,w);
   if(1600*z>=1920)x=clamp(x,1920-1600*z,0);if(900*z>=1080)y=clamp(y,1080-900*z,0);return [x,y];};
  // Capture time at a film time, from the clip's anchors: drives the timelapse clock.
+ const speedAt=(c,t)=>{const a=c.anchors;for(let i=0;i<a.length-1;i++)if(t>=a[i][0]&&t<a[i+1][0])return (a[i+1][1]-a[i][1])/(a[i+1][0]-a[i][0]);return 1;};
  const sourceAt=(c,t)=>{const a=c.anchors;let i=0;while(i<a.length-2&&t>=a[i+1][0])i++;const [f0,s0]=a[i],[f1,s1]=a[i+1];return s0+(s1-s0)*clamp((t-f0)/Math.max(.001,f1-f0));};
  // Hand-offs between windows: the first grows out of the hub logo; the second question slides in from the right;
  // the check slides back in from the left, returning to the first answer.
@@ -92,11 +93,16 @@
    if(id==='check'){const out=ease((t-(end-.55))/.55);k=1-out*.08;x=960+(x-960)*k;y=540+(y-540)*k;el.style.opacity=1-out;}
    el.style.transform=`translate(${x+offset[id]}px,${y}px) scale(${z*k})`;
   });
-  // Timelapse: the pill shows the real time the run took, counting at the speed the film plays it.
-  const tl=ids.map(id=>clips[id]).find(c=>c.timelapse&&t>=c.timelapse.from-.3&&t<c.timelapse.to+.5);
-  const pill=$('.tl-pill');pill.style.opacity=tl?ease((t-tl.timelapse.from+.3)/.3)*(1-ease((t-tl.timelapse.to-.2)/.3)):0;
-  if(tl){const real=Math.max(0,sourceAt(tl,Math.min(t,tl.timelapse.to))-tl.timelapse.clockFrom);$('.tl-clock').textContent=`${Math.floor(real/60)}:${String(Math.floor(real%60)).padStart(2,'0')}`;
-   pill.style.transform=`translateY(${(1-ease((t-tl.timelapse.from+.3)/.3))*-14}px)`;}
+  // Timelapse, only while Wizard works: the pill and a blue frame edge stay up for exactly that stretch. The pill shows
+  // how many times faster than real time it plays and the real time the run has taken, counting at that speed.
+  const tl=ids.map(id=>clips[id]).find(c=>t>=c.timelapse.from&&t<c.timelapse.to+.3);
+  const on=tl?ease((t-tl.timelapse.from)/.25)*(1-ease((t-tl.timelapse.to)/.3)):0,pill=$('.tl-pill');
+  pill.style.opacity=on;$('.tl-edge').style.opacity=on;
+  if(tl){const at=Math.min(t,tl.timelapse.to-.001),real=Math.max(0,sourceAt(tl,at)-tl.timelapse.clockFrom);
+   $('.tl-clock').textContent=`${Math.floor(real/60)}:${String(Math.floor(real%60)).padStart(2,'0')}`;
+   $('.tl-speed').textContent=`${Math.round(speedAt(tl,at))}×`;
+   pill.style.transform=`translate(-50%,${(1-ease((t-tl.timelapse.from)/.3))*-16}px)`;
+   pill.querySelector('.lu').style.opacity=.55+.45*Math.abs(Math.sin((t-tl.timelapse.from)*5));}
   reveal($('.real-tag'),ease((t-start-.9)/.5)*(1-ease((t-end+.6)/.4)),-8);
   // Safe: the app steps back and the security card opens on "safe".
   const dim=ease((t-cue.safe+.15)/.45)*(1-ease((t-end+.5)/.4));$('.screen-dim').style.opacity=dim*.82;

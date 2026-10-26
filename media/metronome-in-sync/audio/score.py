@@ -1,6 +1,7 @@
 import os, shutil, asyncio, json, subprocess, wave, hashlib
 from pathlib import Path
 import edge_tts, imageio_ffmpeg, numpy as np
+import bed
 FF=os.environ.get('FILM_FFMPEG_PATH') or shutil.which('ffmpeg') or imageio_ffmpeg.get_ffmpeg_exe()
 FILM=Path(__file__).resolve().parents[1]
 segments=json.loads((FILM/'narration.json').read_text(encoding='utf-8'))
@@ -62,7 +63,7 @@ vo=tmp/'narration.wav'
 with wave.open(str(vo),'wb') as w:w.setparams((2,2,rate,0,'NONE','not compressed'));w.writeframes((np.clip(mix,-1,1)*32767).astype(np.int16).tobytes())
 subprocess.run([FF,'-y','-i',str(vo),'-c:a','flac',str(FILM/'audio/narration.flac'),'-loglevel','error'],check=True)
 music=FILM/'audio/background.mp3'
-# Speech remains clearly above a continuous instrumental bed.
-subprocess.run([FF,'-y','-i',str(vo),'-stream_loop','-1','-i',str(music),'-filter_complex',f'[0:a]loudnorm=I=-17:TP=-3:LRA=7,aresample=48000,apad=whole_dur={duration},asplit=2[v][sc];[1:a]atrim=0:{duration},asetpts=PTS-STARTPTS,volume=0.12,afade=t=in:d=1,afade=t=out:st={duration-4}:d=4[m];[m][sc]sidechaincompress=threshold=0.018:ratio=4:attack=30:release=600[duck];[v][duck]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.89[mix]','-map','[mix]','-ar','48000','-ac','2','-c:a','pcm_s24le',str(FILM/'audio/score.wav'),'-loglevel','error'],check=True)
+# Speech remains clearly above a continuous instrumental bed (audio/bed.py extends the track for a longer film).
+subprocess.run([FF,'-y','-i',str(vo),'-i',str(music),'-filter_complex',f'[0:a]loudnorm=I=-17:TP=-3:LRA=7,aresample=48000,apad=whole_dur={duration},asplit=2[v][sc];{bed.music_filter(duration,bed.seconds(FF,music))};[m][sc]sidechaincompress=threshold=0.018:ratio=4:attack=30:release=600[duck];[v][duck]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.89[mix]','-map','[mix]','-ar','48000','-ac','2','-c:a','pcm_s24le',str(FILM/'audio/score.wav'),'-loglevel','error'],check=True)
 (FILM/'audio/narration-timing.json').write_text(json.dumps(timing,indent=2),encoding='utf-8')
 print(json.dumps(timing,indent=2))

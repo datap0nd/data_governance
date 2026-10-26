@@ -76,7 +76,7 @@ export function screenScene(clips) {
   const windows = Object.entries(clips).map(([id, c], i) => `<div class="screen-win" data-clip="${id}"><video id="clip-${id}" src="${c.file}" muted playsinline preload="auto" data-start="${c.start}" data-duration="${Math.round((c.end - c.start) * 1000) / 1000}" data-track-index="${2 + i}"></video></div>`).join('');
   const safe = `<div class="safe-card"><b>${lu('shield')}Secure by design</b><div>${lu('cpu')}Authorized AI, approved by the company</div><div>${lu('eye')}Shows only what you're allowed to see</div><div>${lu('lock')}Read-only: it never changes your data</div></div>`;
   return `<div class="hub-echo">${wizardIcon}</div>${windows}<div class="screen-dim"></div>${safe}
-<div class="tl-pill">${lu('fastForward')}<b>Timelapse</b><i></i><span class="tl-clock">0:00</span></div><div class="real-tag">Real Wizard app · illustrative data</div>`;
+<div class="tl-edge"></div><div class="tl-pill">${lu('fastForward')}<b>Timelapse</b><i></i><span class="tl-speed">2×</span><i></i><span class="tl-clock">0:00</span></div><div class="real-tag">Real Wizard app · illustrative data</div>`;
 }
 
 // 4. End card: Wizard's logo, the tagline and every source.
