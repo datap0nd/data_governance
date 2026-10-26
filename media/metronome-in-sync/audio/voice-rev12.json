@@ -1,0 +1,134 @@
+{
+ "source": "Revision 12 narration track (en-US-AndrewNeural, -3%), audio/voice-rev12.flac",
+ "note": "Each line occupies [start, end] seconds of the track; cue offsets are seconds from the line start, from the synthesizer word boundaries (assets/cues.json at revision 12).",
+ "lines": [
+  {
+   "spoken": "Our data is spread across portals like ASAP, GSCM, BDP and N-ERP, each packed with reports.",
+   "start": 0.3,
+   "end": 8.438188,
+   "cues": {
+    "ASAP": 2.248896,
+    "GSCM": 3.395771,
+    "BDP": 4.478271,
+    "N-ERP": 5.573604,
+    "packed": 6.913812
+   }
+  },
+  {
+   "spoken": "And then there are endless Excel files, emails, presentations and PDFs.",
+   "start": 9.0,
+   "end": 14.051437,
+   "cues": {
+    "Excel": 0.966208,
+    "emails": 2.280625,
+    "presentations": 3.053833,
+    "PDFs": 4.110541
+   }
+  },
+  {
+   "spoken": "Finding one answer means knowing where to look, then opening report after report, and piecing it together by hand.",
+   "start": 15.0,
+   "end": 22.110917,
+   "cues": {
+    "look": 2.264083,
+    "opening": 3.282124,
+    "piecing": 5.447083
+   }
+  },
+  {
+   "spoken": "Meet Wizard. It brings every source together, in one place.",
+   "start": 22.9,
+   "end": 27.010562,
+   "cues": {
+    "Wizard": 0.216478,
+    "together": 2.34277
+   }
+  },
+  {
+   "spoken": "Wizard's local AI has learned our portals, so it knows where every answer lives.",
+   "start": 27.6,
+   "end": 32.4865,
+   "cues": {
+    "local": 0.388854,
+    "lives": 4.293479
+   }
+  },
+  {
+   "spoken": "So you can simply ask, in plain words.",
+   "start": 33.5,
+   "end": 35.791021,
+   "cues": {
+    "ask": 0.735646
+   }
+  },
+  {
+   "spoken": "Wizard finds the right reports for you: sell-out from GSCM, market share from ASAP, spend from N-ERP, and your targets in Excel.",
+   "start": 38.6,
+   "end": 47.994875,
+   "cues": {
+    "finds": 0.374646,
+    "sell-out": 2.475146,
+    "share": 4.588562,
+    "spend": 6.328228,
+    "targets": 8.209688
+   }
+  },
+  {
+   "spoken": "Seconds later, you have a complete answer: a clear summary, the key numbers, and charts you can share.",
+   "start": 48.7,
+   "end": 54.812396,
+   "cues": {
+    "Seconds": 0.010083,
+    "summary": 3.154374,
+    "numbers": 4.198208,
+    "charts": 5.035833
+   }
+  },
+  {
+   "spoken": "Sell-out is up eight percent, led by Saudi Arabia, and our market share grew to over thirty-one percent.",
+   "start": 55.4,
+   "end": 62.108875,
+   "cues": {
+    "eight": 1.092541,
+    "Saudi": 2.535833,
+    "share": 4.430166
+   }
+  },
+  {
+   "spoken": "Every number is checked against its source report, so you can trust it.",
+   "start": 62.8,
+   "end": 66.464979,
+   "cues": {
+    "checked": 0.682145
+   }
+  },
+  {
+   "spoken": "And your data stays safe, with authorized AI that only shows what you're allowed to see.",
+   "start": 67.0,
+   "end": 71.821104,
+   "cues": {
+    "safe": 0.811979,
+    "authorized": 1.675354,
+    "allowed": 3.827437
+   }
+  },
+  {
+   "spoken": "Stop searching. Start asking.",
+   "start": 72.8,
+   "end": 74.709542,
+   "cues": {
+    "Stop": 0.002354,
+    "Start": 1.136396
+   }
+  },
+  {
+   "spoken": "Wizard. Every source, one answer.",
+   "start": 75.3,
+   "end": 77.67125,
+   "cues": {
+    "Wizard": -0.003188,
+    "one": 1.59477
+   }
+  }
+ ]
+}

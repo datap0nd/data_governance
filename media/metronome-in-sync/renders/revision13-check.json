@@ -1,0 +1,168 @@
+{
+  "ok": true,
+  "strict": false,
+  "browserSkipped": false,
+  "lint": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": [],
+    "filesScanned": 1
+  },
+  "runtime": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": []
+  },
+  "layout": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 2,
+    "findings": [
+      {
+        "code": "content_overlap",
+        "severity": "info",
+        "time": 24.962,
+        "selector": "#sJoin > div:nth-of-type(6) > div:nth-of-type(1) > b:nth-of-type(1)",
+        "message": "Two text blocks overlap and may render unreadable.",
+        "rect": {
+          "left": 1009.73,
+          "top": 656.17,
+          "right": 1060.6,
+          "bottom": 679.26,
+          "width": 50.87,
+          "height": 23.09
+        },
+        "containerSelector": "div.join-name",
+        "text": "Email",
+        "fixHint": "Give each block its own zone, or mark intentional layering with data-layout-allow-overlap.",
+        "dataAttributes": {},
+        "sourceFile": "index.html",
+        "bbox": {
+          "x": 1009.73,
+          "y": 656.17,
+          "width": 50.87,
+          "height": 23.09
+        },
+        "firstSeen": 24.962,
+        "lastSeen": 24.962,
+        "occurrences": 1,
+        "heldMs": 0,
+        "times": [
+          24.962
+        ]
+      },
+      {
+        "code": "content_overlap",
+        "severity": "info",
+        "time": 25.102,
+        "selector": "#sJoin > div:nth-of-type(4) > div:nth-of-type(1) > span:nth-of-type(1)",
+        "message": "Two text blocks overlap and may render unreadable.",
+        "rect": {
+          "left": 779.98,
+          "top": 622.19,
+          "right": 913.8,
+          "bottom": 640.81,
+          "width": 133.82,
+          "height": 18.62
+        },
+        "containerSelector": "div.join-name",
+        "text": "Finance & planning",
+        "fixHint": "Give each block its own zone, or mark intentional layering with data-layout-allow-overlap.",
+        "dataAttributes": {},
+        "sourceFile": "index.html",
+        "bbox": {
+          "x": 779.98,
+          "y": 622.19,
+          "width": 133.82,
+          "height": 18.62
+        },
+        "firstSeen": 25.102,
+        "lastSeen": 25.102,
+        "occurrences": 1,
+        "heldMs": 0,
+        "times": [
+          25.102
+        ]
+      }
+    ],
+    "duration": 84,
+    "samples": [
+      3,
+      7.5,
+      14,
+      21.5,
+      26,
+      30,
+      34,
+      36.5,
+      40,
+      43,
+      45,
+      47,
+      50,
+      52.6,
+      53.8,
+      54.8,
+      57,
+      60,
+      64.5,
+      66.8,
+      68.2,
+      70,
+      73,
+      77,
+      81
+    ],
+    "transitionSamples": [],
+    "transitionSamplesDropped": 0,
+    "tolerance": 2,
+    "totalIssueCount": 2,
+    "truncated": false
+  },
+  "motion": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": [],
+    "enabled": false,
+    "samples": 0
+  },
+  "contrast": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": [],
+    "enabled": true,
+    "samples": [
+      3,
+      34,
+      50,
+      64.5,
+      81
+    ],
+    "checked": 75,
+    "passed": 75
+  },
+  "hdr": {
+    "autoPromotion": null,
+    "inspection": "available"
+  },
+  "snapshots": {
+    "enabled": false,
+    "files": [],
+    "times": [],
+    "findingFiles": []
+  },
+  "_meta": {
+    "version": "0.8.142",
+    "latestVersion": "0.8.202",
+    "updateAvailable": true
+  }
+}

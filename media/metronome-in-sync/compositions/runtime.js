@@ -68,65 +68,54 @@
   const ai=ease((t-cue.localAI+.1)/.45);$('.join-ai').style.opacity=ai;$('.join-ai').style.transform=`translate(-50%,${(1-ai)*12}px)`;
  }
 
- // 3. Wizard: ask, find, answer, trust.
- const question=config.question,typeStart=cue.ask+.35,typeEnd=typeStart+2.6,sent=typeEnd+.6;
- const lit={gscm:cue.sellOut,asap:cue.share,nerp:cue.spend,excel:cue.targets},foundDone=cue.targets+.7,dash=cue.seconds-.35;
- const bodyPoint=(sel,dx=0,dy=0)=>{const r=$(sel).getBoundingClientRect(),o=$('.app-body').getBoundingClientRect();return [r.left-o.left+r.width/2+dx,r.top-o.top+r.height/2+dy];};
- function app(t){
-  const start=at('sApp').start,win=ease((t-start)/.6);$('.app-window').style.opacity=win;$('.app-window').style.transform=`translateY(${(1-win)*40}px) scale(${.98+.02*win})`;
-  const home=$('.wz-home');home.style.opacity=1-ease((t-sent)/.3);home.style.visibility=t<sent+.3?'inherit':'hidden';
-  $$('.home-mark,.home-hello,.wz-home>h1,.ask-box').forEach((el,i)=>reveal(el,ease((t-start-.25-i*.12)/.5)));
-  $$('.home-sources .src-chip').forEach((el,i)=>reveal(el,ease((t-start-.8-i*.07)/.4),10));reveal($('.home-sources-label'),ease((t-start-.7)/.4),8);
-  const typed=t>=sent?'':question.slice(0,Math.floor(clamp((t-typeStart)/(typeEnd-typeStart))*question.length));
-  $('.ask-typed').textContent=typed;$('.ask-placeholder').style.display=typed?'none':'';
-  const focused=t>=cue.ask-.3&&t<sent;$('.ask-box').classList.toggle('focused',focused);$('.ask-caret').style.opacity=focused&&Math.floor(t*2.5)%2===0?1:0;
-  $('.ask-send').classList.toggle('ready',typed.length===question.length);$('.ask-send').classList.toggle('pressed',t>=sent-.1&&t<sent+.05);
-  const send=bodyPoint('.ask-send');pointer($('.app-pointer'),t,[[typeEnd-.4,send[0]+160,send[1]+120],[sent-.25,send[0],send[1]],[sent+.6,send[0]-40,send[1]+140]],[sent-.1],typeEnd-.4,sent+.6);
-  // The question bubble steps aside when the security card opens beneath the badge.
-  reveal($('.wz-user'),ease((t-sent-.05)/.4)*(1-ease((t-cue.safe+.1)/.3)),10);
-  // Finding the right reports.
-  const find=$('.wz-find'),findIn=ease((t-sent-.2)/.4),findOut=ease((t-dash)/.35);find.style.opacity=findIn*(1-findOut);find.style.visibility=t>=sent&&t<dash+.4?'inherit':'hidden';
-  $('.find-spinner').style.transform=`rotate(${t*360}deg)`;$('.find-spinner').style.opacity=t<foundDone?1:0;
-  $('.find-title').textContent=t<foundDone?'Finding the right reports…':'Found 4 reports across 8 sources';
-  $$('[data-tile]').forEach((el,i)=>{const key=el.dataset.tile,on=lit[key]!==undefined&&t>=lit[key];reveal(el,ease((t-sent-.35-i*.06)/.4),12);
-   el.classList.toggle('lit',on);el.style.opacity=Math.min(+el.style.opacity,t>=foundDone&&!on?.45:1);
-   el.querySelector('.tile-ok').style.opacity=on?ease((t-lit[key])/.3):0;
-   const scan=t<foundDone&&!on;el.querySelector('.tile-scan').style.opacity=scan?1:0;el.querySelector('.tile-scan').style.transform=`translateX(${((t*1.4+i*.37)%1.6-.6)*280}px)`;});
-  $$('[data-found]').forEach((el,i)=>reveal(el,ease((t-[cue.sellOut,cue.share,cue.spend,cue.targets][i]-.1)/.4),16));
-  // The answer builds as it is named.
-  const dashEl=$('.wz-dash');dashEl.style.opacity=ease((t-dash-.1)/.4);dashEl.style.visibility=t>=dash?'inherit':'hidden';
-  reveal($('.dash-used'),ease((t-dash)/.4),8);reveal($('.dash-head'),ease((t-dash-.2)/.45),10);reveal($('.dash-summary'),ease((t-cue.summary+.2)/.5),10);
-  $$('[data-kpi]').forEach((el,i)=>{reveal(el,ease((t-cue.numbers-i*.13)/.45),16);
-   const hot=(i===0&&t>=cue.eight-.1&&t<cue.eight+1.6)||(i===1&&t>=cue.marketShare-.1&&t<cue.marketShare+1.8);el.classList.toggle('pulse',hot);});
-  $$('.chart-card').forEach((el,i)=>reveal(el,ease((t-cue.charts-i*.2)/.5),18));
-  const focusKsa=t>=cue.saudi-.1&&t<cue.checked;
-  $$('[data-bar]').forEach((el,i)=>{const p=ease((t-cue.charts-.35-i*.1)/.7);el.querySelector('.bar').style.transform=`scaleY(${p})`;el.querySelector('.bar-value').style.opacity=clamp((p-.6)/.4);
-   el.style.opacity=focusKsa&&i>0?.4:1;});
-  $('.bar-callout').style.opacity=ease((t-cue.saudi)/.35);
-  $$('[data-slice]').forEach((el,i)=>{const p=ease((t-cue.charts-.5)/1.1),len=+el.dataset.len,off=+el.dataset.off;
-   el.setAttribute('stroke-dasharray',`${Math.max(0,Math.min(len,100*p-off))} 100`);
-   const pop=i===0?ease((t-cue.marketShare+.1)/.4)*(1-ease((t-cue.checked)/.4)):0;el.style.transform=`scale(${1+pop*.07})`;});
-  $$('[data-legend]').forEach((el,i)=>reveal(el,ease((t-cue.charts-.9-i*.12)/.4),8));
-  // Trust: checked against sources, safe by design.
-  $('.dash-checked').style.opacity=ease((t-cue.checked)/.4);
-  $$('.kpi-src').forEach((el,i)=>el.style.opacity=ease((t-cue.checked-.2-i*.12)/.3));$$('.chart-src').forEach((el,i)=>el.style.opacity=ease((t-cue.checked-.6-i*.15)/.3));
-  const glow=t>=cue.safe-.2?.5+.5*Math.sin((t-cue.safe)*4):0;$('.app-secure').style.boxShadow=t>=cue.safe-.2?`0 0 0 ${3+glow*4}px #10b98133`:'';
-  reveal($('.secure-card'),ease((t-cue.safe)/.45),-10);
-  $$('.secure-card>div').forEach((el,i)=>reveal(el,ease((t-[cue.authorized,cue.authorized+.6,cue.allowed+.4][i]+.1)/.35),6));
+ // 3. The real Wizard app. The camera keeps a page point (fx, fy) at the frame centre at zoom z; near z = 1 the window
+ // eases back to the centre, and once it is wider than the frame it never shows its edge.
+ const clips=config.screen.clips,ids=Object.keys(clips),smooth=x=>x*x*(3-2*x);
+ const camera=(keys,t)=>{let i=0;while(i<keys.length-1&&t>=keys[i+1][0])i++;const a=keys[i],b=keys[Math.min(i+1,keys.length-1)];
+  const p=b===a||t<=a[0]?0:smooth(clamp((t-a[0])/(b[0]-a[0])));return [lerp(a[1],b[1],p),lerp(a[2],b[2],p),lerp(a[3],b[3],p)];};
+ const place=(fx,fy,z)=>{const w=clamp((z-1)/.3);let x=lerp(960-800*z,960-fx*z,w),y=lerp(540-450*z,540-fy*z,w);
+  if(1600*z>=1920)x=clamp(x,1920-1600*z,0);if(900*z>=1080)y=clamp(y,1080-900*z,0);return [x,y];};
+ // Capture time at a film time, from the clip's anchors: drives the timelapse clock.
+ const sourceAt=(c,t)=>{const a=c.anchors;let i=0;while(i<a.length-2&&t>=a[i+1][0])i++;const [f0,s0]=a[i],[f1,s1]=a[i+1];return s0+(s1-s0)*clamp((t-f0)/Math.max(.001,f1-f0));};
+ // Hand-offs between windows: the first grows out of the hub logo; the second question slides in from the right;
+ // the check slides back in from the left, returning to the first answer.
+ const slide=(t,from)=>ease((t-from)/.6),T1=clips.stock.start+.2,T2=clips.check.start+.05;
+ function screen(t){
+  const start=at('sApp').start,end=at('sApp').end;
+  const grow=ease((t-start)/.75);
+  $('.hub-echo').style.opacity=t<start+.6?1-grow:0;$('.hub-echo').style.transform=`scale(${1+grow*2.2})`;
+  const offset={ask:-2050*slide(t,T1),stock:2050*(1-slide(t,T1))+2050*slide(t,T2),check:-2050*(1-slide(t,T2))};
+  ids.forEach(id=>{
+   const c=clips[id],el=$(`[data-clip="${id}"]`),on=t>=c.start&&t<c.end;el.style.visibility=on?'inherit':'hidden';if(!on)return;
+   const [fx,fy,z]=camera(c.camera,t);let [x,y]=place(fx,fy,z),k=1;
+   if(id==='ask'){k=lerp(.18,1,grow);x=960+(x-960)*k;y=540+(y-540)*k+(1-grow)*-40;el.style.opacity=clamp(grow*1.6);}
+   if(id==='check'){const out=ease((t-(end-.55))/.55);k=1-out*.08;x=960+(x-960)*k;y=540+(y-540)*k;el.style.opacity=1-out;}
+   el.style.transform=`translate(${x+offset[id]}px,${y}px) scale(${z*k})`;
+  });
+  // Timelapse: the pill shows the real time the run took, counting at the speed the film plays it.
+  const tl=ids.map(id=>clips[id]).find(c=>c.timelapse&&t>=c.timelapse.from-.3&&t<c.timelapse.to+.5);
+  const pill=$('.tl-pill');pill.style.opacity=tl?ease((t-tl.timelapse.from+.3)/.3)*(1-ease((t-tl.timelapse.to-.2)/.3)):0;
+  if(tl){const real=Math.max(0,sourceAt(tl,Math.min(t,tl.timelapse.to))-tl.timelapse.clockFrom);$('.tl-clock').textContent=`${Math.floor(real/60)}:${String(Math.floor(real%60)).padStart(2,'0')}`;
+   pill.style.transform=`translateY(${(1-ease((t-tl.timelapse.from+.3)/.3))*-14}px)`;}
+  reveal($('.real-tag'),ease((t-start-.9)/.5)*(1-ease((t-end+.6)/.4)),-8);
+  // Safe: the app steps back and the security card opens on "safe".
+  const dim=ease((t-cue.safe+.15)/.45)*(1-ease((t-end+.5)/.4));$('.screen-dim').style.opacity=dim*.82;
+  const card=$('.safe-card'),cp=ease((t-cue.safe)/.45)*(1-ease((t-end+.5)/.4));card.style.opacity=cp;card.style.transform=`translate(-50%,calc(-50% + ${(1-cp)*18}px)) scale(${.97+.03*cp})`;
+  $$('.safe-card>div').forEach((el,i)=>reveal(el,ease((t-[cue.authorized,cue.authorized+.7,cue.allowed+.5][i]+.1)/.35),8));
  }
 
- // 4. End card.
+ // 4. End card: Wizard's logo, the tagline, every source.
  function endCard(t){
   const start=at('sEnd').start;
-  $$('[data-end-chip]').forEach((el,i)=>reveal(el,ease((t-start-.2-i*.08)/.45),12));
-  const mark=ease((t-start-.1)/.6);$('.end-mark').style.opacity=mark;$('.end-mark').style.transform=`scale(${.8+.2*mark})`;
-  const name=ease((t-cue.endWizard+.1)/.5);$('.end-lockup>b').style.opacity=name;$('.end-lockup>b').style.transform=`translateX(${(1-name)*-24}px)`;
+  const logo=ease((t-start-.15)/.7),pulse=t>=cue.endWizard?Math.sin(clamp((t-cue.endWizard)/.6)*Math.PI)*.025:0;
+  $('.end-lockup').style.opacity=logo;$('.end-lockup').style.transform=`translateY(${(1-logo)*18}px) scale(${.94+.06*logo+pulse})`;
   reveal($('.end-tagline'),ease((t-cue.oneAnswer+.5)/.6),12);
+  $$('[data-end-chip]').forEach((el,i)=>reveal(el,ease((t-cue.oneAnswer-.1-i*.07)/.45),12));
  }
 
  function draw(t){
   scenes.forEach(s=>{const active=t>=s.start&&t<s.end;s.el.style.visibility=active?'visible':'hidden';s.el.style.opacity=active?'1':'0';});
-  mess(t);join(t);app(t);endCard(t);
+  mess(t);join(t);screen(t);endCard(t);
  }
  window.Film={draw,seek:draw};window.__timelines=window.__timelines||{};const clock={t:0},timeline=gsap.timeline({paused:true});timeline.to(clock,{t:config.duration,duration:config.duration,ease:'none',onUpdate:()=>draw(clock.t)},0);window.__timelines['metronome-your-data-connected']=timeline;window.addEventListener('hf-seek',e=>draw(e.detail.time));draw(0);
 })();

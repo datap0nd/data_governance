@@ -1,0 +1,134 @@
+{
+ "markers": {
+  "start": {
+   "t": 1793003741.377
+  },
+  "type_start": {
+   "t": 1793003744.38,
+   "x": 934,
+   "y": 833.1875,
+   "w": 718,
+   "h": 44
+  },
+  "type_end": {
+   "t": 1793003747.116
+  },
+  "sent": {
+   "t": 1793003748.338,
+   "x": 1315,
+   "y": 833.1875,
+   "w": 36,
+   "h": 36
+  },
+  "done": {
+   "t": 1793003774.246
+  },
+  "settled": {
+   "t": 1793003777.449
+  },
+  "top": {
+   "t": 1793003778.874
+  },
+  "chart": {
+   "t": 1793003782.691
+  },
+  "end": {
+   "t": 1793003785.092
+  }
+ },
+ "runs": [
+  {
+   "id": "run_aNCD3eoFAA5UtLl8",
+   "kind": "ask",
+   "status": "succeeded",
+   "events": [
+    {
+     "type": "run_started",
+     "ts": "2026-10-26T08:35:48.364+00:00"
+    },
+    {
+     "type": "agent_session",
+     "ts": "2026-10-26T08:35:48.365+00:00"
+    },
+    {
+     "type": "note",
+     "ts": "2026-10-26T08:35:52.162+00:00"
+    },
+    {
+     "type": "tool_started",
+     "ts": "2026-10-26T08:35:52.163+00:00",
+     "label": "Searched all sources for “channel stock sell-in sell-out by model”",
+     "name": "wizard_search_catalog"
+    },
+    {
+     "type": "tool_finished",
+     "ts": "2026-10-26T08:35:53.768+00:00",
+     "name": "wizard_search_catalog"
+    },
+    {
+     "type": "tool_started",
+     "ts": "2026-10-26T08:35:54.870+00:00",
+     "label": "Read GSCM · Sell-through by market and quarter (fiscal_quarter=2026-Q2/2026-Q3)",
+     "name": "gscm_run_report"
+    },
+    {
+     "type": "tool_finished",
+     "ts": "2026-10-26T08:35:58.097+00:00",
+     "name": "gscm_run_report"
+    },
+    {
+     "type": "tool_started",
+     "ts": "2026-10-26T08:35:59.200+00:00",
+     "label": "Read GSCM · Sell-in, sell-out and channel stock by model and month (fiscal_quarter=2026-Q3)",
+     "name": "gscm_run_report"
+    },
+    {
+     "type": "tool_finished",
+     "ts": "2026-10-26T08:36:02.412+00:00",
+     "name": "gscm_run_report"
+    },
+    {
+     "type": "tool_started",
+     "ts": "2026-10-26T08:36:03.514+00:00",
+     "label": "Read GSCM · Sell-in, sell-out and channel stock by model and month (month=2026-06/2026-09)",
+     "name": "gscm_run_report"
+    },
+    {
+     "type": "tool_finished",
+     "ts": "2026-10-26T08:36:06.734+00:00",
+     "name": "gscm_run_report"
+    },
+    {
+     "type": "tool_started",
+     "ts": "2026-10-26T08:36:07.837+00:00",
+     "label": "Calculated (sep - jun) / jun * 100",
+     "name": "wizard_calculate"
+    },
+    {
+     "type": "tool_finished",
+     "ts": "2026-10-26T08:36:08.539+00:00",
+     "name": "wizard_calculate"
+    },
+    {
+     "type": "tool_started",
+     "ts": "2026-10-26T08:36:09.642+00:00",
+     "label": "Prepared a bar: Where channel stock grew in Q3",
+     "name": "wizard_render_visual"
+    },
+    {
+     "type": "tool_finished",
+     "ts": "2026-10-26T08:36:11.244+00:00",
+     "name": "wizard_render_visual"
+    },
+    {
+     "type": "visual_added",
+     "ts": "2026-10-26T08:36:11.253+00:00"
+    },
+    {
+     "type": "run_finished",
+     "ts": "2026-10-26T08:36:14.151+00:00"
+    }
+   ]
+  }
+ ]
+}

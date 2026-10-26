@@ -1,0 +1,208 @@
+{
+ "id": "film-quarter-check",
+ "kind": "check",
+ "data_mode": "SYNTHETIC",
+ "match": [
+  "against+targets",
+  "against+target",
+  "quarter+targets"
+ ],
+ "steps": [
+  {
+   "say": "Re-checking the figures in the answer against the GSCM, ASAP and NERP reports they came from."
+  },
+  {
+   "tool": "wizard_check_my_data",
+   "as": "check",
+   "args": {
+    "claims": [
+     {
+      "label": "Total Q3 sell-out",
+      "stated_value": 1020000,
+      "evidence_id": "{E:gscm-sell-through-quarterly}",
+      "measure": "sell_out_units",
+      "where": [
+       {
+        "field": "fiscal_quarter",
+        "values": [
+         "2026-Q3"
+        ]
+       }
+      ],
+      "period": "2026-Q3"
+     },
+     {
+      "label": "Sell-out growth vs Q2 (%)",
+      "stated_value": 10.3,
+      "expression": "(q3 - q2) / q2 * 100",
+      "inputs": [
+       {
+        "name": "q3",
+        "evidence_id": "{E:gscm-sell-through-quarterly}",
+        "measure": "sell_out_units",
+        "where": [
+         {
+          "field": "fiscal_quarter",
+          "values": [
+           "2026-Q3"
+          ]
+         }
+        ],
+        "period": "2026-Q3"
+       },
+       {
+        "name": "q2",
+        "evidence_id": "{E:gscm-sell-through-quarterly}",
+        "measure": "sell_out_units",
+        "where": [
+         {
+          "field": "fiscal_quarter",
+          "values": [
+           "2026-Q2"
+          ]
+         }
+        ],
+        "period": "2026-Q2"
+       }
+      ]
+     },
+     {
+      "label": "Saudi Arabia Q3 sell-out",
+      "stated_value": 452000,
+      "evidence_id": "{E:gscm-sell-through-quarterly}",
+      "measure": "sell_out_units",
+      "where": [
+       {
+        "field": "market",
+        "values": [
+         "SA"
+        ]
+       },
+       {
+        "field": "fiscal_quarter",
+        "values": [
+         "2026-Q3"
+        ]
+       }
+      ],
+      "period": "2026-Q3"
+     },
+     {
+      "label": "UAE sell-out growth (%)",
+      "stated_value": 13.9,
+      "expression": "(q3 - q2) / q2 * 100",
+      "inputs": [
+       {
+        "name": "q3",
+        "evidence_id": "{E:gscm-sell-through-quarterly}",
+        "measure": "sell_out_units",
+        "where": [
+         {
+          "field": "market",
+          "values": [
+           "AE"
+          ]
+         },
+         {
+          "field": "fiscal_quarter",
+          "values": [
+           "2026-Q3"
+          ]
+         }
+        ],
+        "period": "2026-Q3"
+       },
+       {
+        "name": "q2",
+        "evidence_id": "{E:gscm-sell-through-quarterly}",
+        "measure": "sell_out_units",
+        "where": [
+         {
+          "field": "market",
+          "values": [
+           "AE"
+          ]
+         },
+         {
+          "field": "fiscal_quarter",
+          "values": [
+           "2026-Q2"
+          ]
+         }
+        ],
+        "period": "2026-Q2"
+       }
+      ]
+     },
+     {
+      "label": "Egypt share gain (pts)",
+      "stated_value": 1.6,
+      "expression": "q3 - q2",
+      "inputs": [
+       {
+        "name": "q3",
+        "evidence_id": "{E:asap-share-quarterly}",
+        "measure": "volume_share_pct",
+        "where": [
+         {
+          "field": "market",
+          "values": [
+           "EG"
+          ]
+         },
+         {
+          "field": "fiscal_quarter",
+          "values": [
+           "2026-Q3"
+          ]
+         }
+        ],
+        "aggregate": "value",
+        "period": "2026-Q3"
+       },
+       {
+        "name": "q2",
+        "evidence_id": "{E:asap-share-quarterly}",
+        "measure": "volume_share_pct",
+        "where": [
+         {
+          "field": "market",
+          "values": [
+           "EG"
+          ]
+         },
+         {
+          "field": "fiscal_quarter",
+          "values": [
+           "2026-Q2"
+          ]
+         }
+        ],
+        "aggregate": "value",
+        "period": "2026-Q2"
+       }
+      ]
+     },
+     {
+      "label": "Saudi Arabia Q3 marketing spend",
+      "stated_value": 4200000,
+      "evidence_id": "{E:nerp-mkt-spend-quarterly}",
+      "measure": "spend_usd",
+      "where": [
+       {
+        "field": "market",
+        "values": [
+         "SA"
+        ]
+       }
+      ],
+      "period": "2026-Q3"
+     }
+    ]
+   }
+  },
+  {
+   "answer": "**All six figures I re-checked match the GSCM, ASAP and NERP reports they came from.** The answer stands: sell-out up 10.3% to 1.02 million units, led by Saudi Arabia, with the UAE the one market below target.\n\n- Total Q3 sell-out of 1,020,000 units and growth of 10.3% recompute from the GSCM rows.\n- Saudi Arabia's 452,000 units and $4.2M of spend, the UAE's 13.9% growth and Egypt's 1.6-point share gain match their source rows.\n\nThe targets come from your attached file, which no company system can confirm."
+  }
+ ]
+}
