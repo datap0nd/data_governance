@@ -61,6 +61,7 @@ subprocess.run([FF, '-y', '-i', str(vo), '-i', str(music), '-filter_complex',
                 f'{bed.music_filter(duration, bed.seconds(FF, music))};'
                 '[m][sc]sidechaincompress=threshold=0.018:ratio=4:attack=30:release=600[duck];'
                 '[v][duck]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.89[mix]',
-                '-map', '[mix]', '-ar', '48000', '-ac', '2', '-c:a', 'pcm_s24le', str(FILM / 'audio/score.wav'), '-loglevel', 'error'], check=True)
+                '-map', '[mix]', '-ar', '48000', '-ac', '2', '-c:a', 'pcm_s24le', str(cache / 'premix.wav'), '-loglevel', 'error'], check=True)
 (FILM / 'audio/narration-timing.json').write_text(json.dumps(timing, indent=2), encoding='utf-8')
 print(json.dumps(timing, indent=2))
+print("Voice and music in .audio-cache/premix.wav; after node scripts/build.mjs, audio/sfx.py adds the whooshes into audio/score.wav.")

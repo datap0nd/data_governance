@@ -16,6 +16,12 @@ const lucidePaths = {
   fastForward: '<path d="M13 19V5l9 7z"/><path d="M2 19V5l9 7z"/>',
   cpu: '<rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2M15 20v2M2 15h2M2 9h2M20 15h2M20 9h2M9 2v2M9 20v2"/>'
 };
+// Kinetic type: each letter in its own box (words kept whole) so compositions/runtime.js can pop it in and settle it;
+// while they pop, neighbouring letters overlap on purpose.
+export const letters = text => text.split(' ').map(word => `<span class="kw">${[...word].map(c => `<span class="kc" data-layout-allow-overlap>${c}</span>`).join('')}</span>`).join('<span class="kc ks"> </span>');
+// Motion blur: one directional Gaussian per moving element, its deviation set every frame from the element's speed.
+export const blurDefs = (count = 40) => `<svg class="mb-defs" width="0" height="0" aria-hidden="true">${Array.from({length: count}, (_, i) =>
+  `<filter id="mb${i}" x="-30%" y="-30%" width="160%" height="160%" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation="0"/></filter>`).join('')}</svg>`;
 export const lu = (name, cls = '') => `<svg class="lu ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${lucidePaths[name]}</svg>`;
 
 // Every place an answer can hide.
@@ -56,7 +62,8 @@ export function messScene() {
     const s = sources.find(x => x.key === f[0]);
     return `<div class="file-card" data-file="${i}" style="left:${fileSlots[i][0]}px;top:${fileSlots[i][1]}px;--r:${fileSlots[i][2]}deg">${badge(s)}<div><b>${f[1]}</b><span>${f[2]}</span></div></div>`;
   }).join('');
-  return `${windows}${fileCards}<div class="hunt-question">${lu('search')}<span>Which market grew the most this quarter?</span></div><div class="hunt-clock">${lu('clock')}<span>0 min</span></div><div class="hunt-pointer"><svg class="pointer" viewBox="0 0 40 48"><path d="M4 3 33 28 21 30 27 43 20 46 14 32 4 41Z" fill="#fff" stroke="#172d38" stroke-width="2.5"/></svg></div>`;
+  const question = 'Which market grew the most this quarter?';
+  return `${windows}${fileCards}<div class="hunt-veil"></div><div class="hunt-statement">${letters(question)}</div><div class="hunt-question">${lu('search')}<span>${question}</span></div><div class="hunt-clock">${lu('clock')}<span>0 min</span></div><div class="hunt-pointer"><svg class="pointer" viewBox="0 0 40 48"><path d="M4 3 33 28 21 30 27 43 20 46 14 32 4 41Z" fill="#fff" stroke="#172d38" stroke-width="2.5"/></svg></div>`;
 }
 
 // 2. Everything comes together in Wizard.
@@ -68,13 +75,13 @@ export function joinScene() {
   const lines = ringSlots.map(([x, y], i) => { const k = x < cx ? 1 : -1; return `<path data-join-line="${i}" d="M${x} ${y}C${x + k * 300} ${y} ${cx - k * 280} ${cy} ${cx} ${cy}"/>`; }).join('');
   const nodes = sources.map((s, i) => `<div class="join-node" data-node="${i}">${badge(s)}<div><b>${s.name}</b><span>${s.sub}</span></div></div>`).join('');
   return `<svg class="join-lines" viewBox="0 0 1920 1080" aria-hidden="true"><g class="join-base" fill="none" stroke="#d5dcef" stroke-width="2.5">${lines}</g><g class="join-flow" fill="none" stroke="#315bd6" stroke-width="5" stroke-linecap="round" stroke-dasharray="6 46">${lines}</g></svg>
-${nodes}<div class="join-hub"><div class="hub-glow"></div>${wizardIcon}</div><div class="join-name">Wizard</div><div class="join-ai">${lu('cpu')}Local AI</div>`;
+${nodes}<div class="join-hub"><div class="hub-glow"></div>${wizardIcon}</div><div class="join-name">${letters('Wizard')}</div><div class="join-ai">${lu('cpu')}Local AI</div>`;
 }
 
 // 3. The real Wizard app. Each clip plays in its own window; compositions/runtime.js moves the camera over it.
 export function screenScene(clips) {
   const windows = Object.entries(clips).map(([id, c], i) => `<div class="screen-win" data-clip="${id}"><video id="clip-${id}" src="${c.file}" muted playsinline preload="auto" data-start="${c.start}" data-duration="${Math.round((c.end - c.start) * 1000) / 1000}" data-track-index="${2 + i}"></video></div>`).join('');
-  const safe = `<div class="safe-card"><b>${lu('shield')}Secure by design</b><div>${lu('cpu')}Authorized AI, approved by the company</div><div>${lu('eye')}Shows only what you're allowed to see</div><div>${lu('lock')}Read-only: it never changes your data</div></div>`;
+  const safe = `<div class="safe-card"><b>${lu('shield')}<span>${letters('Secure by design')}</span></b><div>${lu('cpu')}Authorized AI, approved by the company</div><div>${lu('eye')}Shows only what you're allowed to see</div><div>${lu('lock')}Read-only: it never changes your data</div></div>`;
   return `<div class="hub-echo">${wizardIcon}</div>${windows}<div class="screen-dim"></div>${safe}
 <div class="tl-edge"></div><div class="tl-pill">${lu('fastForward')}<b>Timelapse</b><i></i><span class="tl-speed">2×</span><i></i><span class="tl-clock">0:00</span></div><div class="real-tag">Real Wizard app · illustrative data</div>`;
 }
@@ -82,5 +89,5 @@ export function screenScene(clips) {
 // 4. End card: Wizard's logo, the tagline and every source.
 export function endScene() {
   const chips = sources.map((s, i) => `<span class="end-chip" data-end-chip="${i}">${badge(s)}${s.name}</span>`).join('');
-  return `<div class="end-glow"></div><div class="end-lockup">${wizardLogo}</div><p class="end-tagline">Every source. One answer.</p><div class="end-sources">${chips}</div>`;
+  return `<div class="end-glow"></div><div class="end-statement"><p data-say="stop">${letters('Stop searching.')}</p><p data-say="start">${letters('Start asking.')}</p></div><div class="end-lockup">${wizardLogo}</div><p class="end-tagline">${letters('Every source. One answer.')}</p><div class="end-sources">${chips}</div>`;
 }

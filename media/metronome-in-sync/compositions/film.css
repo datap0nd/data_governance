@@ -44,3 +44,11 @@
 .end-tagline{position:absolute;top:572px;left:0;right:0;text-align:center;font-size:46px;font-weight:500;color:#4b5871;letter-spacing:-.6px}
 .end-sources{position:absolute;top:724px;left:0;right:0;display:flex;justify-content:center;gap:12px}
 .end-chip{display:inline-flex;align-items:center;gap:10px;padding:6px 18px 6px 6px;background:#fff;border:1px solid #e0e4eb;border-radius:999px;font-size:18px;font-weight:500;opacity:0}.end-chip .src-badge{width:34px;height:34px;border-radius:999px;font-size:15px}.end-chip .src-badge.wide{font-size:9.5px}
+
+/* Kinetic type: letters pop in larger, spaced and soft, then settle (compositions/runtime.js). */
+.kw{display:inline-block;white-space:nowrap}.kc{display:inline-block;white-space:pre;transform-origin:50% 72%;opacity:0}.ks{opacity:1}
+.hunt-veil{position:absolute;inset:0;background:radial-gradient(ellipse at 50% 46%,#f7f8fb 0,#f7f8fbE6 45%,#f7f8fb80 85%);opacity:0;z-index:18}
+.hunt-statement{position:absolute;left:0;right:0;top:420px;text-align:center;font-size:76px;font-weight:600;letter-spacing:-1.8px;color:#18233b;z-index:19;transform-origin:50% 50%}
+.end-statement{position:absolute;left:0;right:0;top:380px;text-align:center;color:#18233b}
+.end-statement p{margin:0;font-size:104px;line-height:1.12;font-weight:600;letter-spacing:-2.6px}.end-statement p+p{color:#315bd6}
+.mb-defs{position:absolute;width:0;height:0;overflow:hidden}
