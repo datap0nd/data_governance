@@ -15,9 +15,9 @@
   },
   "duration": "109.000000",
   "loudness": {
-    "input_i": "-16.15",
-    "input_tp": "-1.93",
-    "input_lra": "17.20"
+    "input_i": "-16.30",
+    "input_tp": "-1.90",
+    "input_lra": "16.60"
   },
   "decode": "PASS",
   "narrationPhrases": 12,
