@@ -1,0 +1,278 @@
+{
+  "cues": {
+    "asap": 2.548896,
+    "gscm": 3.695771,
+    "bdp": 4.778271,
+    "nerp": 5.873604,
+    "packed": 7.213812,
+    "excel": 9.966208,
+    "emails": 11.280625,
+    "presentations": 12.053833,
+    "pdfs": 13.110541,
+    "look": 17.264083,
+    "opening": 18.282124,
+    "piecing": 20.447083,
+    "meetWizard": 23.116478,
+    "together": 25.24277,
+    "localAI": 27.988854,
+    "lives": 31.893479,
+    "ask": 34.235646,
+    "finds": 43.874646,
+    "sellOut": 45.975146,
+    "share": 48.088562,
+    "spend": 49.828228,
+    "targets": 51.709688,
+    "seconds": 55.010083,
+    "summary": 58.154374,
+    "numbers": 59.198208,
+    "charts": 60.035833,
+    "checked": 90.642145,
+    "safe": 95.511979,
+    "authorized": 96.375354,
+    "allowed": 98.527437,
+    "stop": 101.302354,
+    "start": 102.436396,
+    "endWizard": 103.796812,
+    "oneAnswer": 105.39477
+  },
+  "provenance": [
+    {
+      "key": "asap",
+      "word": "ASAP",
+      "segment": 1,
+      "offset": 2.248896,
+      "filmTime": 2.548896
+    },
+    {
+      "key": "gscm",
+      "word": "GSCM",
+      "segment": 1,
+      "offset": 3.395771,
+      "filmTime": 3.695771
+    },
+    {
+      "key": "bdp",
+      "word": "BDP",
+      "segment": 1,
+      "offset": 4.478271,
+      "filmTime": 4.778271
+    },
+    {
+      "key": "nerp",
+      "word": "N-ERP",
+      "segment": 1,
+      "offset": 5.573604,
+      "filmTime": 5.873604
+    },
+    {
+      "key": "packed",
+      "word": "packed",
+      "segment": 1,
+      "offset": 6.913812,
+      "filmTime": 7.213812
+    },
+    {
+      "key": "excel",
+      "word": "Excel",
+      "segment": 2,
+      "offset": 0.966208,
+      "filmTime": 9.966208
+    },
+    {
+      "key": "emails",
+      "word": "emails",
+      "segment": 2,
+      "offset": 2.280625,
+      "filmTime": 11.280625
+    },
+    {
+      "key": "presentations",
+      "word": "presentations",
+      "segment": 2,
+      "offset": 3.053833,
+      "filmTime": 12.053833
+    },
+    {
+      "key": "pdfs",
+      "word": "PDFs",
+      "segment": 2,
+      "offset": 4.110541,
+      "filmTime": 13.110541
+    },
+    {
+      "key": "look",
+      "word": "look",
+      "segment": 3,
+      "offset": 2.264083,
+      "filmTime": 17.264083
+    },
+    {
+      "key": "opening",
+      "word": "opening",
+      "segment": 3,
+      "offset": 3.282124,
+      "filmTime": 18.282124
+    },
+    {
+      "key": "piecing",
+      "word": "piecing",
+      "segment": 3,
+      "offset": 5.447083,
+      "filmTime": 20.447083
+    },
+    {
+      "key": "meetWizard",
+      "word": "Wizard",
+      "segment": 4,
+      "offset": 0.216478,
+      "filmTime": 23.116478
+    },
+    {
+      "key": "together",
+      "word": "together",
+      "segment": 4,
+      "offset": 2.34277,
+      "filmTime": 25.24277
+    },
+    {
+      "key": "localAI",
+      "word": "local",
+      "segment": 5,
+      "offset": 0.388854,
+      "filmTime": 27.988854
+    },
+    {
+      "key": "lives",
+      "word": "lives",
+      "segment": 5,
+      "offset": 4.293479,
+      "filmTime": 31.893479
+    },
+    {
+      "key": "ask",
+      "word": "ask",
+      "segment": 6,
+      "offset": 0.735646,
+      "filmTime": 34.235646
+    },
+    {
+      "key": "finds",
+      "word": "finds",
+      "segment": 7,
+      "offset": 0.374646,
+      "filmTime": 43.874646
+    },
+    {
+      "key": "sellOut",
+      "word": "sell-out",
+      "segment": 7,
+      "offset": 2.475146,
+      "filmTime": 45.975146
+    },
+    {
+      "key": "share",
+      "word": "share",
+      "segment": 7,
+      "offset": 4.588562,
+      "filmTime": 48.088562
+    },
+    {
+      "key": "spend",
+      "word": "spend",
+      "segment": 7,
+      "offset": 6.328228,
+      "filmTime": 49.828228
+    },
+    {
+      "key": "targets",
+      "word": "targets",
+      "segment": 7,
+      "offset": 8.209688,
+      "filmTime": 51.709688
+    },
+    {
+      "key": "seconds",
+      "word": "Seconds",
+      "segment": 8,
+      "offset": 0.010083,
+      "filmTime": 55.010083
+    },
+    {
+      "key": "summary",
+      "word": "summary",
+      "segment": 8,
+      "offset": 3.154374,
+      "filmTime": 58.154374
+    },
+    {
+      "key": "numbers",
+      "word": "numbers",
+      "segment": 8,
+      "offset": 4.198208,
+      "filmTime": 59.198208
+    },
+    {
+      "key": "charts",
+      "word": "charts",
+      "segment": 8,
+      "offset": 5.035833,
+      "filmTime": 60.035833
+    },
+    {
+      "key": "checked",
+      "word": "checked",
+      "segment": 9,
+      "offset": 0.682145,
+      "filmTime": 90.642145
+    },
+    {
+      "key": "safe",
+      "word": "safe",
+      "segment": 10,
+      "offset": 0.811979,
+      "filmTime": 95.511979
+    },
+    {
+      "key": "authorized",
+      "word": "authorized",
+      "segment": 10,
+      "offset": 1.675354,
+      "filmTime": 96.375354
+    },
+    {
+      "key": "allowed",
+      "word": "allowed",
+      "segment": 10,
+      "offset": 3.827437,
+      "filmTime": 98.527437
+    },
+    {
+      "key": "stop",
+      "word": "Stop",
+      "segment": 11,
+      "offset": 0.002354,
+      "filmTime": 101.302354
+    },
+    {
+      "key": "start",
+      "word": "Start",
+      "segment": 11,
+      "offset": 1.136396,
+      "filmTime": 102.436396
+    },
+    {
+      "key": "endWizard",
+      "word": "Wizard",
+      "segment": 12,
+      "offset": -0.003188,
+      "filmTime": 103.796812
+    },
+    {
+      "key": "oneAnswer",
+      "word": "one",
+      "segment": 12,
+      "offset": 1.59477,
+      "filmTime": 105.39477
+    }
+  ]
+}

@@ -1,195 +1,983 @@
 {
-  "title": "Metronome — Your data, connected",
-  "version": 10,
-  "durationSeconds": 110,
+  "title": "Wizard — Every source, one answer",
+  "version": 13,
+  "durationSeconds": 109,
   "width": 1920,
   "height": 1080,
   "fps": 30,
-  "duration": 110,
+  "duration": 109,
   "scenes": [
     {
-      "id": "s1",
+      "id": "sMess",
       "start": 0,
-      "end": 9,
-      "name": "Where reports start"
+      "end": 22.6,
+      "name": "Too many places to look"
     },
     {
-      "id": "sETL",
-      "start": 9,
-      "end": 20,
-      "name": "The work behind reporting"
+      "id": "sJoin",
+      "start": 22.6,
+      "end": 33.2,
+      "name": "Everything together in Wizard"
     },
     {
-      "id": "s2",
-      "start": 20,
-      "end": 31,
-      "name": "Meet Metronome"
+      "id": "sApp",
+      "start": 33.2,
+      "end": 101,
+      "name": "The real Wizard: ask, timelapse, check"
     },
     {
-      "id": "s4",
-      "start": 31,
-      "end": 52,
-      "name": "Code vs no-code"
-    },
-    {
-      "id": "s5",
-      "start": 52,
-      "end": 64,
-      "name": "Overnight agents — in testing"
-    },
-    {
-      "id": "s6",
-      "start": 64,
-      "end": 72,
-      "name": "Findings — in testing"
-    },
-    {
-      "id": "s8",
-      "start": 72,
-      "end": 85,
-      "name": "Two ways to use Metronome"
-    },
-    {
-      "id": "s9",
-      "start": 85,
-      "end": 110,
-      "name": "AI before and after MCP"
+      "id": "sEnd",
+      "start": 101,
+      "end": 109,
+      "name": "Every source. One answer."
     }
   ],
   "narration": [
     {
-      "start": 0.2,
-      "end": 8.8,
-      "en": "Our data comes from interactive portals like ASAP and GSCM, where we download ready-made reports.",
-      "spoken": "Our data comes from interactive portals like A S A P and G S C M, where we download ready-made reports."
+      "start": 0.3,
+      "end": 8.6,
+      "en": "Our data is spread across portals like ASAP, GSCM, BDP and NERP, each packed with reports.",
+      "spoken": "Our data is spread across portals like ASAP, GSCM, BDP and N-ERP, each packed with reports.",
+      "cues": {
+        "asap": "ASAP",
+        "gscm": "GSCM",
+        "bdp": "BDP",
+        "nerp": "N-ERP",
+        "packed": "packed"
+      },
+      "voice": "rev12"
     },
     {
-      "start": 9.15,
-      "end": 19.75,
-      "en": "But downloads alone aren't ready for analysis or scheduled reporting. We still need to extract the data, standardize its format, and load it into a destination.",
-      "spoken": "But downloads alone aren't ready for analysis or scheduled reporting. We still need to extract the data, standardize its format, and load it into a destination."
+      "start": 9,
+      "end": 14.3,
+      "en": "And then there are endless Excel files, emails, presentations and PDFs.",
+      "spoken": "And then there are endless Excel files, emails, presentations and PDFs.",
+      "cues": {
+        "excel": "Excel",
+        "emails": "emails",
+        "presentations": "presentations",
+        "pdfs": "PDFs"
+      },
+      "voice": "rev12"
     },
     {
-      "start": 20.15,
-      "end": 30.8,
-      "en": "Meet Metronome. Build data pipelines in minutes, without code. Schedule them, trigger a run when you need it, and track every run in one place.",
-      "spoken": "Meet Metronome. Build data pipelines in minutes, without code. Schedule them, trigger a run when you need it, and track every run in one place."
+      "start": 15,
+      "end": 22.3,
+      "en": "Finding one answer means knowing where to look, then opening report after report, and piecing it together by hand.",
+      "spoken": "Finding one answer means knowing where to look, then opening report after report, and piecing it together by hand.",
+      "cues": {
+        "look": "look",
+        "opening": "opening",
+        "piecing": "piecing"
+      },
+      "voice": "rev12"
     },
     {
-      "start": 31.2,
-      "end": 38,
-      "en": "Instead of writing a script, build your own Flow. Choose a website and the report you need.",
-      "spoken": "Instead of writing a script, build your own Flow. Choose a website and the report you need."
+      "start": 22.9,
+      "end": 27.2,
+      "en": "Meet Wizard. It brings every source together, in one place.",
+      "spoken": "Meet Wizard. It brings every source together, in one place.",
+      "cues": {
+        "meetWizard": "Wizard",
+        "together": "together"
+      },
+      "voice": "rev12"
     },
     {
-      "start": 38.4,
-      "end": 44.5,
-      "en": "Choose where the data goes and when it runs.",
-      "spoken": "Choose where the data goes and when it runs."
+      "start": 27.6,
+      "end": 32.7,
+      "en": "Wizard's local AI has learned our portals, so it knows where every answer lives.",
+      "spoken": "Wizard's local AI has learned our portals, so it knows where every answer lives.",
+      "cues": {
+        "localAI": "local",
+        "lives": "lives"
+      },
+      "voice": "rev12"
     },
     {
-      "start": 45,
-      "end": 53.6,
-      "en": "While the script is still being written, your Flow is ready. No code needed.",
-      "spoken": "While the script is still being written, your Flow is ready. No code needed."
+      "start": 33.5,
+      "end": 36,
+      "en": "So you can simply ask, in plain words.",
+      "spoken": "So you can simply ask, in plain words.",
+      "cues": {
+        "ask": "ask"
+      },
+      "voice": "rev12"
     },
     {
-      "start": 52.2,
-      "end": 63.7,
-      "en": "At two AM, local AI agents keep working across your reports and pipelines, checking missing data, refresh issues, and blank rows.",
-      "spoken": "At two a.m., local AI agents keep working across your reports and pipelines, checking missing data, refresh issues, and blank rows."
+      "start": 43.5,
+      "end": 53.1,
+      "en": "Wizard finds the right reports for you: sell-out from GSCM, market share from ASAP, spend from NERP, and your targets in Excel.",
+      "spoken": "Wizard finds the right reports for you: sell-out from GSCM, market share from ASAP, spend from N-ERP, and your targets in Excel.",
+      "cues": {
+        "finds": "finds",
+        "sellOut": "sell-out",
+        "share": "share",
+        "spend": "spend",
+        "targets": "targets"
+      },
+      "voice": "rev12"
     },
     {
-      "start": 64.2,
-      "end": 71.7,
-      "en": "By morning, five issues are flagged. Open one to see the evidence and a proposed fix.",
-      "spoken": "By morning, five issues are flagged. Open one to see the evidence and a proposed fix."
+      "start": 55,
+      "end": 61.3,
+      "en": "Seconds later, you have a complete answer: a clear summary, the key numbers, and charts you can share.",
+      "spoken": "Seconds later, you have a complete answer: a clear summary, the key numbers, and charts you can share.",
+      "cues": {
+        "seconds": "Seconds",
+        "summary": "summary",
+        "numbers": "numbers",
+        "charts": "charts"
+      },
+      "voice": "rev12"
     },
     {
-      "start": 72.2,
-      "end": 78.7,
-      "en": "There are two ways to use Metronome. Open it in your browser, just like any other website.",
-      "spoken": "There are two ways to use Metronome. Open it in your browser, just like any other website."
+      "start": 89.96,
+      "end": 93.7,
+      "en": "Every number is checked against its source report, so you can trust it.",
+      "spoken": "Every number is checked against its source report, so you can trust it.",
+      "cues": {
+        "checked": "checked"
+      },
+      "voice": "rev12"
     },
     {
-      "start": 79,
-      "end": 84.8,
-      "en": "Or connect Metronome MCP to your AI, and create flows with a prompt.",
-      "spoken": "Or connect Metronome M C P to your AI, and create flows with a prompt."
+      "start": 94.7,
+      "end": 99.6,
+      "en": "And your data stays safe, with authorized AI that only shows what you're allowed to see.",
+      "spoken": "And your data stays safe, with authorized AI that only shows what you're allowed to see.",
+      "cues": {
+        "safe": "safe",
+        "authorized": "authorized",
+        "allowed": "allowed"
+      },
+      "voice": "rev12"
     },
     {
-      "start": 85.2,
-      "end": 93.4,
-      "en": "Without that connection, your AI may take wrong turns, retry steps, or return the wrong reporting period.",
-      "spoken": "Without that connection, your AI may take wrong turns, retry steps, or return the wrong reporting period."
+      "start": 101.3,
+      "end": 103.3,
+      "en": "Stop searching. Start asking.",
+      "spoken": "Stop searching. Start asking.",
+      "cues": {
+        "stop": "Stop",
+        "start": "Start"
+      },
+      "voice": "rev12"
     },
     {
-      "start": 93.7,
-      "end": 102,
-      "en": "With Metronome MCP, it can follow the portal workflow, create your Flow, and check the result.",
-      "spoken": "With Metronome M C P, it can follow the portal workflow, create your Flow, and check the result."
-    },
-    {
-      "start": 102.5,
-      "end": 109.7,
-      "en": "Fewer retries. Less time and fewer tokens. Accurate data, in your own repeatable Flow.",
-      "spoken": "Fewer retries. Less time and fewer tokens. Accurate data, in your own repeatable Flow."
+      "start": 103.8,
+      "end": 106.2,
+      "en": "Wizard. Every source, one answer.",
+      "spoken": "Wizard. Every source, one answer.",
+      "cues": {
+        "endWizard": "Wizard",
+        "oneAnswer": "one"
+      },
+      "voice": "rev12"
     }
   ],
-  "closingCues": {
-    "segment": 13,
-    "segmentStart": 102.5,
-    "voiceCacheHash": "93812f605c6dc44e",
-    "sourceAudioSha256": "1cb7a00def899aa20d9da8282a4880308cc2806a24dac8050f4ca939b09a20fa",
-    "source": "Cached synthesis WordBoundary events, corrected by the same PCM leading trim as audio/score.py. No speech regeneration.",
-    "trimSeconds": 0.10477083333333333,
-    "revealSeconds": 0.22,
-    "cues": [
-      {
-        "row": 0,
-        "topic": "retries",
-        "word": "Fewer",
-        "wordOffsetSeconds": 0.116,
-        "start": 102.511229
+  "cues": {
+    "asap": 2.548896,
+    "gscm": 3.695771,
+    "bdp": 4.778271,
+    "nerp": 5.873604,
+    "packed": 7.213812,
+    "excel": 9.966208,
+    "emails": 11.280625,
+    "presentations": 12.053833,
+    "pdfs": 13.110541,
+    "look": 17.264083,
+    "opening": 18.282124,
+    "piecing": 20.447083,
+    "meetWizard": 23.116478,
+    "together": 25.24277,
+    "localAI": 27.988854,
+    "lives": 31.893479,
+    "ask": 34.235646,
+    "finds": 43.874646,
+    "sellOut": 45.975146,
+    "share": 48.088562,
+    "spend": 49.828228,
+    "targets": 51.709688,
+    "seconds": 55.010083,
+    "summary": 58.154374,
+    "numbers": 59.198208,
+    "charts": 60.035833,
+    "checked": 90.642145,
+    "safe": 95.511979,
+    "authorized": 96.375354,
+    "allowed": 98.527437,
+    "stop": 101.302354,
+    "start": 102.436396,
+    "endWizard": 103.796812,
+    "oneAnswer": 105.39477
+  },
+  "screen": {
+    "page": [
+      1600,
+      900
+    ],
+    "clips": {
+      "ask": {
+        "file": "assets/screen/ask.mp4",
+        "start": 33.2,
+        "end": 62.033,
+        "take": "quarter",
+        "timelapses": [
+          {
+            "from": 44.4,
+            "to": 54.267,
+            "clockFrom": 10.287,
+            "anchors": [
+              [
+                33.2,
+                2.3
+              ],
+              [
+                41.2,
+                10.287
+              ],
+              [
+                41.2,
+                10.287
+              ],
+              [
+                44.4,
+                13.487
+              ],
+              [
+                44.4,
+                13.487
+              ],
+              [
+                51.7,
+                29.897
+              ],
+              [
+                51.7,
+                29.897
+              ],
+              [
+                54.267,
+                41.46
+              ],
+              [
+                54.267,
+                41.46
+              ],
+              [
+                56.367,
+                43.56
+              ]
+            ]
+          }
+        ],
+        "camera": [
+          [
+            33.2,
+            800,
+            450,
+            1
+          ],
+          [
+            33.916,
+            800,
+            450,
+            1
+          ],
+          [
+            35.116,
+            936,
+            780,
+            1.55
+          ],
+          [
+            41.4,
+            936,
+            780,
+            1.55
+          ],
+          [
+            42.6,
+            936,
+            417,
+            1.45
+          ],
+          [
+            51.7,
+            936,
+            393,
+            1.55
+          ],
+          [
+            53.467,
+            936,
+            393,
+            1.55
+          ],
+          [
+            54.467,
+            936,
+            430,
+            1.12
+          ],
+          [
+            56.367,
+            936,
+            450,
+            1.05
+          ],
+          [
+            58,
+            936,
+            450,
+            1.1
+          ],
+          [
+            57.954,
+            936,
+            300,
+            1.5
+          ],
+          [
+            58.798,
+            936,
+            300,
+            1.5
+          ],
+          [
+            59.698,
+            936,
+            725,
+            1.45
+          ],
+          [
+            59.836,
+            936,
+            725,
+            1.45
+          ],
+          [
+            60.736,
+            936,
+            470,
+            1.42
+          ],
+          [
+            61.036,
+            936,
+            470,
+            1.4
+          ],
+          [
+            61.736,
+            800,
+            450,
+            1
+          ]
+        ]
       },
-      {
-        "row": 1,
-        "topic": "time and tokens",
-        "word": "Less",
-        "wordOffsetSeconds": 1.366,
-        "start": 103.761229
-      },
-      {
-        "row": 2,
-        "topic": "data accuracy",
-        "word": "Accurate",
-        "wordOffsetSeconds": 3.4665,
-        "start": 105.861729
-      },
-      {
-        "row": 3,
-        "topic": "repeatable Flow",
-        "word": "in",
-        "wordOffsetSeconds": 4.548958,
-        "start": 106.944187
+      "stock": {
+        "file": "assets/screen/stock.mp4",
+        "start": 61.233,
+        "end": 101,
+        "take": "stock",
+        "timelapses": [
+          {
+            "from": 69.533,
+            "to": 73.333,
+            "clockFrom": 7.502,
+            "anchors": [
+              [
+                61.233,
+                2.3
+              ],
+              [
+                66.433,
+                7.502
+              ],
+              [
+                66.433,
+                7.502
+              ],
+              [
+                69.533,
+                10.602
+              ],
+              [
+                69.533,
+                10.602
+              ],
+              [
+                73.333,
+                33.325
+              ],
+              [
+                73.333,
+                33.325
+              ],
+              [
+                75.233,
+                35.225
+              ]
+            ]
+          },
+          {
+            "from": 86.1,
+            "to": 90.367,
+            "clockFrom": 44.21,
+            "anchors": [
+              [
+                75.233,
+                36.426
+              ],
+              [
+                76.733,
+                37.938
+              ],
+              [
+                76.733,
+                37.938
+              ],
+              [
+                83.1,
+                44.31
+              ],
+              [
+                83.1,
+                44.31
+              ],
+              [
+                86.1,
+                47.31
+              ],
+              [
+                86.1,
+                47.31
+              ],
+              [
+                90.367,
+                55.867
+              ],
+              [
+                90.367,
+                55.867
+              ],
+              [
+                91.967,
+                57.467
+              ]
+            ]
+          }
+        ],
+        "camera": [
+          [
+            61.233,
+            800,
+            450,
+            1
+          ],
+          [
+            61.931,
+            936,
+            800,
+            1.55
+          ],
+          [
+            66.633,
+            936,
+            800,
+            1.55
+          ],
+          [
+            67.833,
+            936,
+            417,
+            1.45
+          ],
+          [
+            72.733,
+            936,
+            393,
+            1.55
+          ],
+          [
+            73.633,
+            936,
+            430,
+            1.12
+          ],
+          [
+            75.233,
+            936,
+            450,
+            1.08
+          ],
+          [
+            76.733,
+            936,
+            380,
+            1.4
+          ],
+          [
+            77.933,
+            936,
+            400,
+            1.46
+          ],
+          [
+            79.031,
+            936,
+            400,
+            1.46
+          ],
+          [
+            80.746,
+            700,
+            640,
+            1.35
+          ],
+          [
+            82.7,
+            700,
+            690,
+            1.42
+          ],
+          [
+            84.2,
+            936,
+            417,
+            1.45
+          ],
+          [
+            87.379,
+            936,
+            400,
+            1.52
+          ],
+          [
+            89.367,
+            936,
+            560,
+            1.45
+          ],
+          [
+            91.867,
+            936,
+            580,
+            1.5
+          ],
+          [
+            92.167,
+            1180,
+            420,
+            1.15
+          ],
+          [
+            93.53,
+            1240,
+            560,
+            1.3
+          ],
+          [
+            94.733,
+            1240,
+            600,
+            1.38
+          ],
+          [
+            100.992,
+            1240,
+            600,
+            1.45
+          ]
+        ]
       }
+    }
+  },
+  "motion": {
+    "portals": [
+      0.4,
+      0.85,
+      1.3,
+      1.75
+    ],
+    "files": [
+      9.966208,
+      11.280625,
+      12.053833,
+      13.110541
+    ],
+    "rush": 7.013812,
+    "question": 14.45,
+    "dock": 16.264083,
+    "gather": 21.8,
+    "name": 23.016478,
+    "join": 24.74277,
+    "grow": 33.2,
+    "slide": 61.433,
+    "lapses": [
+      44.4,
+      69.533,
+      86.1
+    ],
+    "safe": 95.511979,
+    "away": 100.4,
+    "say": {
+      "stop": 101.252354,
+      "start": 102.386396
+    },
+    "logo": 103.496812,
+    "tagline": 105.29477
+  },
+  "layout": {
+    "windows": [
+      [
+        60,
+        128
+      ],
+      [
+        505,
+        168
+      ],
+      [
+        950,
+        116
+      ],
+      [
+        1395,
+        160
+      ]
+    ],
+    "files": [
+      [
+        120,
+        780,
+        -2
+      ],
+      [
+        560,
+        794,
+        1.5
+      ],
+      [
+        1000,
+        778,
+        -1
+      ],
+      [
+        1440,
+        792,
+        2
+      ],
+      [
+        300,
+        890,
+        1
+      ],
+      [
+        740,
+        902,
+        -1.5
+      ],
+      [
+        1180,
+        888,
+        2
+      ],
+      [
+        1560,
+        900,
+        -1
+      ]
+    ],
+    "ring": [
+      [
+        330,
+        270
+      ],
+      [
+        330,
+        423
+      ],
+      [
+        330,
+        577
+      ],
+      [
+        330,
+        730
+      ],
+      [
+        1590,
+        270
+      ],
+      [
+        1590,
+        423
+      ],
+      [
+        1590,
+        577
+      ],
+      [
+        1590,
+        730
+      ]
     ]
   },
-  "aiConnection": {
-    "logos": [
-      "<svg class=\"ai-logo\" fill=\"currentColor\" fill-rule=\"evenodd\" height=\"1em\" style=\"flex:none;line-height:1\" viewBox=\"0 0 24 24\" width=\"1em\" xmlns=\"http://www.w3.org/2000/svg\"><title>OpenAI</title><path d=\"M9.205 8.658v-2.26c0-.19.072-.333.238-.428l4.543-2.616c.619-.357 1.356-.523 2.117-.523 2.854 0 4.662 2.212 4.662 4.566 0 .167 0 .357-.024.547l-4.71-2.759a.797.797 0 00-.856 0l-5.97 3.473zm10.609 8.8V12.06c0-.333-.143-.57-.429-.737l-5.97-3.473 1.95-1.118a.433.433 0 01.476 0l4.543 2.617c1.309.76 2.189 2.378 2.189 3.948 0 1.808-1.07 3.473-2.76 4.163zM7.802 12.703l-1.95-1.142c-.167-.095-.239-.238-.239-.428V5.899c0-2.545 1.95-4.472 4.591-4.472 1 0 1.927.333 2.712.928L8.23 5.067c-.285.166-.428.404-.428.737v6.898zM12 15.128l-2.795-1.57v-3.33L12 8.658l2.795 1.57v3.33L12 15.128zm1.796 7.23c-1 0-1.927-.332-2.712-.927l4.686-2.712c.285-.166.428-.404.428-.737v-6.898l1.974 1.142c.167.095.238.238.238.428v5.233c0 2.545-1.974 4.472-4.614 4.472zm-5.637-5.303l-4.544-2.617c-1.308-.761-2.188-2.378-2.188-3.948A4.482 4.482 0 014.21 6.327v5.423c0 .333.143.571.428.738l5.947 3.449-1.95 1.118a.432.432 0 01-.476 0zm-.262 3.9c-2.688 0-4.662-2.021-4.662-4.519 0-.19.024-.38.047-.57l4.686 2.71c.286.167.571.167.856 0l5.97-3.448v2.26c0 .19-.07.333-.237.428l-4.543 2.616c-.619.357-1.356.523-2.117.523zm5.899 2.83a5.947 5.947 0 005.827-4.756C22.287 18.339 24 15.84 24 13.296c0-1.665-.713-3.282-1.998-4.448.119-.5.19-.999.19-1.498 0-3.401-2.759-5.947-5.946-5.947-.642 0-1.26.095-1.88.31A5.962 5.962 0 0010.205 0a5.947 5.947 0 00-5.827 4.757C1.713 5.447 0 7.945 0 10.49c0 1.666.713 3.283 1.998 4.448-.119.5-.19 1-.19 1.499 0 3.401 2.759 5.946 5.946 5.946.642 0 1.26-.095 1.88-.309a5.96 5.96 0 004.162 1.713z\"></path></svg>",
-      "<svg class=\"ai-logo\" height=\"1em\" style=\"flex:none;line-height:1\" viewBox=\"0 0 24 24\" width=\"1em\" xmlns=\"http://www.w3.org/2000/svg\"><title>Claude</title><path d=\"M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z\" fill=\"#D97757\" fill-rule=\"nonzero\"></path></svg>",
-      "<svg class=\"ai-logo\" height=\"1em\" style=\"flex:none;line-height:1\" viewBox=\"0 0 24 24\" width=\"1em\" xmlns=\"http://www.w3.org/2000/svg\"><title>Gemini</title><path d=\"M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z\" fill=\"#3186FF\"></path><path d=\"M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z\" fill=\"url(#lobe-icons-gemini-0-_R_0_-6)\"></path><path d=\"M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z\" fill=\"url(#lobe-icons-gemini-1-_R_0_-6)\"></path><path d=\"M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z\" fill=\"url(#lobe-icons-gemini-2-_R_0_-6)\"></path><defs><linearGradient gradientUnits=\"userSpaceOnUse\" id=\"lobe-icons-gemini-0-_R_0_-6\" x1=\"7\" x2=\"11\" y1=\"15.5\" y2=\"12\"><stop stop-color=\"#08B962\"></stop><stop offset=\"1\" stop-color=\"#08B962\" stop-opacity=\"0\"></stop></linearGradient><linearGradient gradientUnits=\"userSpaceOnUse\" id=\"lobe-icons-gemini-1-_R_0_-6\" x1=\"8\" x2=\"11.5\" y1=\"5.5\" y2=\"11\"><stop stop-color=\"#F94543\"></stop><stop offset=\"1\" stop-color=\"#F94543\" stop-opacity=\"0\"></stop></linearGradient><linearGradient gradientUnits=\"userSpaceOnUse\" id=\"lobe-icons-gemini-2-_R_0_-6\" x1=\"3.5\" x2=\"17.5\" y1=\"13.5\" y2=\"12\"><stop stop-color=\"#FABC12\"></stop><stop offset=\".46\" stop-color=\"#FABC12\" stop-opacity=\"0\"></stop></linearGradient></defs></svg>"
-    ],
-    "mark": "<svg viewBox=\"0 0 32 32\" fill=\"none\" aria-label=\"Metronome\"><path d=\"M10 27h12L19 5h-6l-3 22Z\" fill=\"#e2f1ef\" stroke=\"#0d7377\" stroke-width=\"2\"/><path d=\"m16 8 5 13M8 27h16\" stroke=\"#0d7377\" stroke-width=\"2.2\" stroke-linecap=\"round\"/><rect x=\"17\" y=\"13\" width=\"5\" height=\"4\" rx=\"1\" fill=\"#0d7377\"/></svg>"
-  },
-  "openingCues": {
-    "extract": 14.1675,
-    "transform": 15.469041,
-    "load": 17.273166,
-    "build": 21.295146,
-    "schedule": 24.413687,
-    "trigger": 25.367312,
-    "track": 27.171437
-  }
+  "sfx": [
+    {
+      "kind": "swish",
+      "t": 0.4,
+      "gain": -19,
+      "pan": [
+        -0.5,
+        -0.2
+      ]
+    },
+    {
+      "kind": "swish",
+      "t": 0.85,
+      "gain": -19,
+      "pan": [
+        -0.2,
+        0.1
+      ]
+    },
+    {
+      "kind": "swish",
+      "t": 1.3,
+      "gain": -19,
+      "pan": [
+        0.1,
+        0.3
+      ]
+    },
+    {
+      "kind": "swish",
+      "t": 1.75,
+      "gain": -19,
+      "pan": [
+        0.3,
+        0.5
+      ]
+    },
+    {
+      "kind": "rush",
+      "t": 7.013812,
+      "gain": -18,
+      "pan": [
+        0,
+        0
+      ]
+    },
+    {
+      "kind": "swish",
+      "t": 9.816208,
+      "gain": -22,
+      "pan": [
+        -0.4,
+        -0.4
+      ]
+    },
+    {
+      "kind": "swish",
+      "t": 11.130625,
+      "gain": -22,
+      "pan": [
+        -0.1,
+        -0.1
+      ]
+    },
+    {
+      "kind": "swish",
+      "t": 11.903832999999999,
+      "gain": -22,
+      "pan": [
+        0.2,
+        0.2
+      ]
+    },
+    {
+      "kind": "swish",
+      "t": 12.960541,
+      "gain": -22,
+      "pan": [
+        0.4,
+        0.4
+      ]
+    },
+    {
+      "kind": "swish",
+      "t": 14.45,
+      "gain": -19,
+      "pan": [
+        0,
+        0
+      ]
+    },
+    {
+      "kind": "whoosh",
+      "t": 16.264083,
+      "gain": -17,
+      "pan": [
+        0,
+        0
+      ]
+    },
+    {
+      "kind": "whoosh",
+      "t": 21.8,
+      "gain": -18,
+      "pan": [
+        0,
+        0
+      ]
+    },
+    {
+      "kind": "boom",
+      "t": 22.55,
+      "gain": -18,
+      "pan": [
+        0,
+        0
+      ]
+    },
+    {
+      "kind": "swish",
+      "t": 23.016478,
+      "gain": -18,
+      "pan": [
+        0,
+        0
+      ]
+    },
+    {
+      "kind": "whoosh",
+      "t": 24.74277,
+      "gain": -17,
+      "pan": [
+        0,
+        0
+      ]
+    },
+    {
+      "kind": "whoosh",
+      "t": 33.150000000000006,
+      "gain": -16,
+      "pan": [
+        0,
+        0
+      ]
+    },
+    {
+      "kind": "boom",
+      "t": 33.550000000000004,
+      "gain": -17,
+      "pan": [
+        0,
+        0
+      ]
+    },
+    {
+      "kind": "riser",
+      "t": 44.3,
+      "gain": -20,
+      "pan": [
+        0,
+        0
+      ]
+    },
+    {
+      "kind": "whip",
+      "t": 61.353,
+      "gain": -15,
+      "pan": [
+        0.7,
+        -0.7
+      ]
+    },
+    {
+      "kind": "riser",
+      "t": 69.433,
+      "gain": -20,
+      "pan": [
+        0,
+        0
+      ]
+    },
+    {
+      "kind": "riser",
+      "t": 86,
+      "gain": -20,
+      "pan": [
+        0,
+        0
+      ]
+    },
+    {
+      "kind": "swish",
+      "t": 95.411979,
+      "gain": -18,
+      "pan": [
+        0,
+        0
+      ]
+    },
+    {
+      "kind": "whoosh",
+      "t": 100.4,
+      "gain": -18,
+      "pan": [
+        0,
+        0
+      ]
+    },
+    {
+      "kind": "swish",
+      "t": 101.252354,
+      "gain": -20,
+      "pan": [
+        0,
+        0
+      ]
+    },
+    {
+      "kind": "swish",
+      "t": 102.386396,
+      "gain": -20,
+      "pan": [
+        0,
+        0
+      ]
+    },
+    {
+      "kind": "whoosh",
+      "t": 103.44681200000001,
+      "gain": -16,
+      "pan": [
+        0,
+        0
+      ]
+    },
+    {
+      "kind": "boom",
+      "t": 103.796812,
+      "gain": -15,
+      "pan": [
+        0,
+        0
+      ]
+    },
+    {
+      "kind": "swish",
+      "t": 105.29477,
+      "gain": -20,
+      "pan": [
+        0,
+        0
+      ]
+    }
+  ]
 }

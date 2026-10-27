@@ -1,29 +1,42 @@
 {
-  "title": "Metronome — Your data, connected",
-  "status": "clear problem statement; overnight feature marked in testing",
-  "durationSeconds": 110,
+  "title": "Wizard — Every source, one answer",
+  "status": "Wizard film revision 13 (real Wizard app) for review",
+  "durationSeconds": 109,
   "width": 1920,
   "height": 1080,
   "framesPerSecond": 30,
-  "editableProjectHyperFramesVersion": "0.8.81",
+  "editableProjectHyperFramesVersion": "0.8.142",
   "artifacts": {
     "renders/review/animatic.mp4": {
-      "bytes": 6979890,
-      "sha256": "37ee0d2dc82799643557baa8f42449242c5c7d2cad9bd23d52fa2534c3101707"
+      "bytes": 56109550,
+      "sha256": "00819695c449ff417f0b4a8cb4e1fe14d813ed8bbd536934864932d016feba8d"
     },
     "audio/score.wav": {
-      "bytes": 31680102,
-      "sha256": "441aa8c9284bd5455e5f868fb3c4895a6e6bdc2e14cba6b3f502b7bd30f43141"
+      "bytes": 31392102,
+      "sha256": "19a941adf408708f95ff105fb8ef296af40c50f6f1ce8944e9f32059fc041230"
     },
     "audio/narration.flac": {
-      "bytes": 2327717,
-      "sha256": "fbe01858e547ecd3bd09a1da32c7709b18295299f05de4d3d53dc61bc5a18eca"
+      "bytes": 1769998,
+      "sha256": "0c8954ee0a46475b5eaf284d890fe4e932c2e7120ca917e78dc08e115df7ade4"
     },
     "audio/background.mp3": {
       "bytes": 2103552,
       "sha256": "364a546834db4c0c2e3b3240eb6df03e98b7362230154b04c5c614442f6660d7"
+    },
+    "audio/voice-rev12.flac": {
+      "bytes": 1940423,
+      "sha256": "f977679f9ad7f500dd20c842bc26a229fa5826662b18901dbd13d1ff387a45d1"
+    },
+    "assets/screen/ask.mp4": {
+      "bytes": 8703702,
+      "sha256": "7ff0ee7fbe6fe01e4785d2e4e4e68c8469ee910c4236e5f9fe626b96767fbad0"
+    },
+    "assets/screen/stock.mp4": {
+      "bytes": 12716824,
+      "sha256": "50e779f54f4de62de34e474d1bc9e459f2306deadf5adffe62ace3fcbddc6a88"
     }
   },
-  "baseRenderHyperFramesVersion": "0.8.81",
-  "renderEngine": "FFmpeg 7.1 + resvg 2.6.2, shared SVG opening and testing badge, retimed revision 9 master"
+  "baseRenderHyperFramesVersion": "0.8.142",
+  "renderEngine": "HyperFrames 0.8.142 render (chrome-headless-shell from Playwright Chromium 1243), audio/remix.py master",
+  "wizardCapture": "datap0nd/wizard main ff4a9e2, replay runtime over SYNTHETIC fixtures (capture/README.md)"
 }
