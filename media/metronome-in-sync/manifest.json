@@ -1,6 +1,6 @@
 {
   "title": "Wizard — Every source, one answer",
-  "status": "Wizard film revision 14 (narrated app scenes in Andrew Multilingual, calm camera, no whooshes) for review",
+  "status": "Wizard film revision 14 (narrated app scenes in Andrew Multilingual, calm camera, no whooshes), with a Korean-subtitled version, for review",
   "durationSeconds": 121,
   "width": 1920,
   "height": 1080,
@@ -34,6 +34,22 @@
     "audio/voice-rev14.flac": {
       "bytes": 3176861,
       "sha256": "f1c4c88e5359ccec175d897c083036c10a19a6e7850bd2e332d59507e94fcfd6"
+    },
+    "renders/review/animatic-ko.mp4": {
+      "bytes": 68540055,
+      "sha256": "635a80de81edbc740c5eba81166c4308ecaaba7b5f624b14bebbec9da3bd75e7"
+    },
+    "subtitles/wizard-ko.vtt": {
+      "bytes": 3328,
+      "sha256": "854d217504e953a46d4300f2a403d9ca2bc76faba4b78cf423b4560808f2b153"
+    },
+    "subtitles/wizard-ko.srt": {
+      "bytes": 3312,
+      "sha256": "c6cf534c9c244fc0cfb2d9e7dc99dbde12879b3f600c5f10df57cbe81b2c05e2"
+    },
+    "assets/fonts/pretendard-600.woff2": {
+      "bytes": 785856,
+      "sha256": "c863f76a7de5c1ddc1ed8b2fa794964530774592c4f31407a84e2a2ae93f17f0"
     }
   },
   "baseRenderHyperFramesVersion": "0.8.142",

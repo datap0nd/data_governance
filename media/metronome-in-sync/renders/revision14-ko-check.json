@@ -1,0 +1,118 @@
+{
+  "ok": true,
+  "strict": false,
+  "browserSkipped": false,
+  "lint": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": [],
+    "filesScanned": 1
+  },
+  "runtime": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": []
+  },
+  "layout": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": [],
+    "duration": 121,
+    "samples": [
+      3,
+      5,
+      8,
+      10.5,
+      12.2,
+      13,
+      14,
+      17,
+      20,
+      22,
+      23.8,
+      26,
+      30,
+      33,
+      35.5,
+      38,
+      40.5,
+      44,
+      47,
+      49,
+      52,
+      56,
+      59.5,
+      63,
+      66.5,
+      69.7,
+      71.5,
+      76.5,
+      80,
+      84,
+      87,
+      89.5,
+      93.5,
+      98,
+      100.2,
+      103,
+      106.5,
+      109,
+      112.2,
+      114,
+      115,
+      117.5
+    ],
+    "transitionSamples": [],
+    "transitionSamplesDropped": 0,
+    "tolerance": 2,
+    "totalIssueCount": 0,
+    "truncated": false
+  },
+  "motion": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": [],
+    "enabled": false,
+    "samples": 0
+  },
+  "contrast": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": [],
+    "enabled": true,
+    "samples": [
+      3,
+      23.8,
+      52,
+      87,
+      117.5
+    ],
+    "checked": 58,
+    "passed": 58
+  },
+  "hdr": {
+    "autoPromotion": null,
+    "inspection": "available"
+  },
+  "snapshots": {
+    "enabled": false,
+    "files": [],
+    "times": [],
+    "findingFiles": []
+  },
+  "_meta": {
+    "version": "0.8.142",
+    "latestVersion": "0.8.207",
+    "updateAvailable": true
+  }
+}

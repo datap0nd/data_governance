@@ -4,7 +4,7 @@ Current cut: **121 seconds / 2:01, 1920×1080, 30 fps**, English narration and b
 
 The narration is voiced in **en-US-AndrewMultilingualNeural**, a newer and more natural model of the Andrew voice used up to revision 13 (the owner found the old one robotic and chose this one from samples).
 
-[Watch](animatic-review.html) · [MP4](renders/review/animatic.mp4) · [Scene frames](review.html) · [Scene preview](scene-preview.html) · [Narration](narration.json) · [Storyboard](STORYBOARD.md) · [QA](QA.md) · [Sources](assets/LEDGER.md) · [Capture](capture/README.md)
+[Watch](animatic-review.html) · [MP4](renders/review/animatic.mp4) · [MP4 with Korean subtitles](renders/review/animatic-ko.mp4) · [Scene frames](review.html) · [Scene preview](scene-preview.html) · [Narration](narration.json) · [Storyboard](STORYBOARD.md) · [QA](QA.md) · [Sources](assets/LEDGER.md) · [Capture](capture/README.md)
 
 ## Story
 
@@ -28,9 +28,11 @@ The film is HTML rendered by pinned HyperFrames 0.8.142 (Node 24). Edit `composi
 .venv\Scripts\python audio\remix.py                  # narration from the voice banks and the music bed; writes assets/cues.json and audio/score.wav
 .venv\Scripts\python scripts\screen.py --report      # when each recorded moment appears; place narration.json lines from it
 .venv\Scripts\python scripts\screen.py               # cut capture/takes into assets/screen/*.mp4 and assets/screen.json
-node scripts/build.mjs                                # timeline.json and index.html with the cues, motion times and camera
+python scripts/subtitles.py                           # Korean subtitles from narration.json: assets/subtitles-ko.json, subtitles/wizard-ko.vtt and .srt
+node scripts/build.mjs                                # timeline.json, index.html and index-ko.html with the cues, motion times and camera
 .\film.ps1 check --at '3,7.6,8,14,15,15.6,16.5,21.5,22.2,23.3,26,30,34.3,35,38,40,43,45,47,49,51,53,56,58.5,60,60.6,62.5,65,67.2,68.3,69,71,73,75,77.5,80,82.5,83.3,85,88,90.7,92.5,94,96,97,99,101,104,105.6,107,109,111,113,114.2,115.2,116.4,117.2,118.4,120' --json
 .\film.ps1 render --fps 30 --quality looks --workers 4 --output renders/review/animatic.mp4
+.\film.ps1 render --composition index-ko.html --fps 30 --quality looks --workers 4 --output renders/review/animatic-ko.mp4
 node scripts/serve-review.mjs
 ```
 
@@ -41,6 +43,7 @@ node scripts/serve-review.mjs
 - **Camera.** A few keyframes per clip, each a page point at the frame centre and a zoom. `screen.py` turns them into window placements and interpolates those with a monotone cubic, so the camera eases into and out of holds, passes through the others without stopping and never overshoots; it writes the placement for every frame into `assets/screen.json`, the zoom to five decimals (rounded to two, a slow push-in stepped 1% about every second, which read as jitter). It fails the build if a close framing would show the window's edge (which the runtime used to clamp, jerking the camera) or if a stage lock would bring a fixed bar into frame. The page moves on its own when Wizard scrolls, so the camera holds while it does.
 - **Motion.** `scripts/build.mjs` works out when every move starts (`motion` in `timeline.json`); `compositions/runtime.js` animates from those times: kinetic type pops each letter in larger, nudged and soft, then settles; motion blur is a directional Gaussian per moving element, sized every frame from how far it moved, so slow moves stay sharp. Question 2 cross-fades in where question 1 was. There are no sound effects.
 - **Music.** `audio/bed.py` trims or extends the track for both mixers. The film is longer than the 87.6 s track, so at 0:45, 1:02 and 1:19, under narration, it crossfades back eight bars (16.865 s at about 114 bpm) to the matching beat.
+- **Korean subtitles.** Each line in `narration.json` carries its Korean subtitle in `ko`; a `|` splits a long line into parts, and `koSplit` names the English word whose spoken start brings in the next part, so the subtitle changes as the narrator moves on. `scripts/subtitles.py` times them from the voice bank (each line until it ends, plus a short hold, never into the next) and writes `assets/subtitles-ko.json` and, for players, `subtitles/wizard-ko.vtt` and `.srt`. `build.mjs` writes `index-ko.html`, the same film with the subtitles drawn in Pretendard on a dark backing, 24 px above the bottom (clear of the opening's file cards); whenever the camera shows Wizard's composer they rise above it, and a line marked `koTop` (the click on Check my data, at the bottom of the frame) is shown at the top. `index.html` is unchanged by them.
 - **Rendering.** HyperFrames decodes the clips with FFmpeg, frame-accurately. On Linux, point `HYPERFRAMES_BROWSER_PATH` at a chrome-headless-shell; on Windows, its bundled headless browser (`hyperframes browser ensure`) avoids opening desktop Chrome. Previewing in a browser needs one that plays H.264 (Chrome, Edge).
 
 ## Scope and fidelity

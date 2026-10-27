@@ -20,6 +20,7 @@ Owner feedback on the draft (27 October 2026): "the camera still jitters a lot i
 | RF-06 | Voice every line into bank `rev14` with `audio/voice.py rev14` (en-US-AndrewMultilingualNeural, −3%); `audio/remix.py` without `--draft`; re-run RF-05 with the real lengths. | All 22 lines in the chosen voice; every line fits its window; the question's first word with its first typed letter; systems light up on their names; "click" just before the click. |
 | RF-12 | Measure whole-picture motion in the render while Wizard works (three bands, phase correlation), before and after the zoom fix. | No periodic whole-picture jumps during slow camera moves. |
 | RF-13 | `screen.py --report` glides; measure the render's motion through both page scrolls. | Each scroll tracked frame by frame; the conversation moves in even steps; the pointer does not jump. |
+| RF-14 | `scripts/subtitles.py`; build; `hyperframes check` on `index-ko.html`; render `animatic-ko.mp4`; review a frame from the middle of every subtitle; probe, decode, loudness. | Every line subtitled in Korean, parts changing on their words, no overlaps; nothing it covers matters (the file cards, the composer while typing, Check my data while it is clicked); same length, frames and loudness as the main film; check clean. |
 | RF-07 | `hyperframes check` at about 60 times across the film. | No errors. |
 | RF-08 | Render; probe and decode; measure loudness. | 121 s, 3630 frames, H.264 1080p30, stereo AAC 48 kHz; clean decode; about −16 LUFS, true peak below −1 dBTP. |
 | RF-09 | `tests/test_film_package.py` plus syntax checks for the changed scripts. | Pass; manifest hashes match; review pages resolve local media. |
@@ -27,3 +28,5 @@ Owner feedback on the draft (27 October 2026): "the camera still jitters a lot i
 | RF-11 | Final-head CI. | Merge ready passes on the reviewed head. |
 
 Synthetic data only; no live portal, AI account, database or deployment involved. No human listening claim.
+
+Owner request (27 October 2026): "Give me a version with korean subtitles too", then email both versions and the script to the owner's work address. The Korean version is a second render of the same film (`index-ko.html`); the main film is unchanged.

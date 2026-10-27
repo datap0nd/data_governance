@@ -1,0 +1,3 @@
+@font-face{font-family:Pretendard;src:url('assets/fonts/pretendard-600.woff2');font-weight:600}
+.subtitle{position:absolute;left:50%;bottom:24px;transform:translateX(-50%);width:max-content;max-width:1480px;padding:9px 26px 12px;border-radius:14px;background:#141c2ee6;color:#fff;font:600 40px/1.38 Pretendard,Inter,sans-serif;letter-spacing:-.01em;text-align:center;word-break:keep-all;text-wrap:balance;opacity:0;z-index:30;box-shadow:0 10px 30px #18233b33;pointer-events:none}
+.subtitle.top{bottom:auto;top:128px}

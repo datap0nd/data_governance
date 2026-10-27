@@ -140,6 +140,20 @@
   $$('.safe-card>div').forEach((el,i)=>reveal(el,ease((t-[cue.authorized,cue.allowed,cue.never][i]+.1)/.35),8));
  }
 
+ // Korean subtitles (index-ko.html only, from scripts/subtitles.py): the part of the narration being spoken, faded in and
+ // out except between parts of one line, and lifted clear of Wizard's composer whenever the camera shows it.
+ const subs=config.subtitles||[];
+ function subtitle(t){
+  const box=$('.subtitle');if(!box)return;const k=subs.findIndex(e=>t>=e.start&&t<e.end),e=subs[k];
+  if(!e){box.style.opacity=0;return;}
+  if(box.dataset.k!==String(k)){box.dataset.k=k;box.querySelector('span').textContent=e.text;box.classList.toggle('top',e.top);}
+  box.style.opacity=Math.min(e.joinPrev?1:clamp((t-e.start)/.15),e.joinNext?1:clamp((e.end-t)/.15));
+  let bottom=24;  // low enough to clear the opening's second row of file cards (they end at y 976)
+  if(!e.top&&t>=at('sApp').start&&t<at('sApp').end)ids.forEach(id=>{const c=clips[id];if(t<c.start||t>=c.end)return;const a=winAt(id,t);
+   if(a.o>.3)bottom=Math.max(bottom,Math.min(320,1080-(a.y+800*a.s)+18));});  // the composer starts at page row 800
+  box.style.bottom=e.top?'':bottom+'px';
+ }
+
  // 4. End card: the statement, then Wizard's logo, the tagline, every source.
  function endCard(t){
   $$('.end-statement p').forEach(p=>kinetic(p,t,M.say[p.dataset.say],{gap:.032,dur:.45,grow:.8,shift:22,soft:9}));
@@ -153,7 +167,7 @@
 
  function draw(t){
   scenes.forEach(s=>{const active=t>=s.start&&t<s.end;s.el.style.visibility=active?'visible':'hidden';s.el.style.opacity=active?'1':'0';});
-  mess(t);join(t);screen(t);endCard(t);
+  mess(t);join(t);screen(t);endCard(t);subtitle(t);
  }
  window.Film={draw,seek:draw};window.__timelines=window.__timelines||{};const clock={t:0},timeline=gsap.timeline({paused:true});timeline.to(clock,{t:config.duration,duration:config.duration,ease:'none',onUpdate:()=>draw(clock.t)},0);window.__timelines['metronome-your-data-connected']=timeline;window.addEventListener('hf-seek',e=>draw(e.detail.time));draw(0);
 })();

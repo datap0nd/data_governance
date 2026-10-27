@@ -1,0 +1,342 @@
+[
+ {
+  "line": 1,
+  "start": 0.3,
+  "end": 7.283,
+  "text": "우리 데이터는 ASAP, GSCM, BDP, NERP 같은 포털에 흩어져 있고,",
+  "top": false,
+  "joinNext": true
+ },
+ {
+  "line": 1,
+  "start": 7.283,
+  "end": 9.22,
+  "text": "포털마다 리포트가 가득합니다.",
+  "top": false,
+  "joinPrev": true,
+  "joinNext": false
+ },
+ {
+  "line": 2,
+  "start": 9.3,
+  "end": 12.591,
+  "text": "여기에 끝없이 쌓이는 엑셀 파일과 이메일,",
+  "top": false,
+  "joinPrev": false,
+  "joinNext": true
+ },
+ {
+  "line": 2,
+  "start": 12.591,
+  "end": 15.395,
+  "text": "프레젠테이션, PDF까지 있습니다.",
+  "top": false,
+  "joinPrev": true,
+  "joinNext": false
+ },
+ {
+  "line": 3,
+  "start": 15.5,
+  "end": 18.389,
+  "text": "답 하나를 찾으려면 어디를 봐야 할지 알아야 하고,",
+  "top": false,
+  "joinPrev": false,
+  "joinNext": true
+ },
+ {
+  "line": 3,
+  "start": 18.389,
+  "end": 23.178,
+  "text": "리포트를 하나하나 열어 직접 짜 맞춰야 합니다.",
+  "top": false,
+  "joinPrev": true,
+  "joinNext": false
+ },
+ {
+  "line": 4,
+  "start": 23.3,
+  "end": 24.361,
+  "text": "Wizard를 소개합니다.",
+  "top": false,
+  "joinPrev": false,
+  "joinNext": true
+ },
+ {
+  "line": 4,
+  "start": 24.361,
+  "end": 28.32,
+  "text": "모든 소스를 한곳에 모아 줍니다.",
+  "top": false,
+  "joinPrev": true,
+  "joinNext": false
+ },
+ {
+  "line": 5,
+  "start": 28.4,
+  "end": 31.327,
+  "text": "Wizard의 로컬 AI는 우리 포털을 학습해서",
+  "top": false,
+  "joinPrev": false,
+  "joinNext": true
+ },
+ {
+  "line": 5,
+  "start": 31.327,
+  "end": 34.22,
+  "text": "모든 답이 어디에 있는지 알고 있습니다.",
+  "top": false,
+  "joinPrev": true,
+  "joinNext": false
+ },
+ {
+  "line": 6,
+  "start": 34.3,
+  "end": 36.72,
+  "text": "그러니 평소 말하듯 그냥 물어보면 됩니다.",
+  "top": false,
+  "joinPrev": false,
+  "joinNext": false
+ },
+ {
+  "line": 7,
+  "start": 36.8,
+  "end": 39.04,
+  "text": "이번 예시에서는 이렇게 물어보겠습니다.",
+  "top": false,
+  "joinPrev": false,
+  "joinNext": true
+ },
+ {
+  "line": 7,
+  "start": 39.04,
+  "end": 42.008,
+  "text": "“이번 분기 실적은 목표 대비 어땠나요?”",
+  "top": false,
+  "joinPrev": true,
+  "joinNext": false
+ },
+ {
+  "line": 8,
+  "start": 42.2,
+  "end": 45.531,
+  "text": "3분기 목표 파일도 첨부하겠습니다.",
+  "top": false,
+  "joinPrev": false,
+  "joinNext": false
+ },
+ {
+  "line": 9,
+  "start": 46.4,
+  "end": 47.79,
+  "text": "먼저 계획을 세웁니다.",
+  "top": false,
+  "joinPrev": false,
+  "joinNext": false
+ },
+ {
+  "line": 10,
+  "start": 47.87,
+  "end": 50.25,
+  "text": "Wizard가 필요한 리포트를 찾아 줍니다.",
+  "top": false,
+  "joinPrev": false,
+  "joinNext": true
+ },
+ {
+  "line": 10,
+  "start": 50.25,
+  "end": 54.219,
+  "text": "GSCM에서 셀아웃, ASAP에서 시장 점유율,",
+  "top": false,
+  "joinPrev": true,
+  "joinNext": true
+ },
+ {
+  "line": 10,
+  "start": 54.219,
+  "end": 57.52,
+  "text": "NERP에서 마케팅 비용, 엑셀에서 목표를 가져옵니다.",
+  "top": false,
+  "joinPrev": true,
+  "joinNext": false
+ },
+ {
+  "line": 11,
+  "start": 57.6,
+  "end": 61.62,
+  "text": "이어서 수치를 계산하고, 차트를 그리고, 답변을 작성합니다.",
+  "top": false,
+  "joinPrev": false,
+  "joinNext": false
+ },
+ {
+  "line": 12,
+  "start": 61.7,
+  "end": 64.644,
+  "text": "몇 초 만에 완성된 답이 나옵니다.",
+  "top": false,
+  "joinPrev": false,
+  "joinNext": true
+ },
+ {
+  "line": 12,
+  "start": 64.644,
+  "end": 68.706,
+  "text": "명확한 요약과 핵심 수치, 바로 공유할 수 있는 차트까지요.",
+  "top": false,
+  "joinPrev": true,
+  "joinNext": false
+ },
+ {
+  "line": 13,
+  "start": 68.9,
+  "end": 70.581,
+  "text": "다음으로는 이렇게 물어보죠.",
+  "top": false,
+  "joinPrev": false,
+  "joinNext": true
+ },
+ {
+  "line": 13,
+  "start": 70.581,
+  "end": 72.79,
+  "text": "“채널 재고가 어디에 쌓이고 있나요?”",
+  "top": false,
+  "joinPrev": true,
+  "joinNext": false
+ },
+ {
+  "line": 14,
+  "start": 74.9,
+  "end": 78.188,
+  "text": "Wizard는 출고한 물량과 실제 판매된 물량을 비교합니다.",
+  "top": false,
+  "joinPrev": false,
+  "joinNext": true
+ },
+ {
+  "line": 14,
+  "start": 78.188,
+  "end": 81.471,
+  "text": "모든 모델을 대상으로, GSCM 데이터에서 바로요.",
+  "top": false,
+  "joinPrev": true,
+  "joinNext": false
+ },
+ {
+  "line": 15,
+  "start": 82.6,
+  "end": 85.711,
+  "text": "답은 이집트의 갤럭시 A37입니다.",
+  "top": false,
+  "joinPrev": false,
+  "joinNext": true
+ },
+ {
+  "line": 15,
+  "start": 85.711,
+  "end": 88.02,
+  "text": "채널 재고가 두 배 이상 늘었습니다.",
+  "top": false,
+  "joinPrev": true,
+  "joinNext": false
+ },
+ {
+  "line": 16,
+  "start": 88.1,
+  "end": 91.52,
+  "text": "확인을 위해 아래로 내려 ‘Check my data’를 클릭합니다.",
+  "top": true,
+  "joinPrev": false,
+  "joinNext": false
+ },
+ {
+  "line": 17,
+  "start": 91.6,
+  "end": 95.869,
+  "text": "Wizard가 GSCM으로 돌아가 모든 수치를 다시 계산합니다.",
+  "top": false,
+  "joinPrev": false,
+  "joinNext": false
+ },
+ {
+  "line": 18,
+  "start": 96.8,
+  "end": 99.658,
+  "text": "모든 숫자를 원본 리포트와 대조해 확인하므로",
+  "top": false,
+  "joinPrev": false,
+  "joinNext": true
+ },
+ {
+  "line": 18,
+  "start": 99.658,
+  "end": 100.92,
+  "text": "믿고 쓸 수 있습니다.",
+  "top": false,
+  "joinPrev": true,
+  "joinNext": false
+ },
+ {
+  "line": 19,
+  "start": 101.0,
+  "end": 104.928,
+  "text": "그리고 모든 수치는 출처가 된 데이터 행으로 바로 연결됩니다.",
+  "top": false,
+  "joinPrev": false,
+  "joinNext": false
+ },
+ {
+  "line": 20,
+  "start": 105.6,
+  "end": 107.363,
+  "text": "설계부터 안전합니다.",
+  "top": false,
+  "joinPrev": false,
+  "joinNext": true
+ },
+ {
+  "line": 20,
+  "start": 107.363,
+  "end": 111.384,
+  "text": "승인된 AI가 볼 권한이 있는 정보만 보여 주고,",
+  "top": false,
+  "joinPrev": true,
+  "joinNext": true
+ },
+ {
+  "line": 20,
+  "start": 111.384,
+  "end": 113.112,
+  "text": "데이터는 절대 바꾸지 않습니다.",
+  "top": false,
+  "joinPrev": true,
+  "joinNext": false
+ },
+ {
+  "line": 21,
+  "start": 113.4,
+  "end": 114.502,
+  "text": "검색은 그만.",
+  "top": false,
+  "joinPrev": false,
+  "joinNext": true
+ },
+ {
+  "line": 21,
+  "start": 114.502,
+  "end": 115.82,
+  "text": "이제 질문하세요.",
+  "top": false,
+  "joinPrev": true,
+  "joinNext": false
+ },
+ {
+  "line": 22,
+  "start": 115.9,
+  "end": 118.612,
+  "text": "Wizard. 모든 소스, 하나의 답.",
+  "top": false,
+  "joinPrev": false
+ }
+]

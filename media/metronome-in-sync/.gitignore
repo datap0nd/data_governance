@@ -11,6 +11,7 @@ audio/fx.wav
 audio/score-pre.wav
 audio/score-master.wav
 renders/review/animatic-*.mp4
+!renders/review/animatic-ko.mp4
 assets/screens.json
 assets/simulation.json
 

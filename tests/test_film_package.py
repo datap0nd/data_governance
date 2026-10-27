@@ -54,3 +54,16 @@ def test_film_review_pages_resolve_local_media():
             assert target.is_relative_to(FILM.resolve()), reference
             assert target.is_file(), f"{name}: {reference}"
     assert "renders/review/animatic.mp4" in (FILM / "animatic-review.html").read_text(encoding="utf-8")
+
+
+def test_film_korean_subtitles_cover_every_line():
+    narration = json.loads((FILM / "narration.json").read_text(encoding="utf-8"))
+    events = json.loads((FILM / "assets" / "subtitles-ko.json").read_text(encoding="utf-8"))
+    for index, line in enumerate(narration, start=1):
+        parts = line["ko"].split("|")
+        assert len(parts) == len(line.get("koSplit", [])) + 1, index
+        assert [e["text"] for e in events if e["line"] == index] == [p.strip() for p in parts], index
+    for earlier, later in zip(events, events[1:]):
+        assert earlier["start"] < earlier["end"] <= later["start"]
+    vtt = (FILM / "subtitles" / "wizard-ko.vtt").read_text(encoding="utf-8")
+    assert vtt.startswith("WEBVTT") and vtt.count(" --> ") == len(events)

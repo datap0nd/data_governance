@@ -5,6 +5,7 @@
 | Wizard logo | The owner's Wizard repository, `brand/logo/` at `ff4a9e2`: `wizard-app-icon.svg` (the hub), `wizard-logo.svg` (the end lockup) and `wizard-mark.svg`, copied unchanged into `brand/`. Pixel art drawn by Wizard's `scripts/wizard_art.py`; only Samsung's colours are used, never its logo. |
 | Wizard screens | Screen recordings of the real Wizard web app (`main` at `ff4a9e2`) in replay mode over its SYNTHETIC fixtures, made with `capture/` and cut by `scripts/screen.py` into `screen/*.mp4` (3200 × 1800, H.264). Replay and synthetic development labels and demo suggestions were hidden while recording; the film says "Real Wizard app · illustrative data". |
 | Palette and type | Wizard's tokens in `apps/web/src/styles.css`, for the drawn scenes. |
+| Pretendard font | [Pretendard](https://github.com/orioncactus/pretendard) 1.3.9 via the `pretendard` npm package, SIL OFL 1.1; SemiBold (600) WOFF2 for the Korean subtitles only, license in `fonts/Pretendard-OFL.txt`. |
 | Inter font | [Inter](https://github.com/rsms/inter) via `@fontsource/inter` 5.3.0, SIL OFL 1.1; Latin 400/500/600 subsets, license in `fonts/Inter-OFL.txt`. |
 | Icons | Path data after [Lucide](https://lucide.dev) (ISC), as Wizard uses, redrawn inline in `compositions/wizard.js`. Source badges are generic coloured letters, not product logos. |
 | Figures and names | Synthetic. The drawn scenes' report and file names are illustrative. The app's figures are what Wizard's tools return from its synthetic fixtures; `capture/files/Q3 targets.xlsx` is a synthetic targets file. |
