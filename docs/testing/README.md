@@ -8,6 +8,7 @@ templates and the result vocabulary.
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-10-27: Worker reports no longer time out on Flow files | [Test plan](releases/2026-10-27-worker-report-timeouts/test-plan.md) | [Test report](releases/2026-10-27-worker-report-timeouts/test-report.md) |
 | 2026-10-26: Metronome starts promptly after an update | [Test plan](releases/2026-10-26-startup-after-update/test-plan.md) | [Test report](releases/2026-10-26-startup-after-update/test-report.md) |
 | 2026-10-23: Python Flows write their own email body | [Test plan](releases/2026-10-23-flow-script-email-body/test-plan.md) | [Test report](releases/2026-10-23-flow-script-email-body/test-report.md) |
 | 2026-10-19: People change their own SQL password | [Test plan](releases/2026-10-19-own-sql-password/test-plan.md) | [Test report](releases/2026-10-19-own-sql-password/test-report.md) |
