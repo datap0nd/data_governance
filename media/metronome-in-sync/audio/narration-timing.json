@@ -1,93 +1,200 @@
 [
   {
     "segment": 1,
-    "start": 0.2,
-    "end": 7.5160833333333334,
+    "start": 0.3,
+    "end": 8.940167,
     "speed": 1,
-    "naturalSeconds": 7.316
+    "naturalSeconds": 8.64,
+    "voice": "rev14",
+    "sourceStart": 0.0
   },
   {
     "segment": 2,
-    "start": 9.15,
-    "end": 18.819916666666668,
+    "start": 9.3,
+    "end": 15.044604,
     "speed": 1,
-    "naturalSeconds": 9.67
+    "naturalSeconds": 5.745,
+    "voice": "rev14",
+    "sourceStart": 9.140167
   },
   {
     "segment": 3,
-    "start": 20.15,
-    "end": 29.158895833333332,
+    "start": 15.5,
+    "end": 22.828208,
     "speed": 1,
-    "naturalSeconds": 9.009
+    "naturalSeconds": 7.328,
+    "voice": "rev14",
+    "sourceStart": 15.384771
   },
   {
     "segment": 4,
-    "start": 31.2,
-    "end": 36.222125,
+    "start": 23.3,
+    "end": 27.972396,
     "speed": 1,
-    "naturalSeconds": 5.022
+    "naturalSeconds": 4.672,
+    "voice": "rev14",
+    "sourceStart": 23.212979
   },
   {
     "segment": 5,
-    "start": 38.4,
-    "end": 40.8240625,
+    "start": 28.4,
+    "end": 33.870521,
     "speed": 1,
-    "naturalSeconds": 2.424
+    "naturalSeconds": 5.471,
+    "voice": "rev14",
+    "sourceStart": 28.385375
   },
   {
     "segment": 6,
-    "start": 45,
-    "end": 49.31064583333333,
+    "start": 34.3,
+    "end": 36.489354,
     "speed": 1,
-    "naturalSeconds": 4.311
+    "naturalSeconds": 2.189,
+    "voice": "rev14",
+    "sourceStart": 34.355896
   },
   {
     "segment": 7,
-    "start": 52.2,
-    "end": 60.88816666666667,
+    "start": 36.8,
+    "end": 41.657604,
     "speed": 1,
-    "naturalSeconds": 8.688
+    "naturalSeconds": 4.858,
+    "voice": "rev14",
+    "sourceStart": 37.04525
   },
   {
     "segment": 8,
-    "start": 64.2,
-    "end": 69.68491666666667,
+    "start": 42.2,
+    "end": 45.181104,
     "speed": 1,
-    "naturalSeconds": 5.485
+    "naturalSeconds": 2.981,
+    "voice": "rev14",
+    "sourceStart": 42.402854
   },
   {
     "segment": 9,
-    "start": 72.2,
-    "end": 77.3148125,
+    "start": 46.4,
+    "end": 47.63025,
     "speed": 1,
-    "naturalSeconds": 5.115
+    "naturalSeconds": 1.23,
+    "voice": "rev14",
+    "sourceStart": 45.883958
   },
   {
     "segment": 10,
-    "start": 79,
-    "end": 83.867375,
+    "start": 47.87,
+    "end": 57.440042,
     "speed": 1,
-    "naturalSeconds": 4.867
+    "naturalSeconds": 9.57,
+    "voice": "rev14",
+    "sourceStart": 47.614208
   },
   {
     "segment": 11,
-    "start": 85.2,
-    "end": 92.05702083333334,
+    "start": 57.6,
+    "end": 61.458146,
     "speed": 1,
-    "naturalSeconds": 6.857
+    "naturalSeconds": 3.858,
+    "voice": "rev14",
+    "sourceStart": 57.68425
   },
   {
     "segment": 12,
-    "start": 93.7,
-    "end": 99.57181250000001,
+    "start": 61.7,
+    "end": 68.356458,
     "speed": 1,
-    "naturalSeconds": 5.872
+    "naturalSeconds": 6.656,
+    "voice": "rev14",
+    "sourceStart": 62.042396
   },
   {
     "segment": 13,
-    "start": 102.5,
-    "end": 108.6219375,
+    "start": 68.9,
+    "end": 72.440188,
     "speed": 1,
-    "naturalSeconds": 6.122
+    "naturalSeconds": 3.54,
+    "voice": "rev14",
+    "sourceStart": 69.198854
+  },
+  {
+    "segment": 14,
+    "start": 74.9,
+    "end": 81.121042,
+    "speed": 1,
+    "naturalSeconds": 6.221,
+    "voice": "rev14",
+    "sourceStart": 73.239042
+  },
+  {
+    "segment": 15,
+    "start": 82.6,
+    "end": 87.800896,
+    "speed": 1,
+    "naturalSeconds": 5.201,
+    "voice": "rev14",
+    "sourceStart": 79.960083
+  },
+  {
+    "segment": 16,
+    "start": 88.1,
+    "end": 91.324833,
+    "speed": 1,
+    "naturalSeconds": 3.225,
+    "voice": "rev14",
+    "sourceStart": 85.660979
+  },
+  {
+    "segment": 17,
+    "start": 91.6,
+    "end": 95.519375,
+    "speed": 1,
+    "naturalSeconds": 3.919,
+    "voice": "rev14",
+    "sourceStart": 89.385813
+  },
+  {
+    "segment": 18,
+    "start": 96.8,
+    "end": 100.734708,
+    "speed": 1,
+    "naturalSeconds": 3.935,
+    "voice": "rev14",
+    "sourceStart": 93.805188
+  },
+  {
+    "segment": 19,
+    "start": 101.0,
+    "end": 104.577542,
+    "speed": 1,
+    "naturalSeconds": 3.578,
+    "voice": "rev14",
+    "sourceStart": 98.239896
+  },
+  {
+    "segment": 20,
+    "start": 105.6,
+    "end": 112.762021,
+    "speed": 1,
+    "naturalSeconds": 7.162,
+    "voice": "rev14",
+    "sourceStart": 102.317438
+  },
+  {
+    "segment": 21,
+    "start": 113.4,
+    "end": 115.470208,
+    "speed": 1,
+    "naturalSeconds": 2.07,
+    "voice": "rev14",
+    "sourceStart": 109.979458
+  },
+  {
+    "segment": 22,
+    "start": 115.9,
+    "end": 118.26175,
+    "speed": 1,
+    "naturalSeconds": 2.362,
+    "voice": "rev14",
+    "sourceStart": 112.549667
   }
 ]

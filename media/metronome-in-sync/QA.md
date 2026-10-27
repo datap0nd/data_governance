@@ -1,12 +1,19 @@
-# Revision 10 validation
+# Revision 14 validation
 
-Opening: portals → downloaded reports → extract, transform and load → Metronome pipelines. Build, Schedule, Run now and Run history appear on narration cues. Top-right **In testing** remains throughout overnight agents and findings, 52–72 sec.
+Wizard concept film for review: data everywhere → hunting for one answer → everything in Wizard → the real Wizard app: ask, Wizard at work, answer, a second question, checked in the same window, safe → every source, one answer.
 
-- **110 seconds / 1:50**, 1080p30 H.264, 3300 frames; stereo AAC 48 kHz. Full decode PASS. −16.14 LUFS / −1.91 dBTP. [Measurements](renders/revision10-validation.json).
-- Connected Chrome scenes and canonical playback checked: duration 110, source `why-metronome-10`, playback advanced to 9.627 sec. No scene-review console errors/warnings. [Encoded samples](renders/review/revision10-samples.jpg) confirm cuts and clear badge placement.
-- Three new voice phrases recognized correctly by ASR, including ASAP/GSCM. Ten later voice caches reused, shifted 15 sec. All 13 fit at speed 1 without overlap. [Speech evidence](audio/pronunciation-review.json).
-- Two package tests/seven syntax checks PASS: `20260929T110441221Z-5492-5eb82518`. Duration assertions updated to 110. HTTP 200 and range 206.
+- **121 seconds / 2:01**, 1080p30 H.264, 3630 frames; stereo AAC 48 kHz. Full decode PASS. −15.94 LUFS / −1.98 dBTP. [Measurements](renders/revision14-validation.json).
+- **A new voice** (owner: "entire voice is quite robotic"): all 22 lines re-voiced in en-US-AndrewMultilingualNeural at −3%, the newer model of the film's Andrew voice, which the owner chose from samples. Lines are placed by their key words: each question's first word as its first letter is typed (within 0.25 s), "sell-out", "share", "spend" and "targets" within 0.2 s of Wizard reading GSCM, ASAP, NERP and the file, "click" 0.5 s before the click.
+- **No sound effects** (owner request): `audio/sfx.py` and the `sfx` list are gone; the score is voice and music only.
+- **Narrated app scenes** (owner request): the question is read as it is typed ("In this example, we're going to ask: …"; "Next, let's ask: …"), and the narration says what Wizard does while it works, what question 2 found, why we click Check my data, what the check does and where the sources are. The longest pause from 0:33 to the end card is 2.5 s, while question 2 is sent and Wizard appears (revision 13: 28.7 s with music only).
+- **Stage held still while Wizard works** (owner: "it jitters … especially in the timelapses"): Wizard's auto-scroll moved its stage about 23 px at every tool start and end. `scripts/screen.py` follows the stage frame by frame (checked against the recorder's browser log) and moves each frame back. In the rendered timelapses, revision 13 had 40 of 524 frames jump 15 px or more; revision 14 has 1 of 563 (Wizard's own diagram re-laying out once as the attached file joins it).
+- **No zoom steps** (owner: "the camera still jitters a lot inside Wizard"): the first draft stored the camera's zoom to two decimals per frame, so slow push-ins stepped 1% about every 0.8 s — 16 whole-picture jumps in 14 s while question 1 runs. Zoom is now kept to five decimals: none.
+- **Even page scrolls**: the screencast delivers about 40 frames a second, so Wizard's own scroll down to Check my data and back up to the figure moved in uneven one- and two-frame steps (up to 44 px change between frames). Each scroll is measured frame by frame, fitted to the recorder's easing, and every film frame placed on it: the scroll back up now rises and falls 0, 2, 4 … 50 … 4, 2 px a frame, changing by at most 6 px. The check's card, which lands with a two-frame bounce, is reached by a cut 0.2 s after the click.
+- **Calm camera** (owner: "too all over the place"): a few eased keyframes per clip, no stops between them, no overshoot, never the window's edge in close-up. Revision 13's runtime clamped 1,033 of its 2,058 app frames, which jerked the camera at the clamp; its fastest frame moved 552 px. Revision 14 clamps none and moves at most about 27 px a frame. The sideways whip to question 2 is a cross-fade; the zoom out to each answer spans its dissolve.
+- The app scenes are screen recordings of Wizard `main` at `ff4a9e2` over its synthetic fixtures ([capture](capture/README.md)), re-recorded with the question typed before the file is attached. Real time everywhere except Wizard's working stretch: question 1 from 48.7 to 60.2 (2×), question 2 from 77.3 to 82.4 (4×), its check at 2×, with the Timelapse pill (speed and real run clock) and blue edge for exactly those stretches.
+- HyperFrames 0.8.142 `check` at 59 times: pass, 0 errors, 0 warnings; contrast 56/56 AA. [Check output](renders/revision14-check.json).
+- The 87.6 s music bed is extended by three bar-aligned crossfades, at 0:45, 1:02 and 1:19, each at the track's 45 s point and under narration.
 
-Offline resvg/FFmpeg composition; connected Chrome is the only browser-control surface. No new HyperFrames or human listening pass claimed. Product readiness was not audited.
+No ASR or human listening pass. Figures are synthetic.
 
-[Plan](../../../docs/testing/releases/2026-09-29-film-problem-statement/test-plan.md) · [Report](../../../docs/testing/releases/2026-09-29-film-problem-statement/test-report.md).
+[Plan](../../docs/testing/releases/2026-10-27-film-narrated-calm-camera/test-plan.md) · [Report](../../docs/testing/releases/2026-10-27-film-narrated-calm-camera/test-report.md).

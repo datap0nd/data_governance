@@ -1,0 +1,191 @@
+{
+ "id": "film-quarter-vs-targets",
+ "kind": "ask",
+ "data_mode": "SYNTHETIC",
+ "match": [
+  "against+targets",
+  "against+target",
+  "quarter+targets"
+ ],
+ "steps": [
+  {
+   "say": "I'll take Q3 sell-out from GSCM, Samsung's share from ASAP and marketing spend from NERP, then compare sell-out with the targets in your file."
+  },
+  {
+   "tool": "wizard_lookup_definitions",
+   "args": {
+    "query": "sell-out market share"
+   }
+  },
+  {
+   "tool": "gscm_run_report",
+   "as": "sellout",
+   "args": {
+    "report_id": "gscm-sell-through-quarterly",
+    "filters": [
+     {
+      "field": "fiscal_quarter",
+      "values": [
+       "2026-Q2",
+       "2026-Q3"
+      ]
+     }
+    ],
+    "group_by": [
+     "market",
+     "fiscal_quarter"
+    ],
+    "measures": [
+     "sell_out_units"
+    ]
+   }
+  },
+  {
+   "tool": "asap_run_report",
+   "as": "share",
+   "args": {
+    "report_id": "asap-share-quarterly",
+    "filters": [
+     {
+      "field": "fiscal_quarter",
+      "values": [
+       "2026-Q2",
+       "2026-Q3"
+      ]
+     },
+     {
+      "field": "brand",
+      "values": [
+       "Samsung"
+      ]
+     }
+    ],
+    "measures": [
+     "volume_share_pct"
+    ]
+   }
+  },
+  {
+   "tool": "nerp_run_report",
+   "as": "spend",
+   "args": {
+    "report_id": "nerp-mkt-spend-quarterly",
+    "filters": [
+     {
+      "field": "fiscal_quarter",
+      "values": [
+       "2026-Q3"
+      ]
+     }
+    ],
+    "group_by": [
+     "market"
+    ],
+    "measures": [
+     "spend_usd"
+    ]
+   }
+  },
+  {
+   "tool": "wizard_query_attachment",
+   "as": "targets",
+   "args": {
+    "file": "F1"
+   }
+  },
+  {
+   "tool": "wizard_calculate",
+   "args": {
+    "expression": "(q3 - q2) / q2 * 100",
+    "variables": [
+     {
+      "name": "q3",
+      "value": 1020000
+     },
+     {
+      "name": "q2",
+      "value": 925000
+     }
+    ]
+   }
+  },
+  {
+   "tool": "wizard_calculate",
+   "args": {
+    "expression": "actual / target * 100",
+    "variables": [
+     {
+      "name": "actual",
+      "value": 1020000
+     },
+     {
+      "name": "target",
+      "value": 1000000
+     }
+    ]
+   }
+  },
+  {
+   "tool": "wizard_render_visual",
+   "as": "chart",
+   "args": {
+    "kind": "bar",
+    "title": "Q3 sell-out against target",
+    "subtitle": "Units, 2026-Q3. Targets from Q3 targets.xlsx.",
+    "columns": [
+     {
+      "key": "market",
+      "label": "Market"
+     },
+     {
+      "key": "target",
+      "label": "Target",
+      "type": "integer",
+      "unit": "units"
+     },
+     {
+      "key": "sell_out",
+      "label": "Sell-out",
+      "type": "integer",
+      "unit": "units"
+     }
+    ],
+    "rows": [
+     [
+      "Saudi Arabia",
+      440000,
+      452000
+     ],
+     [
+      "UAE",
+      210000,
+      205000
+     ],
+     [
+      "Egypt",
+      250000,
+      262000
+     ],
+     [
+      "Morocco",
+      100000,
+      101000
+     ]
+    ],
+    "x": "market",
+    "series": [
+     "target",
+     "sell_out"
+    ],
+    "evidence_ids": [
+     "{sellout}",
+     "{targets}"
+    ],
+    "note": "Sell-out from GSCM; targets from the attached file."
+   }
+  },
+  {
+   "answer": "**A good quarter: sell-out rose 10.3% to 1.02 million units, 2% ahead of target.** Three of our four markets beat their target; the UAE is the one to watch.\n\n[{chart}]\n\n| Market | Q3 sell-out | vs Q2 | vs target | Samsung share | Q3 marketing spend |\n|---|---|---|---|---|---|\n| Saudi Arabia | 452,000 [{sellout}] | +10.2% | 103% [{targets}] | 32.0%, +0.8 pts [{share}] | $4.2M [{spend}] |\n| UAE | 205,000 [{sellout}] | +13.9% | 98% [{targets}] | 27.2%, −0.3 pts [{share}] | $2.6M [{spend}] |\n| Egypt | 262,000 [{sellout}] | +9.2% | 105% [{targets}] | 25.7%, +1.6 pts [{share}] | $1.5M [{spend}] |\n| Morocco | 101,000 [{sellout}] | +6.3% | 101% [{targets}] | 29.4%, +0.4 pts [{share}] | not posted [{spend}] |\n\n**What stands out**\n- **Saudi Arabia** added the most units, 42,000 more than in Q2, and finished 3% over target.\n- **Egypt** beat its target by the widest margin and gained the most share.\n- **UAE** is the one market below target, at 98%. Sell-out grew 13.9%, but Samsung's share slipped 0.3 points: the market grew faster than we did.\n- **Morocco** has no Q3 marketing spend posted in NERP yet.\n\nTargets come from your attached file, Q3 targets.xlsx, not from a company system."
+  }
+ ]
+}

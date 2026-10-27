@@ -1,0 +1,38 @@
+{
+ "data_mode": "SYNTHETIC",
+ "notice": "Film capture identity (synthetic).",
+ "users": [
+  {
+   "id": "u-ceo",
+   "email": "executive@wizard.test",
+   "name": "Executive",
+   "role": "CEO",
+   "entitlements": {
+    "nerp": {
+     "reports": [
+      "*"
+     ],
+     "markets": [
+      "*"
+     ]
+    },
+    "gscm": {
+     "reports": [
+      "*"
+     ],
+     "markets": [
+      "*"
+     ]
+    },
+    "asap": {
+     "reports": [
+      "*"
+     ],
+     "markets": [
+      "*"
+     ]
+    }
+   }
+  }
+ ]
+}

@@ -1,0 +1,213 @@
+{
+  "ok": true,
+  "strict": false,
+  "browserSkipped": false,
+  "lint": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": [],
+    "filesScanned": 1
+  },
+  "runtime": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": []
+  },
+  "layout": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 2,
+    "findings": [
+      {
+        "code": "escaped_container",
+        "severity": "info",
+        "time": 61.7,
+        "selector": "#sApp > div:nth-of-type(3)",
+        "message": "Positioned element renders far outside its offset parent — its coordinates were likely computed in a different frame (canvas/viewport pixels).",
+        "rect": {
+          "left": 1167.74,
+          "top": -188.24,
+          "right": 3422.39,
+          "bottom": 1080,
+          "width": 2254.65,
+          "height": 1268.24
+        },
+        "containerSelector": "#sApp",
+        "text": "",
+        "fixHint": "Compute left/top in the offset parent's frame (subtract its rect), or mark intentional placement with data-layout-allow-overflow.",
+        "containerRect": {
+          "left": 0,
+          "top": 0,
+          "right": 1920,
+          "bottom": 1080,
+          "width": 1920,
+          "height": 1080
+        },
+        "dataAttributes": {
+          "data-clip": "stock"
+        },
+        "sourceFile": "index.html",
+        "bbox": {
+          "x": 1167.74,
+          "y": -188.24,
+          "width": 2254.65,
+          "height": 1268.24
+        },
+        "firstSeen": 61.7,
+        "lastSeen": 61.7,
+        "occurrences": 1,
+        "heldMs": 0,
+        "times": [
+          61.7
+        ]
+      },
+      {
+        "code": "panel_out_of_canvas",
+        "severity": "info",
+        "time": 61.7,
+        "selector": "#sApp > div:nth-of-type(2)",
+        "message": "Painted panel extends outside the composition canvas.",
+        "rect": {
+          "left": -414.83,
+          "top": 88.62,
+          "right": 1190.08,
+          "bottom": 991.38,
+          "width": 1604.9,
+          "height": 902.76
+        },
+        "containerSelector": "#film",
+        "text": "",
+        "fixHint": "Move the panel inward, or mark intentional off-canvas animation with data-layout-allow-overflow.",
+        "containerRect": {
+          "left": 0,
+          "top": 0,
+          "right": 1920,
+          "bottom": 1080,
+          "width": 1920,
+          "height": 1080
+        },
+        "overflow": {
+          "left": 414.83
+        },
+        "dataAttributes": {
+          "data-clip": "ask"
+        },
+        "sourceFile": "index.html",
+        "bbox": {
+          "x": -414.83,
+          "y": 88.62,
+          "width": 1604.9,
+          "height": 902.76
+        },
+        "firstSeen": 61.7,
+        "lastSeen": 61.7,
+        "occurrences": 1,
+        "heldMs": 0,
+        "times": [
+          61.7
+        ]
+      }
+    ],
+    "duration": 109,
+    "samples": [
+      3,
+      7.6,
+      8,
+      14,
+      15,
+      15.6,
+      16.5,
+      21.5,
+      22.2,
+      23.3,
+      26,
+      30,
+      33.5,
+      34,
+      37,
+      40,
+      43,
+      45.5,
+      48,
+      50,
+      53,
+      55,
+      58.4,
+      59.4,
+      60.4,
+      61.7,
+      63,
+      67,
+      70.5,
+      74,
+      77,
+      80,
+      83,
+      86.5,
+      88.5,
+      90.8,
+      93,
+      95.8,
+      97.5,
+      99.5,
+      100.7,
+      101.6,
+      102.9,
+      103.7,
+      104.5,
+      105.6,
+      107.5
+    ],
+    "transitionSamples": [],
+    "transitionSamplesDropped": 0,
+    "tolerance": 2,
+    "totalIssueCount": 2,
+    "truncated": false
+  },
+  "motion": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": [],
+    "enabled": false,
+    "samples": 0
+  },
+  "contrast": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": [],
+    "enabled": true,
+    "samples": [
+      3,
+      30,
+      59.4,
+      88.5,
+      107.5
+    ],
+    "checked": 86,
+    "passed": 86
+  },
+  "hdr": {
+    "autoPromotion": null,
+    "inspection": "available"
+  },
+  "snapshots": {
+    "enabled": false,
+    "files": [],
+    "times": [],
+    "findingFiles": []
+  },
+  "_meta": {
+    "version": "0.8.142",
+    "latestVersion": "0.8.202",
+    "updateAvailable": true
+  }
+}

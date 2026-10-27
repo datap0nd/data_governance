@@ -1,80 +1,247 @@
 [
   {
-    "start": 0.2,
-    "end": 8.8,
-    "en": "Our data comes from interactive portals like ASAP and GSCM, where we download ready-made reports.",
-    "spoken": "Our data comes from interactive portals like A S A P and G S C M, where we download ready-made reports."
+    "start": 0.3,
+    "end": 9.0,
+    "en": "Our data is spread across portals like ASAP, GSCM, BDP and NERP, each packed with reports.",
+    "spoken": "Our data is spread across portals like ASAP, GSCM, BDP and N-ERP, each packed with reports.",
+    "cues": {
+      "asap": "ASAP",
+      "gscm": "GSCM",
+      "bdp": "BDP",
+      "nerp": "N-ERP",
+      "packed": "packed"
+    },
+    "voice": "rev14"
   },
   {
-    "start": 9.15,
-    "end": 19.75,
-    "en": "But downloads alone aren't ready for analysis or scheduled reporting. We still need to extract the data, standardize its format, and load it into a destination.",
-    "spoken": "But downloads alone aren't ready for analysis or scheduled reporting. We still need to extract the data, standardize its format, and load it into a destination."
+    "start": 9.3,
+    "end": 15.1,
+    "en": "And then there are endless Excel files, emails, presentations and PDFs.",
+    "spoken": "And then there are endless Excel files, emails, presentations and PDFs.",
+    "cues": {
+      "excel": "Excel",
+      "emails": "emails",
+      "presentations": "presentations",
+      "pdfs": "PDFs"
+    },
+    "voice": "rev14"
   },
   {
-    "start": 20.15,
-    "end": 30.8,
-    "en": "Meet Metronome. Build data pipelines in minutes, without code. Schedule them, trigger a run when you need it, and track every run in one place.",
-    "spoken": "Meet Metronome. Build data pipelines in minutes, without code. Schedule them, trigger a run when you need it, and track every run in one place."
+    "start": 15.5,
+    "end": 22.9,
+    "en": "Finding one answer means knowing where to look, then opening report after report, and piecing it together by hand.",
+    "spoken": "Finding one answer means knowing where to look, then opening report after report, and piecing it together by hand.",
+    "cues": {
+      "look": "look",
+      "opening": "opening",
+      "piecing": "piecing"
+    },
+    "voice": "rev14"
   },
   {
-    "start": 31.2,
-    "end": 38,
-    "en": "Instead of writing a script, build your own Flow. Choose a website and the report you need.",
-    "spoken": "Instead of writing a script, build your own Flow. Choose a website and the report you need."
+    "start": 23.3,
+    "end": 28.0,
+    "en": "Meet Wizard. It brings every source together, in one place.",
+    "spoken": "Meet Wizard. It brings every source together, in one place.",
+    "cues": {
+      "meetWizard": "Wizard",
+      "together": "together"
+    },
+    "voice": "rev14"
   },
   {
-    "start": 38.4,
-    "end": 44.5,
-    "en": "Choose where the data goes and when it runs.",
-    "spoken": "Choose where the data goes and when it runs."
+    "start": 28.4,
+    "end": 33.9,
+    "en": "Wizard's local AI has learned our portals, so it knows where every answer lives.",
+    "spoken": "Wizard's local AI has learned our portals, so it knows where every answer lives.",
+    "cues": {
+      "localAI": "local",
+      "lives": "lives"
+    },
+    "voice": "rev14"
   },
   {
-    "start": 45,
-    "end": 53.6,
-    "en": "While the script is still being written, your Flow is ready. No code needed.",
-    "spoken": "While the script is still being written, your Flow is ready. No code needed."
+    "start": 34.3,
+    "end": 36.5,
+    "en": "So you can simply ask, in plain words.",
+    "spoken": "So you can simply ask, in plain words.",
+    "cues": {
+      "ask": "ask"
+    },
+    "voice": "rev14"
   },
   {
-    "start": 52.2,
-    "end": 63.7,
-    "en": "At two AM, local AI agents keep working across your reports and pipelines, checking missing data, refresh issues, and blank rows.",
-    "spoken": "At two a.m., local AI agents keep working across your reports and pipelines, checking missing data, refresh issues, and blank rows."
+    "start": 36.8,
+    "end": 41.7,
+    "en": "In this example, we're going to ask: how did we do this quarter against our targets?",
+    "spoken": "In this example, we're going to ask: how did we do this quarter against our targets?",
+    "cues": {
+      "askQuarter": "how"
+    },
+    "voice": "rev14"
   },
   {
-    "start": 64.2,
-    "end": 71.7,
-    "en": "By morning, five issues are flagged. Open one to see the evidence and a proposed fix.",
-    "spoken": "By morning, five issues are flagged. Open one to see the evidence and a proposed fix."
+    "start": 42.2,
+    "end": 45.3,
+    "en": "And we'll attach our Q3 targets.",
+    "spoken": "And we'll attach our Q3 targets.",
+    "cues": {
+      "attach": "attach"
+    },
+    "voice": "rev14"
   },
   {
-    "start": 72.2,
-    "end": 78.7,
-    "en": "There are two ways to use Metronome. Open it in your browser, just like any other website.",
-    "spoken": "There are two ways to use Metronome. Open it in your browser, just like any other website."
+    "start": 46.4,
+    "end": 47.7,
+    "en": "First, it makes a plan.",
+    "spoken": "First, it makes a plan.",
+    "cues": {
+      "plan": "plan"
+    },
+    "voice": "rev14"
   },
   {
-    "start": 79,
-    "end": 84.8,
-    "en": "Or connect Metronome MCP to your AI, and create flows with a prompt.",
-    "spoken": "Or connect Metronome M C P to your AI, and create flows with a prompt."
+    "start": 47.87,
+    "end": 57.5,
+    "en": "Wizard finds the right reports for you: sell-out from GSCM, market share from ASAP, spend from NERP, and your targets in Excel.",
+    "spoken": "Wizard finds the right reports for you: sell-out from GSCM, market share from ASAP, spend from N-ERP, and your targets in Excel.",
+    "cues": {
+      "finds": "finds",
+      "sellOut": "sell-out",
+      "share": "share",
+      "spend": "spend",
+      "targets": "targets"
+    },
+    "voice": "rev14"
   },
   {
-    "start": 85.2,
-    "end": 93.4,
-    "en": "Without that connection, your AI may take wrong turns, retry steps, or return the wrong reporting period.",
-    "spoken": "Without that connection, your AI may take wrong turns, retry steps, or return the wrong reporting period."
+    "start": 57.6,
+    "end": 61.5,
+    "en": "Then it runs the numbers, draws a chart, and writes up the answer.",
+    "spoken": "Then it runs the numbers, draws a chart, and writes up the answer.",
+    "cues": {
+      "runs": "runs",
+      "drawChart": "chart",
+      "writes": "writes"
+    },
+    "voice": "rev14"
   },
   {
-    "start": 93.7,
-    "end": 102,
-    "en": "With Metronome MCP, it can follow the portal workflow, create your Flow, and check the result.",
-    "spoken": "With Metronome M C P, it can follow the portal workflow, create your Flow, and check the result."
+    "start": 61.7,
+    "end": 68.4,
+    "en": "Seconds later, you have a complete answer: a clear summary, the key numbers, and charts you can share.",
+    "spoken": "Seconds later, you have a complete answer: a clear summary, the key numbers, and charts you can share.",
+    "cues": {
+      "seconds": "Seconds",
+      "summary": "summary",
+      "numbers": "numbers",
+      "charts": "charts"
+    },
+    "voice": "rev14"
   },
   {
-    "start": 102.5,
-    "end": 109.7,
-    "en": "Fewer retries. Less time and fewer tokens. Accurate data, in your own repeatable Flow.",
-    "spoken": "Fewer retries. Less time and fewer tokens. Accurate data, in your own repeatable Flow."
+    "start": 68.9,
+    "end": 72.5,
+    "en": "Next, let's ask: where is stock building up in the channel?",
+    "spoken": "Next, let's ask: where is stock building up in the channel?",
+    "cues": {
+      "askStock": "where"
+    },
+    "voice": "rev14"
+  },
+  {
+    "start": 74.9,
+    "end": 81.2,
+    "en": "Wizard compares what we shipped in with what actually sold, for every model, straight from GSCM.",
+    "spoken": "Wizard compares what we shipped in with what actually sold, for every model, straight from GSCM.",
+    "cues": {
+      "compares": "compares"
+    },
+    "voice": "rev14"
+  },
+  {
+    "start": 82.6,
+    "end": 87.9,
+    "en": "It's Egypt's Galaxy A37: its channel stock has more than doubled.",
+    "spoken": "It's Egypt's Galaxy A thirty-seven: its channel stock has more than doubled.",
+    "cues": {
+      "egypt": "Egypt's"
+    },
+    "voice": "rev14"
+  },
+  {
+    "start": 88.1,
+    "end": 91.4,
+    "en": "To be sure, we scroll down and click Check my data.",
+    "spoken": "To be sure, we scroll down and click Check my data.",
+    "cues": {
+      "clickCheck": "click"
+    },
+    "voice": "rev14"
+  },
+  {
+    "start": 91.6,
+    "end": 95.6,
+    "en": "Wizard goes back to GSCM, and works out every figure again.",
+    "spoken": "Wizard goes back to GSCM, and works out every figure again.",
+    "cues": {
+      "again": "again"
+    },
+    "voice": "rev14"
+  },
+  {
+    "start": 96.8,
+    "end": 100.8,
+    "en": "Every number is checked against its source report, so you can trust it.",
+    "spoken": "Every number is checked against its source report, so you can trust it.",
+    "cues": {
+      "checked": "checked"
+    },
+    "voice": "rev14"
+  },
+  {
+    "start": 101.0,
+    "end": 104.7,
+    "en": "And every figure links straight back to the rows it came from.",
+    "spoken": "And every figure links straight back to the rows it came from.",
+    "cues": {
+      "links": "links"
+    },
+    "voice": "rev14"
+  },
+  {
+    "start": 105.6,
+    "end": 112.9,
+    "en": "It's secure by design: authorized AI that only shows what you're allowed to see, and never changes your data.",
+    "spoken": "It's secure by design: authorized AI that only shows what you're allowed to see, and never changes your data.",
+    "cues": {
+      "safe": "secure",
+      "authorized": "authorized",
+      "allowed": "allowed",
+      "never": "never"
+    },
+    "voice": "rev14"
+  },
+  {
+    "start": 113.4,
+    "end": 115.6,
+    "en": "Stop searching. Start asking.",
+    "spoken": "Stop searching. Start asking.",
+    "cues": {
+      "stop": "Stop",
+      "start": "Start"
+    },
+    "voice": "rev14"
+  },
+  {
+    "start": 115.9,
+    "end": 118.4,
+    "en": "Wizard. Every source, one answer.",
+    "spoken": "Wizard. Every source, one answer.",
+    "cues": {
+      "endWizard": "Wizard",
+      "oneAnswer": "one"
+    },
+    "voice": "rev14"
   }
 ]

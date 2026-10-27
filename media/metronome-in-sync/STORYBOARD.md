@@ -1,16 +1,19 @@
-# Storyboard — revision 10
+# Storyboard — revision 14
 
-110 seconds / 1:50. English narration and background music; zero narration subtitles, light-mode interfaces.
+121 seconds / 2:01. English narration (en-US-AndrewMultilingualNeural) and background music; no subtitles, light mode, plain language, no sound effects. From 0:33 the screens are the real Wizard app (see [capture](capture/README.md)), in real time except while Wizard is working, and the narration says what is being asked and what Wizard is doing.
 
 | Scene | Time | Visual and purpose |
 | --- | --- | --- |
-| Where reports start | 0–9 | ASAP and GSCM interactive portals with downloadable, pre-made report tables. Establish where the inputs come from. |
-| The work behind reporting | 9–20 | Downloaded reports → Extract → Transform → Load. Dates visibly standardized into one format, then saved for analysis and scheduled reporting. Establish the work a download alone does not complete. |
-| Meet Metronome | 20–31 | Sources flow through Metronome to organized datasets. Build, Schedule, Run now and Run history appear on their spoken cues. Establish the tool’s purpose and one-place management. |
-| Code vs Flow | 31–52 | Existing Without/With comparison and working no-code builder. |
-| Overnight agents | 52–64 | Independent agents inspect reports/stages. Top-right In testing label remains visible for the entire scene. |
-| Findings | 64–72 | Five findings and expanded issue/fix. In testing remains visible. |
-| Two ways | 72–85 | Browser access and AI logos drawing connecting lines into Metronome MCP. |
-| AI comparison | 85–110 | Existing ChatGPT before/after. Two-column closing starts at 102; paired rows appear on shifted speech cues. |
+| Data everywhere | 0–15 | Four portal windows cascade in (ASAP, GSCM, BDP, NERP); each glows as it is named and every list rushes past on "packed with reports". Excel files, emails, presentations and PDFs drop in below. No numbers. |
+| Hunting for one answer | 15–23 | "Which market grew the most this quarter?" types in large, letter by letter, while everything behind it drops out of focus; at 16.8 it flies up into its search bar. Each list scrolls to the report someone would need and a pointer opens it while a clock runs past three hours. Everything sweeps to the centre with motion blur. |
+| Everything in Wizard | 23–34 | "Wizard" pops in letter by letter under the logo; portals gather on the left, files on the right, all flowing into it with motion blur; "Local AI" appears under its name. |
+| Just ask | 34.0–46.1 | Wizard's real start screen grows out of the logo. "So you can simply ask, in plain words. In this example, we're going to ask: how did we do this quarter against our targets?" The camera eases down to the question box, and the question is typed as it is said (38.9–42.1); "And we'll attach our Q3 targets": the file is attached (43.9) and the question sent (46.1), in real time. |
+| Wizard at work | 46.1–60.2 | "First, it makes a plan." Real time while the pixel wizard appears and writes its plan. From 48.7 the timelapse: a "Timelapse 2×" pill with the real run clock and a blue frame edge; GSCM, ASAP, NERP and the attached file light up on "sell-out", "share", "spend" and "targets"; "Then it runs the numbers, draws a chart, and writes up the answer" over the sums and the chart. The stage holds still while the page scrolls under it; the camera only drifts closer. |
+| The answer | 60.2–68.8 | A soft dissolve to the top of the answer: "Seconds later, you have a complete answer…". The camera eases to the summary, then down to the chart on "charts". |
+| A second question | 68.0–82.4 | The second window cross-fades in where the first was. "Next, let's ask: where is stock building up in the channel?", typed as it is said (70.4–73.3) and sent (74.7). "Wizard compares what we shipped in with what actually sold, for every model, straight from GSCM": its run plays at 4× (77.3–82.4), the stage held still. |
+| Its answer | 82.4–88.1 | A dissolve to the answer: "It's Egypt's Galaxy A37: its channel stock has more than doubled", over the headline and its chart. |
+| Checked | 88.1–105.6 | The same window: "To be sure, we scroll down and click Check my data", in real time (click at 90.7); the check appears and starts work in real time, then plays at 2× (93.7–96.5) under "Wizard goes back to GSCM, and works out every figure again"; a dissolve to its six MATCH rows under "Every number is checked against its source report, so you can trust it"; then, in real time, back to the figure and its Sources drawer (105.3): "And every figure links straight back to the rows it came from." |
+| Safe | 105.6–113.1 | The app steps back and drops out of focus; "Secure by design" pops in letter by letter on "secure", its lines on "authorized", "allowed" and "never". |
+| Every source. One answer. | 112.2–121 | The app pulls away; "Stop searching." and "Start asking." pop in word by word on the narration, whip off at 115.6 as Wizard's pixel logo punches in, and "Every source. One answer." types in above every source. |
 
-The ETL and capability reveals use synthesis word boundaries corrected for the exact PCM lead trim. See assets/opening-cues.json. Later animation/speech is shifted by 15 seconds. The prototype label covers both overnight monitoring and its findings to avoid implying rollout readiness. Other illustrative/demo limits remain in the review notes.
+Fast moves carry motion blur sized from their speed, timed from `motion` in timeline.json. Speech-linked reveals read their times from assets/cues.json (the recorded word boundaries, moved with their lines); the screen paths and camera keyframes are in scripts/screen.py, whose `--report` gives the film time of every recorded moment.

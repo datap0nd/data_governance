@@ -1,0 +1,160 @@
+{
+ "id": "film-channel-stock",
+ "kind": "ask",
+ "data_mode": "SYNTHETIC",
+ "match": [
+  "stock+building",
+  "stock+piling",
+  "channel+stock"
+ ],
+ "steps": [
+  {
+   "say": "Stock builds up when we ship more into the channel than it sells, so I'll compare sell-in with sell-out for every model in Q3."
+  },
+  {
+   "tool": "wizard_search_catalog",
+   "args": {
+    "query": "channel stock sell-in sell-out by model",
+    "limit": 5
+   }
+  },
+  {
+   "tool": "gscm_run_report",
+   "as": "quarterly",
+   "args": {
+    "report_id": "gscm-sell-through-quarterly",
+    "filters": [
+     {
+      "field": "fiscal_quarter",
+      "values": [
+       "2026-Q2",
+       "2026-Q3"
+      ]
+     }
+    ],
+    "measures": [
+     "closing_channel_stock_units",
+     "sell_through_rate_pct"
+    ]
+   }
+  },
+  {
+   "tool": "gscm_run_report",
+   "as": "models",
+   "args": {
+    "report_id": "gscm-sell-in-sell-out-monthly",
+    "filters": [
+     {
+      "field": "fiscal_quarter",
+      "values": [
+       "2026-Q3"
+      ]
+     }
+    ],
+    "group_by": [
+     "market",
+     "model"
+    ],
+    "measures": [
+     "sell_in_units",
+     "sell_out_units"
+    ]
+   }
+  },
+  {
+   "tool": "gscm_run_report",
+   "as": "stock",
+   "args": {
+    "report_id": "gscm-sell-in-sell-out-monthly",
+    "filters": [
+     {
+      "field": "month",
+      "values": [
+       "2026-06",
+       "2026-09"
+      ]
+     }
+    ],
+    "group_by": [
+     "market",
+     "model",
+     "month"
+    ],
+    "measures": [
+     "channel_stock_units"
+    ]
+   }
+  },
+  {
+   "tool": "wizard_calculate",
+   "args": {
+    "expression": "(sep - jun) / jun * 100",
+    "variables": [
+     {
+      "name": "sep",
+      "value": 58675
+     },
+     {
+      "name": "jun",
+      "value": 24092
+     }
+    ]
+   }
+  },
+  {
+   "tool": "wizard_render_visual",
+   "as": "chart",
+   "args": {
+    "kind": "bar",
+    "title": "Where channel stock grew in Q3",
+    "subtitle": "Channel stock at the end of June and September, units.",
+    "columns": [
+     {
+      "key": "model",
+      "label": "Model and market"
+     },
+     {
+      "key": "june",
+      "label": "End of June",
+      "type": "integer",
+      "unit": "units"
+     },
+     {
+      "key": "september",
+      "label": "End of September",
+      "type": "integer",
+      "unit": "units"
+     }
+    ],
+    "rows": [
+     [
+      "Galaxy A37 · Egypt",
+      24092,
+      58675
+     ],
+     [
+      "Galaxy A57 · Saudi Arabia",
+      36620,
+      53254
+     ],
+     [
+      "Galaxy A17 · Morocco",
+      8267,
+      16044
+     ]
+    ],
+    "x": "model",
+    "series": [
+     "june",
+     "september"
+    ],
+    "evidence_ids": [
+     "{stock}"
+    ]
+   }
+  },
+  {
+   "answer": "**Egypt's Galaxy A37 is the one to act on: its channel stock more than doubled in Q3, from 24,092 to 58,675 units, because we shipped 34,583 more than the channel sold.**\n\n[{chart}]\n\n**Also rising**\n- **Galaxy A57 in Saudi Arabia:** up 45%, to 53,254 units [{stock}]. Sell-in ran 16,634 ahead of sell-out [{models}].\n- **Galaxy A17 in Morocco:** up 94%, to 16,044 units [{stock}].\n\n**Expected, not a concern**\n- The UAE's new Galaxy Z Flip8 and Z Fold8 hold their first launch stock (7,995 and 2,767 units).\n- Every other model moved by less than 3% [{stock}].\n\nEgypt's sell-through rate fell from 72.9% to 67.6% this quarter [{quarterly}]. **Suggested next step:** slow Galaxy A37 shipments to Egypt until the channel works through its stock."
+  }
+ ]
+}
