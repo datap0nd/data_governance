@@ -1,39 +1,39 @@
 {
   "title": "Wizard — Every source, one answer",
-  "status": "Wizard film revision 14 (narrated app scenes, calm camera, no whooshes) for review; draft until the revision 14 lines are voiced",
-  "durationSeconds": 122,
+  "status": "Wizard film revision 14 (narrated app scenes in Andrew Multilingual, calm camera, no whooshes) for review",
+  "durationSeconds": 121,
   "width": 1920,
   "height": 1080,
   "framesPerSecond": 30,
   "editableProjectHyperFramesVersion": "0.8.142",
   "artifacts": {
     "renders/review/animatic.mp4": {
-      "bytes": 71430967,
-      "sha256": "984ec2248d727efa49f4db86e8e2b61c41c0a999f1705ce4d5c5f2b98da63e71"
+      "bytes": 69391726,
+      "sha256": "cff5da87770ebf498edf745cc954ff464fcc64aa24415145142ac0b4b9c30df7"
     },
     "audio/score.wav": {
-      "bytes": 35136102,
-      "sha256": "7616428a6f719dc1f47a474b914d39562e2e465362489ca825e878220b01cfc1"
+      "bytes": 34848102,
+      "sha256": "f13db19ef29c8d1c1b42d45a7f520896f159ab6f19f7065bd4b218334065d54f"
     },
     "audio/narration.flac": {
-      "bytes": 1617563,
-      "sha256": "4e20ab61cb8ce69ff83e5bd356f1b5145914d4ffe19cecf28047f5f7bb98c563"
+      "bytes": 3174674,
+      "sha256": "600c77486fdc69120647cea8392d436afa063575fdc40dd00fb5a7c63e847ae7"
     },
     "audio/background.mp3": {
       "bytes": 2103552,
       "sha256": "364a546834db4c0c2e3b3240eb6df03e98b7362230154b04c5c614442f6660d7"
     },
-    "audio/voice-rev12.flac": {
-      "bytes": 1940423,
-      "sha256": "f977679f9ad7f500dd20c842bc26a229fa5826662b18901dbd13d1ff387a45d1"
-    },
     "assets/screen/ask.mp4": {
-      "bytes": 9793662,
-      "sha256": "7a7e457ed80e245bebe6ae77f48817128ef5c90be84aa98b10b9cc2ec847cc1d"
+      "bytes": 9772875,
+      "sha256": "29df11200a2bd0784cc7ab46c79e9269fb3f629efed8b8be3cfed79aee0e56b4"
     },
     "assets/screen/stock.mp4": {
-      "bytes": 15044057,
-      "sha256": "6ee874b8e010b42fd32462665c61c60030e117c480dcbd53c51dd2e34cacf2ba"
+      "bytes": 14455564,
+      "sha256": "b9b0c68c91d14461942a27cd0f113f1eec7cd2030901870f76e199ad591e6544"
+    },
+    "audio/voice-rev14.flac": {
+      "bytes": 3176861,
+      "sha256": "f1c4c88e5359ccec175d897c083036c10a19a6e7850bd2e332d59507e94fcfd6"
     }
   },
   "baseRenderHyperFramesVersion": "0.8.142",

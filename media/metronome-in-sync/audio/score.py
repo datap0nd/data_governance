@@ -8,14 +8,14 @@ segments=json.loads((FILM/'narration.json').read_text(encoding='utf-8'))
 duration=json.loads((FILM/'timeline.json').read_text(encoding='utf-8'))['durationSeconds']
 tmp=FILM/'.audio-cache';tmp.mkdir(exist_ok=True)
 def voice_path(i,s):
- key=hashlib.sha256(('word-boundaries-v1|en-US-AndrewNeural|-3%|'+s.get('spoken',s['en'])).encode()).hexdigest()[:16]
+ key=hashlib.sha256(('word-boundaries-v1|en-US-AndrewMultilingualNeural|-3%|'+s.get('spoken',s['en'])).encode()).hexdigest()[:16]
  return tmp/f'{i:02}-{key}.mp3'
 async def voice(i,s):
  p=voice_path(i,s)
  if not p.exists() or not p.with_suffix('.json').exists():
   boundaries=[]
   with p.open('wb') as out:
-   async for part in edge_tts.Communicate(s.get('spoken',s['en']),'en-US-AndrewNeural',rate='-3%',boundary='WordBoundary').stream():
+   async for part in edge_tts.Communicate(s.get('spoken',s['en']),'en-US-AndrewMultilingualNeural',rate='-3%',boundary='WordBoundary',proxy=os.environ.get('HTTPS_PROXY')).stream():
     if part['type']=='audio':out.write(part['data'])
     elif part['type']=='WordBoundary':boundaries.append(part)
   p.with_suffix('.json').write_text(json.dumps(boundaries,indent=2),encoding='utf8')

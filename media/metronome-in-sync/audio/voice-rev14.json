@@ -1,0 +1,424 @@
+{
+ "source": "Narration lines voiced for rev14 (en-US-AndrewMultilingualNeural, -3%), audio/voice-rev14.flac",
+ "note": "Each line occupies [start, end] seconds of the track; cue offsets are seconds from the line start, from the synthesizer word boundaries. Written by audio/voice.py.",
+ "lines": [
+  {
+   "spoken": "Our data is spread across portals like ASAP, GSCM, BDP and N-ERP, each packed with reports.",
+   "start": 0.0,
+   "end": 8.640167,
+   "cues": {
+    "Our": -0.004354,
+    "data": 0.15027,
+    "is": 0.536896,
+    "spread": 0.665728,
+    "across": 0.94927,
+    "portals": 1.361604,
+    "like": 1.82552,
+    "ASAP": 2.121938,
+    "GSCM": 3.397688,
+    "BDP": 4.505938,
+    "and": 5.382228,
+    "N-ERP": 5.846146,
+    "each": 7.08327,
+    "packed": 7.289438,
+    "with": 7.753353,
+    "reports": 7.882228
+   }
+  },
+  {
+   "spoken": "And then there are endless Excel files, emails, presentations and PDFs.",
+   "start": 9.140167,
+   "end": 14.884771,
+   "cues": {
+    "And": 0.001916,
+    "then": 0.079249,
+    "there": 0.208124,
+    "are": 0.349874,
+    "endless": 0.620499,
+    "Excel": 0.981291,
+    "files": 1.483874,
+    "emails": 2.463249,
+    "presentations": 3.391083,
+    "and": 4.537999,
+    "PDFs": 4.679749
+   }
+  },
+  {
+   "spoken": "Finding one answer means knowing where to look, then opening report after report, and piecing it together by hand.",
+   "start": 15.384771,
+   "end": 22.712979,
+   "cues": {
+    "Finding": 0.024687,
+    "one": 0.398395,
+    "answer": 0.630354,
+    "means": 1.313353,
+    "knowing": 1.596854,
+    "where": 2.086563,
+    "to": 2.254063,
+    "look": 2.31852,
+    "then": 2.988604,
+    "opening": 3.272104,
+    "report": 3.658728,
+    "after": 4.251478,
+    "and": 5.578812,
+    "piecing": 5.707688,
+    "it": 6.107146,
+    "together": 6.184478,
+    "by": 6.545312,
+    "hand": 6.699938
+   }
+  },
+  {
+   "spoken": "Meet Wizard. It brings every source together, in one place.",
+   "start": 23.212979,
+   "end": 27.885375,
+   "cues": {
+    "Meet": 0.001312,
+    "Wizard": 0.271937,
+    "It": 1.161104,
+    "brings": 1.238437,
+    "every": 1.792562,
+    "source": 2.204937,
+    "together": 2.617312,
+    "in": 3.41627,
+    "one": 3.570895,
+    "place": 3.867312
+   }
+  },
+  {
+   "spoken": "Wizard's local AI has learned our portals, so it knows where every answer lives.",
+   "start": 28.385375,
+   "end": 33.855896,
+   "cues": {
+    "Wizard's": -0.001667,
+    "local": 0.3205,
+    "AI": 0.771541,
+    "has": 1.377208,
+    "learned": 1.634958,
+    "our": 1.931333,
+    "portals": 2.060208,
+    "so": 3.026708,
+    "it": 3.194208,
+    "knows": 3.271541,
+    "where": 3.683916,
+    "every": 4.160708,
+    "answer": 4.534416,
+    "lives": 4.830833
+   }
+  },
+  {
+   "spoken": "So you can simply ask, in plain words.",
+   "start": 34.355896,
+   "end": 36.54525,
+   "cues": {
+    "So": 0.002708,
+    "you": 0.105791,
+    "can": 0.183125,
+    "simply": 0.273333,
+    "ask": 0.621291,
+    "in": 1.059416,
+    "plain": 1.1625,
+    "words": 1.523333
+   }
+  },
+  {
+   "spoken": "In this example, we're going to ask: how did we do this quarter against our targets?",
+   "start": 37.04525,
+   "end": 41.902854,
+   "cues": {
+    "In": 0.007145,
+    "this": 0.097354,
+    "example": 0.264896,
+    "we're": 1.089646,
+    "going": 1.179854,
+    "to": 1.295812,
+    "ask": 1.334478,
+    "how": 2.339646,
+    "did": 2.404062,
+    "we": 2.507146,
+    "do": 2.623146,
+    "quarter": 3.009728,
+    "against": 3.615396,
+    "our": 3.950438,
+    "targets": 4.053562
+   }
+  },
+  {
+   "spoken": "And we'll attach our Q3 targets.",
+   "start": 42.402854,
+   "end": 45.383958,
+   "cues": {
+    "And": -0.003334,
+    "we'll": 0.099749,
+    "attach": 0.280166,
+    "our": 0.963166,
+    "Q3": 1.117791,
+    "targets": 2.122958
+   }
+  },
+  {
+   "spoken": "First, it makes a plan.",
+   "start": 45.883958,
+   "end": 47.114208,
+   "cues": {
+    "First": 0.056416,
+    "it": 0.378583,
+    "makes": 0.443,
+    "a": 0.623416,
+    "plan": 0.674958
+   }
+  },
+  {
+   "spoken": "Wizard finds the right reports for you: sell-out from GSCM, market share from ASAP, spend from N-ERP, and your targets in Excel.",
+   "start": 47.614208,
+   "end": 57.18425,
+   "cues": {
+    "Wizard": -0.007604,
+    "finds": 0.327438,
+    "the": 0.649604,
+    "right": 0.752728,
+    "reports": 1.11352,
+    "for": 1.577438,
+    "you": 1.77077,
+    "sell-out": 2.47952,
+    "from": 2.943438,
+    "GSCM": 3.136728,
+    "market": 4.309396,
+    "share": 4.605812,
+    "ASAP": 5.23727,
+    "spend": 6.448604,
+    "N-ERP": 7.067146,
+    "and": 8.175396,
+    "your": 8.278478,
+    "targets": 8.381563,
+    "in": 8.871271,
+    "Excel": 8.935688
+   }
+  },
+  {
+   "spoken": "Then it runs the numbers, draws a chart, and writes up the answer.",
+   "start": 57.68425,
+   "end": 61.542396,
+   "cues": {
+    "Then": 0.006791,
+    "it": 0.084124,
+    "runs": 0.225874,
+    "the": 0.522249,
+    "numbers": 0.612458,
+    "draws": 1.372791,
+    "a": 1.669166,
+    "chart": 1.733624,
+    "and": 2.635666,
+    "writes": 2.777416,
+    "up": 3.022249,
+    "answer": 3.254208
+   }
+  },
+  {
+   "spoken": "Seconds later, you have a complete answer: a clear summary, the key numbers, and charts you can share.",
+   "start": 62.042396,
+   "end": 68.698854,
+   "cues": {
+    "Seconds": 0.003187,
+    "later": 0.454229,
+    "you": 1.33052,
+    "have": 1.407854,
+    "a": 1.536687,
+    "complete": 1.61402,
+    "answer": 2.077937,
+    "clear": 3.044437,
+    "summary": 3.40527,
+    "the": 4.23002,
+    "key": 4.345979,
+    "numbers": 4.552145,
+    "and": 5.312479,
+    "charts": 5.50577,
+    "can": 5.943937,
+    "share": 6.04702
+   }
+  },
+  {
+   "spoken": "Next, let's ask: where is stock building up in the channel?",
+   "start": 69.198854,
+   "end": 72.739042,
+   "cues": {
+    "Next": 0.002708,
+    "let's": 0.672833,
+    "ask": 0.827458,
+    "where": 1.781083,
+    "is": 1.909916,
+    "stock": 2.025916,
+    "building": 2.373833,
+    "up": 2.683125,
+    "in": 2.83775,
+    "the": 2.902208,
+    "channel": 2.979541
+   }
+  },
+  {
+   "spoken": "Wizard compares what we shipped in with what actually sold, for every model, straight from GSCM.",
+   "start": 73.239042,
+   "end": 79.460083,
+   "cues": {
+    "Wizard": -0.001146,
+    "compares": 0.295229,
+    "what": 0.810687,
+    "we": 0.913812,
+    "shipped": 1.016896,
+    "in": 1.467937,
+    "with": 1.699896,
+    "actually": 2.034937,
+    "sold": 2.408646,
+    "for": 3.388021,
+    "every": 3.568437,
+    "model": 3.813271,
+    "straight": 4.573604,
+    "from": 5.011729,
+    "GSCM": 5.179271
+   }
+  },
+  {
+   "spoken": "It's Egypt's Galaxy A thirty-seven: its channel stock has more than doubled.",
+   "start": 79.960083,
+   "end": 85.160979,
+   "cues": {
+    "It's": 0.00177,
+    "Egypt's": 0.195062,
+    "Galaxy": 0.658978,
+    "A": 1.638396,
+    "thirty-seven": 1.870354,
+    "its": 3.094562,
+    "channel": 3.210562,
+    "stock": 3.58427,
+    "has": 3.983728,
+    "more": 4.189938,
+    "than": 4.512104,
+    "doubled": 4.628062
+   }
+  },
+  {
+   "spoken": "To be sure, we scroll down and click Check my data.",
+   "start": 85.660979,
+   "end": 88.885813,
+   "cues": {
+    "To": -0.003292,
+    "be": 0.04825,
+    "sure": 0.138458,
+    "we": 0.976083,
+    "scroll": 1.13075,
+    "down": 1.465791,
+    "and": 1.994125,
+    "click": 2.071458,
+    "Check": 2.277625,
+    "my": 2.483833,
+    "data": 2.599791
+   }
+  },
+  {
+   "spoken": "Wizard goes back to GSCM, and works out every figure again.",
+   "start": 89.385813,
+   "end": 93.305188,
+   "cues": {
+    "Wizard": -0.00048,
+    "goes": 0.308812,
+    "back": 0.56652,
+    "to": 0.888688,
+    "GSCM": 1.004688,
+    "and": 2.138687,
+    "works": 2.241812,
+    "out": 2.525312,
+    "every": 2.808812,
+    "figure": 3.06652,
+    "again": 3.453145
+   }
+  },
+  {
+   "spoken": "Every number is checked against its source report, so you can trust it.",
+   "start": 93.805188,
+   "end": 97.739896,
+   "cues": {
+    "Every": 0.006645,
+    "number": 0.25152,
+    "is": 0.599438,
+    "checked": 0.754063,
+    "against": 1.089146,
+    "its": 1.449938,
+    "source": 1.630354,
+    "report": 2.042728,
+    "so": 2.957688,
+    "you": 3.047896,
+    "can": 3.150978,
+    "trust": 3.241188,
+    "it": 3.640688
+   }
+  },
+  {
+   "spoken": "And every figure links straight back to the rows it came from.",
+   "start": 98.239896,
+   "end": 101.817438,
+   "cues": {
+    "And": -0.001542,
+    "every": 0.281958,
+    "figure": 0.539708,
+    "links": 0.913416,
+    "straight": 1.3,
+    "back": 1.828375,
+    "to": 2.150541,
+    "the": 2.2665,
+    "rows": 2.356708,
+    "it": 2.717541,
+    "came": 2.80775,
+    "from": 3.09125
+   }
+  },
+  {
+   "spoken": "It's secure by design: authorized AI that only shows what you're allowed to see, and never changes your data.",
+   "start": 102.317438,
+   "end": 109.479458,
+   "cues": {
+    "It's": -0.005355,
+    "secure": 0.110646,
+    "by": 0.69052,
+    "design": 0.845188,
+    "authorized": 1.863228,
+    "AI": 2.417354,
+    "that": 3.216312,
+    "only": 3.409604,
+    "shows": 3.693104,
+    "what": 4.066812,
+    "you're": 4.182812,
+    "allowed": 4.324562,
+    "to": 4.69827,
+    "see": 4.775562,
+    "and": 5.677646,
+    "never": 5.883812,
+    "changes": 6.154438,
+    "your": 6.528146,
+    "data": 6.618354
+   }
+  },
+  {
+   "spoken": "Stop searching. Start asking.",
+   "start": 109.979458,
+   "end": 112.049667,
+   "cues": {
+    "Stop": 0.00327,
+    "searching": 0.26102,
+    "Start": 1.201728,
+    "asking": 1.446562
+   }
+  },
+  {
+   "spoken": "Wizard. Every source, one answer.",
+   "start": 112.549667,
+   "end": 114.911417,
+   "cues": {
+    "Wizard": 0.000333,
+    "Every": 0.812208,
+    "source": 1.044166,
+    "one": 1.520958,
+    "answer": 1.752916
+   }
+  }
+ ]
+}

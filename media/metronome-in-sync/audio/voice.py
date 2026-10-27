@@ -1,9 +1,9 @@
-"""Voice new narration lines into a line bank that audio/remix.py places, without re-voicing the rest of the film.
+"""Voice narration lines into a line bank that audio/remix.py places, without re-voicing lines in other banks.
 
   python audio/voice.py rev14
 
-Every line in narration.json whose "voice" is the bank's name is synthesized with the film's voice (en-US-AndrewNeural at
--3%, as audio/score.py), trimmed like score.py (a short lead and tail around the speech) and written one after another to
+Every line in narration.json whose "voice" is the bank's name is synthesized with the film's voice
+(en-US-AndrewMultilingualNeural at -3%, as audio/score.py), trimmed like score.py (a short lead and tail around the speech) and written one after another to
 audio/voice-<bank>.flac, with audio/voice-<bank>.json giving each line's [start, end] in that track and every word's offset
 from its line start (the synthesizer's word boundaries). Needs edge-tts and network access to its speech service."""
 import asyncio, json, os, shutil, subprocess, sys
@@ -12,22 +12,28 @@ import edge_tts, numpy as np
 
 FILM = Path(__file__).resolve().parents[1]
 FF = shutil.which('ffmpeg')
-VOICE, RATE, rate, GAP = 'en-US-AndrewNeural', '-3%', 48000, 0.5
+VOICE, RATE, rate, GAP = 'en-US-AndrewMultilingualNeural', '-3%', 48000, 0.5
 bank = sys.argv[1]
 lines = [s for s in json.loads((FILM / 'narration.json').read_text(encoding='utf-8')) if s.get('voice') == bank]
 if not lines:
     raise SystemExit(f'No line in narration.json has "voice": "{bank}".')
 
 
-async def synthesize(text):
-    audio, words = bytearray(), []
-    async for part in edge_tts.Communicate(text, VOICE, rate=RATE, boundary='WordBoundary',
-                                           proxy=os.environ.get('HTTPS_PROXY')).stream():
-        if part['type'] == 'audio':
-            audio += part['data']
-        elif part['type'] == 'WordBoundary':
-            words.append((part['text'], part['offset'] / 1e7))
-    return bytes(audio), words
+async def synthesize(text, tries=4):
+    for attempt in range(tries):  # the service now and then closes a stream without audio; ask again
+        audio, words = bytearray(), []
+        try:
+            async for part in edge_tts.Communicate(text, VOICE, rate=RATE, boundary='WordBoundary',
+                                                   proxy=os.environ.get('HTTPS_PROXY')).stream():
+                if part['type'] == 'audio':
+                    audio += part['data']
+                elif part['type'] == 'WordBoundary':
+                    words.append((part['text'], part['offset'] / 1e7))
+            return bytes(audio), words
+        except edge_tts.exceptions.NoAudioReceived:
+            if attempt == tries - 1:
+                raise
+            await asyncio.sleep(2 * (attempt + 1))
 
 
 track, entries, at = [], [], 0.0

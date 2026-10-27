@@ -1,6 +1,6 @@
 # Film composition
 
-1920×1080, 30 fps, 122 seconds. Light mode. Four scenes, timed by `timeline.json`, word cues in `assets/cues.json`, screen clips and camera moves in `assets/screen.json`, and one deterministic draw function. No narration captions; the hunt's question and the closing statement are shown as titles.
+1920×1080, 30 fps, 121 seconds. Light mode. Four scenes, timed by `timeline.json`, word cues in `assets/cues.json`, screen clips and camera moves in `assets/screen.json`, and one deterministic draw function. No narration captions; the hunt's question and the closing statement are shown as titles.
 
 The drawn scenes use Wizard's look: Inter, warm white surfaces, a cobalt accent (#315bd6), green only for "checked" and security, a soft cobalt and violet background glow. Each source has a consistent colour and letter badge (ASAP blue, GSCM violet, BDP teal, NERP rust, Excel green, Email blue, PowerPoint orange, PDF red); these are generic badges, not product logos. Wizard's own pixel logo, in Samsung Blue (#1428A0), is the hub and the end lockup, scaled by whole numbers so it stays crisp.
 

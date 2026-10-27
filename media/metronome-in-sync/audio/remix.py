@@ -1,8 +1,8 @@
 """Mix the narration from recorded voice lines, without a speech service.
 
 Each line in narration.json is cut from the line bank its "voice" names: audio/voice-<voice>.flac, located by
-audio/voice-<voice>.json (rev12: the revision 12 recordings; a later bank: new lines voiced by audio/voice.py with the same
-voice and settings), and placed at its new start. Word cues move with their line. The music bed and ducking are the same
+audio/voice-<voice>.json (rev14: every line, voiced by audio/voice.py in en-US-AndrewMultilingualNeural at -3%; a later
+bank: new lines voiced the same way), and placed at its start. Word cues move with their line. The music bed and ducking are the same
 as audio/score.py, which re-voices every line instead.
 
   python audio/remix.py            # every line must have its recording

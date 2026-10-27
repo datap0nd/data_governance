@@ -1,7 +1,7 @@
 [
   {
     "start": 0.3,
-    "end": 8.6,
+    "end": 9.0,
     "en": "Our data is spread across portals like ASAP, GSCM, BDP and NERP, each packed with reports.",
     "spoken": "Our data is spread across portals like ASAP, GSCM, BDP and N-ERP, each packed with reports.",
     "cues": {
@@ -11,11 +11,11 @@
       "nerp": "N-ERP",
       "packed": "packed"
     },
-    "voice": "rev12"
+    "voice": "rev14"
   },
   {
-    "start": 9.0,
-    "end": 14.3,
+    "start": 9.3,
+    "end": 15.1,
     "en": "And then there are endless Excel files, emails, presentations and PDFs.",
     "spoken": "And then there are endless Excel files, emails, presentations and PDFs.",
     "cues": {
@@ -24,11 +24,11 @@
       "presentations": "presentations",
       "pdfs": "PDFs"
     },
-    "voice": "rev12"
+    "voice": "rev14"
   },
   {
-    "start": 15.0,
-    "end": 22.3,
+    "start": 15.5,
+    "end": 22.9,
     "en": "Finding one answer means knowing where to look, then opening report after report, and piecing it together by hand.",
     "spoken": "Finding one answer means knowing where to look, then opening report after report, and piecing it together by hand.",
     "cues": {
@@ -36,43 +36,43 @@
       "opening": "opening",
       "piecing": "piecing"
     },
-    "voice": "rev12"
+    "voice": "rev14"
   },
   {
-    "start": 22.9,
-    "end": 27.2,
+    "start": 23.3,
+    "end": 28.0,
     "en": "Meet Wizard. It brings every source together, in one place.",
     "spoken": "Meet Wizard. It brings every source together, in one place.",
     "cues": {
       "meetWizard": "Wizard",
       "together": "together"
     },
-    "voice": "rev12"
+    "voice": "rev14"
   },
   {
-    "start": 27.6,
-    "end": 32.7,
+    "start": 28.4,
+    "end": 33.9,
     "en": "Wizard's local AI has learned our portals, so it knows where every answer lives.",
     "spoken": "Wizard's local AI has learned our portals, so it knows where every answer lives.",
     "cues": {
       "localAI": "local",
       "lives": "lives"
     },
-    "voice": "rev12"
+    "voice": "rev14"
   },
   {
-    "start": 33.5,
-    "end": 35.9,
+    "start": 34.3,
+    "end": 36.5,
     "en": "So you can simply ask, in plain words.",
     "spoken": "So you can simply ask, in plain words.",
     "cues": {
       "ask": "ask"
     },
-    "voice": "rev12"
+    "voice": "rev14"
   },
   {
-    "start": 36.1,
-    "end": 41.6,
+    "start": 36.8,
+    "end": 41.7,
     "en": "In this example, we're going to ask: how did we do this quarter against our targets?",
     "spoken": "In this example, we're going to ask: how did we do this quarter against our targets?",
     "cues": {
@@ -81,8 +81,8 @@
     "voice": "rev14"
   },
   {
-    "start": 41.9,
-    "end": 43.8,
+    "start": 42.2,
+    "end": 45.3,
     "en": "And we'll attach our Q3 targets.",
     "spoken": "And we'll attach our Q3 targets.",
     "cues": {
@@ -91,8 +91,8 @@
     "voice": "rev14"
   },
   {
-    "start": 45.95,
-    "end": 47.35,
+    "start": 46.4,
+    "end": 47.7,
     "en": "First, it makes a plan.",
     "spoken": "First, it makes a plan.",
     "cues": {
@@ -101,8 +101,8 @@
     "voice": "rev14"
   },
   {
-    "start": 47.45,
-    "end": 56.95,
+    "start": 47.87,
+    "end": 57.5,
     "en": "Wizard finds the right reports for you: sell-out from GSCM, market share from ASAP, spend from NERP, and your targets in Excel.",
     "spoken": "Wizard finds the right reports for you: sell-out from GSCM, market share from ASAP, spend from N-ERP, and your targets in Excel.",
     "cues": {
@@ -112,11 +112,11 @@
       "spend": "spend",
       "targets": "targets"
     },
-    "voice": "rev12"
+    "voice": "rev14"
   },
   {
-    "start": 57.0,
-    "end": 61.1,
+    "start": 57.6,
+    "end": 61.5,
     "en": "Then it runs the numbers, draws a chart, and writes up the answer.",
     "spoken": "Then it runs the numbers, draws a chart, and writes up the answer.",
     "cues": {
@@ -127,8 +127,8 @@
     "voice": "rev14"
   },
   {
-    "start": 61.2,
-    "end": 67.4,
+    "start": 61.7,
+    "end": 68.4,
     "en": "Seconds later, you have a complete answer: a clear summary, the key numbers, and charts you can share.",
     "spoken": "Seconds later, you have a complete answer: a clear summary, the key numbers, and charts you can share.",
     "cues": {
@@ -137,11 +137,11 @@
       "numbers": "numbers",
       "charts": "charts"
     },
-    "voice": "rev12"
+    "voice": "rev14"
   },
   {
-    "start": 68.0,
-    "end": 72.0,
+    "start": 68.9,
+    "end": 72.5,
     "en": "Next, let's ask: where is stock building up in the channel?",
     "spoken": "Next, let's ask: where is stock building up in the channel?",
     "cues": {
@@ -150,8 +150,8 @@
     "voice": "rev14"
   },
   {
-    "start": 74.0,
-    "end": 81.0,
+    "start": 74.9,
+    "end": 81.2,
     "en": "Wizard compares what we shipped in with what actually sold, for every model, straight from GSCM.",
     "spoken": "Wizard compares what we shipped in with what actually sold, for every model, straight from GSCM.",
     "cues": {
@@ -160,8 +160,8 @@
     "voice": "rev14"
   },
   {
-    "start": 81.9,
-    "end": 86.5,
+    "start": 82.6,
+    "end": 87.9,
     "en": "It's Egypt's Galaxy A37: its channel stock has more than doubled.",
     "spoken": "It's Egypt's Galaxy A thirty-seven: its channel stock has more than doubled.",
     "cues": {
@@ -170,8 +170,8 @@
     "voice": "rev14"
   },
   {
-    "start": 87.4,
-    "end": 90.7,
+    "start": 88.1,
+    "end": 91.4,
     "en": "To be sure, we scroll down and click Check my data.",
     "spoken": "To be sure, we scroll down and click Check my data.",
     "cues": {
@@ -180,8 +180,8 @@
     "voice": "rev14"
   },
   {
-    "start": 90.9,
-    "end": 95.5,
+    "start": 91.6,
+    "end": 95.6,
     "en": "Wizard goes back to GSCM, and works out every figure again.",
     "spoken": "Wizard goes back to GSCM, and works out every figure again.",
     "cues": {
@@ -190,18 +190,18 @@
     "voice": "rev14"
   },
   {
-    "start": 95.9,
-    "end": 99.7,
+    "start": 96.8,
+    "end": 100.8,
     "en": "Every number is checked against its source report, so you can trust it.",
     "spoken": "Every number is checked against its source report, so you can trust it.",
     "cues": {
       "checked": "checked"
     },
-    "voice": "rev12"
+    "voice": "rev14"
   },
   {
-    "start": 100.3,
-    "end": 103.6,
+    "start": 101.0,
+    "end": 104.7,
     "en": "And every figure links straight back to the rows it came from.",
     "spoken": "And every figure links straight back to the rows it came from.",
     "cues": {
@@ -210,8 +210,8 @@
     "voice": "rev14"
   },
   {
-    "start": 105.3,
-    "end": 113.3,
+    "start": 105.6,
+    "end": 112.9,
     "en": "It's secure by design: authorized AI that only shows what you're allowed to see, and never changes your data.",
     "spoken": "It's secure by design: authorized AI that only shows what you're allowed to see, and never changes your data.",
     "cues": {
@@ -223,7 +223,7 @@
     "voice": "rev14"
   },
   {
-    "start": 113.6,
+    "start": 113.4,
     "end": 115.6,
     "en": "Stop searching. Start asking.",
     "spoken": "Stop searching. Start asking.",
@@ -231,17 +231,17 @@
       "stop": "Stop",
       "start": "Start"
     },
-    "voice": "rev12"
+    "voice": "rev14"
   },
   {
-    "start": 116.1,
-    "end": 118.6,
+    "start": 115.9,
+    "end": 118.4,
     "en": "Wizard. Every source, one answer.",
     "spoken": "Wizard. Every source, one answer.",
     "cues": {
       "endWizard": "Wizard",
       "oneAnswer": "one"
     },
-    "voice": "rev12"
+    "voice": "rev14"
   }
 ]

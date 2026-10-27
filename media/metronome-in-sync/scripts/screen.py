@@ -26,18 +26,22 @@ CHECK_LAPSE = 2  # the check, slow enough to follow it
 # While a stage lock is on, the picture may show page rows from just below the conversation title to just above the
 # composer: the lock moves the conversation, not those fixed bars, so they must stay out of frame.
 LOCK_ROWS = (46, 790)
+# The conversation's scrolling area in the capture (left, top, right, bottom): right of the sidebar, below the conversation
+# title, above the composer. Glides move only this area.
+SCROLL_AREA = (272, 44, 1600, 789)
 
 # Capture references: "<marker>", "tool:<label start>" or "stage_end" / "check_stage_end", with an optional "+-seconds".
 # Film references: a number, "cue:<name>[+-s]", or "src:<capture reference>[@+-s]" (the film time this clip reaches
 # that capture moment). Steps: [capture, speed], [capture, "until", film reference] (reach it then, at whatever speed
 # that takes), or a cut {"cut": capture, "blend": seconds}. A clip may start "after:<clip>-s", overlapping the previous
 # one for the hand-off. Timelapses: [from, to, clock] capture references for each stretch where Wizard works; the
-# pill's clock counts from clock. Locks: [from, to] capture references; each must end at a cut.
+# pill's clock counts from clock. Locks: [from, to] capture references; each must end at a cut. Glides: [from, to,
+# [x, y]] for a stretch where Wizard's page scrolls itself in real time, with the pointer's position while it does.
 # Camera: [film reference, fx, fy, z] keyframes: the page point (fx, fy) at the frame centre at zoom z. Between keyframes
 # the camera follows a monotone cubic, so it eases into and out of holds (repeated values) and passes through the
 # others without stopping; it never overshoots. Keep moves few and slow: the page moves enough on its own.
 CLIPS = [
-    {"id": "ask", "take": "quarter", "start": [33.2, "start+0.4"],
+    {"id": "ask", "take": "quarter", "start": [34.0, "start+0.4"],
      "path": [["type_start", "until", "cue:askQuarter-0.25"],   # the home screen; the pointer goes to the question box
               ["sent+2.6", 1],                                  # type, attach the file, send; Wizard appears and plans
               ["stage_end-0.1", LAPSE],                         # timelapse: the reads, the sums, the chart
@@ -56,20 +60,24 @@ CLIPS = [
               ["stage_end-0.1", STOCK_LAPSE],
               {"cut": "top", "blend": 0.6},
               ["top+2.3", "until", "cue:clickCheck-3.6"],               # read the answer
-              ["check_click+3.0", 1],                                    # scroll down, click Check my data; it starts
+              ["check_click+0.2", 1],                                    # scroll down, click Check my data
+              {"cut": "check_click+0.5"},                                # skip the page's twitches and the check card's bounce
+              ["check_click+3.0", 1],                                    # it starts work
               ["check_stage_end-0.1", CHECK_LAPSE],                      # timelapse
               {"cut": "check_panel", "blend": 0.6},                      # the six MATCH rows
               ["check_panel+2.1", "until", "cue:checked+2.9"],
               ["evidence+0.4", 1],                                       # back to the figure, open its sources
               ["evidence+1.6", "until", "cue:stop-0.31"]],
      "timelapse": [["sent+2.6", "stage_end-0.1", "sent"], ["check_click+3.0", "check_stage_end-0.1", "check_click"]],
-     "lock": [["sent+0.9", "stage_end-0.1"], ["check_click+1.2", "check_stage_end-0.1"]],
+     "lock": [["sent+0.9", "stage_end-0.1"], ["check_click+0.5", "check_stage_end-0.1"]],
+     # The scroll down to Check my data and back up to the figure; the pointer rests where record.cjs left it.
+     "glide": [["top+2.3", "bottom+0.1", [1312, 495]], ["check_panel+2.15", "check_panel+3.75", [1376, 540]]],
      "camera": [["src:start+1.2", 880, 450, 1.35], ["src:type_start@-0.6", 936, 520, 1.5],
                 ["src:sent@+0.3", 936, 522, 1.52],
                 ["src:sent+0.9", 936, 412, 1.62], ["src:stage_end-0.1@-0.3", 936, 410, 1.7],    # the stage, held
                 ["src:top@+1.2", 920, 400, 1.42], ["src:top+2.3", 936, 350, 1.55],             # the answer
                 ["src:check_click@-0.9", 840, 470, 1.3],                                        # the Check my data button
-                ["src:check_click+1.2", 936, 412, 1.66], ["src:check_stage_end-0.1@-0.3", 936, 410, 1.7],
+                ["src:check_click+0.5", 936, 412, 1.66], ["src:check_stage_end-0.1@-0.3", 936, 410, 1.7],
                 ["src:check_panel@+1.2", 920, 500, 1.45], ["src:check_panel+2.1", 920, 496, 1.48],  # six MATCH rows
                 ["src:citation_click@-0.6", 840, 440, 1.3], ["src:evidence", 850, 470, 1.32],  # the Sources drawer
                 ["cue:stop-0.31", 850, 470, 1.36]]},
@@ -183,9 +191,16 @@ def track_stage(times, files, geometry, s0, s1):
     first = max(0, bisect.bisect_right(times, s0) - 1)
     last = max(0, bisect.bisect_right(times, s1) - 1)
     log = [g[0] for g in geometry]
-    top = geometry[max(0, bisect.bisect_right(log, times[first] - 0.15) - 1)][1]
     load = lambda i: np.asarray(Image.open(files[i]).convert('L'), np.float32)[:, 480:1390:2]
-    tops, prev = {first: top}, load(first)
+    prev = load(first)
+    # Seed: of the positions logged just before this frame, the one where the frame shows the stage's top border (a
+    # step from the card's white to the stage's tint, about 30 levels, in an empty strip above its systems).
+    strip = prev[:, 80:140].mean(1)
+    edge = lambda c: strip[int(c) - 1] - strip[int(c)] if 46 <= int(c) < PAGE[1] else 0
+    near = {round(g[1], 2) for g in geometry[bisect.bisect_left(log, times[first] - 0.45):bisect.bisect_right(log, times[first] + 0.05)]}
+    fits = [c for c in near if 15 <= edge(c) <= 60]
+    top = max(fits, key=edge) if fits else geometry[max(0, bisect.bisect_right(log, times[first] - 0.15) - 1)][1]
+    tops = {first: top}
     for i in range(first + 1, last + 1):
         cur = load(i)
         r0, r1 = int(max(top, 50)), int(min(top + 300, PAGE[1] - 60))
@@ -193,13 +208,53 @@ def track_stage(times, files, geometry, s0, s1):
         score = lambda d: np.abs(cur[r0 + d:r1 + d] - ref).mean() if r0 + d >= 0 and r1 + d <= PAGE[1] else np.inf
         top += min(range(-80, 81), key=score)
         tops[i], prev = top, cur
-    # Every tracked position must be one the browser logged around that frame.
+    # Every tracked position must be one the browser logged around that frame, or lie between two it logged one after
+    # the other (a frame caught mid-animation, between two samples of the log).
     for i, value in tops.items():
         near = [g[1] for g in geometry[bisect.bisect_left(log, times[i] - 0.4):bisect.bisect_right(log, times[i] + 0.1)]]
-        if near and min(abs(v - value) for v in near) > 1.5:
+        if near and not any(min(a, b) - 1.5 <= value <= max(a, b) + 1.5 for a, b in zip(near, near[1:] or near)):
             raise SystemExit(f'Stage tracking disagrees with the browser log at capture {times[i]:.2f}: '
                              f'{value:.1f}, where the log has {sorted(set(round(v, 1) for v in near))}.')
     return tops
+
+
+def track_scroll(times, files, s0, s1):
+    """How far the conversation has scrolled up (page px) in every capture frame from s0 to s1, by frame index.
+
+    Wizard's page scrolls itself in real time (to Check my data, back to a figure), but the screencast delivers about 40
+    frames a second against the film's 30, so sampling it gives steps of one or two frames: uneven motion. Each frame's
+    scroll is measured by matching its picture to the one before, so a film frame can be placed exactly in between."""
+    first = max(0, bisect.bisect_right(times, s0) - 1)
+    last = min(len(times) - 1, bisect.bisect_right(times, s1))
+    left, top, right, bottom = SCROLL_AREA
+    load = lambda i: np.asarray(Image.open(files[i]).convert('L'), np.float32)[top:bottom, 462:1410:2]
+    offsets, prev, total = {first: 0}, load(first), 0
+    for i in range(first + 1, last + 1):
+        cur = load(i)
+        r0, r1 = 170, len(cur) - 170
+        d = min(range(-160, 161), key=lambda d: np.abs(cur[r0:r1] - prev[r0 + d:r1 + d]).mean())
+        if np.abs(cur[r0:r1] - prev[r0 + d:r1 + d]).mean() > 6:
+            raise SystemExit(f'Scroll tracking lost the page at capture {times[i]:.2f}.')
+        total += d
+        offsets[i], prev = total, cur
+    return offsets
+
+
+def eased(times, offsets):
+    """The recorder's scroll (record.cjs: an ease-in-out cubic) fitted to the measured offsets, as a function of capture
+    time. Screencast timestamps wander by a frame or so against what each frame shows, so frames are placed on this
+    curve by their content, not by their timestamps."""
+    keys = sorted(offsets)
+    t, y = np.array([times[k] for k in keys]), np.array([offsets[k] for k in keys], float)
+    total = y[-1]
+    curve = lambda x, t0, span: total * np.where((p := np.clip((x - t0) / span, 0, 1)) < .5, 4 * p ** 3, 1 - (2 - 2 * p) ** 3 / 2)
+    moving = t[np.flatnonzero(np.abs(y - y[0]) > 0)]
+    t0, span = min(((a, b) for a in np.arange(moving[0] - .3, moving[0] + .1, .005) for b in np.arange(.8, 2.2, .01)),
+                   key=lambda ab: np.square(curve(t, *ab) - y).sum())
+    residual = np.abs(curve(t, t0, span) - y).max()  # timestamp noise: about 20 ms at up to 1000 px/s
+    if residual > 30:
+        raise SystemExit(f'The scroll at capture {t[0]:.2f} does not follow the recorder\'s easing (off by {residual:.0f} px).')
+    return lambda x: float(curve(x, t0, span))
 
 
 def pchip(keys, t):
@@ -278,6 +333,12 @@ def main():
                 if tops:
                     cache.write_text(json.dumps(tops))
             locks.append((s0, s1, tops, tops.get(frame_at(s0))))
+        glides = []
+        for a, b, keep in clip.get('glide', []):
+            offsets = track_scroll(times, files, src(a), src(b)) if times else {}
+            glides.append((src(a), src(b), offsets, keep, eased(times, offsets) if offsets else None))
+        def gliding(s):
+            return next((g for g in glides if g[0] <= s <= g[1] and g[2]), None)
         def shift(s):
             for s0, s1, tops, top0 in locks:
                 if s0 <= s <= s1 + 1e-6:
@@ -291,7 +352,9 @@ def main():
         # Keyframes become window placements (x, y, z) and those are interpolated, so a move between two framings
         # that each keep the window's edge out of the frame keeps it out all the way.
         places = [(k[0], *placement(*k[1:]), k[3]) for k in keys]
-        camera = [[round(pchip([(c[0], c[d]) for c in places], begin + k / args.fps), 2) for d in (1, 2, 3)] for k in range(n)]
+        # Positions to 1/100 px, zoom to 1/100,000: a coarser zoom steps visibly (1% every second or so) on a slow push-in.
+        camera = [[round(pchip([(c[0], c[d]) for c in places], begin + k / args.fps), r) for d, r in ((1, 2), (2, 2), (3, 5))]
+                  for k in range(n)]
         problems = []
         for k, (x, y, z) in enumerate(camera):
             t = begin + k / args.fps
@@ -319,6 +382,10 @@ def main():
                     print(f'   {path.film(s):7.2f}  {name}  (capture {s:.2f})')
                 except SystemExit:
                     pass
+            for s0, s1, offsets, *_ in glides:
+                steps = [b - a for a, b in zip(*(lambda v: (v, v[1:]))([offsets[k] for k in sorted(offsets)]))]
+                print(f'   glide {path.film(s0):.2f}–{path.film(s1):.2f}: the page scrolls {offsets[max(offsets)]:+d} px '
+                      f'in {len(offsets)} frames, steps {min(steps)} to {max(steps)} px')
             for s0, s1, tops, top0 in locks:
                 values = [tops[i] - top0 for i in tops]
                 print(f'   lock {path.film(s0):.2f}–{path.film(s1):.2f}: stage moves {min(values):+.0f} to {max(values):+.0f} px, '
@@ -329,8 +396,27 @@ def main():
         work = Path(tempfile.mkdtemp(prefix=f'screen-{clip["id"]}-'))
         background = None
         def picture(s):
-            """The capture frame shown at capture time s, moved by its stage lock."""
+            """The capture frame shown at capture time s, moved by its stage lock, or placed by its glide."""
             nonlocal background
+            glide = gliding(s)
+            if glide:
+                # The scroll the page had reached at s, on the recorder's easing; the frame whose content is closest
+                # to it and its neighbour on the other side are moved to that scroll, the nearer one on top, so
+                # between them they fill the area. The pointer stays put.
+                _, _, offsets, (px, py), curve = glide
+                order, at = sorted(offsets), curve(s)
+                j = min(range(len(order)), key=lambda k: abs(offsets[order[k]] - at))
+                beyond = j + 1 if (offsets[order[-1]] - offsets[order[0]]) * (at - offsets[order[j]]) > 0 else j - 1
+                near, far = order[j], order[max(0, min(len(order) - 1, beyond))]
+                image = Image.open(files[near]).convert('RGB')
+                out, (left, top, right, bottom) = image.copy(), SCROLL_AREA
+                for k in (far, near):
+                    d = round(at - offsets[k])
+                    area = Image.open(files[k]).convert('RGB').crop((left, top, right, bottom))
+                    out.paste(area.crop((0, max(0, d), right - left, bottom - top + min(0, d))), (left, top + max(0, -d)))
+                pointer = (px - 6, py - 6, px + 32, py + 40)
+                out.paste(image.crop(pointer), pointer[:2])
+                return out
             i, d = frame_at(s), shift(s)
             image = Image.open(files[i]).convert('RGB')
             if not d:
@@ -347,7 +433,7 @@ def main():
             if shot['blend'] and i > 0 and t < first + shot['blend'] / 2:
                 a = (t - (first - shot['blend'] / 2)) / shot['blend']
                 Image.blend(picture(path.source(t, i - 1)), picture(path.source(t, i)), a * a * (3 - 2 * a)).save(link, quality=95)
-            elif shift(path.source(t, i)):
+            elif shift(path.source(t, i)) or gliding(path.source(t, i)):
                 picture(path.source(t, i)).save(link, quality=95)
             else:
                 link.symlink_to(files[frame_at(path.source(t, i))])

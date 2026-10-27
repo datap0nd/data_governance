@@ -4,8 +4,8 @@ import subprocess
 
 # Happy Beats & Business Moves Vol. 11 runs 87.6 s at about 114 bpm (a bar is 2.11 s). A longer film repeats eight bars:
 # at each splice (a film time, under narration where the bed is ducked) the music crossfades back 16.865 s to the
-# matching beat. Every splice lands where the track is most like itself eight bars earlier, track 79 s, each time.
-SPLICES, SPLICE_BACK, CROSSFADE = (79.0, 95.865, 112.73), 16.865, 1.0
+# matching beat. Every splice lands where the track is most like itself eight bars earlier, track 45 s, each time.
+SPLICES, SPLICE_BACK, CROSSFADE = (45.0, 61.865, 78.73), 16.865, 1.0
 
 
 def seconds(ff, path):
