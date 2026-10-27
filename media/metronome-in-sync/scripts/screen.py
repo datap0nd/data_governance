@@ -18,11 +18,13 @@ FILM = Path(__file__).resolve().parents[1]
 PAGE = (1600, 900)  # the capture viewport in CSS pixels; camera keyframes use these coordinates
 OUT_SIZE = (3200, 1800)  # the capture's device pixels (2x), kept so camera push-ins stay sharp
 LAPSE = 2.25  # timelapse speed while Wizard reads the systems: their calls, 4.3 s apart, land on the narrated names
+CHECK_LAPSE = 2  # the check, slow enough to follow its stage and its six MATCH rows arriving
 
 # Capture references: "<marker>" or "tool:<label start>", with an optional "+-seconds". Film references: a number,
 # "cue:<name>[+-s]", or "src:<capture reference>[@+-s]" (the film time this clip reaches that capture moment).
 # Steps: [capture, speed], [capture, "hold", film seconds], [capture, "until", film reference], or a cut
 # {"cut": capture, "blend": seconds}. A clip may start "after:<clip>-s", overlapping the previous one for the hand-off.
+# Timelapses: [from, to, clock] capture references for each stretch where Wizard works; the pill's clock counts from clock.
 CLIPS = [
     {"id": "ask", "take": "quarter", "start": [33.2, "start+2.3"],
      "path": [["sent", 1],                                  # attach the file, type, send: real time
@@ -31,7 +33,7 @@ CLIPS = [
               ["done", 4.5],                                # calculating, charting, writing
               ["done+2.1", 1],                              # the answer lands: the wizard hops
               {"cut": "settled-0.2", "blend": 0.4}, ["top", 1], ["top+0.3", "until", "cue:charts+2.0"]],
-     "timelapse": ["sent+3.2", "done"], "clock": "sent",
+     "timelapse": [["sent+3.2", "done", "sent"]],
      # The camera moves at its own easy pace; while the timelapse runs it holds the stage and only drifts closer. At
      # zoom z the frame's top edge stays just below the conversation title (page y 45): fy = 45 + 540 / z.
      "camera": [["src:start+2.3", 800, 450, 1], ["src:attach_click@-0.9", 800, 450, 1],
@@ -44,23 +46,20 @@ CLIPS = [
                 ["cue:charts+1.7", 800, 450, 1]]},
     {"id": "stock", "take": "stock", "start": ["after:ask-0.8", "start+2.3"],
      "path": [["sent", 1], ["sent+3.1", 1], ["done", 6], ["done+1.9", 1],
-              {"cut": "settled-0.1", "blend": 0.4}, ["top", 1], ["top+0.2", "hold", 2.4]],
-     "timelapse": ["sent+3.1", "done"], "clock": "sent",
+              {"cut": "settled-0.1", "blend": 0.4}, ["top", 1],
+              ["check_click+0.1", 1],                       # read the answer, scroll down, click Check my data: real time
+              ["check_click+3.1", 1],                       # the check appears and starts work: real time
+              ["check_done", CHECK_LAPSE],                  # timelapse
+              ["check_done+1.6", 1],                        # six MATCH rows: real time
+              {"cut": "citation_click-0.3", "blend": 0.35}, ["evidence+1.2", 1],
+              ["evidence+1.8", "until", "cue:stop-0.31"]],
+     "timelapse": [["sent+3.1", "done", "sent"], ["check_click+3.1", "check_done", "check_click"]],
      "camera": [["src:start+2.3", 800, 450, 1], ["src:type_start@-0.2", 936, 800, 1.55], ["src:sent@+0.2", 936, 800, 1.55],
                 ["src:sent@+1.4", 936, 417, 1.45], ["src:done@-0.6", 936, 393, 1.55], ["src:done@+0.3", 936, 430, 1.12],
                 ["src:done+1.9", 936, 450, 1.08], ["src:top", 936, 380, 1.4], ["src:top@+1.2", 936, 400, 1.46],
-                ["src:top@+2.3", 800, 450, 1.05]]},
-    {"id": "check", "take": "quarter", "start": ["after:stock-0.8", "bottom+0.3"],
-     "path": [["check_click+0.1", 1],                       # the click on Check my data: real time
-              ["check_click+3.1", 1],                       # the check appears and starts work: real time
-              ["check_done", 5],                            # timelapse
-              ["check_done+0.8", 1],                        # six MATCH rows: real time
-              {"cut": "citation_click-0.3", "blend": 0.35}, ["evidence+1.2", 1],
-              ["evidence+1.8", "until", "cue:stop-0.31"]],
-     "timelapse": ["check_click+3.1", "check_done"], "clock": "check_click",
-     "camera": [["src:bottom+0.3", 700, 640, 1.35], ["src:check_click@-0.3", 700, 690, 1.42],
-                ["src:check_click@+1.2", 936, 417, 1.45], ["src:check_done@-0.4", 936, 400, 1.52],
-                ["src:check_done@+0.5", 936, 560, 1.4], ["src:citation_click-0.3@-0.1", 936, 560, 1.4],
+                ["src:top+2.3", 936, 400, 1.46], ["src:bottom", 700, 640, 1.35], ["src:check_click@-0.3", 700, 690, 1.42],
+                ["src:check_click@+1.2", 936, 417, 1.45], ["src:tool:Checked@+0.8", 936, 400, 1.52],
+                ["src:check_done@-1.0", 936, 560, 1.45], ["src:check_done+1.6@-0.1", 936, 580, 1.5],
                 ["src:citation_click-0.3@+0.2", 1180, 420, 1.15], ["src:evidence", 1240, 560, 1.3],
                 ["src:evidence+1.2", 1240, 600, 1.38], ["cue:stop-0.31", 1240, 600, 1.45]]},
 ]
@@ -136,10 +135,14 @@ class Path_:
 
     def film(self, s):
         """The film time this clip first shows capture moment s."""
+        return self.locate(s)[0]
+
+    def locate(self, s):
+        """(film time, shot) where this clip first shows capture moment s."""
         for shot in self.shots:
             for f0, f1, s0, s1 in shot['segments']:
                 if s0 <= s <= s1:
-                    return f0 + (f1 - f0) * (s - s0) / (s1 - s0)
+                    return f0 + (f1 - f0) * (s - s0) / (s1 - s0), shot
         raise SystemExit(f'Capture time {s:.2f} is not shown in this clip.')
 
 
@@ -168,6 +171,8 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     manifest_path = FILM / 'assets/screen.json'
     manifest = {'page': PAGE, 'clips': {}}
+    if args.only and manifest_path.exists():  # re-cut one clip; keep the others as they are
+        manifest['clips'] = json.loads(manifest_path.read_text())['clips']
     ends = {}
     for clip in CLIPS:
         events, tools, times, files = load_take(takes, clip['take'])
@@ -211,14 +216,15 @@ def main():
             print(f'{clip["id"]}: {n} frames, {target.stat().st_size / 1e6:.1f} MB, film {path.start:.2f}–{path.end:.2f}')
         shutil.rmtree(work)
         src = lambda ref: source_time(ref, events, tools)
-        lapse_from, lapse_to = (src(r) for r in clip['timelapse'])
+
+        def lapse(begin, end, clock):
+            (start, shot), finish = path.locate(src(begin)), path.film(src(end))
+            # Film/capture breakpoints of its shot: the pill's clock and speed read them.
+            anchors = [[round(f, 3), round(s, 3)] for f0, f1, s0, s1 in shot['segments'] for f, s in ((f0, s0), (f1, s1))]
+            return {'from': round(start, 3), 'to': round(finish, 3), 'clockFrom': round(src(clock), 3), 'anchors': anchors}
         manifest['clips'][clip['id']] = {
             'file': f'assets/screen/{clip["id"]}.mp4', 'start': round(path.start, 3), 'end': round(path.end, 3),
-            'take': clip['take'],
-            # Film/capture breakpoints of the first shot (the timelapse clock reads them) and every segment's speed.
-            'anchors': [[round(f, 3), round(s, 3)] for f0, f1, s0, s1 in path.shots[0]['segments'] for f, s in ((f0, s0), (f1, s1))],
-            'timelapse': {'from': round(path.film(lapse_from), 3), 'to': round(path.film(lapse_to), 3),
-                          'clockFrom': round(src(clip['clock']), 3)},
+            'take': clip['take'], 'timelapses': [lapse(*r) for r in clip['timelapse']],
             'camera': [[round(film_ref(c[0], cues, path, events, tools), 3), *c[1:]] for c in clip['camera']],
         }
     if not args.report:

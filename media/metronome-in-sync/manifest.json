@@ -1,7 +1,7 @@
 {
   "title": "Wizard — Every source, one answer",
   "status": "Wizard film revision 13 (real Wizard app) for review",
-  "durationSeconds": 102,
+  "durationSeconds": 109,
   "width": 1920,
   "height": 1080,
   "framesPerSecond": 30,
@@ -12,12 +12,12 @@
       "sha256": "f9893374423830977216b6484719d0e97b3d2f659e94e4ff48a74ba5f49f6274"
     },
     "audio/score.wav": {
-      "bytes": 29376102,
-      "sha256": "db0190a8e7c31fbb2b684de0e81d0002ec44ab9c2dc6d4b6c410090c22d05eb5"
+      "bytes": 31392102,
+      "sha256": "cb6fa962189ae00474976347b64886b438f772da962f07cb48e7625150bb90d2"
     },
     "audio/narration.flac": {
-      "bytes": 1768889,
-      "sha256": "e8edb0d7031e6be4625b640bd6fd00141464045af11b5f70581fbf40cb656d40"
+      "bytes": 1769998,
+      "sha256": "0c8954ee0a46475b5eaf284d890fe4e932c2e7120ca917e78dc08e115df7ade4"
     },
     "audio/background.mp3": {
       "bytes": 2103552,
@@ -32,12 +32,8 @@
       "sha256": "7ff0ee7fbe6fe01e4785d2e4e4e68c8469ee910c4236e5f9fe626b96767fbad0"
     },
     "assets/screen/stock.mp4": {
-      "bytes": 5324313,
-      "sha256": "a885babcfc3c4fc9712b151476062e1825307d5c76dbd4ecf550ca2cfe4481f9"
-    },
-    "assets/screen/check.mp4": {
-      "bytes": 5235661,
-      "sha256": "e0417fa6f2cd2f52cc577034c67031bd29547636277fb6bb65933d8d89e935a4"
+      "bytes": 12716824,
+      "sha256": "50e779f54f4de62de34e474d1bc9e459f2306deadf5adffe62ace3fcbddc6a88"
     }
   },
   "baseRenderHyperFramesVersion": "0.8.142",

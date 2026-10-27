@@ -114,15 +114,25 @@ const INIT = `(() => {
     await page.getByTestId('evidence-drawer').waitFor(); await moveTo(W * .3, H * .7, 700); mark('evidence');
     await sleep(3200);
   } else if (take === 'stock') {
-    // A fresh analysis, the first one listed in the sidebar.
+    // A fresh analysis, the first one listed in the sidebar; then its check and sources, in the same window.
     await sleep(800);
     await ask(STOCK, false);
     await waitRun(0); mark('done');
     await sleep(3200); mark('settled');
-    await scrollTo(await offsetOf('[data-testid=run-card]', 24), 1400); mark('top');
+    const card = '[data-testid=run-card]';
+    await scrollTo(await offsetOf(card, 24), 1400); mark('top');
     await sleep(2400);
-    await scrollTo(await offsetOf('[data-testid=visual]', 60), 1400); mark('chart');
-    await sleep(2400);
+    await scrollTo(1e6, 1600); mark('bottom'); await sleep(900);
+    const c = await clickAt('[data-testid=check-my-data]', 800); mark('check_click', c);
+    await moveTo(W * .86, H * .6, 900);
+    await waitRun(1); mark('check_done');
+    await sleep(2600); mark('check_settled');
+    await scrollTo(await offsetOf('[data-testid=check-panel]', 140), 1400); mark('check_panel');
+    await sleep(2200);
+    await scrollTo(await offsetOf(`${card} [data-testid=citation]`, 300), 1400); await sleep(500);
+    const e = await clickAt(`${card} [data-testid=citation]`, 800); mark('citation_click', e);
+    await page.getByTestId('evidence-drawer').waitFor(); await moveTo(W * .3, H * .7, 700); mark('evidence');
+    await sleep(3200);
   }
   mark('end');
   await cdp.send('Page.stopScreencast'); await writing;

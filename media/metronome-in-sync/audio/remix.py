@@ -1,8 +1,9 @@
-"""Mix the narration from the revision 12 voice recordings, without a speech service.
+"""Mix the narration from recorded voice lines, without a speech service.
 
-Each line in narration.json with "voice": "rev12" is cut from audio/voice-rev12.flac (the same sentence, same voice
-and pronunciation, located by audio/voice-rev12.json) and placed at its new start. Word cues move with their line.
-The music bed and ducking are the same as audio/score.py, which remains the way to voice new or changed sentences."""
+Each line in narration.json is cut from the line bank its "voice" names: audio/voice-<voice>.flac, located by
+audio/voice-<voice>.json (rev12: the revision 12 recordings; a later bank: new lines voiced by audio/voice.py with the same
+voice and settings), and placed at its new start. Word cues move with their line. The music bed and ducking are the same
+as audio/score.py, which re-voices every line instead."""
 import json, math, shutil, subprocess, wave
 from pathlib import Path
 import numpy as np
@@ -13,16 +14,19 @@ FF = shutil.which('ffmpeg')
 rate = 48000
 segments = json.loads((FILM / 'narration.json').read_text(encoding='utf-8'))
 duration = math.ceil(segments[-1]['end'] + 2.5)  # as scripts/build.mjs computes the film's length
-bank = json.loads((FILM / 'audio/voice-rev12.json').read_text(encoding='utf-8'))['lines']
-raw = subprocess.check_output([FF, '-v', 'error', '-i', str(FILM / 'audio/voice-rev12.flac'), '-f', 'f32le', '-ar', str(rate), '-ac', '2', '-'])
-track = np.frombuffer(raw, dtype=np.float32).reshape(-1, 2)
+banks = {}
+for name in sorted({s.get('voice') for s in segments if s.get('voice')}):
+    raw = subprocess.check_output([FF, '-v', 'error', '-i', str(FILM / f'audio/voice-{name}.flac'), '-f', 'f32le', '-ar', str(rate), '-ac', '2', '-'])
+    banks[name] = (json.loads((FILM / f'audio/voice-{name}.json').read_text(encoding='utf-8'))['lines'],
+                   np.frombuffer(raw, dtype=np.float32).reshape(-1, 2))
 
 mix = np.zeros((duration * rate, 2), np.float32)
 timing, cues, provenance, problems = [], {}, [], []
 for i, s in enumerate(segments):
+    bank, track = banks.get(s.get('voice'), ([], None))
     line = next((b for b in bank if b['spoken'] == s.get('spoken', s['en'])), None)
-    if s.get('voice') != 'rev12' or line is None:
-        problems.append(f'Segment {i + 1} has no revision 12 recording; voice it with audio/score.py.')
+    if line is None:
+        problems.append(f'Segment {i + 1} has no recording in voice bank {s.get("voice")!r}; voice it with audio/voice.py.')
         continue
     clip = track[round(line['start'] * rate):round(line['end'] * rate)]
     length = len(clip) / rate
@@ -32,10 +36,10 @@ for i, s in enumerate(segments):
     at = round(s['start'] * rate)
     mix[at:at + len(clip)] += clip
     timing.append({'segment': i + 1, 'start': s['start'], 'end': round(s['start'] + length, 6), 'speed': 1,
-                   'naturalSeconds': round(length, 3), 'voice': 'rev12', 'sourceStart': line['start']})
+                   'naturalSeconds': round(length, 3), 'voice': s['voice'], 'sourceStart': line['start']})
     for key, word in s.get('cues', {}).items():
         if word not in line['cues']:
-            problems.append(f'Segment {i + 1}: cue word {word!r} has no revision 12 boundary.')
+            problems.append(f'Segment {i + 1}: cue word {word!r} has no boundary in its voice bank.')
             continue
         cues[key] = round(s['start'] + line['cues'][word], 6)
         provenance.append({'key': key, 'word': word, 'segment': i + 1, 'offset': line['cues'][word], 'filmTime': cues[key]})

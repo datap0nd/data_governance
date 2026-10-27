@@ -1,0 +1,279 @@
+{
+ "id": "film-stock-check",
+ "kind": "check",
+ "data_mode": "SYNTHETIC",
+ "match": [
+  "stock+building",
+  "stock+piling",
+  "channel+stock"
+ ],
+ "steps": [
+  {
+   "say": "Re-checking the figures in the answer against the GSCM reports they came from."
+  },
+  {
+   "tool": "wizard_check_my_data",
+   "as": "check",
+   "args": {
+    "claims": [
+     {
+      "label": "Egypt Galaxy A37 channel stock, end of June",
+      "stated_value": 24092,
+      "evidence_id": "{E:gscm-sell-in-sell-out-monthly}",
+      "measure": "channel_stock_units",
+      "where": [
+       {
+        "field": "market",
+        "values": [
+         "EG"
+        ]
+       },
+       {
+        "field": "model",
+        "values": [
+         "Galaxy A37"
+        ]
+       },
+       {
+        "field": "month",
+        "values": [
+         "2026-06"
+        ]
+       }
+      ],
+      "period": "2026-06"
+     },
+     {
+      "label": "Egypt Galaxy A37 channel stock, end of September",
+      "stated_value": 58675,
+      "evidence_id": "{E:gscm-sell-in-sell-out-monthly}",
+      "measure": "channel_stock_units",
+      "where": [
+       {
+        "field": "market",
+        "values": [
+         "EG"
+        ]
+       },
+       {
+        "field": "model",
+        "values": [
+         "Galaxy A37"
+        ]
+       },
+       {
+        "field": "month",
+        "values": [
+         "2026-09"
+        ]
+       }
+      ],
+      "period": "2026-09"
+     },
+     {
+      "label": "Egypt Galaxy A37 stock added in Q3 (units)",
+      "stated_value": 34583,
+      "expression": "sep - jun",
+      "inputs": [
+       {
+        "name": "sep",
+        "evidence_id": "{E:gscm-sell-in-sell-out-monthly}",
+        "measure": "channel_stock_units",
+        "where": [
+         {
+          "field": "market",
+          "values": [
+           "EG"
+          ]
+         },
+         {
+          "field": "model",
+          "values": [
+           "Galaxy A37"
+          ]
+         },
+         {
+          "field": "month",
+          "values": [
+           "2026-09"
+          ]
+         }
+        ],
+        "period": "2026-09"
+       },
+       {
+        "name": "jun",
+        "evidence_id": "{E:gscm-sell-in-sell-out-monthly}",
+        "measure": "channel_stock_units",
+        "where": [
+         {
+          "field": "market",
+          "values": [
+           "EG"
+          ]
+         },
+         {
+          "field": "model",
+          "values": [
+           "Galaxy A37"
+          ]
+         },
+         {
+          "field": "month",
+          "values": [
+           "2026-06"
+          ]
+         }
+        ],
+        "period": "2026-06"
+       }
+      ]
+     },
+     {
+      "label": "Saudi Arabia Galaxy A57 stock growth (%)",
+      "stated_value": 45,
+      "expression": "(sep - jun) / jun * 100",
+      "inputs": [
+       {
+        "name": "sep",
+        "evidence_id": "{E:gscm-sell-in-sell-out-monthly}",
+        "measure": "channel_stock_units",
+        "where": [
+         {
+          "field": "market",
+          "values": [
+           "SA"
+          ]
+         },
+         {
+          "field": "model",
+          "values": [
+           "Galaxy A57"
+          ]
+         },
+         {
+          "field": "month",
+          "values": [
+           "2026-09"
+          ]
+         }
+        ],
+        "period": "2026-09"
+       },
+       {
+        "name": "jun",
+        "evidence_id": "{E:gscm-sell-in-sell-out-monthly}",
+        "measure": "channel_stock_units",
+        "where": [
+         {
+          "field": "market",
+          "values": [
+           "SA"
+          ]
+         },
+         {
+          "field": "model",
+          "values": [
+           "Galaxy A57"
+          ]
+         },
+         {
+          "field": "month",
+          "values": [
+           "2026-06"
+          ]
+         }
+        ],
+        "period": "2026-06"
+       }
+      ]
+     },
+     {
+      "label": "Morocco Galaxy A17 stock growth (%)",
+      "stated_value": 94,
+      "expression": "(sep - jun) / jun * 100",
+      "inputs": [
+       {
+        "name": "sep",
+        "evidence_id": "{E:gscm-sell-in-sell-out-monthly}",
+        "measure": "channel_stock_units",
+        "where": [
+         {
+          "field": "market",
+          "values": [
+           "MA"
+          ]
+         },
+         {
+          "field": "model",
+          "values": [
+           "Galaxy A17"
+          ]
+         },
+         {
+          "field": "month",
+          "values": [
+           "2026-09"
+          ]
+         }
+        ],
+        "period": "2026-09"
+       },
+       {
+        "name": "jun",
+        "evidence_id": "{E:gscm-sell-in-sell-out-monthly}",
+        "measure": "channel_stock_units",
+        "where": [
+         {
+          "field": "market",
+          "values": [
+           "MA"
+          ]
+         },
+         {
+          "field": "model",
+          "values": [
+           "Galaxy A17"
+          ]
+         },
+         {
+          "field": "month",
+          "values": [
+           "2026-06"
+          ]
+         }
+        ],
+        "period": "2026-06"
+       }
+      ]
+     },
+     {
+      "label": "Egypt Q3 sell-through rate (%)",
+      "stated_value": 67.6,
+      "evidence_id": "{E:gscm-sell-through-quarterly}",
+      "measure": "sell_through_rate_pct",
+      "where": [
+       {
+        "field": "market",
+        "values": [
+         "EG"
+        ]
+       },
+       {
+        "field": "fiscal_quarter",
+        "values": [
+         "2026-Q3"
+        ]
+       }
+      ],
+      "aggregate": "value",
+      "period": "2026-Q3"
+     }
+    ]
+   }
+  },
+  {
+   "answer": "**All six figures I re-checked match the GSCM reports they came from.** The answer stands: Egypt's Galaxy A37 channel stock more than doubled in Q3, from 24,092 to 58,675 units.\n\n- Egypt's Galaxy A37 stock at the end of June and September, and the 34,583 units it added, recompute from the GSCM rows.\n- The Galaxy A57's 45% rise in Saudi Arabia, the Galaxy A17's 94% rise in Morocco and Egypt's 67.6% sell-through rate match their source rows."
+  }
+ ]
+}

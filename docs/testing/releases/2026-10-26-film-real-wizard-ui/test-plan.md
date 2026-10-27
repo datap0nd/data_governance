@@ -6,18 +6,22 @@ The owner asked (26 October 2026) to change the film's logo to the Wizard logo a
 
 Owner feedback on the first cut (26 October 2026): "The timelapse parts of the video are ONLY for when wizard is working… I want the timelapse to start (and to be clear that its ongoing) only a couple seconds AFTER wizard starts working and appearing on the screen." The first cut also sped up the typing, clicks, scrolling and landing. The second cut plays everything in real time except Wizard's working stretch, which starts about three seconds after Wizard appears, ends when the answer is done and is marked for its whole length. The film grows to 1:42, so the music bed is extended by a bar-aligned splice.
 
+Owner feedback on the second cut (27 October 2026): the "every number is checked against its source report" part "is sped up as well and should be a bit slower. Perhaps reusing the same window of Wizard?", and the security part "could be a bit better. The voice over isn't explaining it properly." The third cut runs Check my data on the second answer, in the window already on screen (a new take of question 2 with its check), plays the check at 2× instead of 5×, and puts the "checked" line over the MATCH rows and the Sources drawer in real time. The owner chose a new security line, "It's secure by design: authorized AI that only shows what you're allowed to see, and never changes your data.", with each card line revealed on its words; it needs the speech service, which this session still cannot reach. The film grows to 1:49, so the bed takes a second splice.
+
 | Case | Procedure | Expected |
 | --- | --- | --- |
 | RU-01 | Run the three capture transcripts through Wizard's API; compare each answer's figures with the tool results; run Check my data. | Every figure in the answer text is in a tool result it cites; Check my data reports 6 of 6 MATCH and marks the answer CHECKED. |
 | RU-02 | Record both takes; review frames across each take. | The real app (sidebar, composer, systems stage, answer, chart, Sources drawer). Replay and synthetic development labels and demo suggestions hidden; nothing else altered. Synthetic sign-in "Executive". |
 | RU-03 | Remix the narration from `audio/voice-rev12.flac`; check cut points and cues. | 12 lines, each the identical revision 12 recording at speed 1, cut on silence; cue times move with their line; no overlap. |
 | RU-11 | Map every clip with `scripts/screen.py --report` and review encoded frames across each run. | Attaching, typing, clicks, scrolling, the run's first seconds and each answer landing play at 1×. Speed changes only inside Wizard's working stretch, starting about 3 s after Wizard appears and ending at done; the pill (speed and real clock) and the blue edge are up exactly then. |
-| RU-12 | Measure the music bed around the splice and the score's length. | No level jump at the splice; the score lasts the whole film. |
+| RU-12 | Measure the music bed around each splice and the score's length. | No level jump at either splice; the score lasts the whole film. |
 | RU-04 | Build the screen clips; review encoded frames at each cue. | GSCM, ASAP, NERP and the attached file light up within half a second of "sell-out", "share", "spend" and "targets"; the answer, table and chart are framed on "summary", "numbers" and "charts"; the MATCH rows on "checked"; the security card on "safe". No window edge at zoom; no clipped stage. |
 | RU-05 | Logo review. | Hub and end lockup are Wizard's own `brand/logo` SVGs, unchanged, at whole-number scales; the old "W" mark is gone. |
-| RU-06 | `hyperframes check` at 31 times. | No errors. |
-| RU-07 | Render; probe and decode the MP4; measure loudness. | 102 s, 3060 frames, H.264 1080p30, stereo AAC 48 kHz; clean decode; about −16 LUFS. |
+| RU-06 | `hyperframes check` across the film (35 times). | No errors. |
+| RU-07 | Render; probe and decode the MP4; measure loudness. | 109 s, 3270 frames, H.264 1080p30, stereo AAC 48 kHz; clean decode; about −16 LUFS. |
 | RU-08 | `tests/test_film_package.py` plus syntax checks for remix.py, screen.py, build.mjs, runtime.js, wizard.js, capture scripts. | Pass; manifest hashes match; review pages resolve local media. |
+| RU-13 | Run question 2 and its Check my data through the API; record the stock take; map it with `scripts/screen.py --report` and review frames from the end of the answer to the security card. | 6 of 6 MATCH, CHECKED. One window from question 2 to the security card: the scroll, the click on Check my data and the check's first seconds at 1×; the check at 2× with the pill and edge; the MATCH rows and Sources drawer at 1× under "Every number is checked against its source report". |
+| RU-14 | Voice the chosen security line with `audio/voice.py` and remix; review the card at each cue. | The same voice; "Secure by design" opens on "secure", its three lines on "authorized", "shows" and "never". |
 | RU-09 | Owner review of the cut. | Owner approves or asks for changes; no merge before that. |
 | RU-10 | Final-head CI. | Merge ready passes on the reviewed head. |
 

@@ -88,7 +88,29 @@ check = {
     {"answer": "**All six figures I re-checked match the GSCM, ASAP and NERP reports they came from.** The answer stands: sell-out up 10.3% to 1.02 million units, led by Saudi Arabia, with the UAE the one market below target.\n\n- Total Q3 sell-out of 1,020,000 units and growth of 10.3% recompute from the GSCM rows.\n- Saudi Arabia's 452,000 units and $4.2M of spend, the UAE's 13.9% growth and Egypt's 1.6-point share gain match their source rows.\n\nThe targets come from your attached file, which no company system can confirm."}
   ]}
 
-for t in (quarter, stock, check):
+ST, TH = "{E:gscm-sell-in-sell-out-monthly}", "{E:gscm-sell-through-quarterly}"  # the latest is the month-end stock read
+stock_rows = lambda market, model, month: {"evidence_id": ST, "measure": "channel_stock_units",
+                                            "where": where(market=market, model=model, month=month), "period": month}
+stock_check = {
+  "id": "film-stock-check", "kind": "check", "data_mode": "SYNTHETIC",
+  "match": ["stock+building", "stock+piling", "channel+stock"],
+  "steps": [
+    {"say": "Re-checking the figures in the answer against the GSCM reports they came from."},
+    {"tool": "wizard_check_my_data", "as": "check", "args": {"claims": [
+      {"label": "Egypt Galaxy A37 channel stock, end of June", "stated_value": 24092, **stock_rows("EG", "Galaxy A37", "2026-06")},
+      {"label": "Egypt Galaxy A37 channel stock, end of September", "stated_value": 58675, **stock_rows("EG", "Galaxy A37", "2026-09")},
+      {"label": "Egypt Galaxy A37 stock added in Q3 (units)", "stated_value": 34583, "expression": "sep - jun", "inputs": [
+        {"name": "sep", **stock_rows("EG", "Galaxy A37", "2026-09")}, {"name": "jun", **stock_rows("EG", "Galaxy A37", "2026-06")}]},
+      {"label": "Saudi Arabia Galaxy A57 stock growth (%)", "stated_value": 45, "expression": "(sep - jun) / jun * 100", "inputs": [
+        {"name": "sep", **stock_rows("SA", "Galaxy A57", "2026-09")}, {"name": "jun", **stock_rows("SA", "Galaxy A57", "2026-06")}]},
+      {"label": "Morocco Galaxy A17 stock growth (%)", "stated_value": 94, "expression": "(sep - jun) / jun * 100", "inputs": [
+        {"name": "sep", **stock_rows("MA", "Galaxy A17", "2026-09")}, {"name": "jun", **stock_rows("MA", "Galaxy A17", "2026-06")}]},
+      {"label": "Egypt Q3 sell-through rate (%)", "stated_value": 67.6, "evidence_id": TH, "measure": "sell_through_rate_pct",
+       "where": where(market="EG", fiscal_quarter="2026-Q3"), "aggregate": "value", "period": "2026-Q3"}]}},
+    {"answer": "**All six figures I re-checked match the GSCM reports they came from.** The answer stands: Egypt's Galaxy A37 channel stock more than doubled in Q3, from 24,092 to 58,675 units.\n\n- Egypt's Galaxy A37 stock at the end of June and September, and the 34,583 units it added, recompute from the GSCM rows.\n- The Galaxy A57's 45% rise in Saudi Arabia, the Galaxy A17's 94% rise in Morocco and Egypt's 67.6% sell-through rate match their source rows."}
+  ]}
+
+for t in (quarter, stock, check, stock_check):
     (out / f"{t['id']}.json").write_text(json.dumps(t, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
 print("written", out)
 

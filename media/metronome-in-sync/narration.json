@@ -98,8 +98,8 @@
     "voice": "rev12"
   },
   {
-    "start": 83.92,
-    "end": 87.82,
+    "start": 89.96,
+    "end": 93.7,
     "en": "Every number is checked against its source report, so you can trust it.",
     "spoken": "Every number is checked against its source report, so you can trust it.",
     "cues": {
@@ -108,8 +108,8 @@
     "voice": "rev12"
   },
   {
-    "start": 88.2,
-    "end": 93.2,
+    "start": 94.7,
+    "end": 99.6,
     "en": "And your data stays safe, with authorized AI that only shows what you're allowed to see.",
     "spoken": "And your data stays safe, with authorized AI that only shows what you're allowed to see.",
     "cues": {
@@ -120,8 +120,8 @@
     "voice": "rev12"
   },
   {
-    "start": 94.0,
-    "end": 96.1,
+    "start": 101.3,
+    "end": 103.3,
     "en": "Stop searching. Start asking.",
     "spoken": "Stop searching. Start asking.",
     "cues": {
@@ -131,8 +131,8 @@
     "voice": "rev12"
   },
   {
-    "start": 96.5,
-    "end": 99.1,
+    "start": 103.8,
+    "end": 106.2,
     "en": "Wizard. Every source, one answer.",
     "spoken": "Wizard. Every source, one answer.",
     "cues": {

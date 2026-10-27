@@ -26,14 +26,14 @@
     "summary": 58.154374,
     "numbers": 59.198208,
     "charts": 60.035833,
-    "checked": 84.602145,
-    "safe": 89.011979,
-    "authorized": 89.875354,
-    "allowed": 92.027437,
-    "stop": 94.002354,
-    "start": 95.136396,
-    "endWizard": 96.496812,
-    "oneAnswer": 98.09477
+    "checked": 90.642145,
+    "safe": 95.511979,
+    "authorized": 96.375354,
+    "allowed": 98.527437,
+    "stop": 101.302354,
+    "start": 102.436396,
+    "endWizard": 103.796812,
+    "oneAnswer": 105.39477
   },
   "provenance": [
     {
@@ -223,56 +223,56 @@
       "word": "checked",
       "segment": 9,
       "offset": 0.682145,
-      "filmTime": 84.602145
+      "filmTime": 90.642145
     },
     {
       "key": "safe",
       "word": "safe",
       "segment": 10,
       "offset": 0.811979,
-      "filmTime": 89.011979
+      "filmTime": 95.511979
     },
     {
       "key": "authorized",
       "word": "authorized",
       "segment": 10,
       "offset": 1.675354,
-      "filmTime": 89.875354
+      "filmTime": 96.375354
     },
     {
       "key": "allowed",
       "word": "allowed",
       "segment": 10,
       "offset": 3.827437,
-      "filmTime": 92.027437
+      "filmTime": 98.527437
     },
     {
       "key": "stop",
       "word": "Stop",
       "segment": 11,
       "offset": 0.002354,
-      "filmTime": 94.002354
+      "filmTime": 101.302354
     },
     {
       "key": "start",
       "word": "Start",
       "segment": 11,
       "offset": 1.136396,
-      "filmTime": 95.136396
+      "filmTime": 102.436396
     },
     {
       "key": "endWizard",
       "word": "Wizard",
       "segment": 12,
       "offset": -0.003188,
-      "filmTime": 96.496812
+      "filmTime": 103.796812
     },
     {
       "key": "oneAnswer",
       "word": "one",
       "segment": 12,
       "offset": 1.59477,
-      "filmTime": 98.09477
+      "filmTime": 105.39477
     }
   ]
 }
