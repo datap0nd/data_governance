@@ -8,8 +8,8 @@
   "editableProjectHyperFramesVersion": "0.8.142",
   "artifacts": {
     "renders/review/animatic.mp4": {
-      "bytes": 54782724,
-      "sha256": "f9893374423830977216b6484719d0e97b3d2f659e94e4ff48a74ba5f49f6274"
+      "bytes": 59558090,
+      "sha256": "f2a0477b666d26bba3c593657967756bc4c85587b4ec6a26514b8ce89a77089a"
     },
     "audio/score.wav": {
       "bytes": 31392102,
