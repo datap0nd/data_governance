@@ -9,7 +9,7 @@ import pytest
 
 from app import database, flow_handover, flow_layout, flow_standalone
 from app.routers import flows, flow_recordings as recordings
-from test_flows import flow_db, _request
+from test_flows import flow_db, _flow, _mark_discovered, _request, _seed_catalog
 from test_flow_standalone import local_job
 from test_flow_recordings import draft_job, definition
 
@@ -253,6 +253,76 @@ def test_save_during_background_refresh_does_not_wait_and_is_refreshed(flow_db, 
     assert not thread.is_alive()
     assert len(passes) == 2
     assert manifest(saved)['configuration']['name'] == 'Saved during refresh'
+
+
+def queued_worker_run(worker_id):
+    site, report = _seed_catalog()
+    _mark_discovered(report['id'])
+    saved = flows.create_flow(_flow(site['id'], report['id']), _request())
+    queued = flows.queue_run(saved['id'], _request())
+    flows.register_worker(flows.WorkerRegister(
+        worker_id=worker_id, display_name='Files worker',
+        capabilities={'shared_flow_artifacts': True, 'headed': False},
+    ))
+    return saved, queued['id']
+
+
+def test_worker_reports_do_not_wait_on_flow_files(flow_db, monkeypatch):
+    # Run #1138 failed with "timed out": each report refreshed every Flow's
+    # files on the shared folder before the server replied.
+    saved, run_id = queued_worker_run('files-worker')
+    refreshes = []
+    monkeypatch.setattr(flow_handover, 'synchronize', lambda db_path, **kwargs: refreshes.append(db_path) or {})
+    assert flows.claim_run('files-worker')['run']['id'] == run_id
+    flows.update_run('files-worker', run_id, flows.WorkerProgress(
+        status='running', progress={'stage': 'outlook_search', 'message': 'Searching'}))
+    flows.heartbeat_run('files-worker', run_id)
+    flows.update_run('files-worker', run_id, flows.WorkerProgress(
+        status='succeeded', progress={'stage': 'complete', 'message': 'Done'}))
+    assert database.DB_PATH not in refreshes
+    with database.get_db() as db:
+        flow = db.execute('SELECT last_status, last_run_at FROM flows WHERE id=?', (saved['id'],)).fetchone()
+    assert flow['last_status'] == 'succeeded' and flow['last_run_at']
+
+
+def test_sql_fence_from_failed_run_reaches_flow_files_without_delaying_the_report(flow_db, monkeypatch):
+    saved, run_id = queued_worker_run('fence-worker')
+    assert flows.claim_run('fence-worker')['run']['id'] == run_id
+    with database.get_db() as db:
+        job = json.loads(db.execute('SELECT job_json FROM flow_runs WHERE id=?', (run_id,)).fetchone()[0])
+        job['flow']['execution_method'] = 'recorded'
+        job['sql_handoff'] = {'enabled': True, 'mode': 'append', 'database': 'postgres',
+                              'schema': 'reporting', 'table': 'target'}
+        db.execute('UPDATE flow_runs SET job_json=? WHERE id=?', (json.dumps(job), run_id))
+    flows.update_run('fence-worker', run_id, flows.WorkerProgress(
+        status='running', progress={'stage': 'sql_insertion', 'message': 'Appending rows'}))
+    assert manifest(saved)['configuration']['sql_reconciliation_required'] is False
+
+    started, release = threading.Event(), threading.Event()
+    synchronize = flow_handover.synchronize
+
+    def slow_refresh(db_path, **kwargs):
+        started.set()
+        release.wait(30)
+        return synchronize(db_path, **kwargs)
+
+    monkeypatch.setattr(flow_handover, 'synchronize', slow_refresh)
+    try:
+        flows.update_run('fence-worker', run_id, flows.WorkerProgress(
+            status='failed', progress={'stage': 'failed', 'message': 'Load interrupted'},
+            error='Load interrupted'))
+        assert started.wait(30)
+        # The failed report returned while the fenced Flow's refresh waited.
+        assert manifest(saved)['configuration']['sql_reconciliation_required'] is False
+    finally:
+        release.set()
+        thread = flow_handover._fence_thread
+        if thread:
+            thread.join(120)
+    assert flow_handover._fence_thread is None
+    with database.get_db() as db:
+        assert db.execute('SELECT sql_reconciliation_required FROM flows WHERE id=?', (saved['id'],)).fetchone()[0] == 1
+    assert manifest(saved)['configuration']['sql_reconciliation_required'] is True
 
 
 def test_snapshot_fingerprint_is_stable_across_python_hash_seeds():

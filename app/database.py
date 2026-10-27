@@ -2132,13 +2132,21 @@ def get_db():
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
     conn.execute("PRAGMA foreign_keys = ON")
-    # Observe table names only, never SQL text/values. Mirrors run after a
-    # successful commit and cannot change the database transaction outcome.
-    from app.flow_handover import TABLES, after_commit
+    # Observe table and column names only, never SQL text/values. Mirrors run
+    # after a successful commit and cannot change the transaction outcome.
+    from app.flow_handover import RUN_STATE_COLUMNS, TABLES, after_commit, after_fence_trigger
     changed = set()
+    fence_trigger = False
     def observe(action, table, column, database, trigger):
+        nonlocal fence_trigger
         if action in (sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE) and table in TABLES:
-            changed.add(table)
+            if table == 'flows' and column in RUN_STATE_COLUMNS:
+                pass  # Run bookkeeping is not part of any Flow's files.
+            elif table == 'flows' and column == 'sql_reconciliation_required' and trigger:
+                # Compiled into every run status update; it rarely fires.
+                fence_trigger = True
+            else:
+                changed.add(table)
         return sqlite3.SQLITE_OK
     conn.set_authorizer(observe)
     committed = False
@@ -2153,3 +2161,5 @@ def get_db():
         conn.close()
     if committed and changed:
         after_commit(DB_PATH)
+    elif committed and fence_trigger:
+        after_fence_trigger(DB_PATH)

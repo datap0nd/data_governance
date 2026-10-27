@@ -14,6 +14,14 @@ from app import flow_layout, flow_standalone
 
 TABLES = {'flows', 'flow_sites', 'flow_reports', 'flow_report_filters',
           'flow_recording_revisions', 'people', 'app_settings'}
+# Run bookkeeping that claims, progress reports and schedule ticks write. None
+# of it is part of a Flow's files, and refreshing every Flow folder on each
+# report made workers time out waiting for the reply.
+RUN_STATE_COLUMNS = frozenset({
+    'last_run_at', 'last_success_at', 'last_execution_success_at', 'last_status',
+    'last_error', 'next_run_at', 'updated_at', 'outlook_last_identity',
+    'outlook_last_received_at', 'outlook_last_attachment_name', 'outlook_last_subject',
+    'local_file_last_identity'})
 _LOCK = threading.RLock()
 _SECRET = {'password', 'passwd', 'cookie', 'cookies', 'authorization', 'credentials',
            'access_token', 'refresh_token', 'client_secret', 'api_key', 'token'}
@@ -235,8 +243,52 @@ def after_commit(db_path):
     _synchronize_logged(db_path)
 
 
-def _synchronize_logged(db_path):
+def _synchronize_logged(db_path, **kwargs):
     try:
-        synchronize(db_path)
+        synchronize(db_path, **kwargs)
     except Exception as exc:
         logging.getLogger(__name__).warning('Flow continuity synchronization unavailable (%s).', type(exc).__name__)
+
+
+_FENCE_LOCK = threading.Lock()
+_fence_queue = set()
+_fence_thread = None
+
+
+def after_fence_trigger(db_path):
+    """Refresh fenced Flows on a background thread after a run status change.
+
+    Every run status update compiles the SQL reconciliation trigger, but it sets
+    a fence only after an interrupted append load, so usually no Flow is fenced
+    and the shared folder is not touched. A fence stops the saved script from
+    replaying that load; it reaches the files without the report waiting.
+    """
+    global _fence_thread
+    try:
+        with closing(sqlite3.connect(Path(db_path).resolve().as_uri() + '?mode=ro', uri=True)) as db:
+            fenced = [row[0] for row in db.execute(
+                'SELECT id FROM flows WHERE sql_reconciliation_required=1 AND flow_folder IS NOT NULL')]
+    except sqlite3.Error as exc:
+        logging.getLogger(__name__).warning('SQL reconciliation fences could not be read (%s).', type(exc).__name__)
+        return None
+    if not fenced:
+        return None
+    with _FENCE_LOCK:
+        _fence_queue.update((db_path, flow_id) for flow_id in fenced)
+        if _fence_thread is None:
+            _fence_thread = threading.Thread(target=_refresh_fenced, name='flow-fence-refresh', daemon=True)
+            _fence_thread.start()
+        return _fence_thread
+
+
+def _refresh_fenced():
+    global _fence_thread
+    while True:
+        with _FENCE_LOCK:
+            if not _fence_queue:
+                _fence_thread = None
+                return
+            pending = sorted(_fence_queue)
+            _fence_queue.clear()
+        for db_path, flow_id in pending:
+            _synchronize_logged(db_path, flow_id=flow_id)
