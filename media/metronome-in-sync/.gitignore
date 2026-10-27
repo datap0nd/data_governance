@@ -19,3 +19,6 @@ renders/revision-frames/
 renders/revision-frames-v3/
 capture/takes/*/frames/
 capture/takes/*/frames.json
+# HyperFrames render scratch (a render in progress)
+renders/**/work-*/
+renders/**/.*.hf-transaction-*/
