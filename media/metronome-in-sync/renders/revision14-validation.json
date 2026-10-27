@@ -1,0 +1,40 @@
+{
+ "video": {
+  "codec_name": "h264",
+  "width": 1920,
+  "height": 1080,
+  "r_frame_rate": "30/1",
+  "duration": "122.000000",
+  "nb_read_frames": "3660"
+ },
+ "audio": {
+  "codec_name": "aac",
+  "sample_rate": "48000",
+  "channels": 2,
+  "duration": "122.000000"
+ },
+ "duration": "122.000000",
+ "loudness": {
+  "input_i": "-16.25",
+  "input_tp": "-1.96",
+  "input_lra": "17.60"
+ },
+ "decode": "PASS",
+ "narrationPhrases": 22,
+ "voicedPhrases": 11,
+ "unvoicedPhrases": [
+  7,
+  8,
+  9,
+  11,
+  13,
+  14,
+  15,
+  16,
+  17,
+  19,
+  20
+ ],
+ "voice": "draft: revision 12 recordings re-timed (audio/remix.py --draft); the revision 14 lines are not voiced yet and are silent",
+ "renderEngine": "HyperFrames 0.8.142, chrome-headless-shell (Playwright Chromium 1243 build)"
+}

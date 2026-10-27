@@ -8,6 +8,7 @@ templates and the result vocabulary.
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-10-27: Wizard film revision 14, narrated app scenes and a calm camera | [Test plan](releases/2026-10-27-film-narrated-calm-camera/test-plan.md) | [Test report](releases/2026-10-27-film-narrated-calm-camera/test-report.md) |
 | 2026-10-26: Wizard film revision 13, the real Wizard app | [Test plan](releases/2026-10-26-film-real-wizard-ui/test-plan.md) | [Test report](releases/2026-10-26-film-real-wizard-ui/test-report.md) |
 | 2026-10-26: Metronome starts promptly after an update | [Test plan](releases/2026-10-26-startup-after-update/test-plan.md) | [Test report](releases/2026-10-26-startup-after-update/test-report.md) |
 | 2026-10-23: Python Flows write their own email body | [Test plan](releases/2026-10-23-flow-script-email-body/test-plan.md) | [Test report](releases/2026-10-23-flow-script-email-body/test-report.md) |

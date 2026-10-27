@@ -17,23 +17,36 @@
     "localAI": 27.988854,
     "lives": 31.893479,
     "ask": 34.235646,
-    "finds": 43.874646,
-    "sellOut": 45.975146,
-    "share": 48.088562,
-    "spend": 49.828228,
-    "targets": 51.709688,
-    "seconds": 55.010083,
-    "summary": 58.154374,
-    "numbers": 59.198208,
-    "charts": 60.035833,
-    "checked": 90.642145,
-    "safe": 95.511979,
-    "authorized": 96.375354,
-    "allowed": 98.527437,
-    "stop": 101.302354,
-    "start": 102.436396,
-    "endWizard": 103.796812,
-    "oneAnswer": 105.39477
+    "askQuarter": 38.702,
+    "attach": 42.236,
+    "plan": 47.419,
+    "finds": 47.824646,
+    "sellOut": 49.925146,
+    "share": 52.038562,
+    "spend": 53.778228,
+    "targets": 55.659688,
+    "runs": 57.336,
+    "drawChart": 59.123,
+    "writes": 60.038,
+    "seconds": 61.210083,
+    "summary": 64.354374,
+    "numbers": 65.398208,
+    "charts": 66.235833,
+    "askStock": 69.512,
+    "compares": 74.336,
+    "egypt": 82.018,
+    "clickCheck": 89.305,
+    "again": 94.985,
+    "checked": 96.582145,
+    "links": 101.508,
+    "safe": 105.418,
+    "authorized": 106.987,
+    "allowed": 109.603,
+    "never": 111.39,
+    "stop": 113.602354,
+    "start": 114.736396,
+    "endWizard": 116.096812,
+    "oneAnswer": 117.69477
   },
   "provenance": [
     {
@@ -156,123 +169,214 @@
       "filmTime": 34.235646
     },
     {
+      "key": "askQuarter",
+      "word": "how",
+      "segment": 7,
+      "offset": 2.602,
+      "filmTime": 38.702
+    },
+    {
+      "key": "attach",
+      "word": "attach",
+      "segment": 8,
+      "offset": 0.336,
+      "filmTime": 42.236
+    },
+    {
+      "key": "plan",
+      "word": "plan",
+      "segment": 9,
+      "offset": 1.469,
+      "filmTime": 47.419
+    },
+    {
       "key": "finds",
       "word": "finds",
-      "segment": 7,
+      "segment": 10,
       "offset": 0.374646,
-      "filmTime": 43.874646
+      "filmTime": 47.824646
     },
     {
       "key": "sellOut",
       "word": "sell-out",
-      "segment": 7,
+      "segment": 10,
       "offset": 2.475146,
-      "filmTime": 45.975146
+      "filmTime": 49.925146
     },
     {
       "key": "share",
       "word": "share",
-      "segment": 7,
+      "segment": 10,
       "offset": 4.588562,
-      "filmTime": 48.088562
+      "filmTime": 52.038562
     },
     {
       "key": "spend",
       "word": "spend",
-      "segment": 7,
+      "segment": 10,
       "offset": 6.328228,
-      "filmTime": 49.828228
+      "filmTime": 53.778228
     },
     {
       "key": "targets",
       "word": "targets",
-      "segment": 7,
+      "segment": 10,
       "offset": 8.209688,
-      "filmTime": 51.709688
+      "filmTime": 55.659688
+    },
+    {
+      "key": "runs",
+      "word": "runs",
+      "segment": 11,
+      "offset": 0.336,
+      "filmTime": 57.336
+    },
+    {
+      "key": "drawChart",
+      "word": "chart",
+      "segment": 11,
+      "offset": 2.123,
+      "filmTime": 59.123
+    },
+    {
+      "key": "writes",
+      "word": "writes",
+      "segment": 11,
+      "offset": 3.038,
+      "filmTime": 60.038
     },
     {
       "key": "seconds",
       "word": "Seconds",
-      "segment": 8,
+      "segment": 12,
       "offset": 0.010083,
-      "filmTime": 55.010083
+      "filmTime": 61.210083
     },
     {
       "key": "summary",
       "word": "summary",
-      "segment": 8,
+      "segment": 12,
       "offset": 3.154374,
-      "filmTime": 58.154374
+      "filmTime": 64.354374
     },
     {
       "key": "numbers",
       "word": "numbers",
-      "segment": 8,
+      "segment": 12,
       "offset": 4.198208,
-      "filmTime": 59.198208
+      "filmTime": 65.398208
     },
     {
       "key": "charts",
       "word": "charts",
-      "segment": 8,
+      "segment": 12,
       "offset": 5.035833,
-      "filmTime": 60.035833
+      "filmTime": 66.235833
+    },
+    {
+      "key": "askStock",
+      "word": "where",
+      "segment": 13,
+      "offset": 1.512,
+      "filmTime": 69.512
+    },
+    {
+      "key": "compares",
+      "word": "compares",
+      "segment": 14,
+      "offset": 0.336,
+      "filmTime": 74.336
+    },
+    {
+      "key": "egypt",
+      "word": "Egypt's",
+      "segment": 15,
+      "offset": 0.118,
+      "filmTime": 82.018
+    },
+    {
+      "key": "clickCheck",
+      "word": "click",
+      "segment": 16,
+      "offset": 1.905,
+      "filmTime": 89.305
+    },
+    {
+      "key": "again",
+      "word": "again",
+      "segment": 17,
+      "offset": 4.085,
+      "filmTime": 94.985
     },
     {
       "key": "checked",
       "word": "checked",
-      "segment": 9,
+      "segment": 18,
       "offset": 0.682145,
-      "filmTime": 90.642145
+      "filmTime": 96.582145
+    },
+    {
+      "key": "links",
+      "word": "links",
+      "segment": 19,
+      "offset": 1.208,
+      "filmTime": 101.508
     },
     {
       "key": "safe",
-      "word": "safe",
-      "segment": 10,
-      "offset": 0.811979,
-      "filmTime": 95.511979
+      "word": "secure",
+      "segment": 20,
+      "offset": 0.118,
+      "filmTime": 105.418
     },
     {
       "key": "authorized",
       "word": "authorized",
-      "segment": 10,
-      "offset": 1.675354,
-      "filmTime": 96.375354
+      "segment": 20,
+      "offset": 1.687,
+      "filmTime": 106.987
     },
     {
       "key": "allowed",
       "word": "allowed",
-      "segment": 10,
-      "offset": 3.827437,
-      "filmTime": 98.527437
+      "segment": 20,
+      "offset": 4.303,
+      "filmTime": 109.603
+    },
+    {
+      "key": "never",
+      "word": "never",
+      "segment": 20,
+      "offset": 6.09,
+      "filmTime": 111.39
     },
     {
       "key": "stop",
       "word": "Stop",
-      "segment": 11,
+      "segment": 21,
       "offset": 0.002354,
-      "filmTime": 101.302354
+      "filmTime": 113.602354
     },
     {
       "key": "start",
       "word": "Start",
-      "segment": 11,
+      "segment": 21,
       "offset": 1.136396,
-      "filmTime": 102.436396
+      "filmTime": 114.736396
     },
     {
       "key": "endWizard",
       "word": "Wizard",
-      "segment": 12,
+      "segment": 22,
       "offset": -0.003188,
-      "filmTime": 103.796812
+      "filmTime": 116.096812
     },
     {
       "key": "oneAnswer",
       "word": "one",
-      "segment": 12,
+      "segment": 22,
       "offset": 1.59477,
-      "filmTime": 105.39477
+      "filmTime": 117.69477
     }
   ]
 }

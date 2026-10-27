@@ -1,0 +1,215 @@
+{
+  "ok": true,
+  "strict": false,
+  "browserSkipped": false,
+  "lint": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": [],
+    "filesScanned": 1
+  },
+  "runtime": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": []
+  },
+  "layout": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 2,
+    "findings": [
+      {
+        "code": "content_overlap",
+        "severity": "info",
+        "time": 12.22,
+        "selector": "#sMess > div:nth-of-type(7) > div:nth-of-type(1) > span:nth-of-type(1)",
+        "message": "Two text blocks overlap and may render unreadable.",
+        "rect": {
+          "left": 1077.07,
+          "top": 808.07,
+          "right": 1229.82,
+          "bottom": 827.73,
+          "width": 152.75,
+          "height": 19.66
+        },
+        "containerSelector": "#sMess > div:nth-of-type(11) > i:nth-of-type(1)",
+        "text": "PowerPoint · 48 slides",
+        "fixHint": "Give each block its own zone, or mark intentional layering with data-layout-allow-overlap.",
+        "dataAttributes": {},
+        "sourceFile": "index.html",
+        "bbox": {
+          "x": 1077.07,
+          "y": 808.07,
+          "width": 152.75,
+          "height": 19.66
+        },
+        "firstSeen": 12.22,
+        "lastSeen": 12.22,
+        "occurrences": 1,
+        "heldMs": 0,
+        "times": [
+          12.22
+        ]
+      },
+      {
+        "code": "panel_out_of_canvas",
+        "severity": "info",
+        "time": 113,
+        "selector": "#sApp > div:nth-of-type(3)",
+        "message": "Painted panel extends outside the composition canvas.",
+        "rect": {
+          "left": -24.71,
+          "top": -123.01,
+          "right": 1828.92,
+          "bottom": 919.66,
+          "width": 1853.63,
+          "height": 1042.67
+        },
+        "containerSelector": "#film",
+        "text": "",
+        "fixHint": "Move the panel inward, or mark intentional off-canvas animation with data-layout-allow-overflow.",
+        "containerRect": {
+          "left": 0,
+          "top": 0,
+          "right": 1920,
+          "bottom": 1080,
+          "width": 1920,
+          "height": 1080
+        },
+        "overflow": {
+          "top": 123.01
+        },
+        "dataAttributes": {
+          "data-clip": "stock"
+        },
+        "sourceFile": "index.html",
+        "bbox": {
+          "x": -24.71,
+          "y": -123.01,
+          "width": 1853.63,
+          "height": 1042.67
+        },
+        "firstSeen": 113,
+        "lastSeen": 113,
+        "occurrences": 1,
+        "heldMs": 0,
+        "times": [
+          113
+        ]
+      }
+    ],
+    "duration": 122,
+    "samples": [
+      3,
+      7.6,
+      8,
+      14,
+      15,
+      15.6,
+      16.5,
+      21.5,
+      22.2,
+      23.3,
+      26,
+      30,
+      33.5,
+      34,
+      37,
+      39,
+      42,
+      44,
+      46,
+      48,
+      50,
+      52,
+      55,
+      58,
+      59.5,
+      60.2,
+      62,
+      64.5,
+      66.5,
+      67.4,
+      68,
+      70,
+      72,
+      74,
+      76.5,
+      79,
+      81.5,
+      82.3,
+      84,
+      87,
+      89.9,
+      91.5,
+      93,
+      95,
+      96,
+      98,
+      100,
+      103,
+      104.6,
+      106,
+      108,
+      111,
+      113,
+      114.2,
+      115.2,
+      116.4,
+      117.2,
+      118.6,
+      121
+    ],
+    "transitionSamples": [],
+    "transitionSamplesDropped": 0,
+    "tolerance": 2,
+    "totalIssueCount": 2,
+    "truncated": false
+  },
+  "motion": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": [],
+    "enabled": false,
+    "samples": 0
+  },
+  "contrast": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": [],
+    "enabled": true,
+    "samples": [
+      3,
+      37,
+      67.4,
+      95,
+      121
+    ],
+    "checked": 56,
+    "passed": 56
+  },
+  "hdr": {
+    "autoPromotion": null,
+    "inspection": "available"
+  },
+  "snapshots": {
+    "enabled": false,
+    "files": [],
+    "times": [],
+    "findingFiles": []
+  },
+  "_meta": {
+    "version": "0.8.142",
+    "latestVersion": "0.8.207",
+    "updateAvailable": true
+  }
+}
