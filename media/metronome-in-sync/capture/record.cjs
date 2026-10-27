@@ -28,6 +28,15 @@ const INIT = `(() => {
     addEventListener('mousemove', e => { c.style.transform = 'translate(' + e.clientX + 'px,' + e.clientY + 'px)'; }, true);
     addEventListener('mousedown', () => { c.classList.remove('click'); void c.offsetWidth; c.classList.add('click'); }, true);
     walk(document.body);
+    // Where the newest run's systems stage sits on screen, every frame, so the film can hold it still in a timelapse.
+    const geo = window.__filmGeometry = [];
+    const sample = () => {
+      const stages = document.querySelectorAll('[data-testid=stage]'), stage = stages[stages.length - 1];
+      const sc = document.querySelector('[data-testid=conversation]');
+      if (stage && sc) { const r = stage.getBoundingClientRect(); geo.push([(performance.timeOrigin + performance.now()) / 1000, +r.top.toFixed(2), +r.height.toFixed(2), sc.scrollTop]); }
+      requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
     new MutationObserver(ms => ms.forEach(m => { if (m.type === 'characterData') strip(m.target); m.addedNodes.forEach(n => n.nodeType === 3 ? strip(n) : n.nodeType === 1 && walk(n)); }))
       .observe(document.body, {subtree: true, childList: true, characterData: true});
   });
@@ -75,7 +84,12 @@ const INIT = `(() => {
   await cdp.send('Page.startScreencast', {format: 'jpeg', quality: 92, maxWidth: W * DPR, maxHeight: H * DPR, everyNthFrame: 1});
   mark('start');
   await sleep(1200);
+  // Type the question, then (for question 1) attach the file it refers to, then send: the narration reads the question
+  // as it is typed and mentions the file as it lands.
   const ask = async (question, withFile) => {
+    const t = await clickAt('textarea[aria-label="Your question"]', 700); mark('type_start', t);
+    for (const ch of question) { await page.keyboard.type(ch); await sleep(38 + Math.random() * 40); }
+    mark('type_end'); await sleep(450);
     if (withFile) {
       const b = await clickAt('[data-testid=attach]', 800).catch(() => null);
       mark('attach_click', b);
@@ -83,9 +97,6 @@ const INIT = `(() => {
       await page.waitForFunction(() => !document.querySelector('button[type=submit][aria-label^="Wait until"]'), null, {timeout: 20000});
       await sleep(700); mark('attached');
     }
-    const t = await clickAt('textarea[aria-label="Your question"]', 700); mark('type_start', t);
-    for (const ch of question) { await page.keyboard.type(ch); await sleep(38 + Math.random() * 40); }
-    mark('type_end'); await sleep(450);
     const s = await clickAt('button[type=submit][aria-label=Send]', 500); mark('sent', s);
     await moveTo(W * .82, H * .55, 900);
   };
@@ -140,6 +151,7 @@ const INIT = `(() => {
     const conv = await (await fetch('/api/v1/conversations')).json();
     const id = conv.conversations[0].id; return (await (await fetch('/api/v1/conversations/' + id)).json()).runs.map(r => ({id: r.id, kind: r.kind, status: r.status, events: r.events.map(e => ({type: e.type, ts: e.ts, label: e.payload?.label, name: e.payload?.name}))}));
   });
+  fs.writeFileSync(path.join(OUT, 'geometry.json'), JSON.stringify({columns: ['t', 'stageTop', 'stageHeight', 'scrollTop'], samples: await page.evaluate(() => window.__filmGeometry)}));
   fs.writeFileSync(path.join(OUT, 'frames.json'), JSON.stringify({width: W * DPR, height: H * DPR, frames}, null, 0));
   fs.writeFileSync(path.join(OUT, 'markers.json'), JSON.stringify({markers, runs}, null, 1));
   console.log(`${take}: ${frames.length} frames over ${(frames.at(-1).t - frames[0].t).toFixed(1)} s`);

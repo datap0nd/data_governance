@@ -1,234 +1,234 @@
 {
  "markers": {
   "start": {
-   "t": 1793003656.198
-  },
-  "attach_click": {
-   "t": 1793003660.111,
-   "x": 553,
-   "y": 833.1875,
-   "w": 36,
-   "h": 36
-  },
-  "attached": {
-   "t": 1793003661.151
+   "t": 1793085252.78
   },
   "type_start": {
-   "t": 1793003662.148,
+   "t": 1793085256.823,
    "x": 934,
    "y": 833.1875,
    "w": 718,
    "h": 44
   },
   "type_end": {
-   "t": 1793003665.279
+   "t": 1793085260.029
+  },
+  "attach_click": {
+   "t": 1793085261.872,
+   "x": 553,
+   "y": 833.1875,
+   "w": 36,
+   "h": 36
+  },
+  "attached": {
+   "t": 1793085263.063
   },
   "sent": {
-   "t": 1793003666.485,
+   "t": 1793085264.053,
    "x": 1315,
    "y": 833.1875,
    "w": 36,
    "h": 36
   },
   "done": {
-   "t": 1793003697.658
+   "t": 1793085295.24
   },
   "settled": {
-   "t": 1793003700.859
+   "t": 1793085298.441
   },
   "top": {
-   "t": 1793003702.277
+   "t": 1793085299.855
   },
   "table": {
-   "t": 1793003705.693
+   "t": 1793085303.272
   },
   "bottom": {
-   "t": 1793003708.91
+   "t": 1793085306.488
   },
   "check_click": {
-   "t": 1793003710.881,
+   "t": 1793085308.726,
    "x": 555.40625,
    "y": 738.484375,
    "w": 140.8125,
    "h": 32
   },
   "check_done": {
-   "t": 1793003723.142
+   "t": 1793085320.992
   },
   "check_settled": {
-   "t": 1793003725.742
+   "t": 1793085323.592
   },
   "check_panel": {
-   "t": 1793003727.159
+   "t": 1793085325.004
   },
   "checked_badge": {
-   "t": 1793003730.975
+   "t": 1793085328.82
   },
   "citation_click": {
-   "t": 1793003735.86,
+   "t": 1793085334.112,
    "x": 705.96875,
    "y": 220.84375,
    "w": 21.78125,
    "h": 18
   },
   "evidence": {
-   "t": 1793003736.644
+   "t": 1793085335.22
   },
   "end": {
-   "t": 1793003739.847
+   "t": 1793085338.421
   }
  },
  "runs": [
   {
-   "id": "run_jqKd04vJgChCux95",
+   "id": "run_g5WLW6MN5XUoyMvj",
    "kind": "ask",
    "status": "succeeded",
    "events": [
     {
      "type": "run_started",
-     "ts": "2026-10-26T08:34:26.492+00:00"
+     "ts": "2026-10-27T07:14:24.061+00:00"
     },
     {
      "type": "agent_session",
-     "ts": "2026-10-26T08:34:26.494+00:00"
+     "ts": "2026-10-27T07:14:24.065+00:00"
     },
     {
      "type": "note",
-     "ts": "2026-10-26T08:34:30.259+00:00"
+     "ts": "2026-10-27T07:14:27.849+00:00"
     },
     {
      "type": "tool_started",
-     "ts": "2026-10-26T08:34:30.260+00:00",
+     "ts": "2026-10-27T07:14:27.851+00:00",
      "label": "Looked up “sell-out market share”",
      "name": "wizard_lookup_definitions"
     },
     {
      "type": "tool_finished",
-     "ts": "2026-10-26T08:34:32.064+00:00",
+     "ts": "2026-10-27T07:14:29.653+00:00",
      "name": "wizard_lookup_definitions"
     },
     {
      "type": "tool_started",
-     "ts": "2026-10-26T08:34:33.167+00:00",
+     "ts": "2026-10-27T07:14:30.756+00:00",
      "label": "Read GSCM · Sell-through by market and quarter (fiscal_quarter=2026-Q2/2026-Q3)",
      "name": "gscm_run_report"
     },
     {
      "type": "tool_finished",
-     "ts": "2026-10-26T08:34:36.372+00:00",
+     "ts": "2026-10-27T07:14:33.961+00:00",
      "name": "gscm_run_report"
     },
     {
      "type": "tool_started",
-     "ts": "2026-10-26T08:34:37.474+00:00",
+     "ts": "2026-10-27T07:14:35.062+00:00",
      "label": "Read ASAP · Smartphone market share by brand (fiscal_quarter=2026-Q2/2026-Q3, brand=Samsung)",
      "name": "asap_run_report"
     },
     {
      "type": "tool_finished",
-     "ts": "2026-10-26T08:34:40.677+00:00",
+     "ts": "2026-10-27T07:14:38.267+00:00",
      "name": "asap_run_report"
     },
     {
      "type": "tool_started",
-     "ts": "2026-10-26T08:34:41.784+00:00",
+     "ts": "2026-10-27T07:14:39.369+00:00",
      "label": "Read NERP · Marketing spend by market, quarter and category (fiscal_quarter=2026-Q3)",
      "name": "nerp_run_report"
     },
     {
      "type": "tool_finished",
-     "ts": "2026-10-26T08:34:44.992+00:00",
+     "ts": "2026-10-27T07:14:42.578+00:00",
      "name": "nerp_run_report"
     },
     {
      "type": "tool_started",
-     "ts": "2026-10-26T08:34:46.095+00:00",
+     "ts": "2026-10-27T07:14:43.680+00:00",
      "label": "Queried attached file F1",
      "name": "wizard_query_attachment"
     },
     {
      "type": "tool_finished",
-     "ts": "2026-10-26T08:34:48.299+00:00",
+     "ts": "2026-10-27T07:14:45.884+00:00",
      "name": "wizard_query_attachment"
     },
     {
      "type": "tool_started",
-     "ts": "2026-10-26T08:34:49.401+00:00",
+     "ts": "2026-10-27T07:14:46.986+00:00",
      "label": "Calculated (q3 - q2) / q2 * 100",
      "name": "wizard_calculate"
     },
     {
      "type": "tool_finished",
-     "ts": "2026-10-26T08:34:50.117+00:00",
+     "ts": "2026-10-27T07:14:47.690+00:00",
      "name": "wizard_calculate"
     },
     {
      "type": "tool_started",
-     "ts": "2026-10-26T08:34:51.221+00:00",
+     "ts": "2026-10-27T07:14:48.824+00:00",
      "label": "Calculated actual / target * 100",
      "name": "wizard_calculate"
     },
     {
      "type": "tool_finished",
-     "ts": "2026-10-26T08:34:51.924+00:00",
+     "ts": "2026-10-27T07:14:49.528+00:00",
      "name": "wizard_calculate"
     },
     {
      "type": "tool_started",
-     "ts": "2026-10-26T08:34:53.029+00:00",
+     "ts": "2026-10-27T07:14:50.630+00:00",
      "label": "Prepared a bar: Q3 sell-out against target",
      "name": "wizard_render_visual"
     },
     {
      "type": "tool_finished",
-     "ts": "2026-10-26T08:34:54.633+00:00",
+     "ts": "2026-10-27T07:14:52.238+00:00",
      "name": "wizard_render_visual"
     },
     {
      "type": "visual_added",
-     "ts": "2026-10-26T08:34:54.645+00:00"
+     "ts": "2026-10-27T07:14:52.240+00:00"
     },
     {
      "type": "run_finished",
-     "ts": "2026-10-26T08:34:57.545+00:00"
+     "ts": "2026-10-27T07:14:55.159+00:00"
     }
    ]
   },
   {
-   "id": "run_xAXm7bN3u9rn1lrA",
+   "id": "run_b32shqB6It6zyvKA",
    "kind": "check",
    "status": "succeeded",
    "events": [
     {
      "type": "run_started",
-     "ts": "2026-10-26T08:35:10.914+00:00"
+     "ts": "2026-10-27T07:15:08.773+00:00"
     },
     {
      "type": "agent_session",
-     "ts": "2026-10-26T08:35:10.917+00:00"
+     "ts": "2026-10-27T07:15:08.776+00:00"
     },
     {
      "type": "note",
-     "ts": "2026-10-26T08:35:15.606+00:00"
+     "ts": "2026-10-27T07:15:13.459+00:00"
     },
     {
      "type": "tool_started",
-     "ts": "2026-10-26T08:35:15.608+00:00",
+     "ts": "2026-10-27T07:15:13.479+00:00",
      "label": "Checked 6 figure(s) against the evidence",
      "name": "wizard_check_my_data"
     },
     {
      "type": "tool_finished",
-     "ts": "2026-10-26T08:35:20.110+00:00",
+     "ts": "2026-10-27T07:15:17.985+00:00",
      "name": "wizard_check_my_data"
     },
     {
      "type": "check_result",
-     "ts": "2026-10-26T08:35:20.138+00:00"
+     "ts": "2026-10-27T07:15:17.987+00:00"
     },
     {
      "type": "run_finished",
-     "ts": "2026-10-26T08:35:23.054+00:00"
+     "ts": "2026-10-27T07:15:20.919+00:00"
     }
    ]
   }

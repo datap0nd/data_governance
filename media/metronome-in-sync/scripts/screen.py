@@ -3,78 +3,97 @@
 A clip is a path through one recorded take. It starts at a film time and a capture moment; each step then moves to a
 later capture moment at real speed (1), sped up (a speed above 1: the timelapse, used only while Wizard is working),
 or held over a given film duration. A cut jumps to another capture moment and may cross-dissolve. Capture moments are
-markers the recorder logged, or the start of a tool call as Wizard logged it, so the timelapse follows the real run.
-Frames are the capture's own screencast frames, never redrawn. Writes assets/screen/<clip>.mp4 and assets/screen.json
-(clip windows, timelapse ranges and camera keyframes for compositions/runtime.js).
+markers the recorder logged, the start of a tool call as Wizard logged it, or the moment a run's systems stage scrolls
+away for its answer, so the timelapse follows the real run. Frames are the capture's own screencast frames (1600 x 900),
+never redrawn; while Wizard works they are only moved up or down so its stage holds still (the stage lock below).
+Writes assets/screen/<clip>.mp4 and assets/screen.json (clip windows, timelapse ranges and, for every frame, where
+compositions/runtime.js places the window: its top-left corner in the frame and its scale).
 
   python scripts/screen.py [--takes capture/takes] [--report] [--camera-only]"""
 from __future__ import annotations
 import argparse, bisect, json, re, shutil, subprocess, tempfile
 from datetime import datetime
 from pathlib import Path
+import numpy as np
 from PIL import Image
 
 FILM = Path(__file__).resolve().parents[1]
-PAGE = (1600, 900)  # the capture viewport in CSS pixels; camera keyframes use these coordinates
-OUT_SIZE = (3200, 1800)  # the capture's device pixels (2x), kept so camera push-ins stay sharp
-LAPSE = 2.25  # timelapse speed while Wizard reads the systems: their calls, 4.3 s apart, land on the narrated names
-CHECK_LAPSE = 2  # the check, slow enough to follow its stage and its six MATCH rows arriving
+PAGE = (1600, 900)  # the capture viewport in CSS pixels, which is also the screencast frame size; the camera uses these coordinates
+OUT_SIZE = (3200, 1800)  # the clips are scaled up 2x so the camera's push-ins are resampled once, not twice
+LAPSE = 2.25  # question 1: Wizard's reads are 4.3 s apart, so at 2.25x each system lights up as the narrator names it
+STOCK_LAPSE = 4  # question 2: its run fits under one line of narration
+CHECK_LAPSE = 2  # the check, slow enough to follow it
+# While a stage lock is on, the picture may show page rows from just below the conversation title to just above the
+# composer: the lock moves the conversation, not those fixed bars, so they must stay out of frame.
+LOCK_ROWS = (46, 790)
 
-# Capture references: "<marker>" or "tool:<label start>", with an optional "+-seconds". Film references: a number,
-# "cue:<name>[+-s]", or "src:<capture reference>[@+-s]" (the film time this clip reaches that capture moment).
-# Steps: [capture, speed], [capture, "hold", film seconds], [capture, "until", film reference], or a cut
-# {"cut": capture, "blend": seconds}. A clip may start "after:<clip>-s", overlapping the previous one for the hand-off.
-# Timelapses: [from, to, clock] capture references for each stretch where Wizard works; the pill's clock counts from clock.
+# Capture references: "<marker>", "tool:<label start>" or "stage_end" / "check_stage_end", with an optional "+-seconds".
+# Film references: a number, "cue:<name>[+-s]", or "src:<capture reference>[@+-s]" (the film time this clip reaches
+# that capture moment). Steps: [capture, speed], [capture, "until", film reference] (reach it then, at whatever speed
+# that takes), or a cut {"cut": capture, "blend": seconds}. A clip may start "after:<clip>-s", overlapping the previous
+# one for the hand-off. Timelapses: [from, to, clock] capture references for each stretch where Wizard works; the
+# pill's clock counts from clock. Locks: [from, to] capture references; each must end at a cut.
+# Camera: [film reference, fx, fy, z] keyframes: the page point (fx, fy) at the frame centre at zoom z. Between keyframes
+# the camera follows a monotone cubic, so it eases into and out of holds (repeated values) and passes through the
+# others without stopping; it never overshoots. Keep moves few and slow: the page moves enough on its own.
 CLIPS = [
-    {"id": "ask", "take": "quarter", "start": [33.2, "start+2.3"],
-     "path": [["sent", 1],                                  # attach the file, type, send: real time
-              ["sent+3.2", 1],                              # Wizard appears and starts work: real time
-              ["tool:Queried attached file", LAPSE],        # timelapse: GSCM, ASAP, NERP, then the file
-              ["done", 4.5],                                # calculating, charting, writing
-              ["done+2.1", 1],                              # the answer lands: the wizard hops
-              {"cut": "settled-0.2", "blend": 0.4}, ["top", 1], ["top+0.3", "until", "cue:charts+2.0"]],
-     "timelapse": [["sent+3.2", "done", "sent"]],
-     # The camera moves at its own easy pace; while the timelapse runs it holds the stage and only drifts closer. At
-     # zoom z the frame's top edge stays just below the conversation title (page y 45): fy = 45 + 540 / z.
-     "camera": [["src:start+2.3", 800, 450, 1], ["src:attach_click@-0.9", 800, 450, 1],
-                ["src:attach_click@+0.3", 936, 780, 1.55], ["src:sent@+0.2", 936, 780, 1.55],
-                ["src:sent@+1.4", 936, 417, 1.45], ["src:tool:Queried attached file", 936, 393, 1.55],
-                ["src:done@-0.8", 936, 393, 1.55], ["src:done@+0.2", 936, 430, 1.12],
-                ["src:done+2.1", 936, 450, 1.05], ["src:top", 936, 450, 1.1], ["cue:summary-0.2", 936, 300, 1.5],
-                ["cue:numbers-0.4", 936, 300, 1.5], ["cue:numbers+0.5", 936, 725, 1.45],
-                ["cue:charts-0.2", 936, 725, 1.45], ["cue:charts+0.7", 936, 470, 1.42], ["cue:charts+1.0", 936, 470, 1.4],
-                ["cue:charts+1.7", 800, 450, 1]]},
-    {"id": "stock", "take": "stock", "start": ["after:ask-0.8", "start+2.3"],
-     "path": [["sent", 1], ["sent+3.1", 1], ["done", 6], ["done+1.9", 1],
-              {"cut": "settled-0.1", "blend": 0.4}, ["top", 1],
-              ["check_click+0.1", 1],                       # read the answer, scroll down, click Check my data: real time
-              ["check_click+3.1", 1],                       # the check appears and starts work: real time
-              ["check_done", CHECK_LAPSE],                  # timelapse
-              ["check_done+1.6", 1],                        # six MATCH rows: real time
-              {"cut": "citation_click-0.3", "blend": 0.35}, ["evidence+1.2", 1],
-              ["evidence+1.8", "until", "cue:stop-0.31"]],
-     "timelapse": [["sent+3.1", "done", "sent"], ["check_click+3.1", "check_done", "check_click"]],
-     "camera": [["src:start+2.3", 800, 450, 1], ["src:type_start@-0.2", 936, 800, 1.55], ["src:sent@+0.2", 936, 800, 1.55],
-                ["src:sent@+1.4", 936, 417, 1.45], ["src:done@-0.6", 936, 393, 1.55], ["src:done@+0.3", 936, 430, 1.12],
-                ["src:done+1.9", 936, 450, 1.08], ["src:top", 936, 380, 1.4], ["src:top@+1.2", 936, 400, 1.46],
-                ["src:top+2.3", 936, 400, 1.46], ["src:bottom", 700, 640, 1.35], ["src:check_click@-0.3", 700, 690, 1.42],
-                ["src:check_click@+1.2", 936, 417, 1.45], ["src:tool:Checked@+0.8", 936, 400, 1.52],
-                ["src:check_done@-1.0", 936, 560, 1.45], ["src:check_done+1.6@-0.1", 936, 580, 1.5],
-                ["src:citation_click-0.3@+0.2", 1180, 420, 1.15], ["src:evidence", 1240, 560, 1.3],
-                ["src:evidence+1.2", 1240, 600, 1.38], ["cue:stop-0.31", 1240, 600, 1.45]]},
+    {"id": "ask", "take": "quarter", "start": [33.2, "start+0.4"],
+     "path": [["type_start", "until", "cue:askQuarter-0.25"],   # the home screen; the pointer goes to the question box
+              ["sent+2.6", 1],                                  # type, attach the file, send; Wizard appears and plans
+              ["stage_end-0.1", LAPSE],                         # timelapse: the reads, the sums, the chart
+              {"cut": "top", "blend": 0.6},                     # the answer, from its top
+              ["top+1.6", "until", "cue:charts+1.6"]],
+     "timelapse": [["sent+2.6", "stage_end-0.1", "sent"]],
+     "lock": [["sent+0.9", "stage_end-0.1"]],
+     "camera": [["src:start+0.4", 800, 450, 1], ["src:type_start@-1.0", 800, 450, 1.0],
+                ["src:type_start@+0.2", 936, 520, 1.5], ["src:attached@+0.3", 936, 522, 1.52],   # the question box
+                ["src:sent+0.9", 936, 455, 1.62], ["src:stage_end-0.1@-0.3", 936, 462, 1.7],    # the stage, held
+                ["src:top@+1.2", 920, 400, 1.42], ["cue:summary-0.6", 936, 350, 1.55],         # the summary
+                ["cue:charts-0.5", 936, 470, 1.5], ["cue:charts+1.6", 936, 474, 1.52]]},       # down to the chart
+    {"id": "stock", "take": "stock", "start": ["after:ask-0.8", "start+1.2"],
+     "path": [["type_start", "until", "cue:askStock-0.25"],
+              ["sent+2.6", 1],
+              ["stage_end-0.1", STOCK_LAPSE],
+              {"cut": "top", "blend": 0.6},
+              ["top+2.3", "until", "cue:clickCheck-3.6"],               # read the answer
+              ["check_click+3.0", 1],                                    # scroll down, click Check my data; it starts
+              ["check_stage_end-0.1", CHECK_LAPSE],                      # timelapse
+              {"cut": "check_panel", "blend": 0.6},                      # the six MATCH rows
+              ["check_panel+2.1", "until", "cue:checked+2.9"],
+              ["evidence+0.4", 1],                                       # back to the figure, open its sources
+              ["evidence+1.6", "until", "cue:stop-0.31"]],
+     "timelapse": [["sent+2.6", "stage_end-0.1", "sent"], ["check_click+3.0", "check_stage_end-0.1", "check_click"]],
+     "lock": [["sent+0.9", "stage_end-0.1"], ["check_click+1.2", "check_stage_end-0.1"]],
+     "camera": [["src:start+1.2", 880, 450, 1.35], ["src:type_start@-0.6", 936, 520, 1.5],
+                ["src:sent@+0.3", 936, 522, 1.52],
+                ["src:sent+0.9", 936, 412, 1.62], ["src:stage_end-0.1@-0.3", 936, 410, 1.7],    # the stage, held
+                ["src:top@+1.2", 920, 400, 1.42], ["src:top+2.3", 936, 350, 1.55],             # the answer
+                ["src:check_click@-0.9", 840, 470, 1.3],                                        # the Check my data button
+                ["src:check_click+1.2", 936, 412, 1.66], ["src:check_stage_end-0.1@-0.3", 936, 410, 1.7],
+                ["src:check_panel@+1.2", 920, 500, 1.45], ["src:check_panel+2.1", 920, 496, 1.48],  # six MATCH rows
+                ["src:citation_click@-0.6", 840, 440, 1.3], ["src:evidence", 850, 470, 1.32],  # the Sources drawer
+                ["cue:stop-0.31", 850, 470, 1.36]]},
 ]
 
 
 def load_take(root: Path, take: str):
-    frames = json.loads((root / take / 'frames.json').read_text()) if (root / take / 'frames.json').exists() else None
-    meta = json.loads((root / take / 'markers.json').read_text())
+    folder = root / take
+    frames = json.loads((folder / 'frames.json').read_text()) if (folder / 'frames.json').exists() else None
+    meta = json.loads((folder / 'markers.json').read_text())
     t0 = meta['markers']['start']['t']
     events = {k: v['t'] - t0 for k, v in meta['markers'].items()}
     tools = [(e['label'] or '', datetime.fromisoformat(e['ts']).timestamp() - t0)
              for r in meta['runs'] for e in r['events'] if e['type'] == 'tool_started']
+    geometry = None
+    if (folder / 'geometry.json').exists():
+        geometry = [[s[0] - t0, *s[1:]] for s in json.loads((folder / 'geometry.json').read_text())['samples']]
+        # When a run's answer starts, the conversation scrolls its stage away: the first big jump up after it began.
+        for name, after in (('stage_end', 'sent'), ('check_stage_end', 'check_click')):
+            later = [(a, b) for a, b in zip(geometry, geometry[1:]) if a[0] > events[after] + 1]
+            events[name] = next(b[0] for a, b in later if b[1] - a[1] < -120)
     times = [f['t'] - t0 for f in frames['frames']] if frames else []
-    files = [root / take / 'frames' / f['file'] for f in frames['frames']] if frames else []
-    return events, tools, times, files
+    files = [folder / 'frames' / f['file'] for f in frames['frames']] if frames else []
+    return events, tools, times, files, geometry
 
 
 def offset(ref: str):
@@ -104,9 +123,7 @@ class Path_:
                 self.shots.append({'segments': [], 'blend': step.get('blend', 0)})
                 continue
             target = src(step[0])
-            if step[1] == 'hold':
-                length = step[2]
-            elif step[1] == 'until':
+            if step[1] == 'until':
                 try:
                     length = film_ref(step[2], cues, None) - t
                 except KeyError:  # no voice timing yet (a --report before the first remix): hold briefly
@@ -156,6 +173,65 @@ def film_ref(ref, cues, path, events=None, tools=None):
     return cues[name.removeprefix('cue:')] + delta
 
 
+def track_stage(times, files, geometry, s0, s1):
+    """The page row of the newest systems stage's top edge in every capture frame from s0 to s1, by frame index.
+
+    Wizard's conversation keeps its newest line in view, so each time a tool starts or ends and the stage's status line
+    appears or goes, everything scrolls about 23 px; at timelapse speed that reads as jitter. The browser's own log
+    (geometry.json) runs a frame or two ahead of the screencast, so it only seeds the first frame; after that the stage
+    is followed frame to frame by matching its picture, so every value belongs to exactly the frame it describes."""
+    first = max(0, bisect.bisect_right(times, s0) - 1)
+    last = max(0, bisect.bisect_right(times, s1) - 1)
+    log = [g[0] for g in geometry]
+    top = geometry[max(0, bisect.bisect_right(log, times[first] - 0.15) - 1)][1]
+    load = lambda i: np.asarray(Image.open(files[i]).convert('L'), np.float32)[:, 480:1390:2]
+    tops, prev = {first: top}, load(first)
+    for i in range(first + 1, last + 1):
+        cur = load(i)
+        r0, r1 = int(max(top, 50)), int(min(top + 300, PAGE[1] - 60))
+        ref = prev[r0:r1]
+        score = lambda d: np.abs(cur[r0 + d:r1 + d] - ref).mean() if r0 + d >= 0 and r1 + d <= PAGE[1] else np.inf
+        top += min(range(-80, 81), key=score)
+        tops[i], prev = top, cur
+    # Every tracked position must be one the browser logged around that frame.
+    for i, value in tops.items():
+        near = [g[1] for g in geometry[bisect.bisect_left(log, times[i] - 0.4):bisect.bisect_right(log, times[i] + 0.1)]]
+        if near and min(abs(v - value) for v in near) > 1.5:
+            raise SystemExit(f'Stage tracking disagrees with the browser log at capture {times[i]:.2f}: '
+                             f'{value:.1f}, where the log has {sorted(set(round(v, 1) for v in near))}.')
+    return tops
+
+
+def pchip(keys, t):
+    """Monotone cubic (Fritsch-Carlson) through keyframes [(time, value)] at time t; flat outside them."""
+    xs, ys = [k[0] for k in keys], [k[1] for k in keys]
+    if t <= xs[0]:
+        return ys[0]
+    if t >= xs[-1]:
+        return ys[-1]
+    i = bisect.bisect_right(xs, t) - 1
+    h = [xs[k + 1] - xs[k] for k in range(len(xs) - 1)]
+    d = [(ys[k + 1] - ys[k]) / h[k] for k in range(len(h))]
+    def slope(k):
+        if k == 0 or k == len(xs) - 1:
+            return 0.0  # every move starts and ends at rest
+        if d[k - 1] * d[k] <= 0:
+            return 0.0
+        w1, w2 = 2 * h[k] + h[k - 1], h[k] + 2 * h[k - 1]
+        return (w1 + w2) / (w1 / d[k - 1] + w2 / d[k])
+    p = (t - xs[i]) / h[i]
+    return ((2 * p ** 3 - 3 * p ** 2 + 1) * ys[i] + (p ** 3 - 2 * p ** 2 + p) * h[i] * slope(i) +
+            (-2 * p ** 3 + 3 * p ** 2) * ys[i + 1] + (p ** 3 - p ** 2) * h[i] * slope(i + 1))
+
+
+def placement(fx, fy, z):
+    """Where compositions/runtime.js puts the window for camera (fx, fy, z): its top-left corner in the 1920 x 1080
+    frame, before any clamping. Near z = 1 the window eases back to the centre."""
+    w = min(1, max(0, (z - 1) / .3))
+    w = w * w * (3 - 2 * w)
+    return 960 - 800 * z + (800 * z - fx * z) * w, 540 - 450 * z + (450 * z - fy * z) * w
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--takes', default=str(FILM / 'capture' / 'takes'))
@@ -166,7 +242,7 @@ def main():
     ap.add_argument('--report', action='store_true', help='print when each recorded moment appears in the film; write nothing')
     args = ap.parse_args()
     cues_file = FILM / 'assets/cues.json'
-    cues = json.loads(cues_file.read_text())['cues'] if cues_file.exists() and not args.report else {}
+    cues = json.loads(cues_file.read_text())['cues'] if cues_file.exists() else {}
     takes, out = Path(args.takes), FILM / 'assets' / 'screen'
     out.mkdir(parents=True, exist_ok=True)
     manifest_path = FILM / 'assets/screen.json'
@@ -175,13 +251,66 @@ def main():
         manifest['clips'] = json.loads(manifest_path.read_text())['clips']
     ends = {}
     for clip in CLIPS:
-        events, tools, times, files = load_take(takes, clip['take'])
+        events, tools, times, files, geometry = load_take(takes, clip['take'])
+        src = lambda ref: source_time(ref, events, tools)
         begin = clip['start'][0]
         if isinstance(begin, str):
             name, delta = offset(begin.removeprefix('after:'))
             begin = ends[name] + delta
         path = Path_(clip, begin, events, tools, cues, args.fps)
         ends[clip['id']] = path.end
+        n = round((path.end - path.start) * args.fps)
+        frame_at = lambda s: max(0, bisect.bisect_right(times, s) - 1)
+        film_times = [begin + (k + .5) / args.fps for k in range(n)]
+
+        # Stage locks: each frame inside one is moved by how far the stage has moved since the lock began.
+        locks = []
+        for a, b in clip.get('lock', []):
+            s0, s1 = src(a), src(b)
+            _, shot = path.locate(s1)
+            if shot['segments'][-1][3] != s1:
+                raise SystemExit(f'{clip["id"]}: the lock {a}..{b} must end where its shot ends, at a cut.')
+            cache = takes / clip['take'] / f'stage-{s0:.3f}-{s1:.3f}.json'
+            if cache.exists():
+                tops = {int(k): v for k, v in json.loads(cache.read_text()).items()}
+            else:
+                tops = track_stage(times, files, geometry, s0, s1) if times else {}
+                if tops:
+                    cache.write_text(json.dumps(tops))
+            locks.append((s0, s1, tops, tops.get(frame_at(s0))))
+        def shift(s):
+            for s0, s1, tops, top0 in locks:
+                if s0 <= s <= s1 + 1e-6:
+                    return round(tops[frame_at(s)] - top0)
+            return 0
+
+        # The camera for every frame of the clip, from its keyframes.
+        keys = [(film_ref(c[0], cues, path, events, tools), *c[1:]) for c in clip['camera']]
+        if any(b[0] <= a[0] for a, b in zip(keys, keys[1:])):
+            raise SystemExit(f'{clip["id"]}: camera keyframes are out of order: {[round(k[0], 2) for k in keys]}')
+        # Keyframes become window placements (x, y, z) and those are interpolated, so a move between two framings
+        # that each keep the window's edge out of the frame keeps it out all the way.
+        places = [(k[0], *placement(*k[1:]), k[3]) for k in keys]
+        camera = [[round(pchip([(c[0], c[d]) for c in places], begin + k / args.fps), 2) for d in (1, 2, 3)] for k in range(n)]
+        problems = []
+        for k, (x, y, z) in enumerate(camera):
+            t = begin + k / args.fps
+            # Between two close framings (z >= 1.3) the window's edge must never show. A move from or to the floating
+            # window (z near 1) shows it by design while the window grows to fill the frame or shrinks back.
+            j = max(0, min(len(places) - 2, bisect.bisect_right([c[0] for c in places], t) - 1))
+            close = places[j][3] >= 1.3 and places[j + 1][3] >= 1.3
+            if close and not (1920 - 1600 * z - .5 <= x <= .5 and 1080 - 900 * z - .5 <= y <= .5):
+                problems.append((t, f'the window ({x}, {y}, {z}) shows its edge'))
+            if locks and times:
+                i = path.shot_at(t)
+                d = shift(path.source(t, i)) if any(s0 <= path.source(t, i) <= s1 for s0, s1, *_ in locks) else None
+                top, bottom = -y / z, (1080 - y) / z  # the page rows in frame
+                if d is not None and not (LOCK_ROWS[0] - d <= top and bottom <= LOCK_ROWS[1] - d):
+                    problems.append((t, f'rows {top:.0f}-{bottom:.0f} show a fixed bar under a stage shift of {d}'))
+        if problems:  # the first frame of each run of bad frames
+            runs = [f'film {t:.2f}: {what}' for k, (t, what) in enumerate(problems) if k == 0 or t - problems[k - 1][0] > 1.5 / args.fps]
+            raise SystemExit(f'{clip["id"]}: {len(problems)} frames go wrong, from\n  ' + '\n  '.join(runs[:20]))
+
         if args.report:
             print(f'{clip["id"]}: film {path.start:.2f}–{path.end:.2f}')
             moments = sorted([(v, k) for k, v in events.items()] + [(t, 'tool:' + label[:40]) for label, t in tools])
@@ -190,23 +319,38 @@ def main():
                     print(f'   {path.film(s):7.2f}  {name}  (capture {s:.2f})')
                 except SystemExit:
                     pass
+            for s0, s1, tops, top0 in locks:
+                values = [tops[i] - top0 for i in tops]
+                print(f'   lock {path.film(s0):.2f}–{path.film(s1):.2f}: stage moves {min(values):+.0f} to {max(values):+.0f} px, '
+                      f'and is held still')
             continue
         if args.only and clip['id'] != args.only:
             continue
-        n = round((path.end - path.start) * args.fps)
-        frame_at = lambda s: files[max(0, bisect.bisect_right(times, s) - 1)]
         work = Path(tempfile.mkdtemp(prefix=f'screen-{clip["id"]}-'))
+        background = None
+        def picture(s):
+            """The capture frame shown at capture time s, moved by its stage lock."""
+            nonlocal background
+            i, d = frame_at(s), shift(s)
+            image = Image.open(files[i]).convert('RGB')
+            if not d:
+                return image
+            background = background or image.getpixel((1580, 450))  # the page's own background colour
+            moved = Image.new('RGB', image.size, background)
+            moved.paste(image, (0, -d))
+            return moved
         for k in (range(0) if args.camera_only else range(n)):
-            t = begin + (k + .5) / args.fps
+            t = film_times[k]
             i = path.shot_at(t)
             shot, link = path.shots[i], work / f'{k:05d}.jpg'
             first = shot['segments'][0][0]
             if shot['blend'] and i > 0 and t < first + shot['blend'] / 2:
                 a = (t - (first - shot['blend'] / 2)) / shot['blend']
-                Image.blend(Image.open(frame_at(path.source(t, i - 1))).convert('RGB'),
-                            Image.open(frame_at(path.source(t, i))).convert('RGB'), a * a * (3 - 2 * a)).save(link, quality=95)
+                Image.blend(picture(path.source(t, i - 1)), picture(path.source(t, i)), a * a * (3 - 2 * a)).save(link, quality=95)
+            elif shift(path.source(t, i)):
+                picture(path.source(t, i)).save(link, quality=95)
             else:
-                link.symlink_to(frame_at(path.source(t, i)))
+                link.symlink_to(files[frame_at(path.source(t, i))])
         target = out / f'{clip["id"]}.mp4'
         if not args.camera_only:
             subprocess.run(['ffmpeg', '-v', 'error', '-y', '-framerate', str(args.fps), '-i', str(work / '%05d.jpg'),
@@ -215,7 +359,6 @@ def main():
                             '-an', str(target)], check=True)
             print(f'{clip["id"]}: {n} frames, {target.stat().st_size / 1e6:.1f} MB, film {path.start:.2f}–{path.end:.2f}')
         shutil.rmtree(work)
-        src = lambda ref: source_time(ref, events, tools)
 
         def lapse(begin, end, clock):
             (start, shot), finish = path.locate(src(begin)), path.film(src(end))
@@ -225,10 +368,11 @@ def main():
         manifest['clips'][clip['id']] = {
             'file': f'assets/screen/{clip["id"]}.mp4', 'start': round(path.start, 3), 'end': round(path.end, 3),
             'take': clip['take'], 'timelapses': [lapse(*r) for r in clip['timelapse']],
-            'camera': [[round(film_ref(c[0], cues, path, events, tools), 3), *c[1:]] for c in clip['camera']],
+            'locks': [[round(path.film(s0), 3), round(path.film(s1), 3)] for s0, s1, *_ in locks],
+            'keys': [[round(k[0], 3), *k[1:]] for k in keys], 'camera': camera,
         }
     if not args.report:
-        manifest_path.write_text(json.dumps(manifest, indent=1) + '\n')
+        manifest_path.write_text(json.dumps(manifest, separators=(',', ':')) + '\n')
 
 
 if __name__ == '__main__':

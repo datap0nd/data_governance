@@ -1,6 +1,6 @@
 """Voice new narration lines into a line bank that audio/remix.py places, without re-voicing the rest of the film.
 
-  python audio/voice.py rev13
+  python audio/voice.py rev14
 
 Every line in narration.json whose "voice" is the bank's name is synthesized with the film's voice (en-US-AndrewNeural at
 -3%, as audio/score.py), trimmed like score.py (a short lead and tail around the speech) and written one after another to

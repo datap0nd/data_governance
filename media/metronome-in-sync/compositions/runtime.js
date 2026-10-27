@@ -94,24 +94,23 @@
   const ai=ease((t-cue.localAI+.1)/.45);$('.join-ai').style.opacity=ai;$('.join-ai').style.transform=`translate(-50%,${(1-ai)*12}px)`;
  }
 
- // 3. The real Wizard app. The camera keeps a page point (fx, fy) at the frame centre at zoom z; near z = 1 the window
- // eases back to the centre, and once it is wider than the frame it never shows its edge.
+ // 3. The real Wizard app. scripts/screen.py gives, for every frame of each clip, where its window goes (top-left corner
+ // in the frame and scale): the camera, already eased between its few keyframes and checked so the window's edge never
+ // shows in close-up. While Wizard works, the clip itself holds Wizard's stage still.
  const clips=config.screen.clips,ids=Object.keys(clips);
- const camera=(keys,t)=>{let i=0;while(i<keys.length-1&&t>=keys[i+1][0])i++;const a=keys[i],b=keys[Math.min(i+1,keys.length-1)];
-  const p=b===a||t<=a[0]?0:smooth(clamp((t-a[0])/(b[0]-a[0])));return [lerp(a[1],b[1],p),lerp(a[2],b[2],p),lerp(a[3],b[3],p)];};
- const place=(fx,fy,z)=>{const w=clamp((z-1)/.3);let x=lerp(960-800*z,960-fx*z,w),y=lerp(540-450*z,540-fy*z,w);
-  if(1600*z>=1920)x=clamp(x,1920-1600*z,0);if(900*z>=1080)y=clamp(y,1080-900*z,0);return [x,y];};
+ const camera=(c,t)=>{const f=(t-c.start)*30,n=c.camera.length-1,i=Math.max(0,Math.min(n,Math.floor(f+1e-6))),j=Math.min(n,i+1),p=clamp(f-i);return c.camera[i].map((v,k)=>lerp(v,c.camera[j][k],p));};
  // Capture time and speed at a film time, from a timelapse's anchors (its shot's film/capture breakpoints).
  const speedAt=(c,t)=>{const a=c.anchors;for(let i=0;i<a.length-1;i++)if(t>=a[i][0]&&t<a[i+1][0])return (a[i+1][1]-a[i][1])/(a[i+1][0]-a[i][0]);return 1;};
  const sourceAt=(c,t)=>{const a=c.anchors;let i=0;while(i<a.length-2&&t>=a[i+1][0])i++;const [f0,s0]=a[i],[f1,s1]=a[i+1];return s0+(s1-s0)*clamp((t-f0)/Math.max(.001,f1-f0));};
  const lapses=ids.flatMap(id=>clips[id].timelapses),last=ids[ids.length-1];
- // Hand-offs between windows: the first grows out of the hub logo; the second question whips in from the right, and
- // its check runs in that same window; at the end the app pulls away.
- const slide=(t,from)=>whip((t-from)/.6);
- const winAt=(id,t)=>{const c=clips[id],grow=ease((t-at('sApp').start)/.75),[fx,fy,z]=camera(c.camera,t);let [x,y]=place(fx,fy,z),k=1,o=1;
-  if(id==='ask'){k=lerp(.18,1,grow);x=960+(x-960)*k;y=540+(y-540)*k+(1-grow)*-40;o=clamp(grow*1.6);}
-  if(id===last){const out=ease((t-M.away)/.6);k=1-out*.2;x=960+(x-960)*k;y=540+(y-540)*k-out*160;o=1-out;}
-  return {x:x+{ask:-2050*slide(t,M.slide),stock:2050*(1-slide(t,M.slide))}[id],y,s:z*k,o};};
+ // Hand-offs between windows: the first grows out of the hub logo; the second question cross-fades in where the first
+ // was, the first settling back a little as the second comes forward, and its check runs in that same window; at the
+ // end the app pulls away.
+ const winAt=(id,t)=>{const c=clips[id],grow=ease((t-at('sApp').start)/.75),hand=smooth((t-M.handoff)/.8);let [x,y,z]=camera(c,t),k=1,o=1;
+  if(id==='ask'){k=lerp(.18,1,grow)*(1-.04*hand);y+=(1-grow)*-40/k;o=clamp(grow*1.6)*(1-hand);}
+  if(id==='stock'){k=1.04-.04*hand;o=hand;}
+  if(id===last){const out=smooth((t-M.away)/.9);k*=1-out*.2;y-=out*160/k;o*=1-out;}
+  return {x:960+(x-960)*k,y:540+(y-540)*k,s:z*k,o};};
  function screen(t){
   const start=at('sApp').start,end=at('sApp').end;
   const grow=ease((t-start)/.75);
@@ -138,7 +137,7 @@
   // Safe: the app steps back and the security card opens on "safe".
   $('.screen-dim').style.opacity=dim*.82;
   const card=$('.safe-card'),cp=ease((t-cue.safe)/.45)*(1-ease((t-end+.5)/.4));kinetic(card.querySelector('b>span'),t,M.safe,{gap:.03});card.style.opacity=cp;card.style.transform=`translate(-50%,calc(-50% + ${(1-cp)*18}px)) scale(${.97+.03*cp})`;
-  $$('.safe-card>div').forEach((el,i)=>reveal(el,ease((t-[cue.authorized,cue.authorized+.7,cue.allowed+.5][i]+.1)/.35),8));
+  $$('.safe-card>div').forEach((el,i)=>reveal(el,ease((t-[cue.authorized,cue.allowed,cue.never][i]+.1)/.35),8));
  }
 
  // 4. End card: the statement, then Wizard's logo, the tagline, every source.
