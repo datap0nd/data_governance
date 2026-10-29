@@ -5,6 +5,7 @@ in [the testing workflow](../README.md); this file is the complete history.
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-10-29: Flows list filters and no sub-groups | [Test plan](2026-10-29-flow-list-filters/test-plan.md) | [Test report](2026-10-29-flow-list-filters/test-report.md) |
 | 2026-10-27: Worker reports no longer time out on Flow files | [Test plan](2026-10-27-worker-report-timeouts/test-plan.md) | [Test report](2026-10-27-worker-report-timeouts/test-report.md) |
 | 2026-10-26: Metronome starts promptly after an update | [Test plan](2026-10-26-startup-after-update/test-plan.md) | [Test report](2026-10-26-startup-after-update/test-report.md) |
 | 2026-10-23: Python Flows write their own email body | [Test plan](2026-10-23-flow-script-email-body/test-plan.md) | [Test report](2026-10-23-flow-script-email-body/test-report.md) |

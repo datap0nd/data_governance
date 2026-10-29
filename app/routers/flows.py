@@ -33,6 +33,7 @@ from app.flow_publish import new_local_file_storage_key, normalize_target_path
 from app.freshness import (
     additional_trigger_rules,
     flow_freshness,
+    flow_today,
     flow_trigger_rules,
     host_timezone,
     iso_utc,
@@ -40,6 +41,7 @@ from app.freshness import (
     next_trigger_occurrence,
     rule_key,
     schedule_rule,
+    scheduled_day_offsets,
     trigger_payload,
     utc_now,
 )
@@ -1401,6 +1403,10 @@ def _flow_out(db, flow_id: int, *, include_private_storage: bool = False) -> dic
     freshness_rule, freshness_health = flow_freshness(row)
     result["freshness_rule"] = freshness_rule
     result["freshness_health"] = freshness_health
+    # Today, tomorrow and the day after in Dubai, for the list's schedule filter.
+    today = flow_today()
+    result["scheduled_days_from"] = today.isoformat()
+    result["scheduled_day_offsets"] = scheduled_day_offsets(flow_trigger_rules(row), today=today) if result["enabled"] else []
     link = flow_link_status(db, row, server=_flow_server_identity())
     # Keep persisted diagnostic evidence separate from the exact target a
     # preview or run may safely use.
@@ -2665,7 +2671,9 @@ def flow_activity():
         return item
     return {"latest_runs": [public_activity(row) for row in latest],
             "active_runs": [public_activity(row) for row in active],
-            "workers": dict(workers)}
+            "workers": dict(workers),
+            # The list reloads its scheduled days when this Dubai date moves on.
+            "schedule_date": flow_today().isoformat()}
 
 
 @router.get("/runs")

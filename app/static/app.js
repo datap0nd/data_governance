@@ -10680,8 +10680,12 @@ function _flowListHtml(flows, workers, catalog, runs = []) {
     if (!flows.length) return _flowEmptyState(catalog);
     const ownerFilter = _flowOwnerFilter();
     const ownerControl = _flowOwnerFilterHtml(flows, ownerFilter);
-    flows = flows.filter(flow => _flowMatchesOwner(flow, ownerFilter));
+    const filters = _flowListFilters(flows);
+    const narrowed = Object.values(filters).some(value => value !== "all");
+    const filterControls = `<div class="flow-list-filters" role="group" aria-label="Filter flows">${_flowFiltersHtml(flows, filters)}<button type="button" class="btn-sm btn-outline" id="flow-filters-clear" ${narrowed || ownerFilter !== "all" ? "" : "hidden"}>Clear filters</button></div>`;
     const classification = window._flowsState?.classification === "draft" ? "draft" : "production";
+    const total = flows.filter(flow => (flow.classification || "production") === classification).length;
+    flows = flows.filter(flow => _flowMatchesOwner(flow, ownerFilter) && _flowMatchesFilters(flow, filters));
     const classified = flows.filter(flow => (flow.classification || "production") === classification);
     const productionCount = flows.filter(flow => (flow.classification || "production") === "production").length;
     const draftCount = flows.length - productionCount;
@@ -10689,12 +10693,12 @@ function _flowListHtml(flows, workers, catalog, runs = []) {
         <button type="button" role="tab" data-flow-classification="production" aria-selected="${classification === "production"}" class="${classification === "production" ? "active" : ""}">Production <span>${productionCount}</span></button>
         <button type="button" role="tab" data-flow-classification="draft" aria-selected="${classification === "draft"}" class="${classification === "draft" ? "active" : ""}">Draft flows <span>${draftCount}</span></button>
     </div>`;
-    const toolbar = `<div class="flow-list-toolbar">${classificationTabs}${ownerControl}</div>`;
+    const toolbar = `<div class="flow-list-toolbar">${classificationTabs}${ownerControl}${filterControls}</div>`;
     if (!classified.length) {
         const kind = classification === "draft" ? "draft" : "production";
         const person = (window._flowsState?.people || []).find(item => String(item.id) === ownerFilter);
-        const heading = ownerFilter === "unassigned" ? `No unassigned ${kind} flows` : person ? `No ${kind} flows for ${esc(person.name)}` : `No ${kind} flows`;
-        return `${toolbar}<div class="flow-empty"><h2>${heading}</h2><p>${ownerFilter === "all" ? "Move a Flow here from its More menu." : "Choose All users to see every Flow."}</p></div>`;
+        const heading = narrowed ? `No ${kind} flows match these filters` : ownerFilter === "unassigned" ? `No unassigned ${kind} flows` : person ? `No ${kind} flows for ${esc(person.name)}` : `No ${kind} flows`;
+        return `${toolbar}<div class="flow-empty"><h2>${heading}</h2><p>${narrowed ? "Clear filters to see every Flow." : ownerFilter === "all" ? "Move a Flow here from its More menu." : "Choose All users to see every Flow."}</p></div>`;
     }
     const opened = _flowOpenGroups();
     const rows = classified.map(flow => _flowRowModel(flow, runs, catalog));
@@ -10707,7 +10711,7 @@ function _flowListHtml(flows, workers, catalog, runs = []) {
                 <tbody id="flow-execution-rows">${executing.map(_flowRowHtml).join("")}</tbody></table>
             </div>
         </section>
-        <div class="flow-status-strip"><span><strong>${classified.length}</strong> ${classification} flow${classified.length === 1 ? "" : "s"}</span><span id="flow-worker-count"><strong>${online}</strong> online workers</span><span>Newest 3 producing runs retained; active recovery files stay protected.</span><span id="flow-activity-connection" role="status"></span></div>
+        <div class="flow-status-strip"><span>${classified.length === total ? `<strong>${total}</strong> ${classification} flow${total === 1 ? "" : "s"}` : `Showing <strong>${classified.length}</strong> of ${total} ${classification} flow${total === 1 ? "" : "s"}`}</span><span id="flow-worker-count"><strong>${online}</strong> online workers</span><span>Newest 3 producing runs retained; active recovery files stay protected.</span><span id="flow-activity-connection" role="status"></span></div>
         <div class="flow-table-wrap"><table class="flow-table flow-grouped-table">
         <thead><tr>${_flowSortHeaders()}</tr></thead>
         ${_flowGroups().map(group => {
@@ -10715,8 +10719,8 @@ function _flowListHtml(flows, workers, catalog, runs = []) {
             if (!items.length) return "";
             const active = items.filter(row => row.activeRun).length;
             const failed = items.filter(row => row.flow.last_status === "failed").length;
-            return `<tbody class="flow-group-heading"><tr><th colspan="9" scope="rowgroup"><div class="group-source-heading"><button type="button" class="flow-group-toggle" id="flow-group-${group}" data-group="${group}" aria-expanded="${opened.has(group)}" aria-controls="flow-group-rows-${group}"><span aria-hidden="true">${opened.has(group) ? "▾" : "▸"}</span> ${group} <span class="flow-group-count">${items.length}</span><small class="flow-group-active" ${active ? "" : "hidden"}>${active} active runs</small><small class="flow-group-failed" ${failed ? "" : "hidden"}>${failed} failed</small></button>${window.FlowGroups?.sourceAction(group) || ''}</div></th></tr></tbody>
-            <tbody id="flow-group-rows-${group}" ${opened.has(group) ? "" : "hidden"}>${window.FlowGroups ? window.FlowGroups.rowsHtml(group, items) : items.filter(row => !row.activeRun).map(_flowRowHtml).join("")}</tbody>`;
+            return `<tbody class="flow-group-heading"><tr><th colspan="9" scope="rowgroup"><button type="button" class="flow-group-toggle" id="flow-group-${group}" data-group="${group}" aria-expanded="${opened.has(group)}" aria-controls="flow-group-rows-${group}"><span aria-hidden="true">${opened.has(group) ? "▾" : "▸"}</span> ${group} <span class="flow-group-count">${items.length}</span><small class="flow-group-active" ${active ? "" : "hidden"}>${active} active runs</small><small class="flow-group-failed" ${failed ? "" : "hidden"}>${failed} failed</small></button></th></tr></tbody>
+            <tbody id="flow-group-rows-${group}" ${opened.has(group) ? "" : "hidden"}>${items.filter(row => !row.activeRun).map(_flowRowHtml).join("")}</tbody>`;
         }).join("")}</table></div>`;
 }
 
@@ -10761,6 +10765,64 @@ function _flowOwnerFilterHtml(flows, filter) {
     </select></label>`;
 }
 
+// Source, Active, Last run, Scheduled and Database filters: [label, "all" label, choices].
+function _flowFilterOptions(flows) {
+    const databases = [...new Set(flows.filter(flow => flow.sql_handoff_enabled && flow.sql_database).map(flow => flow.sql_database))]
+        .sort((a, b) => a.localeCompare(b, undefined, {sensitivity: "base"}));
+    return {
+        source: ["Source", "All sources", _flowGroups().filter(group => flows.some(flow => _flowSourceGroup(flow) === group)).map(group => [group, group])],
+        active: ["Active", "Active and inactive", [["active", "Active"], ["inactive", "Inactive"]]],
+        result: ["Last run", "Any result", [["succeeded", "Succeeded"], ["failed", "Failed"]]],
+        schedule: ["Scheduled", "Any day", [["today", "Today"], ["tomorrow", "Tomorrow"], ["next3", "Next 3 days"]]],
+        database: ["Database", "All databases", [...databases.map(name => [`db:${name}`, name]), ["none", "No SQL output"]]],
+    };
+}
+
+// Each filter's selection, kept for this browser tab; "all" when unset or no longer offered.
+function _flowListFilters(flows) {
+    if (!Object.prototype.hasOwnProperty.call(window, "_flowFilterMemory")) {
+        let value = null;
+        try { value = JSON.parse(sessionStorage.getItem("metronome.flowFilters") || "null"); } catch (_) {}
+        window._flowFilterMemory = value && typeof value === "object" ? value : {};
+    }
+    return Object.fromEntries(Object.entries(_flowFilterOptions(flows)).map(([key, [, , choices]]) => {
+        const value = window._flowFilterMemory[key];
+        return [key, choices.some(([choice]) => choice === value) ? value : "all"];
+    }));
+}
+
+function _flowMatchesFilters(flow, filters) {
+    // Days from today in Dubai with a trigger; the server leaves paused Flows empty.
+    const days = flow.scheduled_day_offsets || [];
+    const database = flow.sql_handoff_enabled && flow.sql_database ? `db:${flow.sql_database}` : "none";
+    return (filters.source === "all" || _flowSourceGroup(flow) === filters.source)
+        && (filters.active === "all" || (filters.active === "active") === !!flow.enabled)
+        && (filters.result === "all" || _flowLastResult(flow) === filters.result)
+        && (filters.schedule === "all" || (filters.schedule === "next3" ? days.length > 0 : days.includes(filters.schedule === "today" ? 0 : 1)))
+        && (filters.database === "all" || database === filters.database);
+}
+
+// The latest finished run's status: starting a run never moves a Flow out of a Last run filter.
+function _flowLastResult(flow) {
+    return flow.last_result !== undefined ? flow.last_result : flow.last_status;
+}
+
+function _flowFiltersHtml(flows, filters) {
+    return Object.entries(_flowFilterOptions(flows)).map(([key, [label, all, choices]]) =>
+        `<label class="flow-list-filter"><span>${label}</span><select id="flow-filter-${key}" data-flow-filter="${key}" aria-label="${label}"${key === "schedule" ? ' title="Days in Dubai time. Paused Flows are not scheduled."' : ""}><option value="all">${all}</option>${choices.map(([value, text]) => `<option value="${esc(value)}" ${filters[key] === value ? "selected" : ""}>${esc(text)}</option>`).join("")}</select></label>`).join("");
+}
+
+// The Flows the list shows: the selected tab, user and filters.
+function _flowVisibleFlows() {
+    const state = window._flowsState;
+    const flows = state?.flows || [];
+    const classification = state?.classification === "draft" ? "draft" : "production";
+    const owner = _flowOwnerFilter();
+    const filters = _flowListFilters(flows);
+    return flows.filter(flow => (flow.classification || "production") === classification
+        && _flowMatchesOwner(flow, owner) && _flowMatchesFilters(flow, filters));
+}
+
 // After an inline reassignment the row stays put, so the host can keep working
 // down a filtered list; only the per-user counts change.
 function _flowRefreshOwnerFilterCounts() {
@@ -10792,7 +10854,6 @@ function _flowWatchExecutionPane() {
 }
 
 function _flowSyncExecutionRows(active) {
-    if (window.FlowGroups?.syncExecutionRows(active)) return;
     const target = document.getElementById("flow-execution-rows");
     if (!target) return;
     const state = window._flowsState;
@@ -10843,8 +10904,12 @@ function _flowEmailStatusText(email) {
     }
 }
 
+function _flowSourceGroup(flow) {
+    return flow.source_type === "file" ? "Local" : flow.source_type === "outlook" ? "Outlook" : flow.source_type === "python" ? "Python" : ({asap_portal: "ASAP", gscm_portal: "GSCM"}[flow.source_adapter] || "Web");
+}
+
 function _flowRowModel(flow, runs = [], catalog = {}) {
-    const group = flow.source_type === "file" ? "Local" : flow.source_type === "outlook" ? "Outlook" : flow.source_type === "python" ? "Python" : ({asap_portal: "ASAP", gscm_portal: "GSCM"}[flow.source_adapter] || "Web");
+    const group = _flowSourceGroup(flow);
     const scripts = _flowPythonScriptNames(flow);
     const source = group === "Local" ? flow.local_file_path : group === "Outlook" ? flow.outlook_subject_contains : group === "Python" ? scripts.join(" → ") : (flow.category_path?.length ? flow.category_path.join(" › ") : flow.report_name || flow.site_name);
     const type = group === "Python" ? flow.python_run_mode === "run" ? `Runs ${scripts.length} script(s)` : `${scripts.length} script(s) → ${flow.sql_handoff_enabled ? "SQL" : String(flow.file_format || "csv").toUpperCase()}` : ["Local", "Outlook"].includes(group) ? "CSV / Excel" : ((catalog.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase());
@@ -12093,11 +12158,10 @@ async function _flowLoadRuns(append = false) {
 async function renderFlows() {
     const requestId = navigationRequestId;
     await (window._currentUserReady || Promise.resolve());
-    const [catalog, flows, runs, workers, scans, estimates, sqlCatalog, people, remoteControl, groups] = await Promise.all([
+    const [catalog, flows, runs, workers, scans, estimates, sqlCatalog, people, remoteControl] = await Promise.all([
         api("/api/flows/catalog"), api("/api/flows"), api("/api/flows/runs"), api("/api/flows/workers"),
         api("/api/flows/scans"), api("/api/flows/estimates"), api("/api/flows/sql/catalog"), api("/api/people"),
         api("/api/system/remote-flow-control").catch(() => null),
-        api("/api/flows/groups"),
     ]);
     window._remoteFlowControlStatus = remoteControl;
     let scanEvents = [];
@@ -12106,7 +12170,7 @@ async function renderFlows() {
     }
     if (requestId !== navigationRequestId || currentPage !== "flows") return "";
     window._flowsState = {
-        catalog, flows, runs, workers, scans, estimates, sqlCatalog, people, scanEvents, groups,
+        catalog, flows, runs, workers, scans, estimates, sqlCatalog, people, scanEvents,
         openCatalogTopics: new Set(), view: "list", classification: "production",
         runFilter: {}, runsPageFull: runs.length === 100,
     };
@@ -12195,6 +12259,7 @@ function _flowRefreshActivity() {
             if (generation !== poll.generation || state !== window._flowsState || !_flowActivityVisible()) return;
             state.activity = activity;
             _flowPatchActivity(activity);
+            _flowRefreshScheduledDays(state, activity.schedule_date);
             const connection = document.getElementById("flow-activity-connection");
             if (connection) connection.textContent = "";
         } catch (_) {
@@ -12225,16 +12290,23 @@ document.addEventListener("visibilitychange", () => {
 function _flowPatchActivity(activity) {
     const latest = new Map(activity.latest_runs.map(run => [Number(run.flow_id), run]));
     const active = new Map(activity.active_runs.map(run => [Number(run.flow_id), run]));
-    for (const flow of window._flowsState?.flows || []) {
+    const flows = window._flowsState?.flows || [];
+    const result = flows.length ? _flowListFilters(flows).result : "all";
+    let regroup = false;
+    for (const flow of flows) {
         const run = active.get(flow.id) || latest.get(flow.id);
+        const before = _flowLastResult(flow);
         flow.last_status = run?.status || null;
         flow.last_run_at = run?.created_at || null;
+        if (["queued", "claimed", "running"].includes(flow.last_status)) { flow.last_result = before; continue; }
+        flow.last_result = flow.last_status;
+        regroup ||= result !== "all" && (before === result) !== (flow.last_result === result);
     }
+    // A finished run moved a Flow into or out of the Last run filter.
+    if (regroup && window._flowsState.view === "list") { _flowShowView("list"); return; }
+    const visible = _flowVisibleFlows();
     document.querySelectorAll(".flow-group-toggle").forEach(button => {
-        const selectedClassification = window._flowsState?.classification === "draft" ? "draft" : "production";
-        const items = (window._flowsState?.flows || []).filter(flow =>
-            (flow.classification || "production") === selectedClassification
-            && _flowRowModel(flow).group === button.dataset.group);
+        const items = visible.filter(flow => _flowSourceGroup(flow) === button.dataset.group);
         const counts = [[".flow-group-active", items.filter(flow => active.has(flow.id)).length, "active runs"],
             [".flow-group-failed", items.filter(flow => flow.last_status === "failed").length, "failed"]];
         for (const [selector, count, label] of counts) {
@@ -12259,6 +12331,22 @@ function _flowPatchActivity(activity) {
     _flowSyncExecutionRows(active);
     const workers = document.getElementById("flow-worker-count");
     if (workers) workers.textContent = `${activity.workers.online} online worker${activity.workers.online === 1 ? "" : "s"}`;
+}
+
+// Scheduled days count from the Dubai date the Flows were loaded; reload them once it moves on.
+function _flowRefreshScheduledDays(state, date) {
+    if (!date || state.scheduledDaysReload) return;
+    const loaded = state.scheduledDaysFrom ?? state.flows?.find(flow => flow.scheduled_days_from)?.scheduled_days_from;
+    if (!loaded || loaded === date) return;
+    state.scheduledDaysReload = api("/api/flows").then(flows => {
+        const fresh = new Map(flows.map(flow => [flow.id, flow]));
+        for (const flow of state.flows) {
+            const item = fresh.get(flow.id);
+            if (item) Object.assign(flow, {scheduled_days_from: item.scheduled_days_from, scheduled_day_offsets: item.scheduled_day_offsets});
+        }
+        state.scheduledDaysFrom = flows.find(flow => flow.scheduled_days_from)?.scheduled_days_from || date;
+        if (state === window._flowsState && state.view === "list" && _flowListFilters(state.flows).schedule !== "all") _flowShowView("list");
+    }).catch(() => {}).finally(() => { state.scheduledDaysReload = null; });
 }
 
 function _flowScheduleCatalogMonitor() {
@@ -12962,7 +13050,6 @@ async function _flowSubmitBuilder(event) {
 
 function _bindFlowWorkspace() {
     const state = window._flowsState;
-    window.FlowGroups?.bind();
     _flowWatchExecutionPane();
     document.querySelectorAll(".flow-classification-tabs button").forEach(button => button.addEventListener("click", () => {
         state.classification = button.dataset.flowClassification;
@@ -13004,6 +13091,24 @@ function _bindFlowWorkspace() {
         document.getElementById("flow-owner-filter")?.focus();
     };
     window._flowOwnerCountsChanged = _flowRefreshOwnerFilterCounts;
+    document.querySelectorAll("[data-flow-filter]").forEach(select => select.onchange = () => {
+        window._flowFilterMemory = {..._flowListFilters(state.flows), [select.dataset.flowFilter]: select.value};
+        try { sessionStorage.setItem("metronome.flowFilters", JSON.stringify(window._flowFilterMemory)); } catch (_) {}
+        // Open every source with a match so the results are in view.
+        const opened = _flowOpenGroups();
+        for (const flow of _flowVisibleFlows()) opened.add(_flowSourceGroup(flow));
+        try { sessionStorage.setItem("metronome.flowGroups", JSON.stringify([...opened])); } catch (_) {}
+        _flowShowView("list");
+        document.getElementById(select.id)?.focus();
+    });
+    const clearFilters = document.getElementById("flow-filters-clear");
+    if (clearFilters) clearFilters.onclick = () => {
+        window._flowFilterMemory = {};
+        window._flowOwnerFilterMemory = "all";
+        try { sessionStorage.removeItem("metronome.flowFilters"); sessionStorage.setItem("metronome.flowOwner", "all"); } catch (_) {}
+        _flowShowView("list");
+        document.getElementById("flow-filter-source")?.focus();
+    };
     document.querySelectorAll(".flow-group-toggle").forEach(button => button.addEventListener("click", () => {
         const opened = _flowOpenGroups();
         if (opened.has(button.dataset.group)) opened.delete(button.dataset.group); else opened.add(button.dataset.group);
@@ -13027,7 +13132,6 @@ function _bindFlowWorkspace() {
             const updated = await apiPatch(`/api/flows/${flow.id}`, {classification});
             Object.assign(flow, updated);
             toast(classification === 'draft' ? 'Flow moved to Draft flows.' : 'Flow moved to Production.');
-            if (window.FlowGroups) await window.FlowGroups.refresh();
             _flowShowView('list');
         } catch (error) {
             toast('Flow classification was not changed: ' + error.message);

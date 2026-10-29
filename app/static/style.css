@@ -527,7 +527,13 @@ h2 {
     margin-bottom: var(--space-lg);
 }
 .flow-list-toolbar .flow-classification-tabs { margin-bottom: 0; }
-.flow-owner-filter {
+.flow-list-filters {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-sm) var(--space-md);
+}
+.flow-owner-filter, .flow-list-filter {
     display: inline-flex;
     align-items: center;
     gap: var(--space-sm);
@@ -535,7 +541,7 @@ h2 {
     font-weight: 600;
     color: var(--text-muted);
 }
-.flow-owner-filter select {
+.flow-owner-filter select, .flow-list-filter select {
     min-width: 12rem;
     max-width: 100%;
     background: var(--surface);
@@ -547,8 +553,10 @@ h2 {
     font-size: 0.82rem;
     font-weight: 500;
 }
-.flow-owner-filter select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-color: var(--accent); }
-:root.dark .flow-owner-filter select { color-scheme: dark; }
+.flow-owner-filter select:focus-visible, .flow-list-filter select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-color: var(--accent); }
+:root.dark .flow-owner-filter select, :root.dark .flow-list-filter select { color-scheme: dark; }
+.flow-list-filter select { min-width: 9rem; }
+.flow-list-filters button[hidden] { display: none; }
 .flow-muted { color: var(--text-muted); }
 .flow-table .flow-owner-name { display: inline-block; min-width: 6.5rem; overflow-wrap: normal; word-break: normal; }
 .flow-owner-fixed { display: flex; flex-direction: column; gap: 0.3rem; }
@@ -7949,6 +7957,7 @@ body.remote-flow-control-enabled { padding-top: 32px; }
 }
 /* Grouped flow list: fixed source order, readable paths, native controls. */
 .flow-grouped-table { min-width: 1020px; }
+.flow-grouped-table .flow-name-cell, .flow-execution-table .flow-name-cell { padding-left: 30px; min-width: 190px; }
 .flow-grouped-table td { vertical-align: top; white-space: normal; overflow-wrap: anywhere; }
 .flow-grouped-table .flow-row-actions { min-width: 140px; }
 .flow-grouped-table .flow-row-actions .btn-sm { margin: 0 4px 4px 0; }

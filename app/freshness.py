@@ -371,6 +371,23 @@ def next_trigger_occurrence(rules: Iterable[dict], *, after: datetime | None = N
     return min((next_occurrence(rule, after=after) for rule in rules), default=None)
 
 
+def flow_today(as_of: datetime | None = None) -> date:
+    """Return today's date in the Flow timezone."""
+    return (as_of or utc_now()).astimezone(host_timezone()).date()
+
+
+def scheduled_day_offsets(rules: Iterable[dict], *, today: date, days: int = 3) -> list[int]:
+    """Return which of the ``days`` dates from ``today``, 0 being today, have a trigger.
+
+    A date counts whether its trigger time is still ahead or already passed.
+    """
+    rules = list(rules)
+    return [
+        offset for offset in range(days)
+        if any(_occurs_on(rule, today + timedelta(days=offset)) for rule in rules)
+    ]
+
+
 def flow_freshness(flow, *, as_of: datetime | None = None) -> tuple[dict | None, dict]:
     schedule_type = str(_row_value(flow, "schedule_type", "manual") or "manual")
     if schedule_type == "manual":
