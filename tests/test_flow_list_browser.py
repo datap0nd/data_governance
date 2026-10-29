@@ -162,3 +162,21 @@ def test_filters_survive_reload_and_fit_a_phone_width(ui):
     for label in ('Source', 'Active', 'Last run', 'Scheduled', 'Database'):
         expect(page.get_by_label(label, exact=True)).to_be_visible()
     page.screenshot(path=str(evidence / 'flow-list-narrow.png'), full_page=True)
+
+
+def test_last_run_filter_follows_runs_that_finish_while_the_page_is_open(ui):
+    page, names, evidence = ui
+    choose(page, 'Last run', 'Failed')
+    assert visible(page) == [names['stock']]
+    row = lambda key: page.locator(f'#flow-workspace tr[data-flow-id="{names[key]}"]')
+    # A run that fails elsewhere joins the list on the next activity poll.
+    _finish_run(names['daily'], 'failed')
+    expect(row('daily')).to_have_count(1, timeout=20000)
+    # Starting a run keeps its Flow in view; a success then takes it out of Failed.
+    queued = flows.queue_run(names['stock'], _request())
+    expect(page.locator(f'#flow-execution-rows tr[data-flow-id="{names["stock"]}"]')).to_have_count(1, timeout=20000)
+    with database.get_db() as db:
+        db.execute("UPDATE flow_runs SET status='succeeded', finished_at=CURRENT_TIMESTAMP WHERE id=?", (queued["id"],))
+    expect(row('stock')).to_have_count(0, timeout=20000)
+    assert visible(page) == [names['daily']]
+    expect(page.get_by_label('Last run', exact=True)).to_have_value('failed')

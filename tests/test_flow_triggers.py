@@ -4,7 +4,7 @@ The main schedule columns stay trigger 1; additional triggers add run times.
 The scheduler queues at the earliest trigger, the Flow's own health checks the
 latest due trigger, and inherited Source freshness keeps following trigger 1.
 """
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import pytest
 from pydantic import ValidationError
@@ -13,6 +13,7 @@ from app import database, freshness
 from app.freshness import (
     additional_trigger_rules,
     evaluate_timed_rules,
+    flow_today,
     next_trigger_occurrence,
     schedule_rule,
     scheduled_day_offsets,
@@ -223,14 +224,18 @@ def test_scheduled_days_follow_dubai_dates_across_every_trigger():
     daily = schedule_rule("daily", "08:00", [])
     friday = schedule_rule("weekly", "06:00", ["friday"])
     month_end = schedule_rule("monthly", "23:00", [], 31)
+    thursday = flow_today(THURSDAY_1000_DUBAI)
+    assert thursday == date(2026, 10, 29)
     # Today counts although its 08:00 trigger has already passed.
-    assert scheduled_day_offsets([daily], as_of=THURSDAY_1000_DUBAI) == [0, 1, 2]
-    assert scheduled_day_offsets([friday], as_of=THURSDAY_1000_DUBAI) == [1]
-    assert scheduled_day_offsets([month_end], as_of=THURSDAY_1000_DUBAI) == [2]
-    assert scheduled_day_offsets([friday, month_end], as_of=THURSDAY_1000_DUBAI) == [1, 2]
-    assert scheduled_day_offsets([], as_of=THURSDAY_1000_DUBAI) == []
+    assert scheduled_day_offsets([daily], today=thursday) == [0, 1, 2]
+    assert scheduled_day_offsets([friday], today=thursday) == [1]
+    assert scheduled_day_offsets([month_end], today=thursday) == [2]
+    assert scheduled_day_offsets([friday, month_end], today=thursday) == [1, 2]
+    assert scheduled_day_offsets([], today=thursday) == []
     # 21:30 UTC on Thursday is already Friday in Dubai.
-    assert scheduled_day_offsets([friday], as_of=datetime(2026, 10, 29, 21, 30, tzinfo=UTC)) == [0]
+    friday_date = flow_today(datetime(2026, 10, 29, 21, 30, tzinfo=UTC))
+    assert friday_date == date(2026, 10, 30)
+    assert scheduled_day_offsets([friday], today=friday_date) == [0]
 
 
 def test_flow_list_reports_scheduled_days_for_active_scheduled_flows_only(flow_db, monkeypatch):
@@ -241,5 +246,9 @@ def test_flow_list_reports_scheduled_days_for_active_scheduled_flows_only(flow_d
     paused, manual = (flows.create_flow(_flow(site["id"], report["id"], **fields), _request()) for fields in (
         {"name": "Paused Friday", "schedule_time": "06:00", "schedule_days": ["friday"], "enabled": False},
         {"name": "Manual only", "schedule_type": "manual", "schedule_time": None, "enabled": False}))
-    days = {flow["id"]: flow["scheduled_day_offsets"] for flow in flows.list_flows()}
+    listed = flows.list_flows()
+    days = {flow["id"]: flow["scheduled_day_offsets"] for flow in listed}
     assert days == {active["id"]: [1, 2], paused["id"]: [], manual["id"]: []}
+    # The list reloads these days when activity reports a later Dubai date.
+    assert {flow["scheduled_days_from"] for flow in listed} == {"2026-10-29"}
+    assert flows.flow_activity()["schedule_date"] == "2026-10-29"

@@ -82,4 +82,49 @@ context.window._flowFilterMemory = {source: 'ASAP'};
 assert.deepEqual([...context._flowVisibleFlows().map(flow => flow.id)], [1, 2]);
 context.window._flowsState.classification = 'draft';
 assert.deepEqual([...context._flowVisibleFlows().map(flow => flow.id)], [7]);
+
+// Last run follows the latest finished run: starting a run keeps the Flow listed,
+// and a finished run that changes the result re-renders the list.
+const shown = [];
+Object.assign(context, {_flowShowView: view => shown.push(view), _flowSyncExecutionRows: () => {},
+    document: {querySelectorAll: () => [], getElementById: () => null}});
+vm.runInContext(source.slice(source.indexOf('function _flowPatchActivity(activity)'), source.indexOf('function _flowScheduleCatalogMonitor')), context);
+const watched = [{id: 1, source_type: 'file', last_status: 'failed'}, {id: 2, source_type: 'file', last_status: 'succeeded'}];
+context.window._flowsState = {flows: watched, classification: 'production', view: 'list'};
+context.window._flowFilterMemory = {result: 'failed'};
+const activity = runs => ({latest_runs: runs, active_runs: runs.filter(run => ['queued', 'claimed', 'running'].includes(run.status)), workers: {online: 1}});
+const listed = () => [...context._flowVisibleFlows().map(flow => flow.id)];
+context._flowPatchActivity(activity([{flow_id: 1, status: 'running'}, {flow_id: 2, status: 'succeeded'}]));
+assert.deepEqual(shown, []);
+assert.deepEqual(listed(), [1]);
+context._flowPatchActivity(activity([{flow_id: 1, status: 'succeeded'}, {flow_id: 2, status: 'succeeded'}]));
+assert.deepEqual(shown, ['list']);
+assert.deepEqual(listed(), []);
+context._flowPatchActivity(activity([{flow_id: 1, status: 'succeeded'}, {flow_id: 2, status: 'failed'}]));
+assert.deepEqual(shown, ['list', 'list']);
+assert.deepEqual(listed(), [2]);
+context.window._flowFilterMemory = {};
+context._flowPatchActivity(activity([{flow_id: 1, status: 'failed'}, {flow_id: 2, status: 'failed'}]));
+assert.deepEqual(shown, ['list', 'list'], 'without a Last run filter a finished run patches rows in place');
+
+// After midnight in Dubai the scheduled days are reloaded once, and only a schedule filter re-renders.
+const requested = [];
+context.api = url => { requested.push(url); return Promise.resolve([{id: 1, scheduled_days_from: '2026-10-30', scheduled_day_offsets: [0]}]); };
+const dayState = {flows: [{id: 1, source_type: 'file', scheduled_days_from: '2026-10-29', scheduled_day_offsets: [1]}], view: 'list'};
+context.window._flowsState = dayState;
+context.window._flowFilterMemory = {schedule: 'today'};
+shown.length = 0;
+context._flowRefreshScheduledDays(dayState, '2026-10-29');
+context._flowRefreshScheduledDays(dayState, undefined);
+assert.deepEqual(requested, []);
+context._flowRefreshScheduledDays(dayState, '2026-10-30');
+const reload = dayState.scheduledDaysReload;
+context._flowRefreshScheduledDays(dayState, '2026-10-30');
+assert.deepEqual(requested, ['/api/flows']);
+await reload;
+assert.deepEqual([...dayState.flows[0].scheduled_day_offsets], [0]);
+assert.equal(dayState.scheduledDaysFrom, '2026-10-30');
+assert.deepEqual(shown, ['list']);
+context._flowRefreshScheduledDays(dayState, '2026-10-30');
+assert.deepEqual(requested, ['/api/flows']);
 console.log('flow list filter tests passed');

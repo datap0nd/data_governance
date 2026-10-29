@@ -10797,9 +10797,14 @@ function _flowMatchesFilters(flow, filters) {
     const database = flow.sql_handoff_enabled && flow.sql_database ? `db:${flow.sql_database}` : "none";
     return (filters.source === "all" || _flowSourceGroup(flow) === filters.source)
         && (filters.active === "all" || (filters.active === "active") === !!flow.enabled)
-        && (filters.result === "all" || flow.last_status === filters.result)
+        && (filters.result === "all" || _flowLastResult(flow) === filters.result)
         && (filters.schedule === "all" || (filters.schedule === "next3" ? days.length > 0 : days.includes(filters.schedule === "today" ? 0 : 1)))
         && (filters.database === "all" || database === filters.database);
+}
+
+// The latest finished run's status: starting a run never moves a Flow out of a Last run filter.
+function _flowLastResult(flow) {
+    return flow.last_result !== undefined ? flow.last_result : flow.last_status;
 }
 
 function _flowFiltersHtml(flows, filters) {
@@ -12254,6 +12259,7 @@ function _flowRefreshActivity() {
             if (generation !== poll.generation || state !== window._flowsState || !_flowActivityVisible()) return;
             state.activity = activity;
             _flowPatchActivity(activity);
+            _flowRefreshScheduledDays(state, activity.schedule_date);
             const connection = document.getElementById("flow-activity-connection");
             if (connection) connection.textContent = "";
         } catch (_) {
@@ -12284,11 +12290,20 @@ document.addEventListener("visibilitychange", () => {
 function _flowPatchActivity(activity) {
     const latest = new Map(activity.latest_runs.map(run => [Number(run.flow_id), run]));
     const active = new Map(activity.active_runs.map(run => [Number(run.flow_id), run]));
-    for (const flow of window._flowsState?.flows || []) {
+    const flows = window._flowsState?.flows || [];
+    const result = flows.length ? _flowListFilters(flows).result : "all";
+    let regroup = false;
+    for (const flow of flows) {
         const run = active.get(flow.id) || latest.get(flow.id);
+        const before = _flowLastResult(flow);
         flow.last_status = run?.status || null;
         flow.last_run_at = run?.created_at || null;
+        if (["queued", "claimed", "running"].includes(flow.last_status)) { flow.last_result = before; continue; }
+        flow.last_result = flow.last_status;
+        regroup ||= result !== "all" && (before === result) !== (flow.last_result === result);
     }
+    // A finished run moved a Flow into or out of the Last run filter.
+    if (regroup && window._flowsState.view === "list") { _flowShowView("list"); return; }
     const visible = _flowVisibleFlows();
     document.querySelectorAll(".flow-group-toggle").forEach(button => {
         const items = visible.filter(flow => _flowSourceGroup(flow) === button.dataset.group);
@@ -12316,6 +12331,22 @@ function _flowPatchActivity(activity) {
     _flowSyncExecutionRows(active);
     const workers = document.getElementById("flow-worker-count");
     if (workers) workers.textContent = `${activity.workers.online} online worker${activity.workers.online === 1 ? "" : "s"}`;
+}
+
+// Scheduled days count from the Dubai date the Flows were loaded; reload them once it moves on.
+function _flowRefreshScheduledDays(state, date) {
+    if (!date || state.scheduledDaysReload) return;
+    const loaded = state.scheduledDaysFrom ?? state.flows?.find(flow => flow.scheduled_days_from)?.scheduled_days_from;
+    if (!loaded || loaded === date) return;
+    state.scheduledDaysReload = api("/api/flows").then(flows => {
+        const fresh = new Map(flows.map(flow => [flow.id, flow]));
+        for (const flow of state.flows) {
+            const item = fresh.get(flow.id);
+            if (item) Object.assign(flow, {scheduled_days_from: item.scheduled_days_from, scheduled_day_offsets: item.scheduled_day_offsets});
+        }
+        state.scheduledDaysFrom = flows.find(flow => flow.scheduled_days_from)?.scheduled_days_from || date;
+        if (state === window._flowsState && state.view === "list" && _flowListFilters(state.flows).schedule !== "all") _flowShowView("list");
+    }).catch(() => {}).finally(() => { state.scheduledDaysReload = null; });
 }
 
 function _flowScheduleCatalogMonitor() {
