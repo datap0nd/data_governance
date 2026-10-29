@@ -57,7 +57,10 @@ for (const [config, label] of [
     [{ schedule_type: "weekly", schedule_days: ["wednesday", "monday"] }, "Mondays and Wednesdays"],
     [{ schedule_type: "monthly", schedule_day: 15 }, "Monthly · day 15"],
 ]) assert.match(render({ ...config, next_run_at: "hidden-next" }), new RegExp(`<td>${label}</td>`));
-assert.doesNotMatch(render({ next_run_at: "hidden-next" }), /hidden-next|Next /);
+// The Scheduled filter offers "Next 3 days"; the list itself shows no next-run label.
+const unscheduled = render({ next_run_at: "hidden-next" });
+assert.doesNotMatch(unscheduled, /hidden-next/);
+assert.doesNotMatch(unscheduled.slice(unscheduled.indexOf('<section id="flow-execution-pane"')), /Next /);
 
 assert.match(render({ last_status: "queued" }), /Waiting/);
 context.window._flowsState.people = [{ id: 7, name: "Dana" }];

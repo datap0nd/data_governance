@@ -9,12 +9,13 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import ValidationError
 
-from app import database
+from app import database, freshness
 from app.freshness import (
     additional_trigger_rules,
     evaluate_timed_rules,
     next_trigger_occurrence,
     schedule_rule,
+    scheduled_day_offsets,
     trigger_payload,
 )
 from app.freshness_inheritance import reconcile_source
@@ -212,3 +213,33 @@ def test_handover_snapshot_carries_the_triggers(flow_db, clock):
     with database.get_db() as db:
         snapshot = flow_handover.snapshot(db, saved["id"])
     assert snapshot["schedule"]["additional_triggers"] == [_daily("11:00")]
+
+
+# Thursday 29 October 2026, 10:00 in Dubai.
+THURSDAY_1000_DUBAI = datetime(2026, 10, 29, 6, 0, tzinfo=UTC)
+
+
+def test_scheduled_days_follow_dubai_dates_across_every_trigger():
+    daily = schedule_rule("daily", "08:00", [])
+    friday = schedule_rule("weekly", "06:00", ["friday"])
+    month_end = schedule_rule("monthly", "23:00", [], 31)
+    # Today counts although its 08:00 trigger has already passed.
+    assert scheduled_day_offsets([daily], as_of=THURSDAY_1000_DUBAI) == [0, 1, 2]
+    assert scheduled_day_offsets([friday], as_of=THURSDAY_1000_DUBAI) == [1]
+    assert scheduled_day_offsets([month_end], as_of=THURSDAY_1000_DUBAI) == [2]
+    assert scheduled_day_offsets([friday, month_end], as_of=THURSDAY_1000_DUBAI) == [1, 2]
+    assert scheduled_day_offsets([], as_of=THURSDAY_1000_DUBAI) == []
+    # 21:30 UTC on Thursday is already Friday in Dubai.
+    assert scheduled_day_offsets([friday], as_of=datetime(2026, 10, 29, 21, 30, tzinfo=UTC)) == [0]
+
+
+def test_flow_list_reports_scheduled_days_for_active_scheduled_flows_only(flow_db, monkeypatch):
+    monkeypatch.setattr(freshness, "utc_now", lambda: THURSDAY_1000_DUBAI)
+    site, report, active = _create(
+        name="Friday and month end", schedule_type="weekly", schedule_time="06:00", schedule_days=["friday"],
+        additional_triggers=[{"type": "monthly", "time": "23:00", "day": 31}])
+    paused, manual = (flows.create_flow(_flow(site["id"], report["id"], **fields), _request()) for fields in (
+        {"name": "Paused Friday", "schedule_time": "06:00", "schedule_days": ["friday"], "enabled": False},
+        {"name": "Manual only", "schedule_type": "manual", "schedule_time": None, "enabled": False}))
+    days = {flow["id"]: flow["scheduled_day_offsets"] for flow in flows.list_flows()}
+    assert days == {active["id"]: [1, 2], paused["id"]: [], manual["id"]: []}

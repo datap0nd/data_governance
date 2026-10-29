@@ -40,6 +40,7 @@ from app.freshness import (
     next_trigger_occurrence,
     rule_key,
     schedule_rule,
+    scheduled_day_offsets,
     trigger_payload,
     utc_now,
 )
@@ -1401,6 +1402,8 @@ def _flow_out(db, flow_id: int, *, include_private_storage: bool = False) -> dic
     freshness_rule, freshness_health = flow_freshness(row)
     result["freshness_rule"] = freshness_rule
     result["freshness_health"] = freshness_health
+    # Today, tomorrow and the day after in Dubai, for the list's schedule filter.
+    result["scheduled_day_offsets"] = scheduled_day_offsets(flow_trigger_rules(row)) if result["enabled"] else []
     link = flow_link_status(db, row, server=_flow_server_identity())
     # Keep persisted diagnostic evidence separate from the exact target a
     # preview or run may safely use.
