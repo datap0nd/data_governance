@@ -2,9 +2,10 @@
 
 - Plan: [test-plan.md](test-plan.md)
 - Change/PR: link in the PR's testing section
-- Evidence cutoff (UTC): 2026-10-29 07:13
-- Tested code revision: `a9d9905` (application and test changes; this report
-  and its screenshots are committed after it)
+- Evidence cutoff (UTC): 2026-10-29 07:26
+- Tested code revision: `fb32a85` (application and test changes, including
+  the fixes for the two Codex review findings; this report update is
+  committed after it)
 - Environment: Linux 6.18 (cloud container), Python 3.13.17 checkout-owned
   `.venv` with the locked CI dependencies, Node v22.22.0, Playwright 1.62.0
   with its bundled Chromium 153.0.8010.12 (synthetic, headless)
@@ -15,9 +16,9 @@
 
 | Check/case IDs | Command or procedure | Revision/environment | Result/counts/duration | Evidence |
 | --- | --- | --- | --- | --- |
-| F-03, S-01, R-01 | The `python tools/check.py verify` command in the plan | `a9d9905`, Linux above | PASS: 55 passed, 0 failed, 0 skipped, 2 third-party deprecation warnings, 133.6 s; syntax clean for `app/freshness.py` and `app/routers/flows.py` | `.test-runs/20261029T071016998Z-4247-fead9f9f/result.json` |
-| L-02, F-07, R-01 | `for test_file in tests/test_*.mjs; do node "$test_file"; done` and `node --check` on every `app/static/*.js` | `a9d9905`, Node above | 26 of 27 Node test files pass, including the new `test_flow_list_filters.mjs`; every script passes `node --check`. `test_gemini_extension.mjs` cannot start here: the `pg` package from the integration's npm install is missing. It fails the same way on unchanged `main`; CI installs it | Console output |
-| L-01, F-01 to F-06 | `python -m pytest tests/test_flow_list_browser.py`, with a scratch pytest plugin (not committed) that launches the container's Chromium in place of `channel='chrome'`, because Google Chrome is not installed here | `a9d9905`, Chromium above | PASS: 3 passed, 23.8 s; no page errors | `evidence/flow-list-asap-open.png`, `evidence/flow-list-filtered.png`, `evidence/flow-list-no-match.png`, `evidence/flow-list-narrow.png` |
+| F-03, F-09, S-01, R-01 | The `python tools/check.py verify` command in the plan | `fb32a85`, Linux above | PASS: 55 passed, 0 failed, 0 skipped, 2 third-party deprecation warnings, 135.0 s; syntax clean for `app/freshness.py` and `app/routers/flows.py` | `.test-runs/20261029T072210840Z-5538-7ebd6c76/result.json` |
+| L-02, F-07 to F-09, R-01 | `for test_file in tests/test_*.mjs; do node "$test_file"; done` and `node --check` on every `app/static/*.js` | `fb32a85`, Node above | 26 of 27 Node test files pass, including the new `test_flow_list_filters.mjs`; every script passes `node --check`. `test_gemini_extension.mjs` cannot start here: the `pg` package from the integration's npm install is missing. It fails the same way on unchanged `main`; CI installs it | Console output |
+| L-01, F-01 to F-06, F-08 | `python -m pytest tests/test_flow_list_browser.py`, with a scratch pytest plugin (not committed) that launches the container's Chromium in place of `channel='chrome'`, because Google Chrome is not installed here | `fb32a85`, Chromium above | PASS: 4 passed, 46.0 s; no page errors | `evidence/flow-list-asap-open.png`, `evidence/flow-list-filtered.png`, `evidence/flow-list-no-match.png`, `evidence/flow-list-narrow.png` |
 
 ## Unperformed or blocked in-scope checks
 
@@ -27,7 +28,8 @@
 
 ## Usability evidence
 
-Synthetic screenshots at `a9d9905`, 1440 × 1080 unless noted:
+Synthetic screenshots, 1440 × 1080 unless noted. They were taken at
+`a9d9905`, and the rerun at `fb32a85` produced byte-identical images:
 
 - [ASAP opened, no sub-groups](evidence/flow-list-asap-open.png): both
   formerly grouped ASAP Flows are listed directly under ASAP.
@@ -41,8 +43,8 @@ Synthetic screenshots at `a9d9905`, 1440 × 1080 unless noted:
 Labels are the visible filter names. Feedback appears beside the controls:
 the status line and the source headings' counts. The filters survive
 navigation and reload, and Clear filters is the next action whenever filters
-hide Flows. Before the fix, the first browser run found two defects, and both
-were fixed before `a9d9905`. **Clear filters** showed while hidden, because
+hide Flows. The first browser run found two defects, and both were fixed
+before `a9d9905`. **Clear filters** showed while hidden, because
 the button style overrode `hidden`. The dropdowns' accessible names included
 their selected option text.
 
@@ -66,9 +68,16 @@ appears still covers the whole page.
 
 "Scheduled" answers whether a Flow has a trigger on that Dubai date, whether
 the trigger time is still ahead or has already passed today. "Next 3 days" is
-today, tomorrow and the day after. The list's dates are computed when the
-page loads, so a page left open past midnight in Dubai shows the previous
-day's dates until it is reloaded.
+today, tomorrow and the day after.
+
+The Codex review of `5a42893` raised two findings, and both were fixed in
+`fb32a85` (F-08, F-09):
+- The Last run filter did not follow runs that finished while the page was
+  open: a new failure never appeared under Failed.
+- The scheduled days kept counting from the load date after midnight in Dubai.
+
+A test against the earlier code would fail: the new browser case waits for
+the new failure to appear, and the earlier code never re-rendered.
 
 ## Merge evidence
 

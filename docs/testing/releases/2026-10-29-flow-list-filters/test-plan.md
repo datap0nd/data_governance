@@ -17,6 +17,12 @@
      filter opens the sources with a match. The status line reads "Showing N
      of M" while filters hide Flows, and **Clear filters** resets every filter,
      including User. The browser tab remembers the filters.
+  3. **Live while open** (from the Codex review). **Last run** follows each
+     Flow's latest finished run. Starting a run keeps its Flow in view, and
+     when a run finishes and moves a Flow into or out of the selected result,
+     the list re-renders. Each Flow carries the Dubai date its scheduled days
+     count from, and the activity poll reports the server's current Dubai
+     date. When that date moves on, the list reloads the scheduled days once.
 - Code baseline: `main` at `44301b8`.
 - Related report: [test-report.md](test-report.md)
 - Intended environments: Linux with the checkout-owned Python 3.13 `.venv`,
@@ -49,6 +55,8 @@ Both ASAP Flows are saved in an old topic group named "ASAP tracker".
 | F-04 | Database lists only databases in use; choose each | Options: All databases, meto_db, postgres, No SQL output; each shows its own Flows | same browser test, `evidence/flow-list-filtered.png` |
 | F-05 | A combination with no match (Source = Local, Database = meto_db), then Clear filters | "No production flows match these filters" with "Clear filters to see every Flow."; Clear brings all four back | same browser test, `evidence/flow-list-no-match.png` |
 | F-06 | Choose Database = postgres, reload; narrow to 390 px | The filter and "Showing 1 of 4" survive the reload; no horizontal page scroll; every filter visible | `test_flow_list_browser.py::test_filters_survive_reload_and_fit_a_phone_width`, `evidence/flow-list-narrow.png` |
+| F-08 | With Last run = Failed open: another Flow's run fails; then a failed Flow is run and succeeds | The new failure joins the list on the next poll; the running Flow stays in view in Flows in execution; its success takes it out of Failed; the filter stays selected | `test_flow_list_browser.py::test_last_run_filter_follows_runs_that_finish_while_the_page_is_open`; `test_flow_list_filters.mjs` |
+| F-09 | Activity reports a later Dubai date than the loaded Flows | One reload of `/api/flows` updates every Flow's scheduled days, even with repeated polls; the list re-renders only when a Scheduled filter is chosen; the same date, or no date, reloads nothing | `test_flow_list_filters.mjs`; `test_flow_triggers.py::test_flow_list_reports_scheduled_days_for_active_scheduled_flows_only` |
 | S-01 | Scheduled days from triggers: daily, weekly, monthly day 31, several triggers, Dubai midnight | Today counts after its trigger time has passed; Friday is tomorrow on a Thursday; day 31 is the day after tomorrow on 29 October; triggers combine; 21:30 UTC on Thursday is Friday in Dubai | `test_flow_triggers.py::test_scheduled_days_follow_dubai_dates_across_every_trigger` |
 | F-07 | Filter rules, stored values and live counts | Each filter and combination selects the expected Flows; a stored value no longer offered (for example a retired database) falls back to all; live heading counts use the same tab, user and filters | `test_flow_list_filters.mjs` |
 | R-01 | Existing Flows list, triggers, handover snapshot and groups API behavior | Unchanged | remaining `test_flow_triggers.py`, `test_flow_topic_groups.py`, `test_flow_target_roundtrip.py`, `test_flow_handover.py`, every other `tests/test_*.mjs` |
