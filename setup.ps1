@@ -34,6 +34,9 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 }
 
 $ErrorActionPreference = "Stop"
+# Windows PowerShell 5.1 slows Invoke-WebRequest and Expand-Archive badly
+# while it draws their progress bars. The [n/5] step messages below remain.
+$ProgressPreference = 'SilentlyContinue'
 trap {
     Write-Host ""
     Write-Host "SETUP FAILED: $_" -ForegroundColor Red

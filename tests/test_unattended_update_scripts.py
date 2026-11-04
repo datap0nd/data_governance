@@ -243,3 +243,13 @@ def test_update_archive_never_contains_anything_under_media(tmp_path):
         names = set(bundle.namelist())
     assert not [name for name in names if name == "media/" or name.startswith("media/")]
     assert {"app/main.py", "app/media.py", "docs/media/guide.md"} <= names
+
+
+def test_setup_hides_progress_bars_before_downloading_and_extracting():
+    # Windows PowerShell 5.1 crawls through Invoke-WebRequest and
+    # Expand-Archive while it draws their progress bars.
+    source = SETUP.read_text(encoding="utf-8")
+    quiet = source.index("$ProgressPreference = 'SilentlyContinue'")
+    assert quiet < source.index("Invoke-WebRequest")
+    assert quiet < source.index("Expand-Archive")
+    assert source.count("$ProgressPreference") == 1
