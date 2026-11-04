@@ -250,6 +250,6 @@ def test_setup_hides_progress_bars_before_downloading_and_extracting():
     # Expand-Archive while it draws their progress bars.
     source = SETUP.read_text(encoding="utf-8")
     quiet = source.index("$ProgressPreference = 'SilentlyContinue'")
-    assert quiet < source.index("Invoke-WebRequest")
-    assert quiet < source.index("Expand-Archive")
+    assert quiet < source.index("Invoke-WebRequest -Uri")
+    assert quiet < source.index("Expand-Archive -Path")
     assert source.count("$ProgressPreference") == 1
