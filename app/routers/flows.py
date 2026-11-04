@@ -534,8 +534,6 @@ def _week_range(start: str, end: str) -> list[str]:
         raise ValueError("The selected week does not exist in that year.") from exc
     if final < current:
         raise ValueError("End week cannot be before start week.")
-    if (final - current).days > 7 * 104:
-        raise ValueError("A flow can cover at most 105 weeks.")
     result = []
     while current <= final:
         year, week, _ = current.isocalendar()
