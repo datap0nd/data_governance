@@ -17,9 +17,11 @@
      PowerShell 5.1 slows `Invoke-WebRequest` and `Expand-Archive` badly
      while it draws their progress bars, and `setup.ps1` never turned them
      off. It now sets `$ProgressPreference = 'SilentlyContinue'` right after
-     elevation; its own `[n/5]` step messages still show. An update runs the
-     installed `setup.ps1` for its download and extraction, so this speeds up
-     the update after the one that installs it.
+     elevation; its own `[n/5]` step messages still show. The update that
+     installs this first downloads and extracts with the old `setup.ps1`,
+     then sees `setup.ps1` changed and relaunches the new one, which repeats
+     both steps without progress bars. Every later update is quiet from the
+     start.
 
   Unchanged: the order and content of the update steps. The update merges
   files and never deletes installed ones, so a `media` folder already on a PC

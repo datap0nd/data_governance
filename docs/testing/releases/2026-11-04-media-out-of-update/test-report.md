@@ -66,9 +66,10 @@ than the commands and failed at `c18dfde`; `fb72d6d` anchors it to
 (`.test-runs/20261104T091456640Z-926-6a344429`). No PowerShell parse of
 `setup.ps1` ran here.
 
-The progress setting cannot be timed here. An update downloads and extracts
-with the `setup.ps1` already installed, so the gain appears from the update
-after the one that installs this change.
+The progress setting cannot be timed here. The update that installs it
+downloads and extracts once with the old `setup.ps1`, then relaunches the new
+one (it relaunches whenever `setup.ps1` changed), which repeats both steps
+without progress bars.
 
 M-01 uses local `git archive`. GitHub's download is built the same way, but
 this report does not include a download from GitHub itself.
