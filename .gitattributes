@@ -1,0 +1,4 @@
+# The app update downloads GitHub's archive of main. Nothing under media/
+# (films, audio, renders) belongs in that download, even if files are added
+# there again later.
+/media export-ignore

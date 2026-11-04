@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import uuid
+import zipfile
 from contextlib import closing
 from pathlib import Path
 
@@ -20,6 +21,7 @@ APPLY_UPDATE = ROOT / "tools" / "apply_update.ps1"
 BACKUP_SQLITE = ROOT / "tools" / "backup_sqlite.py"
 SETUP = ROOT / "setup.ps1"
 UPDATE_APP = ROOT / "update_app.ps1"
+GIT_ATTRIBUTES = ROOT / ".gitattributes"
 
 
 def test_sqlite_backup_includes_committed_wal_pages():
@@ -213,3 +215,31 @@ def test_manual_update_requires_a_fresh_sha_and_propagates_setup_failure():
     assert "Continuing with a normal update" not in source
     assert 'throw "Could not confirm the newest version.' in source
     assert "exit $LASTEXITCODE" in source
+
+
+def test_update_archive_never_contains_anything_under_media(tmp_path):
+    # The update downloads GitHub's archive of main, which git archive builds
+    # and which honours export-ignore. Archive a fixture commit carrying the
+    # repository's own .gitattributes, exactly as GitHub would.
+    checkout = tmp_path / "checkout"
+    for relative in (
+        "media/film/audio/score.wav", "media/film/renders/animatic.mp4",
+        "media/notes.md", "app/main.py", "app/media.py", "docs/media/guide.md",
+    ):
+        path = checkout / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(relative, encoding="utf-8")
+    (checkout / ".gitattributes").write_bytes(GIT_ATTRIBUTES.read_bytes())
+    git = ["git", "-C", str(checkout), "-c", "user.name=Fixture",
+           "-c", "user.email=fixture@example.invalid", "-c", "core.autocrlf=false"]
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True, capture_output=True)
+    subprocess.run([*git, "add", "-A"], check=True, capture_output=True)
+    subprocess.run([*git, "commit", "-q", "-m", "fixture"], check=True, capture_output=True)
+    archive = tmp_path / "update.zip"
+    subprocess.run([*git, "archive", "--format=zip", "-o", str(archive), "HEAD"],
+                   check=True, capture_output=True)
+
+    with zipfile.ZipFile(archive) as bundle:
+        names = set(bundle.namelist())
+    assert not [name for name in names if name == "media/" or name.startswith("media/")]
+    assert {"app/main.py", "app/media.py", "docs/media/guide.md"} <= names
