@@ -146,6 +146,47 @@ def test_asap_week_slider_discovery_expands_bounds_and_restores_handles(monkeypa
     assert values == ["202622", "202633"]
 
 
+def test_asap_week_slider_spanning_more_than_105_weeks_reports_its_newest_week(monkeypatch):
+    # A portal slider from 2024-W01 to 2026-W45 holds 149 weeks. Discovery
+    # once returned nothing past 105 weeks, so "Start to latest" stalled.
+    values = ["202610", "202645"]
+    bounds = [("202401", "202645"), ("202401", "202645")]
+
+    class Handle:
+        def __init__(self, index):
+            self.index = index
+
+        def get_attribute(self, name):
+            return values[self.index] if name == "aria-valuetext" else None
+
+        def inner_text(self):
+            return ""
+
+        def press(self, key):
+            if key == "Home":
+                values[self.index] = bounds[self.index][0]
+            elif key == "End":
+                values[self.index] = bounds[self.index][1]
+            else:
+                raw = values[self.index]
+                current = datetime.fromisocalendar(int(raw[:4]), int(raw[4:]), 1)
+                current += flow_worker.timedelta(days=7 if key == "ArrowRight" else -7)
+                year, week, _weekday = current.isocalendar()
+                values[self.index] = f"{year:04d}{week:02d}"
+
+    handles = [Handle(0), Handle(1)]
+    monkeypatch.setattr(flow_worker, "_asap_range_scope", lambda _frame, _label: (object(), handles))
+
+    options, automation = flow_worker._asap_discover_week_slider(object())
+
+    assert len(options) == 149
+    assert options[0] == "202401"
+    assert options[-1] == "202645"
+    assert "202453" not in options  # 2024 has 52 ISO weeks
+    assert automation == {"kind": "range_slider", "date_range_label": "Date"}
+    assert values == ["202610", "202645"]
+
+
 def test_asap_period_slider_has_no_coupled_date_range(monkeypatch):
     values = ["202623", "202634"]
     bounds = [("202601", "202634"), ("202601", "202634")]
@@ -1365,6 +1406,55 @@ def test_start_to_latest_uses_newest_discovered_asap_week(flow_db):
     assert queued["job"]["downloads"]["periods"] == [
         ["2026-W30", "2026-W31"], ["2026-W32", "2026-W33"],
     ]
+
+
+def test_start_to_latest_keeps_reaching_the_newest_week_past_105_weeks(flow_db):
+    # 2024-W01 through 2026-W45 is 149 weeks: more than the old 105-week cap.
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    weeks = flow_worker._asap_week_options("202401", "202645")
+    with database.get_db() as db:
+        db.execute(
+            "UPDATE flow_report_filters SET options_json=? WHERE report_id=? AND control_type='week'",
+            (json.dumps(weeks), report["id"]),
+        )
+    saved = flows.create_flow(
+        _flow(
+            site["id"], report["id"], period_strategy="latest", start_week="2024-W01",
+            end_week=None, download_mode="one_per_period", window_weeks=7,
+            filename_template="{flow}_{start_period}_{end_period}.csv",
+        ),
+        _request(),
+    )
+    downloads = flows.queue_run(saved["id"], _request())["job"]["downloads"]
+
+    assert len(weeks) == 149
+    assert downloads["period_start_week"] == "2024-W01"
+    assert downloads["period_end_week"] == "2026-W45"
+    assert len(downloads["periods"]) == 22
+    assert downloads["periods"][0] == [f"2024-W{week:02d}" for week in range(1, 8)]
+    assert downloads["periods"][-1] == ["2026-W44", "2026-W45"]
+    assert [week for period in downloads["periods"] for week in period] == [
+        f"{week[:4]}-W{week[4:]}" for week in weeks
+    ]
+
+
+def test_fixed_range_longer_than_105_weeks_is_accepted(flow_db):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(
+        _flow(
+            site["id"], report["id"], start_week="2024-W01", end_week="2026-W45",
+            window_weeks=7,
+        ),
+        _request(),
+    )
+    periods = flows.queue_run(saved["id"], _request())["job"]["downloads"]["periods"]
+
+    assert len(periods) == 22
+    assert periods[-1] == ["2026-W44", "2026-W45"]
+    with pytest.raises(ValueError, match="End week cannot be before start week"):
+        _flow(site["id"], report["id"], start_week="2026-W45", end_week="2024-W01")
 
 
 def test_no_period_bundle_queues_every_discovered_export_view(flow_db):

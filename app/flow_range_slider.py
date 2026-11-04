@@ -209,7 +209,9 @@ def week_options(start: str, end: str) -> list[str]:
         final = date.fromisocalendar(int(end_match.group(1)), int(end_match.group(2)), 1)
     except ValueError:
         return []
-    if final < current or (final - current).days > 7 * 104:
+    # Any span is accepted: a portal that keeps more than two years of weeks
+    # must still report its newest week, or "Start to latest" stops there.
+    if final < current:
         return []
     values = []
     while current <= final:
