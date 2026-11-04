@@ -8,7 +8,7 @@ templates and the result vocabulary.
 
 | Release | What to test | Results |
 | --- | --- | --- |
-| 2026-11-04: Film removed and media/ kept out of updates | [Test plan](releases/2026-11-04-media-out-of-update/test-plan.md) | [Test report](releases/2026-11-04-media-out-of-update/test-report.md) |
+| 2026-11-04: Film removed, media/ kept out of updates, quiet setup | [Test plan](releases/2026-11-04-media-out-of-update/test-plan.md) | [Test report](releases/2026-11-04-media-out-of-update/test-report.md) |
 | 2026-11-04: ASAP week ranges past 105 weeks | [Test plan](releases/2026-11-04-asap-weeks-past-105/test-plan.md) | [Test report](releases/2026-11-04-asap-weeks-past-105/test-report.md) |
 | 2026-10-29: Flows list filters and no sub-groups | [Test plan](releases/2026-10-29-flow-list-filters/test-plan.md) | [Test report](releases/2026-10-29-flow-list-filters/test-report.md) |
 | 2026-10-27: Worker reports no longer time out on Flow files | [Test plan](releases/2026-10-27-worker-report-timeouts/test-plan.md) | [Test report](releases/2026-10-27-worker-report-timeouts/test-report.md) |
