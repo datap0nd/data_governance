@@ -122,17 +122,22 @@ second, empty Metronome and point the services at it, so the app opens with no
 users and no data while the real database sits unused on disk.
 
 Setup checks for this before it changes anything. It prints `Code dir` and
-`Database` first; if the database beside the folder does not exist while the
-installed service already has one somewhere else, it stops with
-`SETUP STOPPED`, names both locations and the `setup.ps1` to run instead.
-`update_app.ps1` always updates the installed copy, wherever the file itself
-sits.
+`Database` first, then compares them with what the installed service uses:
+
+- The folder has no database and the installed one is somewhere else: setup
+  stops with `SETUP STOPPED`, names both locations and the `setup.ps1` to run
+  instead.
+- Both folders have a database: setup shows the two files with their sizes and
+  last-changed times and continues only when you type `SWITCH`. An unattended
+  update never switches.
+- `update_app.ps1` always updates the installed copy, wherever the file itself
+  sits.
 
 If a second copy was installed before this check existed, run `setup.ps1` from
-the code folder that sits beside the database holding your data. It prints
-`DB exists: ... KB (will be preserved)`, notes which database the services
-used until then, and points them back. To install in a new folder on purpose
-with a new empty database, set `DG_SETUP_NEW_DATABASE` to `1` for that run.
+the code folder that sits beside the database holding your data, check that it
+prints `DB exists: ... KB (will be preserved)`, and type `SWITCH` when it shows
+the two databases. To install in a new folder on purpose with a new empty
+database, set `DG_SETUP_NEW_DATABASE` to `1` for that run.
 
 ### Service logs
 

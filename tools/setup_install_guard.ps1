@@ -48,11 +48,25 @@ function Test-MetronomeSamePath {
     }
 }
 
-function Get-MetronomeFileSizeText {
+function Test-MetronomeSameFile {
+    # One file reached by two routes (a junction, a share name, a short name)
+    # has one size and one last-write time. Two different databases do not.
+    param([string]$Left, [string]$Right)
+    try {
+        $a = Get-Item -LiteralPath $Left -ErrorAction Stop
+        $b = Get-Item -LiteralPath $Right -ErrorAction Stop
+        return ($a.Length -eq $b.Length) -and ($a.LastWriteTimeUtc -eq $b.LastWriteTimeUtc)
+    } catch {
+        return $false
+    }
+}
+
+function Get-MetronomeFileText {
+    # "1,234 KB, last changed 2026-11-11 14:02" for a message.
     param([string]$Path)
     try {
-        $length = (Get-Item -LiteralPath $Path -ErrorAction Stop).Length
-        return ('{0:N0} KB' -f [math]::Ceiling($length / 1024))
+        $file = Get-Item -LiteralPath $Path -ErrorAction Stop
+        return ('{0:N0} KB, last changed {1}' -f [math]::Ceiling($file.Length / 1024), $file.LastWriteTime.ToString('yyyy-MM-dd HH:mm'))
     } catch {
         return 'size unknown'
     }
@@ -61,12 +75,15 @@ function Get-MetronomeFileSizeText {
 function Get-MetronomeInstallCheck {
     # What setup.ps1 should do when run from $CodeDir with its database at
     # $DbPath, given where the installed service keeps its own:
-    #   continue - nothing to say;
-    #   notice   - the services move to this folder's database, which exists
-    #              (or a new one was asked for by name);
+    #   continue - this is the installed folder, or nothing is installed;
     #   stop     - this folder has no database and the installed one is
     #              somewhere else, so going on would start a second, empty
-    #              Metronome. The caller exits before changing anything.
+    #              Metronome;
+    #   ask      - both folders have a database. Going on would make Metronome
+    #              show the other one, so a person has to say so. This is also
+    #              how a PC is pointed back after a second copy was installed
+    #              by mistake;
+    #   notice   - a new empty database here was asked for by name.
     param(
         [Parameter(Mandatory = $true)][string]$CodeDir,
         [Parameter(Mandatory = $true)][string]$DbPath,
@@ -80,14 +97,22 @@ function Get-MetronomeInstallCheck {
     if (Test-MetronomeSamePath -Left $installedDb -Right $DbPath) { return $check }
     if (-not (Test-Path -LiteralPath $installedDb -PathType Leaf)) { return $check }
 
-    $installedSize = Get-MetronomeFileSizeText -Path $installedDb
+    $installedText = Get-MetronomeFileText -Path $installedDb
     if (Test-Path -LiteralPath $DbPath -PathType Leaf) {
-        $check.Action = 'notice'
+        if (Test-MetronomeSameFile -Left $installedDb -Right $DbPath) { return $check }
+        $check.Action = 'ask'
         $check.Lines = @(
-            'NOTE: Metronome was using a different database until now:',
-            "    $installedDb ($installedSize)",
-            '  From now on it uses the one beside this folder:',
-            "    $DbPath ($(Get-MetronomeFileSizeText -Path $DbPath))"
+            'This folder is not the one Metronome uses now.',
+            '',
+            '  Metronome uses now:',
+            "    $installedDb",
+            "    $installedText",
+            '  This folder would make it use:',
+            "    $DbPath",
+            "    $(Get-MetronomeFileText -Path $DbPath)",
+            '',
+            'Switching makes Metronome show what is in this folder''s database.',
+            'The other database is left where it is.'
         )
         return $check
     }
@@ -95,7 +120,7 @@ function Get-MetronomeInstallCheck {
         $check.Action = 'notice'
         $check.Lines = @(
             'NOTE: Starting a new, empty database here because DG_SETUP_NEW_DATABASE is 1.',
-            "  The database Metronome used until now is left where it is: $installedDb ($installedSize)"
+            "  The database Metronome used until now is left where it is: $installedDb"
         )
         return $check
     }
@@ -108,13 +133,15 @@ function Get-MetronomeInstallCheck {
     $check.Lines = @(
         'SETUP STOPPED: Metronome is already installed somewhere else on this PC.',
         '',
-        "  Metronome's database now:  $installedDb ($installedSize)",
-        "  Its code folder:           $installedCode",
-        "  This folder:               $CodeDir",
-        "  Database beside this one:  $DbPath (none)",
+        '  Metronome uses now:',
+        "    $installedDb",
+        "    $installedText",
+        "  Its code folder:  $installedCode",
+        "  This folder:      $CodeDir",
+        "  It has no database: $DbPath",
         '',
         'Running setup here would start a second, empty Metronome and leave your',
-        'data unused. Nothing was changed.',
+        'data unused.',
         '',
         'Run setup.ps1 from where Metronome is installed:',
         "  $runFrom",
@@ -123,4 +150,21 @@ function Get-MetronomeInstallCheck {
         "  `$env:DG_SETUP_NEW_DATABASE = '1'; .\setup.ps1"
     )
     return $check
+}
+
+function Start-MetronomeInstalledServices {
+    # Start again the services an earlier part of the run stopped, when setup
+    # then refuses to go on. Only services Windows starts by itself; a slot
+    # that is installed but switched off stays off. Returns the names started.
+    param([string[]]$Names = @('MXAnalytics', 'MetronomeAuditorReader', 'MXFlowsWorker*'))
+    $started = @()
+    foreach ($service in @(Get-Service -Name $Names -ErrorAction SilentlyContinue)) {
+        try {
+            if ("$($service.StartType)" -eq 'Automatic' -and "$($service.Status)" -ne 'Running') {
+                Start-Service -InputObject $service -ErrorAction Stop
+                $started += $service.Name
+            }
+        } catch {}
+    }
+    return $started
 }

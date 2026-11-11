@@ -98,7 +98,6 @@ def test_a_second_copy_with_no_database_is_refused_and_told_where_to_run(places)
     assert str(places.installed_db) in message
     assert str(places.installed_code / "setup.ps1") in message
     assert str(places.code) in message
-    assert "Nothing was changed" in message
 
 
 def test_the_installed_folder_continues_without_comment(places):
@@ -110,16 +109,29 @@ def test_the_installed_folder_continues_without_comment(places):
                   places.installed_code, respelled) == ("continue", "")
 
 
-def test_a_folder_that_has_its_own_database_takes_the_services_back_and_says_so(places):
-    # How a PC recovers after a second copy was installed by mistake: setup is
-    # run again from the folder whose database holds the data. That must not
-    # be refused, and it names both databases so the switch is visible.
+def test_one_database_reached_through_a_junction_is_not_a_second_database(places, tmp_path):
+    link = tmp_path / "another-route"
+    made = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(places.installed_code.parent)],
+                          capture_output=True, text=True)
+    assert made.returncode == 0, made.stdout + made.stderr
+    try:
+        assert _check(link / "data_governance-main", link / "governance.db",
+                      places.installed_code, places.installed_db) == ("continue", "")
+    finally:
+        os.rmdir(link)  # removes the junction, not what it points at
+
+
+def test_two_folders_with_a_database_each_are_shown_side_by_side_for_a_person_to_choose(places):
+    # Going on would make Metronome show another database. That is how a PC is
+    # pointed back after a second copy was installed by mistake, and equally
+    # how the mistake is repeated, so setup has to ask.
     places.db.write_bytes(b"s" * 300)
 
     action, message = _check(places.installed_code, places.installed_db, places.code, places.db)
 
-    assert action == "notice"
+    assert action == "ask"
     assert str(places.db) in message and str(places.installed_db) in message
+    assert message.count(" KB, last changed ") == 2
 
 
 def test_no_service_or_a_database_that_is_gone_is_an_ordinary_first_install(places):
@@ -150,8 +162,21 @@ def test_the_installed_location_is_read_from_the_service_settings(places, servic
     assert result.stdout.strip() == f"{places.installed_code}|{places.installed_db}|[]"
 
 
+def test_restarting_services_that_are_not_installed_does_nothing():
+    result = _powershell(
+        f"$ErrorActionPreference = 'Stop'; . '{GUARD}'; "
+        "$started = @(Start-MetronomeInstalledServices -Names @('MetronomeTestNoSuchService', 'MetronomeTestNone*')); "
+        "\"started=$($started.Count)\""
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip() == "started=0"
+
+
 @ci_runner_only
-def test_setup_itself_stops_before_it_creates_or_replaces_anything(places, service_settings):
+@pytest.mark.parametrize("situation", ["no database here", "another database here",
+                                       "an older copy already stopped Metronome"])
+def test_setup_itself_stops_before_it_creates_or_replaces_anything(places, service_settings, situation):
     # The real setup.ps1, placed in a second copy of the code while the
     # service settings name the installed one.
     (places.code / "setup.ps1").write_bytes((ROOT / "setup.ps1").read_bytes())
@@ -160,15 +185,20 @@ def test_setup_itself_stops_before_it_creates_or_replaces_anything(places, servi
         (places.code / "tools" / script.name).write_bytes(script.read_bytes())
     (places.code / "app").mkdir()
     (places.code / "app" / "main.py").write_text("# stand-in\n", encoding="ascii")
-    before = sorted(str(path.relative_to(places.code)) for path in places.code.rglob("*"))
+    if situation == "another database here":
+        places.db.write_bytes(b"s" * 300)
+    beside = sorted(path.name for path in places.code.parent.iterdir())
+    inside = sorted(str(path.relative_to(places.code)) for path in places.code.rglob("*"))
 
     environment = {
         name: value for name, value in os.environ.items()
-        if name not in {"DG_FLOWS_ROOT", "DG_GITHUB_TOKEN", "DG_UPDATE_ZIP_URL",
-                        "DG_SETUP_NEW_DATABASE", "DG_SETUP_RELAUNCHED"}
+        if name not in {"DG_FLOWS_ROOT", "DG_GITHUB_TOKEN", "DG_UPDATE_ZIP_URL", "DG_SETUP_NEW_DATABASE",
+                        "DG_SETUP_RELAUNCHED", "DG_SETUP_SWITCH_CONFIRMED"}
     }
     environment["DG_SETUP_TEST_SERVICE_ROOT"] = service_settings(places.installed_code, places.installed_db)
     environment["DG_UPDATE_COMMIT_SHA"] = "0" * 40  # no call to GitHub
+    if situation == "an older copy already stopped Metronome":
+        environment["DG_SETUP_RELAUNCHED"] = "1"
     result = subprocess.run(
         ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
          "-File", str(places.code / "setup.ps1"), "-Unattended"],
@@ -178,8 +208,16 @@ def test_setup_itself_stops_before_it_creates_or_replaces_anything(places, servi
     output = result.stdout + result.stderr
     assert result.returncode == 1, output
     assert "SETUP STOPPED" in output and str(places.installed_db) in output, output
+    expected = {
+        "no database here": "Nothing was changed.",
+        "another database here": "never switches Metronome to another database",
+        "an older copy already stopped Metronome": "The first part of this run stopped Metronome.",
+    }[situation]
+    assert expected in output, output
     # No database, Python, download, Flow folders or state beside the copy...
-    assert [path.name for path in places.code.parent.iterdir()] == ["data_governance-main"], output
-    # ...and nothing added to the copy itself.
-    assert sorted(str(path.relative_to(places.code)) for path in places.code.rglob("*")) == before
+    assert sorted(path.name for path in places.code.parent.iterdir()) == beside, output
+    # ...nothing added to the copy itself, and neither database touched.
+    assert sorted(str(path.relative_to(places.code)) for path in places.code.rglob("*")) == inside
     assert places.installed_db.read_bytes() == b"d" * 5000
+    if situation == "another database here":
+        assert places.db.read_bytes() == b"s" * 300
