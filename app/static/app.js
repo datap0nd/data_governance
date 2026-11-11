@@ -13945,14 +13945,19 @@ function bindFlowSettingsPage() {
 // menu entries. Each keeps its own renderer and binder here; settings.js gives
 // them a place in its left rail and draws them in its panel. "about" is what
 // the Settings search matches; "hostOnly" says the server refuses a save from
-// another computer. Their old addresses (#paths and so on) still open them.
+// another computer; "shared" names registry settings the page's own form also
+// saves. Their old addresses (#paths and so on) still open them.
 const settingsSubpages = [
     { id: "ai", name: "AI", about: "Operating mode, the model connection and its key, and which features may use AI.",
       hostOnly: true, render: renderAISettings, bind: bindAISettingsPage },
     { id: "paths", name: "Paths", about: "The Flows root folder, its source folders and whether paths are enforced.",
       hostOnly: true, render: renderPaths, bind: bindPathsPage },
     { id: "flow-settings", name: "Flow workers", about: "Portal browser, recording wait, worker capacity and slots, and per-portal limits.",
-      hostOnly: true, render: renderFlowSettings, bind: bindFlowSettingsPage },
+      hostOnly: true, render: renderFlowSettings, bind: bindFlowSettingsPage,
+      // Registry settings this form also holds, and the control that holds each.
+      shared: { "flows.browser": "#flow-browser-channel", "flows.total_workers": "#flow-total-capacity",
+                "flows.background_workers": "#flow-headless-capacity", "flows.visible_windows": "#flow-headed-capacity",
+                "flows.recording_wait_seconds": "#flow-recording-wait" } },
     { id: "premiumviewers", name: "Premium Viewers", about: "Viewer emails whose report views weigh more in usage and impact.",
       hostOnly: false, render: renderPremiumViewers, bind: bindPremiumViewersPage },
 ];

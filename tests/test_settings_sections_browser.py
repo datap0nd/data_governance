@@ -97,6 +97,10 @@ def _respond(state, route):
         payload = {"enabled": False}
     elif path == "/api/system/settings" and method == "GET":
         payload = _registry(state)
+    elif path == "/api/system/settings" and method == "PUT":
+        if "flows.visible_windows" in body["values"]:
+            state["flows"]["headed_capacity"] = body["values"]["flows.visible_windows"]
+        payload = {**_registry(state), "changed": list(body["values"])}
     elif path == "/api/system/logs":
         payload = {"directory": "D:\\Metronome\\logs", "exists": False, "file_count": 0, "total_bytes": 0, "largest": []}
     elif path == "/api/system/settings/portal-login":
@@ -383,6 +387,27 @@ def test_flow_workers_saves_through_its_api(settings_browser):
     expect(page.locator("#flow-capacity-result")).to_have_text(f"Only the host PC can change Flows settings. {HOST_ONLY}")
     expect(page.locator("#flow-headed-capacity")).to_have_value("5")
     expect(page.get_by_role("button", name="Save settings")).to_be_enabled()
+
+
+def test_a_registry_save_reaches_the_open_flow_workers_form(settings_browser):
+    # The two hold the same value. Saved from the bar while the form is open,
+    # it must not be sent back as it was by the form's own Save.
+    page, state = settings_browser("#settings/flows")
+    page.locator('[data-st-key="flows.visible_windows"]').fill("4")
+    _rail(page, "flow-settings").click()
+    _expect_section(page, "flow-settings", "Flow workers", "#flow-capacity-form")
+    expect(page.locator("#flow-headed-capacity")).to_have_value("1")
+    page.locator("#flow-recording-wait").fill("25")  # typed into the form, not saved yet
+
+    page.get_by_role("button", name="Save changes").click()
+    expect(page.locator(".toast")).to_contain_text("Saved 1 setting")
+    expect(page.locator("#flow-headed-capacity")).to_have_value("4")
+    expect(page.locator("#flow-recording-wait")).to_have_value("25")
+
+    page.get_by_role("button", name="Save settings").click()
+    expect(page.locator(".toast").filter(has_text="Flows settings saved")).to_be_visible()
+    assert _calls(state, "PUT", "/api/system/flows")[-1]["headed_capacity"] == 4
+    assert state["flows"]["headed_capacity"] == 4
 
 
 def test_flows_page_keeps_its_own_settings_view(settings_browser):
