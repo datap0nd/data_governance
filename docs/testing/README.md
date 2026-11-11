@@ -8,6 +8,7 @@ templates and the result vocabulary.
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-11-11: Setup run from the data folder stops and names the code folder | [Test plan](releases/2026-11-11-installer-data-folder/test-plan.md) | [Test report](releases/2026-11-11-installer-data-folder/test-report.md) |
 | 2026-11-11: A reused PowerShell window no longer makes setup skip its first half | [Test plan](releases/2026-11-11-installer-relaunch-marker/test-plan.md) | [Test report](releases/2026-11-11-installer-relaunch-marker/test-report.md) |
 | 2026-11-11: Tests that prove nothing removed, with the leftover code they kept alive | [Test plan](releases/2026-11-11-test-suite-pruning/test-plan.md) | [Test report](releases/2026-11-11-test-suite-pruning/test-report.md) |
 | 2026-11-11: Setup refuses to start a second, empty installation | [Test plan](releases/2026-11-11-installer-one-installation/test-plan.md) | [Test report](releases/2026-11-11-installer-one-installation/test-report.md) |

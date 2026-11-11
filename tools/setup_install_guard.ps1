@@ -82,6 +82,43 @@ function Get-MetronomeFileText {
     }
 }
 
+function Get-MetronomeDataFolderCheck {
+    # setup.ps1 keeps the database one folder above the folder it is run from.
+    # A copy of the code placed in Metronome's data folder itself, beside
+    # governance.db, therefore looks one folder too high, finds no database
+    # there and starts an empty Metronome. That folder is recognisable: it
+    # holds a database, and a subfolder of it is the real code folder.
+    param([Parameter(Mandatory = $true)][string]$CodeDir)
+    $check = @{ Action = 'continue'; Lines = @() }
+    $database = Join-Path $CodeDir 'governance.db'
+    if (-not (Test-Path -LiteralPath $database -PathType Leaf)) { return $check }
+    $codeFolders = @()
+    try {
+        foreach ($child in @(Get-ChildItem -LiteralPath $CodeDir -Directory -ErrorAction Stop)) {
+            if ((Test-Path -LiteralPath (Join-Path $child.FullName 'setup.ps1') -PathType Leaf) -and
+                (Test-Path -LiteralPath (Join-Path $child.FullName 'app\main.py') -PathType Leaf)) {
+                $codeFolders += $child.FullName
+            }
+        }
+    } catch {}
+    if (-not $codeFolders.Count) { return $check }
+    $check.Action = 'stop'
+    $check.Lines = @(
+        'SETUP STOPPED: this folder holds Metronome''s data, not its code.',
+        '',
+        '  Your database is here:',
+        "    $database",
+        "    $(Get-MetronomeFileText -Path $database)",
+        '',
+        'setup.ps1 keeps the database one folder above the folder it is run from.',
+        'Run from here it would look one folder too high, find no database there',
+        'and start an empty Metronome.',
+        '',
+        'Run setup.ps1 from the code folder instead:'
+    ) + @($codeFolders | ForEach-Object { '  ' + (Join-Path $_ 'setup.ps1') })
+    return $check
+}
+
 function Get-MetronomeInstallCheck {
     # What setup.ps1 should do when run from $CodeDir with its database at
     # $DbPath, given where the installed service keeps its own:
