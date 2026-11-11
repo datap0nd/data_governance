@@ -36,6 +36,7 @@ from app.config import (
     UPLOAD_PGUSER,
 )
 from app.database import get_db
+from app.freshness import dubai_minute
 from app.scanner import jobs as scanner_jobs
 from app.scanner.control import assert_not_cancelled, current_cancel_generation
 from app.scanner.tmdl_parser import LOCAL_USER_PATH
@@ -224,11 +225,16 @@ def _compute_status_for_rule(last_activity_str: str | None, rule: dict) -> str:
             "day": rule.get("day"),
             "timezone": rule.get("timezone") or FLOW_TIMEZONE,
         }
+        evidence_at = parse_source_timestamp(last_activity_str)
         result = evaluate_timed_rule(
             timed_rule,
-            evidence_at=parse_source_timestamp(last_activity_str),
+            evidence_at=evidence_at,
             baseline_at=parse_monitoring_timestamp(rule.get("baseline_at")),
         )
+        if result["status"] == "pending" and evidence_at is None:
+            # Not due yet since its baseline and nothing was ever observed:
+            # there is no evidence either way, so do not report it as fresh.
+            return "unknown"
         return "outdated" if result["status"] == "overdue" else "fresh"
     if rule["type"] == "fixed":
         return _compute_fixed_schedule_status(last_activity_str, rule.get("days", []))
@@ -416,7 +422,7 @@ def _probe_file_source(db, source_id: int, file_path: str, now: str,
     except Exception as e:
         logger.warning("Row count failed for %s: %s", p, e)
     status = _compute_status_for_rule(mod_time.isoformat(), rule)
-    msg = f"File modified: {mod_time.strftime('%Y-%m-%d %H:%M')}"
+    msg = f"File modified: {dubai_minute(mod_time)} Dubai time"
     if row_count is not None:
         msg += f" ({row_count:,} rows)"
     if status == "no_rule":
@@ -701,6 +707,10 @@ def _probe_pg_sources(
                 db.commit()
                 rule = _rule_for_source(source)
                 previous_row_count = _latest_source_row_count(db, source_id)
+                # Plain views and foreign tables have no xmin, so the
+                # commit-timestamp expression can only fail on them.
+                relation_kind = str(_pg_source_value(source, "relation_kind", "table"))
+                has_commit_timestamps = relation_kind not in {"view", "foreign_table"}
 
                 try:
                     table_ref = sql.SQL("{}.{}").format(
@@ -708,7 +718,7 @@ def _probe_pg_sources(
                         sql.Identifier(table),
                     )
                     row = None
-                    if commit_timestamps_available:
+                    if commit_timestamps_available and has_commit_timestamps:
                         try:
                             pg_cur.execute(
                                 sql.SQL(
@@ -725,7 +735,7 @@ def _probe_pg_sources(
                                 f"PG: {server}/{database} has track_commit_timestamp "
                                 "disabled; probing row counts only"
                             )
-                    if not commit_timestamps_available:
+                    if not commit_timestamps_available or not has_commit_timestamps:
                         pg_cur.execute(
                             sql.SQL("SELECT COUNT(*) AS row_count FROM {}").format(
                                 table_ref
@@ -752,7 +762,7 @@ def _probe_pg_sources(
                             latest_iso = last_write.isoformat()
                             status = _compute_status_for_rule(latest_iso, rule)
                             msg = (
-                                f"Last write: {last_write.strftime('%Y-%m-%d %H:%M')} "
+                                f"Last write: {dubai_minute(last_write)} Dubai time "
                                 f"({row_count:,} rows)"
                             )
                             if status == "no_rule":
@@ -768,12 +778,22 @@ def _probe_pg_sources(
                             )
                         else:
                             status = "unknown"
-                            msg = (
-                                f"No commit timestamps ({row_count:,} rows)"
-                                if commit_timestamps_available
-                                else "track_commit_timestamp disabled on server; "
-                                f"row count only ({row_count:,} rows)"
-                            )
+                            if not has_commit_timestamps:
+                                kind_label = (
+                                    "A view" if relation_kind == "view" else "A foreign table"
+                                )
+                                msg = (
+                                    f"{kind_label} carries no commit timestamps, so its "
+                                    "freshness cannot be read here; set the freshness rule "
+                                    f"on the tables underneath ({row_count:,} rows)"
+                                )
+                            else:
+                                msg = (
+                                    f"No commit timestamps ({row_count:,} rows)"
+                                    if commit_timestamps_available
+                                    else "track_commit_timestamp disabled on server; "
+                                    f"row count only ({row_count:,} rows)"
+                                )
                             db.execute(
                                 """INSERT INTO source_probes
                                        (source_id, probed_at, row_count, status, message)
@@ -1182,10 +1202,10 @@ def _check_report_source_schedule(db, now: str, log_lines: list) -> int:
 
         short_src = info["src_name"].replace("\\", "/").split("/")[-1]
         msg = (
-            f"Report last refreshed {rep_dt.strftime('%Y-%m-%d %H:%M')} "
+            f"Report last refreshed {dubai_minute(rep_dt)} "
             f"but source {short_src} has data from "
-            f"{info['src_dt'].strftime('%Y-%m-%d %H:%M')} "
-            f"({int(behind_hours)}h behind)"
+            f"{dubai_minute(info['src_dt'])} "
+            f"(Dubai time, {int(behind_hours)}h behind)"
         )
 
         existing = db.execute(
@@ -1283,9 +1303,9 @@ def _check_dependency_freshness(db, now: str, log_lines: list):
 
             msg = (
                 f"Upstream {up_name} has data from "
-                f"{up_dt.strftime('%Y-%m-%d %H:%M')} but MV {mv_name} "
-                f"last refreshed {mv_dt.strftime('%Y-%m-%d %H:%M')} "
-                f"({hours}h behind)"
+                f"{dubai_minute(up_dt)} but MV {mv_name} "
+                f"last refreshed {dubai_minute(mv_dt)} "
+                f"(Dubai time, {hours}h behind)"
             )
             bucket = active_by_mv.setdefault(
                 dep["source_id"],

@@ -174,6 +174,11 @@ def _merge_report_discovery(
             report for report in (pbix, tmdl) if _provider_snapshot_complete(report)
         ]
         candidates = complete_candidates or [pbix, tmdl]
+        # A live-connection PBIX has a layout but no model of its own, so it
+        # can never replace (or disagree with) the TMDL model's tables.
+        pbix_layout_only = bool((getattr(pbix, "discovery", {}) or {}).get("layout_only"))
+        if pbix_layout_only:
+            candidates = [tmdl]
         # TMDL wins exact ties because its text model is inspectable and is
         # normally the intentional source-control export.
         chosen = max(
@@ -207,7 +212,7 @@ def _merge_report_discovery(
             "tmdl_path": tmdl.tmdl_path,
             "pbix_modified_at": pbix_mtime,
             "tmdl_modified_at": tmdl_mtime,
-            "table_sets_disagree": pbix_tables != tmdl_tables,
+            "table_sets_disagree": not pbix_layout_only and pbix_tables != tmdl_tables,
             "pbix_only_tables": sorted(pbix_tables - tmdl_tables),
             "tmdl_only_tables": sorted(tmdl_tables - pbix_tables),
             "snapshot_complete": _provider_snapshot_complete(chosen),
@@ -247,11 +252,15 @@ def _merge_report_discovery(
     return result
 
 
-def walk_reports_root(root_path: str | Path) -> list[DiscoveredReport]:
+def walk_reports_root(root_path: str | Path, on_report=None) -> list[DiscoveredReport]:
     """Walk the reports root folder and discover all reports.
 
     PBIX and TMDL candidates are parsed together and matching report snapshots
     are resolved deterministically.
+
+    ``on_report(position, total)`` is optional. It is called before each
+    report candidate is parsed, so a long walk can report progress and stop
+    early by raising.
     """
     root = Path(root_path).resolve()
     logger.info("walk_reports_root: root_path=%s resolved=%s exists=%s", root_path, root, root.exists())
@@ -265,8 +274,19 @@ def walk_reports_root(root_path: str | Path) -> list[DiscoveredReport]:
         "Discovery candidates: %d PBIX file(s), %d TMDL report folder(s)",
         len(pbix_files), len(tmdl_dirs),
     )
-    pbix_reports = _walk_pbix(pbix_files) if pbix_files else []
-    tmdl_reports = _walk_tmdl(root, report_dirs=tmdl_dirs) if tmdl_dirs else []
+    progress = {}
+    if on_report is not None:
+        total = len(pbix_files) + len(tmdl_dirs)
+        position = 0
+
+        def before_report() -> None:
+            nonlocal position
+            position += 1
+            on_report(position, total)
+
+        progress["on_report"] = before_report
+    pbix_reports = _walk_pbix(pbix_files, **progress) if pbix_files else []
+    tmdl_reports = _walk_tmdl(root, report_dirs=tmdl_dirs, **progress) if tmdl_dirs else []
     return _merge_report_discovery(pbix_reports, tmdl_reports, root=root)
 
 
@@ -476,12 +496,14 @@ def diagnose_reports_root(root_path: str | Path) -> dict:
     return result
 
 
-def _walk_pbix(pbix_files: list[Path]) -> list[DiscoveredReport]:
+def _walk_pbix(pbix_files: list[Path], on_report=None) -> list[DiscoveredReport]:
     """Parse .pbix files using PBIXRay."""
     from app.scanner.pbix_parser import parse_pbix_file
 
     discovered = []
     for pbix_path in sorted(pbix_files):
+        if on_report is not None:
+            on_report()
         logger.info("Parsing: %s", pbix_path.name)
         report = parse_pbix_file(pbix_path)
         if report:
@@ -498,6 +520,8 @@ def _walk_pbix(pbix_files: list[Path]) -> list[DiscoveredReport]:
             dr.discovery = {
                 "snapshot_complete": bool(getattr(report, "snapshot_complete", True)),
                 "issues": list(getattr(report, "parse_issues", []) or []),
+                "measures_complete": bool(getattr(report, "measures_complete", True)),
+                "layout_only": bool(getattr(report, "layout_only", False)),
             }
             discovered.append(dr)
         else:
@@ -518,6 +542,7 @@ def _walk_tmdl(
     root: Path,
     *,
     report_dirs: list[Path] | None = None,
+    on_report=None,
 ) -> list[DiscoveredReport]:
     """Walk the TMDL folder candidates found during mixed discovery."""
     reports_dir = root / "reports"
@@ -536,6 +561,8 @@ def _walk_tmdl(
     for report_dir in candidates:
         if not report_dir.is_dir():
             continue
+        if on_report is not None:
+            on_report()
         logger.info("_walk_tmdl: checking dir=%s", report_dir.name)
         try:
             report = _scan_tmdl_report_folder(report_dir)
@@ -611,7 +638,7 @@ def _scan_tmdl_report_folder(report_dir: Path) -> DiscoveredReport | None:
     if expr_file.exists():
         try:
             expressions = parse_expressions_file(expr_file)
-        except OSError as exc:
+        except (OSError, UnicodeError) as exc:
             logger.warning("Could not read %s: %s", expr_file, exc)
             issues.append("expressions.tmdl could not be read")
 

@@ -393,15 +393,23 @@ def test_cached_hover_read_never_calls_postgres_and_exclusions_hide_existing_val
 
 
 def test_normal_backup_copies_only_governance_database(insights_store, monkeypatch):
+    import sqlite3
+    from contextlib import closing
+
     main_path, sidecar_path = insights_store
-    main_path.write_bytes(b"main")
+    app_settings.set_setting("backup_marker", "main")
     sidecar_path.write_bytes(b"private cache")
     monkeypatch.setattr(runner, "DB_PATH", str(main_path))
     runner._backup_db()
     files = list((main_path.parent / "backups").iterdir())
     assert len(files) == 1
     assert files[0].name.startswith("governance_")
-    assert files[0].read_bytes() == b"main"
+    # The backup is a SQLite snapshot of the live database, not a byte copy.
+    with closing(sqlite3.connect(files[0])) as backup:
+        marker = backup.execute(
+            "SELECT value FROM app_settings WHERE key='backup_marker'"
+        ).fetchone()
+    assert marker[0] == "main"
     assert all("pipeline_insights" not in path.name for path in files)
 
 

@@ -619,22 +619,29 @@ def _parse_m_expression(expr: str) -> SourceInfo:
         source.source_type = "calculated"
         return source
 
-    # If we still can't identify it, log the first 200 chars for debugging
+    # If we still can't identify it, log what kind of expression it was
     _log_unknown_expression(expr)
 
     return source
+
+
+def _describe_unknown_expression(expr: str) -> str:
+    """Summarize an unrecognized M expression without quoting it.
+
+    Power Query text can embed a connection string with a password, so only
+    the first function name and the expression length are ever logged.
+    """
+    # Find the first function call pattern to help identify what it is
+    func_match = re.search(r'(\w+\.\w+)\s*\(', expr)
+    function = f"function: {func_match.group(1)}" if func_match else "no function found"
+    return f"{function} | expression length: {len(expr)}"
 
 
 def _log_unknown_expression(expr: str):
     """Log unrecognized M expressions for debugging."""
     import logging
     logger = logging.getLogger(__name__)
-    # Find the first function call pattern to help identify what it is
-    func_match = re.search(r'(\w+\.\w+)\s*\(', expr)
-    if func_match:
-        logger.warning("Unknown source type — function: %s | expression: %.200s", func_match.group(1), expr)
-    else:
-        logger.warning("Unknown source type — no function found | expression: %.200s", expr)
+    logger.warning("Unknown source type — %s", _describe_unknown_expression(expr))
 
 
 # A clean table identifier: starts with letter or underscore, then word chars.

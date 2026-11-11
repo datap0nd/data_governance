@@ -1554,7 +1554,12 @@ def test_tmdl_scan_does_not_claim_unidentified_same_display_source(
     assert source_count == 3
 
 
-def test_tmdl_scan_rolls_back_on_ambiguous_exact_identity(identity_db, monkeypatch):
+def test_tmdl_scan_uses_lowest_source_for_ambiguous_exact_identity(
+    identity_db, monkeypatch
+):
+    # Two active rows for one relation are the same physical table. Aborting
+    # here made every later scan fail once an install reached this state, so
+    # the scan now picks the lowest id, says so in its log, and carries on.
     reports = [_pg_report("Warehouse report", "warehouse")]
     _stub_runner_followups(monkeypatch, reports)
 
@@ -1566,22 +1571,27 @@ def test_tmdl_scan_rolls_back_on_ambiguous_exact_identity(identity_db, monkeypat
 
     result = runner.run_scan("unused", run_followup_probe=False)
 
-    assert result["status"] == "failed"
-    assert result["error"] == "Redacted; review server logs."
-    assert result["components"]["core"]["status"] == "failed"
-    assert result["components"]["core"]["error"] == "Redacted; review server logs."
+    assert result["status"] == "completed"
+    assert "error" not in result
+    assert result["components"]["core"]["status"] == "completed"
+    assert "error" not in result["components"]["core"]
     with get_db() as db:
-        assert db.execute("SELECT COUNT(*) FROM reports").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM reports").fetchone()[0] == 1
         assert db.execute("SELECT COUNT(*) FROM sources").fetchone()[0] == 2
+        linked = db.execute("SELECT source_id FROM report_tables").fetchall()
         scan = db.execute(
             "SELECT status, components_json, log FROM scan_runs WHERE id=?",
             (result["scan_id"],),
         ).fetchone()
     persisted_components = json.loads(scan["components_json"])
-    assert scan["status"] == "failed"
-    assert scan["log"] == "Core discovery failed; review server logs."
-    assert persisted_components["core"]["status"] == "failed"
-    assert persisted_components["core"]["error"] == "Redacted; review server logs."
+    assert [int(row["source_id"]) for row in linked] == [1]
+    assert scan["status"] == "completed"
+    assert (
+        "WARNING: Ambiguous PostgreSQL identity for warehouse.sales.orders: "
+        "sources 1, 2; using source 1"
+    ) in scan["log"]
+    assert persisted_components["core"]["status"] == "completed"
+    assert "error" not in persisted_components["core"]
 
 
 @pytest.mark.parametrize(

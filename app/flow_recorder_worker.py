@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -15,9 +17,77 @@ from pathlib import Path
 
 from app import flow_recording
 
+logger = logging.getLogger(__name__)
+
+#: Recording-test folders kept per Flow under ``.recording-validation``.
+VALIDATION_FOLDERS_KEPT = 3
+
 
 class RecordingCancelled(RuntimeError):
     pass
+
+
+def _is_link(path) -> bool:
+    return path.is_symlink() or (hasattr(path, 'is_junction') and path.is_junction())
+
+
+def _discard(path, folder) -> None:
+    """Delete one private recording file or folder sitting directly in ``folder``.
+
+    Links are neither followed nor removed, and a failed delete is a logged
+    warning: clean-up never fails the recording session it belongs to.
+    """
+    try:
+        if path.parent != folder or _is_link(folder) or _is_link(path):
+            return
+        if path.is_dir():
+            shutil.rmtree(path)
+        elif path.exists():
+            path.unlink()
+    except OSError as exc:
+        logger.warning('Could not remove private recording data %s/%s: %s',
+                       folder.name, path.name, exc.__class__.__name__)
+
+
+def _discard_leftover_state(recordings) -> None:
+    """Remove plain-text sign-in state that a killed worker left behind.
+
+    Every session writes it to ``<session>/codegen-auth-*/state.json`` and
+    deletes it when the session ends, so one found at the start of a session
+    belongs to no live recording: this worker holds the profile throughout.
+    """
+    try:
+        if _is_link(recordings) or not recordings.is_dir():
+            return
+        for session in list(recordings.iterdir()):
+            if _is_link(session) or not session.is_dir():
+                continue
+            for leftover in list(session.glob('codegen-auth-*')):
+                _discard(leftover, session)
+    except OSError as exc:
+        logger.warning('Could not check %s for leftover sign-in state: %s',
+                       recordings.name, exc.__class__.__name__)
+
+
+def _prune_validation_folders(root, current) -> None:
+    """Keep this Flow's newest recording-test folders, ``current`` among them.
+
+    Each test writes its private trace and output to a folder named after its
+    session id directly inside ``root``; nothing else in ``root`` is touched.
+    """
+    try:
+        if _is_link(root) or not root.is_dir():
+            return
+        older = sorted(
+            (entry for entry in root.iterdir()
+             if entry.name.isascii() and entry.name.isdigit() and entry.name != current.name
+             and not _is_link(entry) and entry.is_dir()),
+            key=lambda entry: int(entry.name), reverse=True)
+        for stale in older[VALIDATION_FOLDERS_KEPT - 1:]:
+            _discard(stale, root)
+    except OSError as exc:
+        logger.warning('Could not prune recording-test folders in %s: %s',
+                       root.name, exc.__class__.__name__)
 
 
 def _close_recorder(process):
@@ -119,6 +189,7 @@ def record(client, worker_id, scan, page, context, profile, progress):
     from app import flow_worker
     from app.flow_clock import TIMEZONE
     job, scan_id = scan['job'], scan['id']
+    _discard_leftover_state(profile / 'recordings')
     authenticate(page, job, profile, progress)
     zone = TIMEZONE
     private = profile / 'recordings' / str(scan_id)
@@ -140,6 +211,16 @@ def record(client, worker_id, scan, page, context, profile, progress):
                    '--output', str(raw), '--load-storage', str(storage), '--save-storage', str(storage),
                    '--channel', channel, '--timezone', zone, '--viewport-size', '1440,900', job['report_url']]
         return _run_recorder(command, client, worker_id, scan_id, raw, private, zone, job, profile, channel, storage, progress)
+    except BaseException as exc:
+        # Nothing was imported from this session. Its raw script is never
+        # sanitised and may hold a value typed into a sign-in field, so it
+        # does not stay on disk. A cancelled or rejected recording drops its
+        # log too; an unexpected recorder failure keeps the log, because that
+        # error tells the operator to read it.
+        _discard(raw, private)
+        if isinstance(exc, (RecordingCancelled, ValueError, SyntaxError)):
+            _discard(private / 'recorder.log', private)
+        raise
     finally:
         temporary.cleanup()
 
@@ -233,6 +314,7 @@ def validate(scan, page, profile, progress):
         'diagnostic': sanitize_diagnostic({'version': 1, 'phase': 'environment', 'environment': environment})})
     if job.get('recording', {}).get('engine_hash') != actual_engine:
         raise RuntimeError('Update this worker to the same execution version as Metronome before testing the recording.')
+    _discard_leftover_state(Path(profile) / 'recordings')
     authenticate(page, job, profile, progress)
     # Validation uses private output but keeps the path contract under this
     # source's own folder. It never publishes production downloads or SQL.
@@ -289,3 +371,5 @@ def validate(scan, page, profile, progress):
                 if execution_error is None:
                     progress('running', {'stage': 'diagnostics', 'message': 'Private trace was unavailable; the text log is retained.',
                         'diagnostic': {'version': 1, 'phase': 'diagnostics', 'failure_reason': 'trace_unavailable'}})
+        # Traces and test output would otherwise accumulate for every test.
+        _prune_validation_folders(private.parent, private)

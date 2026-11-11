@@ -35,6 +35,7 @@ from app.config import (
     PBI_WORKSPACE,
 )
 from app.database import get_db
+from app.freshness import dubai_minute, parse_source_timestamp
 from app.scanner.findings import sync_managed_actions
 from app.scanner import jobs as scanner_jobs
 from app.scanner.control import (
@@ -1736,6 +1737,11 @@ def _import_pbi_data_serialized(data: dict, cancel_generation: int | None = None
         name_map = {r["name"].strip().lower(): (r["id"], r["name"]) for r in all_reports}
 
         matched_ids = set()
+        # Reports whose schedule or refresh history Power BI could not serve
+        # this sync. "Not readable now" is not "there is none": their stored
+        # values stay, and alerts are not opened or closed on the gap.
+        schedule_unread_ids = set()
+        history_unread_ids = set()
 
         for entry in reports_data:
             assert_not_cancelled(cancel_generation, "Power BI refresh import")
@@ -1755,6 +1761,12 @@ def _import_pbi_data_serialized(data: dict, cancel_generation: int | None = None
             matched_ids.add(report_id)
             schedule = entry.get("schedule") or {}
             last_refresh = entry.get("last_refresh") or {}
+            schedule_unreadable = bool(entry.get("schedule_unreadable"))
+            history_unreadable = bool(entry.get("last_refresh_unreadable"))
+            if schedule_unreadable:
+                schedule_unread_ids.add(report_id)
+            if history_unreadable:
+                history_unread_ids.add(report_id)
 
             schedule_str = _build_schedule_string(schedule)
             last_refresh_at = last_refresh.get("end_time") or last_refresh.get("start_time")
@@ -1767,19 +1779,23 @@ def _import_pbi_data_serialized(data: dict, cancel_generation: int | None = None
             db.execute(
                 """UPDATE reports SET
                     pbi_dataset_id = ?,
-                    pbi_refresh_schedule = ?,
-                    pbi_last_refresh_at = ?,
-                    pbi_refresh_status = ?,
-                    pbi_refresh_error = ?,
+                    pbi_refresh_schedule = CASE WHEN ? THEN pbi_refresh_schedule ELSE ? END,
+                    pbi_last_refresh_at = CASE WHEN ? THEN pbi_last_refresh_at ELSE ? END,
+                    pbi_refresh_status = CASE WHEN ? THEN pbi_refresh_status ELSE ? END,
+                    pbi_refresh_error = CASE WHEN ? THEN pbi_refresh_error ELSE ? END,
                     powerbi_url = ?,
                     archived = 0,
                     updated_at = ?
                 WHERE id = ?""",
                 (
                     entry.get("dataset_id"),
+                    schedule_unreadable,
                     schedule_str,
+                    history_unreadable,
                     last_refresh_at,
+                    history_unreadable,
                     refresh_status,
+                    history_unreadable,
                     refresh_error,
                     entry.get("web_url"),
                     now,
@@ -1787,24 +1803,62 @@ def _import_pbi_data_serialized(data: dict, cancel_generation: int | None = None
                 ),
             )
             matched += 1
+            if schedule_unreadable or history_unreadable:
+                unread = " and ".join(
+                    label
+                    for flag, label in (
+                        (schedule_unreadable, "refresh schedule"),
+                        (history_unreadable, "refresh history"),
+                    )
+                    if flag
+                )
+                log_lines.append(
+                    f"UNREAD: {report_name} - {unread} could not be read from Power BI "
+                    "this sync; stored values kept"
+                )
+                continue
             status_str = refresh_status or "no history"
             log_lines.append(f"OK: {report_name} - {status_str} ({schedule_str or 'no schedule'})")
+
+        # A report the workspace's own report list contains is present even
+        # when its dataset was not found there (for example a dataset that
+        # lives in another workspace). It is not archived, and no refresh
+        # details are written or judged for it because none were read.
+        present_ids = set()
+        for present_name in data.get("workspace_report_names") or []:
+            match = name_map.get(str(present_name or "").strip().lower())
+            if not match or match[0] in matched_ids or match[0] in present_ids:
+                continue
+            present_ids.add(match[0])
+            db.execute(
+                "UPDATE reports SET archived = 0, updated_at = ? WHERE id = ? AND archived = 1",
+                (now, match[0]),
+            )
+            log_lines.append(
+                f"PRESENT: {match[1]} (in PBI workspace; its dataset was not found there, "
+                "refresh details not synced)"
+            )
 
         # Auto-archive reports NOT found in PBI workspace
         if matched_ids:
             for r in all_reports:
-                if r["id"] not in matched_ids:
-                    db.execute(
+                if r["id"] not in matched_ids and r["id"] not in present_ids:
+                    cursor = db.execute(
                         "UPDATE reports SET archived = 1, updated_at = ? WHERE id = ? AND archived = 0",
                         (now, r["id"]),
                     )
-                    if db.total_changes:
+                    if cursor.rowcount:
                         archived_count += 1
                         log_lines.append(f"ARCHIVE: {r['name']} (not in PBI workspace)")
 
         # Check for overdue refreshes and create alerts
         assert_not_cancelled(cancel_generation, "Power BI refresh import")
-        overdue_count = _check_refresh_alerts(db, now)
+        overdue_count = _check_refresh_alerts(
+            db,
+            now,
+            schedule_unread_ids=schedule_unread_ids,
+            history_unread_ids=history_unread_ids | present_ids,
+        )
         _resolve_reconnect_alerts(db, now)
 
         completion_details = {
@@ -2050,7 +2104,13 @@ def is_refresh_overdue(schedule_str: str | None, last_refresh_at: str | None) ->
     return hours_since > _max_gap_hours(dpw)
 
 
-def _check_refresh_alerts(db, now: str) -> int:
+def _check_refresh_alerts(
+    db,
+    now: str,
+    *,
+    schedule_unread_ids=frozenset(),
+    history_unread_ids=frozenset(),
+) -> int:
     """Create actions + alerts for reports with refresh problems.
 
     Two kinds of issues, both surface in the dashboard Alerts table:
@@ -2061,6 +2121,11 @@ def _check_refresh_alerts(db, now: str) -> int:
     this report and type" check. When a refresh recovers (status becomes
     Completed), any open action for that report auto-resolves on the next
     sync via _auto_resolve_recovered_refreshes.
+
+    A report whose refresh history could not be read this sync keeps its
+    stored values and gets no new alert from them; one whose schedule could
+    not be read gets no new overdue alert. Nothing is resolved on the gap
+    either, because the stored values are left exactly as they were.
     """
     reports = db.execute(
         """SELECT id, name, pbi_refresh_schedule, pbi_last_refresh_at,
@@ -2070,10 +2135,13 @@ def _check_refresh_alerts(db, now: str) -> int:
 
     created = 0
     for r in reports:
+        if r["id"] in history_unread_ids:
+            continue
         status_val = (r["pbi_refresh_status"] or "").lower()
         is_failed = status_val in ("failed", "disabled", "cancelled")
         is_overdue = (
-            r["pbi_refresh_schedule"]
+            r["id"] not in schedule_unread_ids
+            and r["pbi_refresh_schedule"]
             and is_refresh_overdue(r["pbi_refresh_schedule"], r["pbi_last_refresh_at"])
         )
 
@@ -2082,7 +2150,12 @@ def _check_refresh_alerts(db, now: str) -> int:
 
         # Failed takes precedence over overdue (a failed run is the root cause)
         action_type = "refresh_failed" if is_failed else "refresh_overdue"
-        last_str = r["pbi_last_refresh_at"] or "never"
+        # Shown in Dubai time; the stored value and the overdue maths stay UTC.
+        last_dt = parse_source_timestamp(r["pbi_last_refresh_at"])
+        last_str = (
+            f"{dubai_minute(last_dt)} Dubai time" if last_dt
+            else r["pbi_last_refresh_at"] or "never"
+        )
         if is_failed:
             msg = f"PBI refresh {status_val}: {r['name']}"
             if r["pbi_refresh_error"]:

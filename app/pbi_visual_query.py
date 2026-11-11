@@ -431,10 +431,31 @@ def _advanced_filter_condition(expression: str, filter_body: dict) -> str | None
     return separator.join(f"({condition})" for condition in conditions)
 
 
+def _unreadable_filter_levels(query_spec: dict) -> str:
+    """Name the report, page or visual filter levels the browser could not read."""
+    reported = query_spec.get("unreadableFilters") or []
+    if not isinstance(reported, list):
+        reported = [reported]
+    levels = [level for level in ("report", "page", "visual") if level in reported]
+    if reported and not levels:
+        levels = ["report, page or visual"]
+    if len(levels) > 1:
+        return ", ".join(levels[:-1]) + " and " + levels[-1]
+    return levels[0] if levels else ""
+
+
 def build_visual_query(query_spec: dict, max_rows: int) -> dict:
     """Build escaped DAX plus ordered output metadata from a visual query spec."""
     if not isinstance(query_spec, dict):
         raise PbiVisualQueryError("The Power BI visual query definition is missing.")
+    unreadable = _unreadable_filter_levels(query_spec)
+    if unreadable:
+        # An unread filter level is not "no filter": running without it would
+        # return broader data than the visual shows.
+        raise PbiVisualQueryError(
+            f"Power BI did not return the {unreadable} filters, so this fallback cannot "
+            "reproduce the visual's filters safely. No email was sent."
+        )
     fields = query_spec.get("fields") or []
     if not isinstance(fields, list) or not fields:
         raise PbiVisualQueryError("The selected visual has no readable data fields.")

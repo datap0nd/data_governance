@@ -5521,6 +5521,15 @@ function _recStatusHtml(status) {
     return `<span class="rec-status${success ? " success" : warning ? " warning" : error ? " error" : ""}">${esc(label)}</span>`;
 }
 
+// A run or preview whose export filled the row limit: the table was cut off.
+// The limit is the one the server exported with, never a hardcoded number.
+function _recExportLimitHtml(detail, exportedRows) {
+    if (!detail?.export_limit_reached) return "";
+    const limit = Number(detail.export_row_limit || exportedRows || 0).toLocaleString();
+    const title = detail.warning || `The table was cut off at the Power BI export limit of ${limit} rows.`;
+    return `<span class="rec-status warning" title="${esc(title)}">Table cut off at ${limit} rows</span>`;
+}
+
 function _recSourceText(item) {
     return [item.report_name, item.page_display_name || item.page_name, item.visual_title || item.visual_name]
         .filter(Boolean)
@@ -5821,7 +5830,7 @@ function _recPreviewTable(preview) {
         <div class="rec-preview-summary">
             <span><strong>${preview.row_count.toLocaleString()}</strong> exported rows</span>
             <span><strong>${preview.columns.length}</strong> columns</span>
-            ${preview.export_limit_reached ? '<span class="rec-status warning">30,000 row limit reached</span>' : ""}
+            ${_recExportLimitHtml(preview, preview.row_count)}
         </div>
         <div class="rec-preview-wrap">
             <table class="rec-preview-table"><thead><tr>${header}</tr></thead><tbody>${rows}</tbody></table>
@@ -6294,7 +6303,7 @@ async function _recLoadHistory(id, row) {
         }
         const body = runs.map(run => `
             <tr>
-                <td>${_recStatusHtml(run.status)}</td>
+                <td>${_recStatusHtml(run.status)} ${_recExportLimitHtml(run.detail, run.exported_rows)}</td>
                 <td>${esc(run.trigger_type)}</td>
                 <td>${esc(_recDateTime(run.started_at))}</td>
                 <td>${Number(run.exported_rows || 0).toLocaleString()}</td>

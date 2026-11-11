@@ -24,8 +24,10 @@ def paths_state(db, root=None, *, resolve=False):
     outside = []
     for row in db.execute("SELECT f.*, s.adapter AS source_adapter FROM flows f JOIN flow_sites s ON s.id=f.site_id"):
         flow = dict(row)
-        rules = {"flows_root": root, "source_folder": flow_paths.source_folder_name(flow["source_adapter"]), "enforced": True}
         try:
+            # A website on an adapter Metronome does not know has no source
+            # folder: report that Flow instead of failing the whole page.
+            rules = {"flows_root": root, "source_folder": flow_paths.source_folder_name(flow["source_adapter"]), "enforced": True}
             flow_paths.validate_flow(flow, rules, resolve=resolve)
         except ValueError as exc:
             outside.append({"id": flow["id"], "name": flow["name"], "reason": str(exc), "target_folder": flow["target_folder"] if flow["source_type"] != "file" else flow["local_file_path"]})

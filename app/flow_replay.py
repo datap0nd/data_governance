@@ -25,8 +25,9 @@ re-records a fresh recipe as it succeeds.
 
 Safety properties, in order of importance:
 
-- A recipe is keyed by site, report, export view, *and* requested period, so
-  a request recorded for one configuration is never replayed for another.
+- A recipe is keyed by Flow, site, report, the Flow's saved report filters,
+  export view, *and* requested period, so a request recorded for one
+  configuration is never replayed for another.
 - A replayed file passes the exact same content detection, container
   validation, and normalization as a browser download does.
 - Recipes expire after ``RECIPE_MAX_AGE_DAYS`` and are refreshed by every
@@ -56,7 +57,9 @@ from typing import Any
 from app.flow_download_security import looks_like_sign_in
 
 RECIPES_FILENAME = ".export_replay.json"
-RECIPE_VERSION = 2
+#: Version 3 added the Flow and its saved report filters to the recipe key.
+#: Older recipes are never found again; the next browser export re-records.
+RECIPE_VERSION = 3
 RECIPE_MAX_AGE_DAYS = 14
 #: Requests observed while one export runs. The window also contains the
 #: portal's own chatter (telemetry, keepalives), so keep enough history that
@@ -272,23 +275,45 @@ def _save_all(profile_dir: Path, data: dict[str, dict]) -> None:
             time.sleep(0.025 * (attempt + 1))
 
 
+def _canonical_selections(value: Any) -> Any:
+    """A Flow's saved report filters in one stable shape.
+
+    Mapping keys are ordered when the key is serialized; list values are
+    ordered here, because a multi-select saved as ``["B", "A"]`` selects the
+    same options as ``["A", "B"]`` and must not look like another Flow.
+    """
+    if isinstance(value, dict):
+        return {str(key): _canonical_selections(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return sorted(
+            (_canonical_selections(item) for item in value),
+            key=lambda item: json.dumps(item, sort_keys=True, default=str),
+        )
+    return value
+
+
 def recipe_key(job: dict, task_key: str) -> str:
-    """One recipe per (site, report, export view, period) - never broader.
+    """One recipe per (Flow, site, report, filters, export view, period).
 
     Periods are part of ``task_key``, so a recipe recorded for one week can
     never be replayed to satisfy a request for another: it simply won't be
-    found, and the browser flow runs as before.
+    found, and the browser flow runs as before. The Flow and its saved report
+    filters are part of the key for the same reason: the recorded request
+    carries the filters the browser had applied, so another Flow on the same
+    report - or this Flow after its filters were edited - must not find it.
     """
     site = job.get("site") or {}
     report = job.get("report") or {}
     return json.dumps({
+        "flow": (job.get("flow") or {}).get("id"),
         "site": site.get("id") or site.get("name"),
         "report": report.get("id") or report.get("name"),
+        "selections": _canonical_selections(job.get("selections") or {}),
         "task": task_key,
         "asap_download_type": (job.get("downloads") or {}).get("asap_download_type"),
         "export_report_title": (job.get("downloads") or {}).get("export_report_title"),
         "export_filter_details": (job.get("downloads") or {}).get("export_filter_details"),
-    }, sort_keys=True)
+    }, sort_keys=True, default=str)
 
 
 def _recipe_expired(recipe: dict) -> bool:

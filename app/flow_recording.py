@@ -43,6 +43,13 @@ MONTH_CALCULATIONS = {'oldest_selectable', 'latest_selectable', 'current_month',
 MONTH_FORMATS = {'%Y%m': re.compile(r'(20\d{2})(0[1-9]|1[0-2])')}
 MAX_MONTH_OFFSET = 120
 SENSITIVE = re.compile(r'password|passwd|authorization|cookie|token|secret|otp|verification.?code', re.I)
+# Query parameters that carry a credential. "code" counts as a whole name
+# (code=, auth_code=) or joined to a credential word (authCode=, passcode=);
+# reportCode=, menuCode= and zipcode= are ordinary portal parameters.
+AUTH_QUERY_PARAMETER = re.compile(
+    r'[?&](?:[^=&]*(?:token|password|secret|ticket)'
+    r'|(?:[^=&]*[_.\-])?code'
+    r'|[^=&]*(?:auth|authorization|access|pass|otp|verification|security|login)code)=', re.I)
 
 
 def canonical(value):
@@ -541,7 +548,7 @@ def validate_definition(definition, *, activation=True):
             url = urlsplit(args[0])
             if url.scheme not in {'http', 'https'} or not url.hostname or url.username or url.password:
                 raise ValueError('Recording navigation requires an HTTP(S) URL without credentials.')
-            if re.search(r'(?:[?&])[^=&]*(?:token|password|secret|ticket|code)=', args[0], re.I):
+            if AUTH_QUERY_PARAMETER.search(args[0]):
                 raise ValueError('Record from a stable portal URL without authentication parameters.')
         if action in {'fill', 'press_sequentially'} and SENSITIVE.search(canonical(step.get('locator', []))):
             raise ValueError('Authentication inputs cannot be included in a recording. Sign in first.')

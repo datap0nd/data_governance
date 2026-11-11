@@ -15,6 +15,7 @@ from typing import Iterable
 from zoneinfo import ZoneInfo
 
 from app.config import FLOW_TIMEZONE
+from app.flow_clock import TIMEZONE as DISPLAY_TIMEZONE
 
 UTC = timezone.utc
 WEEKDAY_NUMBERS = {
@@ -52,6 +53,17 @@ def iso_utc(value: datetime | None) -> str | None:
     if value.tzinfo is None:
         value = value.replace(tzinfo=UTC)
     return value.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def dubai_minute(value: datetime) -> str:
+    """Format an instant for alert and status text as Dubai wall time.
+
+    Display only: callers keep storing and comparing the instant itself, and
+    name the zone ("Dubai time") once in the message they build.
+    """
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(ZoneInfo(DISPLAY_TIMEZONE)).strftime("%Y-%m-%d %H:%M")
 
 
 def _parse(value: str | datetime | None) -> datetime | None:

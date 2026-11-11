@@ -13,6 +13,11 @@ import httpx
 
 from app import flow_layout, flow_paths, flow_publish, flow_retention, flow_tasks
 
+# The coordinator polls its helpers every second, and the server stores every
+# progress post as a run event. An unchanged payload is repeated only this
+# often, as a sign of life in the run log.
+PARALLEL_PROGRESS_KEEPALIVE_SECONDS = 30
+
 
 def task_output_folder(job, task, run_id):
     parent = Path(task['run_folder'])
@@ -171,12 +176,19 @@ def acquire_bundle(client, worker_id, transport_state, page, job, progress, prof
     base = f'/api/flows/worker/{worker_id}/runs/{run_id}'
     try:
         state = worker._api(client, 'POST', base + '/tasks', {'run_date': dubai_today().isoformat(), 'completed_keys': list(_valid_carried(job))})
+        reported, reported_at = None, 0.0
         while True:
             artifacts[:] = state['artifacts']
             if state['state'] == 'aborting':
                 raise RuntimeError(state['error'] or 'Parallel downloads stopped.')
-            progress('running', {'stage': 'parallel_downloads', 'message': f"Downloaded {state['completed']} of {state['total']} exports; {state['active']} active slots.",
-                                 'completed': state['completed'], 'total': state['total'], 'active_slots': state['active']}, artifacts)
+            detail = {'stage': 'parallel_downloads', 'message': f"Downloaded {state['completed']} of {state['total']} exports; {state['active']} active slots.",
+                      'completed': state['completed'], 'total': state['total'], 'active_slots': state['active']}
+            # Post a change at once; otherwise only the keepalive. The run's own
+            # 30-second heartbeat, not this post, keeps it from being reaped.
+            now = time.monotonic()
+            if (detail, state['artifacts']) != reported or now - reported_at >= PARALLEL_PROGRESS_KEEPALIVE_SECONDS:
+                progress('running', detail, artifacts)
+                reported, reported_at = (detail, state['artifacts']), now
             if state['completed'] == state['total']:
                 break
             claimed = worker._api(client, 'POST', base + '/tasks/claim')

@@ -7,6 +7,7 @@ No need for TMDL exports or Power BI Desktop.
 """
 
 import logging
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from app.scanner.tmdl_parser import (
     is_auto_table,
     _parse_m_expression,
     _extract_hashtable_value,
+    _describe_unknown_expression,
 )
 
 logger = logging.getLogger(__name__)
@@ -67,6 +69,36 @@ class PbixReport:
     parse_issues: list[str] = field(default_factory=list)
 
 
+def _parse_live_connection_report(file_path: Path, report_name: str) -> PbixReport | None:
+    """Catalogue a .pbix that carries a report layout but no data model.
+
+    A live-connection report reads a shared dataset, so its archive has no
+    ``DataModel`` entry and PBIXRay cannot open it. It is still a real report:
+    return its pages and visuals with no tables. A file that does contain a
+    model, is not an archive, or has no readable layout stays unparsed.
+    """
+    try:
+        if not zipfile.is_zipfile(str(file_path)):
+            return None
+        with zipfile.ZipFile(str(file_path), "r") as archive:
+            if any(name.casefold() == "datamodel" for name in archive.namelist()):
+                return None
+        from app.scanner.layout_parser import parse_pbix_layout
+        layout = parse_pbix_layout(file_path)
+    except Exception as e:
+        logger.warning("Could not parse layout from %s: %s", file_path.name, e)
+        return None
+    if layout is None:
+        return None
+    logger.info(
+        "[%s] No data model (live connection): catalogued %d page(s) from the layout",
+        report_name, len(layout.pages),
+    )
+    report = PbixReport(name=report_name, file_path=str(file_path), layout=layout)
+    report.layout_only = True
+    return report
+
+
 def parse_pbix_file(file_path: str | Path) -> PbixReport | None:
     """Parse a .pbix file and extract all table/source information.
 
@@ -83,6 +115,9 @@ def parse_pbix_file(file_path: str | Path) -> PbixReport | None:
         from pbixray import PBIXRay
         model = PBIXRay(str(file_path))
     except Exception as e:
+        live_report = _parse_live_connection_report(file_path, report_name)
+        if live_report is not None:
+            return live_report
         logger.error("Failed to open %s: %s", file_path.name, e)
         return None
 
@@ -170,7 +205,7 @@ def parse_pbix_file(file_path: str | Path) -> PbixReport | None:
             else:
                 source = _parse_m_expression(expr)
                 if source and source.source_type == "unknown":
-                    logger.info("  [%s] table '%s': unknown source — expr: %.150s", report_name, tname, expr.replace("\n", " "))
+                    logger.info("  [%s] table '%s': unknown source — %s", report_name, tname, _describe_unknown_expression(expr))
                 elif source:
                     logger.info("  [%s] table '%s': %s (%s)", report_name, tname, source.source_type, source.display_name)
 
@@ -192,6 +227,7 @@ def parse_pbix_file(file_path: str | Path) -> PbixReport | None:
 
     # Extract DAX measures
     measures = []
+    measures_complete = True
     try:
         dax_measures = model.dax_measures
         if dax_measures is not None and len(dax_measures) > 0:
@@ -210,8 +246,10 @@ def parse_pbix_file(file_path: str | Path) -> PbixReport | None:
                             dax_expression=str(expr) if expr else None,
                         ))
             else:
+                measures_complete = False
                 logger.warning("Unexpected dax_measures columns in %s: %s", file_path.name, list(dax_measures.columns))
     except Exception as e:
+        measures_complete = False
         logger.warning("Could not read dax_measures from %s: %s", file_path.name, e)
 
     # Extract visual layout (pages, visuals, field references)
@@ -247,4 +285,7 @@ def parse_pbix_file(file_path: str | Path) -> PbixReport | None:
         parse_issues=parse_issues,
     )
     report.layout_diagnostic = layout_diagnostic
+    # False when the measure list could not be read: an empty list then says
+    # nothing about the model, and stored measures must be left alone.
+    report.measures_complete = measures_complete
     return report
