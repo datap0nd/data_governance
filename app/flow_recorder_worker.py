@@ -69,8 +69,8 @@ def _discard_leftover_state(recordings) -> None:
                        recordings.name, exc.__class__.__name__)
 
 
-def _prune_validation_folders(root, current) -> None:
-    """Keep this Flow's newest recording-test folders, ``current`` among them.
+def _prune_validation_folders(root, current, keep: int = VALIDATION_FOLDERS_KEPT) -> None:
+    """Keep this Flow's newest ``keep`` recording-test folders, ``current`` among them.
 
     Each test writes its private trace and output to a folder named after its
     session id directly inside ``root``; nothing else in ``root`` is touched.
@@ -83,7 +83,7 @@ def _prune_validation_folders(root, current) -> None:
              if entry.name.isascii() and entry.name.isdigit() and entry.name != current.name
              and not _is_link(entry) and entry.is_dir()),
             key=lambda entry: int(entry.name), reverse=True)
-        for stale in older[VALIDATION_FOLDERS_KEPT - 1:]:
+        for stale in older[max(1, int(keep)) - 1:]:
             _discard(stale, root)
     except OSError as exc:
         logger.warning('Could not prune recording-test folders in %s: %s',
@@ -289,7 +289,7 @@ def validate(scan, page, profile, progress):
     from app.flow_recording_runtime import execute_recorded_flow
     from app.flow_recording_diagnostics import sanitize_diagnostic
     from app.flow_recording_timing import for_job
-    from app import flow_worker
+    from app import flow_job_limits, flow_worker
     import importlib.metadata
     import platform
     job = copy.deepcopy(scan['job']['validation_job'])
@@ -372,4 +372,7 @@ def validate(scan, page, profile, progress):
                     progress('running', {'stage': 'diagnostics', 'message': 'Private trace was unavailable; the text log is retained.',
                         'diagnostic': {'version': 1, 'phase': 'diagnostics', 'failure_reason': 'trace_unavailable'}})
         # Traces and test output would otherwise accumulate for every test.
-        _prune_validation_folders(private.parent, private)
+        # The number kept is the one frozen into this test when it was queued.
+        _prune_validation_folders(private.parent, private,
+                                  **flow_job_limits.given(
+                                      job, keep=('recording_test_folders_kept', VALIDATION_FOLDERS_KEPT)))

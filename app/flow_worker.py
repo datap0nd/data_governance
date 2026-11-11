@@ -5,7 +5,8 @@ Every run first saves immutable artifacts into an owned run folder. Flows may
 either keep those folders visible in the configured target or publish a
 validated deliverable bundle directly into that target with exact-name
 replacement. The only recursive deletion is a server-assigned retention
-operation against an owned run folder (keeping the newest three per store).
+operation against an owned run folder (the server keeps the newest three per
+store unless Settings says otherwise).
 """
 
 from __future__ import annotations
@@ -44,7 +45,7 @@ if str(_CODE_DIR) not in sys.path:
 
 from app.flow_clock import dubai_today
 from app.flow_paths import assert_job_paths
-from app import flow_layout, flow_excel, flow_range_slider
+from app import flow_job_limits, flow_layout, flow_excel, flow_range_slider
 
 try:
     from app import flow_gscm, flow_outlook, flow_publish, flow_python, flow_replay, flow_retention
@@ -92,6 +93,13 @@ PROGRESS_CHECK_SECONDS = 5 * 60
 # report finished with an empty rendering (the caller re-runs it once).
 ASAP_EMPTY_RESULT_SETTLE_SECONDS = 5 * 60
 ASAP_SCAN_OVERLAY_TIMEOUT_SECONDS = 30 * 60
+# How long one ASAP catalog scan keeps opening reports when its job names no
+# budget of its own.
+CATALOG_SCAN_BUDGET_MINUTES = 90
+# These attempts, the scan limits above and the download budgets further down
+# are the built-in values. A job the server queued may carry its own under
+# ``job["limits"]`` (the ones saved in Settings; see flow_job_limits), and a
+# limit it carries is used instead.
 EXPORT_TASK_ATTEMPTS = 3
 GSCM_EXPORT_TASK_ATTEMPTS = 2
 GSCM_INITIAL_LOAD_BUFFER_MS = 60_000
@@ -1994,12 +2002,19 @@ def _edge_completed_download(
     *,
     staging_dir: Path | None = None,
     progress: Callable[[str, str], None] | None = None,
+    event_timeout_seconds: float | None = None,
 ) -> Path:
-    """Use Edge's native download lifecycle as the completion authority."""
+    """Use Edge's native download lifecycle as the completion authority.
+
+    ``event_timeout_seconds`` is the limit a job carries for the browser to
+    accept the transfer; without it the built-in one applies.
+    """
     files_before = _download_staging_snapshot(staging_dir) if staging_dir is not None else None
+    if event_timeout_seconds is None:
+        event_timeout_seconds = DOWNLOAD_EVENT_TIMEOUT_SECONDS
     try:
         with page.expect_download(
-            timeout=DOWNLOAD_EVENT_TIMEOUT_SECONDS * 1_000,
+            timeout=event_timeout_seconds * 1_000,
         ) as pending:
             trigger_download()
         download = pending.value
@@ -2581,6 +2596,10 @@ def _asap_download(
     # popup can therefore leave a visibly completed browser download waiting
     # until timeout. Subscribe to every current portal page before clicking.
     files_before = _download_staging_snapshot(staging_dir)
+    # Only a limit the job changes is passed on; otherwise the wait keeps its
+    # built-in start budget.
+    start_limit = flow_job_limits.given(
+        job, start_timeout_seconds=("download_start_seconds", DOWNLOAD_START_TIMEOUT_SECONDS))
     downloads = []
     observed_pages = list(page.context.pages)
 
@@ -2611,6 +2630,7 @@ def _asap_download(
             # second time and creating a duplicate CSV.
             staged_file = _wait_for_staged_download(
                 staging_dir, files_before, progress=progress, label="The ASAP export download",
+                **start_limit,
             )
             export_pages = [
                 candidate for candidate in wizard_pages
@@ -2624,6 +2644,7 @@ def _asap_download(
             raise RuntimeError("ASAP export started, but Browser did not expose the completed download within 3 minutes.")
         staged_file = _wait_for_staged_download(
                 staging_dir, files_before, progress=progress, label="The ASAP export download",
+                **start_limit,
             )
         export_pages = [
             candidate for candidate in wizard_pages
@@ -2786,6 +2807,12 @@ def _asap_download_dashboard_link(
             "Rescan this report if the dashboard renamed its download links."
         )
     files_before = _download_staging_snapshot(staging_dir)
+    # The start budget, passed on only when the job changes it.
+    start_limit = flow_job_limits.given(
+        job, start_timeout_seconds=("download_start_seconds", DOWNLOAD_START_TIMEOUT_SECONDS))
+    signal_limit = flow_job_limits.given(
+        job, timeout_seconds=("download_start_seconds", DOWNLOAD_START_TIMEOUT_SECONDS))
+    start_seconds = int(flow_job_limits.value(job, "download_start_seconds", DOWNLOAD_START_TIMEOUT_SECONDS))
     opened: list = []
     downloads: list = []
     observed_pages: list = []
@@ -2811,7 +2838,7 @@ def _asap_download_dashboard_link(
         control.click(timeout=30_000)
         signal = _asap_wait_for_dashboard_download_signal(
             page, staging_dir, files_before, downloads, opened,
-            progress=progress, label=label,
+            progress=progress, label=label, **signal_limit,
         )
         # A native event is authoritative proof that the transfer started, but
         # dashboard completion comes from the stable worker staging file. This
@@ -2824,13 +2851,13 @@ def _asap_download_dashboard_link(
         if signal == "staging":
             return _wait_for_staged_download(
                 staging_dir, files_before, progress=progress,
-                label=f"The ASAP dashboard download {label!r}",
+                label=f"The ASAP dashboard download {label!r}", **start_limit,
             )
         if signal == "timeout":
             raise RuntimeError(
                 "ASAP dashboard download did not emit an Browser download event, "
                 "open an intermediate page, or create a local staging file within "
-                f"{DOWNLOAD_START_TIMEOUT_SECONDS} seconds: {label}."
+                f"{start_seconds} seconds: {label}."
             )
 
         # No file or Browser download event followed the first click, but a popup
@@ -2867,7 +2894,7 @@ def _asap_download_dashboard_link(
         if _download_staging_changed(staging_dir, files_before):
             return _wait_for_staged_download(
                 staging_dir, files_before, progress=progress,
-                label=f"The ASAP dashboard download {label!r}",
+                label=f"The ASAP dashboard download {label!r}", **start_limit,
             )
         if popup_control is None:
             raise RuntimeError(
@@ -2877,7 +2904,7 @@ def _asap_download_dashboard_link(
         popup_control.click(timeout=30_000)
         signal = _asap_wait_for_dashboard_download_signal(
             page, staging_dir, files_before, downloads, opened,
-            popup_grace_seconds=None, progress=progress, label=label,
+            popup_grace_seconds=None, progress=progress, label=label, **signal_limit,
         )
         if downloads:
             return _asap_dashboard_event_staged_download(
@@ -2886,17 +2913,17 @@ def _asap_download_dashboard_link(
         if _download_staging_changed(staging_dir, files_before):
             return _wait_for_staged_download(
                 staging_dir, files_before, progress=progress,
-                label=f"The ASAP dashboard download {label!r}",
+                label=f"The ASAP dashboard download {label!r}", **start_limit,
             )
         if signal == "timeout":
             raise RuntimeError(
                 "ASAP dashboard intermediate page did not emit an Browser download "
                 "event or create a local staging file within "
-                f"{DOWNLOAD_START_TIMEOUT_SECONDS} seconds: {label}."
+                f"{start_seconds} seconds: {label}."
             )
         return _wait_for_staged_download(
                 staging_dir, files_before, progress=progress,
-                label=f"The ASAP dashboard download {label!r}",
+                label=f"The ASAP dashboard download {label!r}", **start_limit,
             )
     finally:
         try:
@@ -3425,7 +3452,9 @@ def _asap_portal_menu_paths(page: Page, diagnostics: dict | None = None) -> list
     return paths
 
 
-def _asap_discover_menu_reports(page: Page, scope: list[str]) -> list[list[str]]:
+def _asap_discover_menu_reports(
+    page: Page, scope: list[str], *, overlay_seconds: float = ASAP_SCAN_OVERLAY_TIMEOUT_SECONDS,
+) -> list[list[str]]:
     # Discovery is deliberately page-driven. The old implementation required a
     # configured label such as "Mobile", which made every navigation rename a
     # deployment incident. Scope remains in the job schema for compatibility,
@@ -3449,7 +3478,7 @@ def _asap_discover_menu_reports(page: Page, scope: list[str]) -> list[list[str]]
         # loading overlay. Playwright can therefore resolve a menu link while
         # the overlay still intercepts the click. Wait for a sustained clear
         # state before resolving the live link used for this interaction.
-        _asap_wait_for_loading_clear(page, max_seconds=ASAP_SCAN_OVERLAY_TIMEOUT_SECONDS)
+        _asap_wait_for_loading_clear(page, max_seconds=overlay_seconds)
         # Mega-menu contents change the number and order of matching elements.
         # Re-resolve the navigation trigger instead of retaining an nth-based
         # Playwright locator from the initial DOM snapshot.
@@ -4069,7 +4098,10 @@ def _asap_activate_export_view(
 
 def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: Path) -> tuple[list[dict], list[dict], bool]:
     timings = _Timings()
-    deadline = time.monotonic() + 60 * int(job["discovery"].get("max_duration_minutes") or 90)
+    # Both limits were frozen into the scan when the server queued it.
+    budget_minutes = int(job["discovery"].get("max_duration_minutes") or CATALOG_SCAN_BUDGET_MINUTES)
+    deadline = time.monotonic() + 60 * budget_minutes
+    overlay_seconds = flow_job_limits.value(job, "scan_overlay_seconds", ASAP_SCAN_OVERLAY_TIMEOUT_SECONDS)
     site = job["site"]
     report_progress("running", {"stage": "navigation", "message": "Opening ASAP for catalog discovery."})
     with timings.measure("navigation"):
@@ -4077,7 +4109,9 @@ def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: P
     target_paths = [path for path in job["discovery"].get("report_paths", []) if len(path) >= 2]
     with timings.measure("report_discovery"):
         paths = target_paths or _asap_discover_menu_reports(
-            page, job["discovery"].get("scope") or ["Mobile"]
+            page, job["discovery"].get("scope") or ["Mobile"],
+            **flow_job_limits.given(
+                job, overlay_seconds=("scan_overlay_seconds", ASAP_SCAN_OVERLAY_TIMEOUT_SECONDS)),
         )
     if job["discovery"].get("mode") == "partial" and not target_paths:
         # A partial scan inventories the menu only: names and paths, without
@@ -4115,7 +4149,7 @@ def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: P
             complete = False
             report_progress("running", {
                 "stage": "time_budget_reached",
-                "message": "The 90-minute scan budget was reached. Keeping partial discoveries without marking unseen entries stale.",
+                "message": f"The {budget_minutes}-minute scan budget was reached. Keeping partial discoveries without marking unseen entries stale.",
                 "report_index": index, "report_count": len(paths),
             })
             break
@@ -4152,7 +4186,7 @@ def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: P
                     # instead of holding the worker and its slots forever.
                     active_frame, selected_label = _asap_activate_export_view(
                         page, frame, export_view_label,
-                        max_seconds=ASAP_SCAN_OVERLAY_TIMEOUT_SECONDS,
+                        max_seconds=overlay_seconds,
                     )
                     diagnostics: dict = {}
                     discovered = _asap_discover_filters(active_frame, diagnostics)
@@ -5967,8 +6001,14 @@ def _script_command(script_path: Path, input_path: Path, output_path: Path) -> l
         raise RuntimeError("Transformation script must be a .py, .ps1, or .exe file.")
 
 
-def _run_transformations(artifacts: list[dict], config: dict) -> list[dict]:
-    """Run one configured script once per download and return SQL-ready outputs."""
+def _run_transformations(
+    artifacts: list[dict], config: dict, *, timeout_seconds: float = flow_python.SCRIPT_TIMEOUT_SECONDS,
+) -> list[dict]:
+    """Run one configured script once per download and return SQL-ready outputs.
+
+    A transformation has no time limit of its own: ``timeout_seconds`` is the
+    one its job carries, and the built-in hour without it.
+    """
     if not config.get("enabled"):
         return artifacts
     script_path = Path(str(config.get("script_path") or ""))
@@ -5995,7 +6035,7 @@ def _run_transformations(artifacts: list[dict], config: dict) -> list[dict]:
         completed = subprocess.run(
             _script_command(script_path, input_path, output_path),
             cwd=str(script_path.parent), env=environment, capture_output=True,
-            text=True, timeout=60 * 60, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            text=True, timeout=timeout_seconds, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         stdout = (completed.stdout or "").strip()
         stderr = (completed.stderr or "").strip()
@@ -7057,15 +7097,18 @@ def _bounded_detail(detail: dict | None) -> dict | None:
     return detail
 
 
-def _failure_screenshot(page, profile_dir: Path, label: str) -> str | None:
+def _failure_screenshot(
+    page, profile_dir: Path, label: str, *, keep: int = FAILURE_SCREENSHOT_KEEP,
+) -> str | None:
     """Best-effort PNG of the live page for a failed run or scan.
 
     Saved under the profile's ``diagnostics`` folder, never the run folder -
     run folders feed downstream pipelines and retention. The worker never
     deletes files (flow_retention is the one gated deletion site), so growth
     is bounded by overwriting a fixed rotation of slot filenames instead of
-    pruning old screenshots. Returns the saved path, or ``None`` when the
-    page is already gone.
+    pruning old screenshots. ``keep`` is the number of slots: the one the
+    failed job carries, or the built-in number. Returns the saved path, or
+    ``None`` when the page is already gone.
     """
     try:
         diagnostics = Path(profile_dir) / "diagnostics"
@@ -7076,7 +7119,7 @@ def _failure_screenshot(page, profile_dir: Path, label: str) -> str | None:
         except (OSError, ValueError):
             counter = 0
         counter_path.write_text(str(counter + 1), encoding="utf-8")
-        target = diagnostics / f"failure-{counter % FAILURE_SCREENSHOT_KEEP:02d}.png"
+        target = diagnostics / f"failure-{counter % max(1, int(keep)):02d}.png"
         page.screenshot(path=str(target), full_page=False)
         safe_label = re.sub(r"[^A-Za-z0-9_-]+", "_", str(label))[:60] or "failure"
         return f"{target} ({safe_label}, {datetime.now():%Y-%m-%d %H:%M:%S})"
@@ -7112,7 +7155,8 @@ def _prepare_run_folder(
     # the new folder. Outlook calls this only after it has acquired a new
     # attachment, so a no-match/dedup no-op creates no folder and receives no
     # retention work; pending operations wait for the next producing run.
-    assigned = (register_folder(str(run_folder)) or {}).get("ops") or []
+    registration = register_folder(str(run_folder)) or {}
+    assigned = registration.get("ops") or []
     report_progress("running", {
         "stage": "run_folder",
         "message": (
@@ -7125,6 +7169,9 @@ def _prepare_run_folder(
         ),
     })
     if assigned:
+        # The server decides how many folders stay and says so; an older
+        # server does not, and kept the built-in number.
+        kept = registration.get("keep") or flow_retention.RUN_FOLDER_KEEP
         results = flow_retention.execute_ops(storage_root, assigned)
         outcomes = "; ".join(
             f"{Path(str(op.get('original_path') or '')).name or 'unknown'}: {result['outcome']}"
@@ -7135,7 +7182,7 @@ def _prepare_run_folder(
             "stage": "run_folder_retention",
             "message": (
                 f"Cleaning up old run folders (keeping the newest "
-                f"{flow_retention.RUN_FOLDER_KEEP}): {outcomes}."
+                f"{kept}): {outcomes}."
             ),
             "retention_results": results,
         })
@@ -7431,7 +7478,8 @@ def execute_python_job(
     destination = "sql" if job.get("sql_handoff", {}).get("enabled") else "file"
     if destination == "sql" and output_format != "csv":
         raise RuntimeError("SQL insertion requires the final Python-script file to be CSV.")
-    timeout_seconds = int(source.get("timeout_seconds") or flow_python.SCRIPT_TIMEOUT_SECONDS)
+    timeout_seconds = int(source.get("timeout_seconds") or flow_job_limits.value(
+        job, "script_timeout_seconds", flow_python.SCRIPT_TIMEOUT_SECONDS))
     timings = _Timings()
     names = flow_python.describe([str(item) for item in scripts], arguments, values)
     runs_note = f", {len(plan)} run(s) in total" if len(plan) != len(scripts) else ""
@@ -7586,7 +7634,8 @@ def execute_python_run_job(job: dict, report_progress, *, run_id: int,
         interpreter, reason, checksums = checked["interpreter"], checked["interpreter_reason"], checked["checksums"]
     arguments = flow_python.aligned_arguments(source.get("arguments"), len(scripts))
     values = flow_python.aligned_values(source.get("values"), len(scripts))
-    timeout_seconds = int(source.get("timeout_seconds") or flow_python.SCRIPT_TIMEOUT_SECONDS)
+    timeout_seconds = int(source.get("timeout_seconds") or flow_job_limits.value(
+        job, "script_timeout_seconds", flow_python.SCRIPT_TIMEOUT_SECONDS))
     plan = flow_python.run_plan(scripts, arguments, values)
     where = " in the signed-in Windows session" if session is not None else ""
     report_progress("running", {
@@ -7832,6 +7881,8 @@ def execute_job(
                     page, lambda: flow_gscm.trigger_excel_export(page, job),
                     staging_dir=download_staging_dir or profile_dir / "downloads",
                     progress=_processing_progress,
+                    **flow_job_limits.given(
+                        job, event_timeout_seconds=("download_event_seconds", DOWNLOAD_EVENT_TIMEOUT_SECONDS)),
                 )
                 export_pages = []
         elif is_asap:
@@ -7898,7 +7949,8 @@ def execute_job(
                     )
         else:
             _apply_configuration(page, job, period)
-            with page.expect_download(timeout=DOWNLOAD_EVENT_TIMEOUT_SECONDS * 1_000) as pending:
+            with page.expect_download(timeout=flow_job_limits.value(
+                    job, "download_event_seconds", DOWNLOAD_EVENT_TIMEOUT_SECONDS) * 1_000) as pending:
                 _click_named(page, job["report"]["download_text"])
             download = pending.value
             export_pages = []
@@ -8062,7 +8114,11 @@ def execute_job(
         )
         staging = download_staging_dir or profile_dir / "downloads"
         with timings.measure("file_export", report_id=job["report"].get("id")):
-            staged_file = flow_replay.try_replay(context, recipe, staging)
+            staged_file = flow_replay.try_replay(context, recipe, staging, **{
+                argument: int(seconds * 1_000) for argument, seconds in flow_job_limits.given(
+                    job, timeout_ms=("replay_request_seconds", flow_replay.REPLAY_TIMEOUT_MS // 1_000),
+                ).items()
+            })
         if staged_file is None:
             flow_replay.forget_recipe(profile_dir, job, task_key)
             report_progress(
@@ -8167,7 +8223,10 @@ def execute_job(
             artifacts.append(_decorate_artifact_storage(replayed, job, profile_dir))
             continue
 
-        task_attempts = GSCM_EXPORT_TASK_ATTEMPTS if is_gscm else EXPORT_TASK_ATTEMPTS
+        task_attempts = int(
+            flow_job_limits.value(job, "gscm_export_attempts", GSCM_EXPORT_TASK_ATTEMPTS) if is_gscm
+            else flow_job_limits.value(job, "export_attempts", EXPORT_TASK_ATTEMPTS)
+        )
 
         def _task_retry(attempt: int, exc: Exception, *, index=index, task=task):
             report_progress(
@@ -8534,7 +8593,11 @@ def execute_flow(page, job: dict, progress, profile_dir: Path, download_staging_
                 artifacts, timings,
             )
             transformation_started = time.perf_counter()
-            sql_artifacts = _run_transformations(sql_artifacts, job["transformation"])
+            sql_artifacts = _run_transformations(
+                sql_artifacts, job["transformation"],
+                **flow_job_limits.given(
+                    job, timeout_seconds=("script_timeout_seconds", flow_python.SCRIPT_TIMEOUT_SECONDS)),
+            )
             timings.insert(max(0, len(timings) - 1), {
                 "phase": "transformation",
                 "duration_ms": round((time.perf_counter() - transformation_started) * 1000),
@@ -8561,7 +8624,7 @@ def execute_flow(page, job: dict, progress, profile_dir: Path, download_staging_
                 artifacts, timings,
             )
         if not no_op and job.get("sql_handoff", {}).get("enabled"):
-            from app.flow_sql import load_artifacts
+            from app.flow_sql import limits_argument, load_artifacts
             source_label = "transformed" if job.get("transformation", {}).get("enabled") else "downloaded"
             if sql_only:
                 source_label = "saved"
@@ -8574,6 +8637,7 @@ def execute_flow(page, job: dict, progress, profile_dir: Path, download_staging_
 
             sql_result = load_artifacts(
                 sql_artifacts, job["sql_handoff"], progress=sql_progress,
+                **limits_argument(job),
             )
             # The load is committed: a report the server cannot receive from
             # here on is retried or dropped, never turned into a failed run.
@@ -8668,6 +8732,36 @@ def execute_flow(page, job: dict, progress, profile_dir: Path, download_staging_
     return state
 
 
+_settings_refresh_problem: str | None = None
+
+
+def _refresh_connection_settings() -> list[str]:
+    """Apply connection values the host PC saved while this worker was running.
+
+    Called once per loop, before work is claimed. It costs one ``stat`` of the
+    settings file, and re-reads the file only when it was written since the
+    last look. A failure keeps the values in force and never stops the worker;
+    it is reported once, not on every loop.
+    """
+    global _settings_refresh_problem
+    try:
+        from app import config
+        changed = config.refresh_if_changed()
+    except Exception as exc:
+        # The kind of failure only: the file holds passwords.
+        problem = type(exc).__name__
+        if problem != _settings_refresh_problem:
+            _settings_refresh_problem = problem
+            print(f"Could not re-read the settings file ({problem}); keeping the connection values in force.",
+                  file=sys.stderr, flush=True)
+        return []
+    _settings_refresh_problem = None
+    if changed:
+        # Names only: the values include passwords.
+        print(f"Applied changed connection settings: {', '.join(sorted(changed))}.", flush=True)
+    return changed
+
+
 def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path, headed: bool,
                once: bool, idle_exit_seconds: int = 0):
     from app import flow_browser
@@ -8743,6 +8837,9 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                     if ids != set(registration["capabilities"].get("artifact_store_ids") or []):
                         registration["capabilities"].update(shared_flow_artifacts=True, artifact_store_ids=sorted(ids))
                         _api(client, "POST", "/api/flows/worker/register", registration)
+                # A connection or password the host PC saved since the last
+                # loop applies to the work claimed next.
+                _refresh_connection_settings()
                 claimed = _api(client, "POST", f"/api/flows/worker/{worker_id}/claim")
                 run = claimed.get("run")
                 scan = claimed.get("scan")
@@ -8886,6 +8983,8 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                         failure_message = _redact_secrets(str(exc))
                         screenshot_path = _failure_screenshot(
                             page, profile_dir, f"scan-{scan_id}",
+                            **flow_job_limits.given(
+                                scan["job"], keep=("failure_screenshots_kept", FAILURE_SCREENSHOT_KEEP)),
                         )
                         if screenshot_path:
                             failure_message += f" Screenshot: {screenshot_path}"
@@ -9012,6 +9111,8 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                     failure_traceback = _redact_secrets(traceback.format_exc())
                     screenshot_path = _failure_screenshot(
                         page, profile_dir, f"run-{run_id}",
+                        **flow_job_limits.given(
+                            run["job"], keep=("failure_screenshots_kept", FAILURE_SCREENSHOT_KEEP)),
                     )
                     if screenshot_path:
                         failure_message += f" Screenshot: {screenshot_path}"

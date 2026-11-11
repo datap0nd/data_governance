@@ -18,7 +18,7 @@ import threading
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from app.config import PBI_VISUAL_EXPORT_MAX_ROWS, PBI_VISUAL_EXPORT_TIMEOUT_SECONDS
+from app import settings_registry
 from app.pbi_visual_query import (
     PbiVisualQueryError,
     apply_visual_field_formats,
@@ -37,6 +37,18 @@ POWER_BI_AUTHORING_URLS = (
     "https://unpkg.com/powerbi-report-authoring@3.0.0/dist/powerbi-report-authoring.min.js",
 )
 TABLE_VISUAL_TYPES = {"table", "tableex", "pivottable", "matrix"}
+# Power BI's own ceiling for one summarized export.
+POWER_BI_MAX_ROWS = 30000
+
+
+def export_timeout_seconds() -> int:
+    """How long Power BI may take to return a table: the Settings value."""
+    return int(settings_registry.get("email.visual_export_timeout_seconds"))
+
+
+def export_row_limit() -> int:
+    """The most rows read from one table: the Settings value."""
+    return min(POWER_BI_MAX_ROWS, max(1, int(settings_registry.get("email.visual_export_max_rows"))))
 _BROWSER_START_ATTEMPTS = 2
 _VISUAL_ACTION_LOCK = threading.Lock()
 
@@ -442,10 +454,12 @@ _RUNTIME_HTML = f"""<!doctype html>
 """
 
 
-def _load_power_bi_client(page) -> str:
+def _load_power_bi_client(page, timeout_ms: int | None = None) -> str:
     """Load the browser client from the published npm package with a fallback CDN."""
     attempts: list[str] = []
-    page.set_default_timeout(min(20000, PBI_VISUAL_EXPORT_TIMEOUT_SECONDS * 1000))
+    if timeout_ms is None:
+        timeout_ms = export_timeout_seconds() * 1000
+    page.set_default_timeout(min(20000, timeout_ms))
     for source_url in POWER_BI_CLIENT_URLS:
         source_host = urlsplit(source_url).hostname or source_url
         try:
@@ -513,8 +527,8 @@ def visual_export_runtime_status() -> dict:
         "playwright_installed": importlib.util.find_spec("playwright") is not None,
         "edge_detected": bool(edge_paths) if platform.system() in {"Windows", "Darwin"} else False,
         "edge_path": str(edge_paths[0]) if edge_paths else None,
-        "timeout_seconds": PBI_VISUAL_EXPORT_TIMEOUT_SECONDS,
-        "max_rows": PBI_VISUAL_EXPORT_MAX_ROWS,
+        "timeout_seconds": export_timeout_seconds(),
+        "max_rows": export_row_limit(),
     }
 
 
@@ -575,11 +589,13 @@ def _run_browser_attempt(playwright, config: dict):
             ignore_https_errors=False,
         )
         page = context.new_page()
-        page.set_default_timeout(PBI_VISUAL_EXPORT_TIMEOUT_SECONDS * 1000)
+        # One value for the whole attempt: the one read when the request was built.
+        timeout_ms = int(config.get("timeoutMs") or export_timeout_seconds() * 1000)
+        page.set_default_timeout(timeout_ms)
         page.set_content(_RUNTIME_HTML, wait_until="domcontentloaded")
-        _load_power_bi_client(page)
+        _load_power_bi_client(page, timeout_ms)
         _load_power_bi_authoring(page)
-        page.set_default_timeout(PBI_VISUAL_EXPORT_TIMEOUT_SECONDS * 1000)
+        page.set_default_timeout(timeout_ms)
         return page.evaluate("config => window.metronomeRun(config)", config)
     finally:
         _safe_close(context)
@@ -647,8 +663,8 @@ def _run_visual_action(
         "embedUrl": embed_url,
         "pageName": page_name,
         "visualName": visual_name,
-        "maxRows": min(30000, max_rows or PBI_VISUAL_EXPORT_MAX_ROWS),
-        "timeoutMs": PBI_VISUAL_EXPORT_TIMEOUT_SECONDS * 1000,
+        "maxRows": min(POWER_BI_MAX_ROWS, max_rows or export_row_limit()),
+        "timeoutMs": export_timeout_seconds() * 1000,
         "accessToken": auth["access_token"],
     }
 
@@ -773,7 +789,7 @@ def export_visual_data(
                 workspace_id=workspace_id,
                 dataset_id=dataset_id,
                 query_spec=result["querySpec"],
-                max_rows=min(30000, max_rows or PBI_VISUAL_EXPORT_MAX_ROWS),
+                max_rows=min(POWER_BI_MAX_ROWS, max_rows or export_row_limit()),
             )
         except PbiVisualQueryError as exc:
             raise PbiVisualExportError(

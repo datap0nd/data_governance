@@ -827,8 +827,7 @@ def _configure_scheduler_jobs() -> dict:
     _scheduler.add_job(
         _scheduled_flow_sql_catalog_refresh,
         "cron",
-        hour=5,
-        minute=30,
+        **flows.sql_catalog_refresh_time(),
         id="flow_sql_catalog_refresh",
         replace_existing=True,
         max_instances=1,

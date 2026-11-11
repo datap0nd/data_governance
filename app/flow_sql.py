@@ -17,20 +17,19 @@ import uuid
 from pathlib import Path
 from typing import Callable
 
-from app.config import (
-    ENV_FILE,
-    current_setting,
-    UPLOAD_PGDATABASE,
-    UPLOAD_PGHOST,
-    UPLOAD_PGPASSWORD,
-    UPLOAD_PGPORT,
-    UPLOAD_PGUSER,
-)
+from app import config, flow_job_limits
+from app.config import ENV_FILE, current_setting
+
+# The upload connection (host, port, default database, shared user and
+# password) is read from ``config`` each time a connection is made, never
+# kept from import: the host PC can change it while this process runs, and
+# ``config.refresh_if_changed`` then applies it to the very next connection.
 
 # These are runaway backstops, not performance budgets. A load is allowed to
 # take as long as the database needs on a slow day; the limits exist only so a
 # wedged connection, an unreachable host, or a lock nobody will ever release
-# cannot leave a transaction open forever.
+# cannot leave a transaction open forever. They are the built-in values: a job
+# queued by the server carries the ones saved in Settings (``flow_job_limits``).
 SQL_CONNECT_TIMEOUT_SECONDS = 60
 # How long to wait for another session's lock on the target table. Unbounded
 # would let one long-running reader pin an open Metronome transaction all day.
@@ -85,12 +84,38 @@ def connection_credentials(target: dict) -> tuple[str, str] | None:
     return username, password
 
 
-def engine_factory_for(target: dict) -> Callable | None:
-    """The engine factory for an owner's SQL user; None keeps the shared ``_engine``."""
+def engine_factory_for(target: dict, *, connect_timeout_seconds: float | None = None) -> Callable | None:
+    """The engine factory for an owner's SQL user; None keeps the shared ``_engine``.
+
+    ``connect_timeout_seconds`` is the connection limit a job changes; without
+    it engines are made exactly as before.
+    """
     credentials = connection_credentials(target)
+    if connect_timeout_seconds is not None:
+        return lambda database: _engine(database, credentials, connect_timeout_seconds=connect_timeout_seconds)
     if credentials is None:
         return None
     return lambda database: _engine(database, credentials)
+
+
+def connect_limit(job: dict) -> dict:
+    """``connect_timeout_seconds=...`` when ``job`` changes the connection limit."""
+    return flow_job_limits.given(job, connect_timeout_seconds=("sql_connect_seconds", SQL_CONNECT_TIMEOUT_SECONDS))
+
+
+def limits_argument(job: dict) -> dict:
+    """``limits=...`` for ``load_artifacts`` when ``job`` changes an SQL limit.
+
+    Empty for a job that keeps the built-in limits, so the load is then called
+    exactly as it always was.
+    """
+    changed = flow_job_limits.given(
+        job,
+        sql_connect_seconds=("sql_connect_seconds", SQL_CONNECT_TIMEOUT_SECONDS),
+        sql_lock_seconds=("sql_lock_seconds", SQL_LOCK_TIMEOUT_SECONDS),
+        sql_statement_seconds=("sql_statement_seconds", SQL_STATEMENT_TIMEOUT_SECONDS),
+    )
+    return {"limits": changed} if changed else {}
 
 
 def person_credentials_supported(job: dict, capabilities: dict) -> bool:
@@ -184,24 +209,30 @@ class SqlHandoffError(RuntimeError):
 
 def configuration_status() -> dict:
     missing = []
-    if not UPLOAD_PGHOST:
+    if not config.UPLOAD_PGHOST:
         missing.append("PGHOST (or DG_UPLOAD_PGHOST)")
-    if not UPLOAD_PGDATABASE:
+    if not config.UPLOAD_PGDATABASE:
         missing.append("PGDATABASE (or DG_UPLOAD_PGDATABASE)")
-    if not UPLOAD_PGUSER:
+    if not config.UPLOAD_PGUSER:
         missing.append("DG_UPLOAD_PGUSER")
-    if not UPLOAD_PGPASSWORD:
+    if not config.UPLOAD_PGPASSWORD:
         missing.append("DG_UPLOAD_PGPASSWORD")
     return {
         "configured": not missing,
         "missing": missing,
         "settings_file": str(ENV_FILE) if ENV_FILE else "",
-        "host": UPLOAD_PGHOST,
-        "default_database": UPLOAD_PGDATABASE,
+        "host": config.UPLOAD_PGHOST,
+        "default_database": config.UPLOAD_PGDATABASE,
     }
 
 
-def _engine(database: str, credentials: tuple[str, str] | None = None):
+def _engine(database: str, credentials: tuple[str, str] | None = None, *,
+            connect_timeout_seconds: float | None = None):
+    """An engine for the upload server as it is configured right now.
+
+    ``connect_timeout_seconds`` is the limit a job carries; without it the
+    built-in one applies.
+    """
     status = configuration_status()
     # A person's own SQL user needs only the server and default database.
     missing = status["missing"] if credentials is None else [
@@ -217,18 +248,22 @@ def _engine(database: str, credentials: tuple[str, str] | None = None):
         from sqlalchemy.pool import NullPool
     except ImportError as exc:
         raise RuntimeError("sqlalchemy/psycopg2 are not installed. Re-run setup.ps1.") from exc
-    username, password = credentials or (UPLOAD_PGUSER, UPLOAD_PGPASSWORD)
-    if credentials:
+    username, password = credentials or (config.UPLOAD_PGUSER, config.UPLOAD_PGPASSWORD)
+    # Whichever password this process connects with, now or after the host PC
+    # replaces it, never appears in a reported database error.
+    if password:
         _REDACTED_PASSWORDS.add(password)
+    if connect_timeout_seconds is None:
+        connect_timeout_seconds = SQL_CONNECT_TIMEOUT_SECONDS
     url = URL.create(
         "postgresql+psycopg2",
         username=username,
         password=password,
-        host=UPLOAD_PGHOST,
-        port=int(UPLOAD_PGPORT),
+        host=config.UPLOAD_PGHOST,
+        port=int(config.UPLOAD_PGPORT),
         database=database,
         query={
-            "connect_timeout": str(SQL_CONNECT_TIMEOUT_SECONDS),
+            "connect_timeout": str(int(connect_timeout_seconds)),
             "keepalives": "1",
             "keepalives_idle": "15",
             "keepalives_interval": "5",
@@ -262,7 +297,7 @@ def discover_catalog() -> dict:
     from sqlalchemy import text
 
     started = time.perf_counter()
-    seed = _engine(UPLOAD_PGDATABASE)
+    seed = _engine(config.UPLOAD_PGDATABASE)
     try:
         with seed.connect() as connection:
             databases = [
@@ -418,7 +453,7 @@ def _database_error(exc: Exception) -> str:
     diagnostic = getattr(original, "diag", None)
     primary = getattr(diagnostic, "message_primary", None) if diagnostic is not None else None
     message = str(primary or original or exc).strip().replace("\r", " ").replace("\n", " ")
-    for secret in (UPLOAD_PGPASSWORD, *_REDACTED_PASSWORDS):
+    for secret in (config.UPLOAD_PGPASSWORD, *_REDACTED_PASSWORDS):
         if secret:
             message = message.replace(secret, "[redacted]")
     message = re.sub(r"\s+", " ", message)[:4000]
@@ -439,10 +474,19 @@ def _emit(progress: SqlProgress | None, stage: str, message: str, started: float
 
 def load_artifacts(
     artifacts: list[dict], target: dict, progress: SqlProgress | None = None,
+    *, limits: dict | None = None,
 ) -> dict:
-    """Append to a target, or atomically replace all of its rows."""
+    """Append to a target, or atomically replace all of its rows.
+
+    ``limits`` holds the SQL limits a job changes (``limits_argument``); any
+    it does not name, or names unusably, keeps the built-in timeout above.
+    """
     from sqlalchemy import text
 
+    frozen = {flow_job_limits.KEY: limits}
+    connect_timeout = flow_job_limits.value(frozen, "sql_connect_seconds", SQL_CONNECT_TIMEOUT_SECONDS)
+    lock_timeout = flow_job_limits.value(frozen, "sql_lock_seconds", SQL_LOCK_TIMEOUT_SECONDS)
+    statement_timeout = flow_job_limits.value(frozen, "sql_statement_seconds", SQL_STATEMENT_TIMEOUT_SECONDS)
     started = time.perf_counter()
     database = str(target.get("database") or "")
     schema = str(target.get("schema") or "")
@@ -491,11 +535,15 @@ def load_artifacts(
         _emit(
             progress, "sql_connecting", f"Connecting to PostgreSQL database {database}{as_user}.",
             started, status="started", target=target_name,
-            timeout_seconds=SQL_CONNECT_TIMEOUT_SECONDS,
+            timeout_seconds=connect_timeout,
             **({"sql_user": sql_user} if sql_user else {}),
         )
         credentials = connection_credentials(target)
-        engine = _engine(database, credentials) if credentials else _engine(database)
+        # Only a changed limit is passed on, so an engine is otherwise built
+        # exactly as it always was.
+        engine_limits = connect_limit(frozen)
+        engine = (_engine(database, credentials, **engine_limits) if credentials
+                  else _engine(database, **engine_limits))
         connection = engine.connect()
         _emit(
             progress, "sql_connected", f"Connected to PostgreSQL database {database}{as_user}.",
@@ -504,8 +552,8 @@ def load_artifacts(
 
         transaction = connection.begin()
         rollback_status = "The transaction did not commit. PostgreSQL rollback was requested."
-        connection.execute(text(f"SET LOCAL lock_timeout = '{SQL_LOCK_TIMEOUT_SECONDS}s'"))
-        connection.execute(text(f"SET LOCAL statement_timeout = '{SQL_STATEMENT_TIMEOUT_SECONDS}s'"))
+        connection.execute(text(f"SET LOCAL lock_timeout = '{int(lock_timeout)}s'"))
+        connection.execute(text(f"SET LOCAL statement_timeout = '{int(statement_timeout)}s'"))
 
         if owner:
             stage = 'ownership validation'
@@ -635,7 +683,7 @@ def load_artifacts(
                 progress, "sql_copy", f"COPY {index} of {len(inspected)} started: {artifact['filename']}.",
                 started, status="started", target=target_name, file=artifact["filename"],
                 file_index=index, files=len(inspected), rows=artifact["row_count"],
-                bytes=artifact["file_size"], timeout_seconds=SQL_STATEMENT_TIMEOUT_SECONDS,
+                bytes=artifact["file_size"], timeout_seconds=statement_timeout,
             )
             _copy_artifact(connection, artifact, copy_destination, uppercase=uppercase)
             rows_written += artifact["row_count"]
@@ -655,7 +703,7 @@ def load_artifacts(
                     f"Replacing all rows in {target_name} while preserving the table itself."
                 ),
                 started, status="started", target=target_name,
-                timeout_seconds=SQL_LOCK_TIMEOUT_SECONDS, schema_action=schema_action,
+                timeout_seconds=lock_timeout, schema_action=schema_action,
                 rows=rows_written, columns_added=len(columns_added),
             )
             if not existing_columns:
