@@ -18,6 +18,8 @@ setting nobody reads is refused by
 | `app/settings_catalog.py` | Connections, folders and the settings that existed before the page |
 | `app/settings_catalog_scanner.py` | Scanner, freshness, update and backup settings |
 | `app/settings_catalog_flows.py` | Flow run, worker, SQL step and delivery settings |
+| `app/flow_job_limits.py` | The limits copied into each Flow job, and how a worker reads them |
+| `app/scanner/limits.py` | How scanner code reads its settings without failing a scan |
 | `app/routers/system_settings.py` | The page's API; every change is host PC only |
 | `app/static/settings.js`, `settings.css` | The page |
 
@@ -37,9 +39,10 @@ Every row says which of these holds, from the declaration's `applies`:
 - `next_scan`: read when a scan starts.
 - `new_runs`: copied into each Flow job when the job is queued. Worker
   processes never read Metronome's database, so anything a worker uses during
-  a run must travel in the job. A run already queued or in progress keeps the
-  values it was queued with, and a job without them behaves as before the
-  setting existed.
+  a run must travel in the job (`job["limits"]`). A run already queued or in
+  progress keeps the values it was queued with, a retry or resume keeps the
+  values of the run it continues, and a job without them behaves as before
+  the setting existed.
 - `restart`: avoid; nothing uses it today.
 
 A schedule is rescheduled at once through `settings_registry.subscribe`. A

@@ -113,6 +113,7 @@ entirely rather than listed as placeholders.
 | `app/static/` | Vanilla JS and CSS UI; no build step, no framework |
 | `app/flow_*.py` | Flow engine: recording, replay, browser/worker runtime, SQL, paths, delivery |
 | `app/ai/` | LLM provider abstraction and the read-only operations agent |
+| `app/settings_*.py` | The settings registry and catalogs behind **System > Settings** |
 | `app/scanner/`, `app/checks/` | Power BI scanning, freshness probing, data-quality rules |
 | `tests/` | `pytest` suites plus `tests/test_*.mjs` Node UI contract tests |
 | `tools/` | Verifiers, `ci/merge_gate.py`, installer and worker scripts |
@@ -131,7 +132,9 @@ No pre-read sweep. Open a document when its subject is in play:
 [DESIGN.md](DESIGN.md) before UI work — it owns the design contract and the
 usability review; [the testing workflow](docs/testing/README.md) when writing the
 release package; `docs/flow_*.md` and `docs/recorded_flows.md` when touching
-Flows; [README.md](README.md) for operator setup; [PRODUCT.md](PRODUCT.md) for
+Flows; [docs/settings.md](docs/settings.md) before adding a limit, schedule or
+connection value, which is declared as a setting rather than a new constant or
+environment variable; [README.md](README.md) for operator setup; [PRODUCT.md](PRODUCT.md) for
 product context. `GEMINI.md` and [the field-agent workflow](docs/gemini_field_agent.md)
 cover the separate command-line assistant that observes live Flows on the work
 PC; they bind that assistant, not work in this repository.

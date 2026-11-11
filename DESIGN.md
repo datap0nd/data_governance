@@ -64,6 +64,9 @@ indicates failure or destructive action. Every colored status also needs text.
 
 ## Responsive behavior
 
+Metronome is used in desktop browsers only. Do not design for, test or report
+phone layouts; the rules below keep a narrow desktop window usable.
+
 - At wide widths, use a main builder column and a narrower summary column.
 - Below 900px, stack the summary under the builder.
 - Tables scroll horizontally.
