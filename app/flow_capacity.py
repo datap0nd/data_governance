@@ -9,6 +9,22 @@ from app.flow_limits import MAX_SLOTS, DEFAULT_TOTAL_CAPACITY, DEFAULT_HEADLESS_
 CAPACITY_KEY = 'flows_headless_capacity'
 HEADED_CAPACITY_KEY = 'flows_headed_capacity'
 TOTAL_CAPACITY_KEY = 'flows_total_capacity'
+# How long after its last contact a worker still counts as online, unless
+# Settings says otherwise. An idle worker reports every 10 seconds and a busy
+# one every 30.
+ONLINE_SECONDS = 90
+
+
+def online_seconds() -> int:
+    """The Settings value, for the web service; read once per operation."""
+    from app import settings_registry
+
+    return int(settings_registry.get('flows.worker_online_seconds'))
+
+
+def online_cutoff(now: datetime | None = None) -> datetime:
+    """A worker last seen before this moment is offline."""
+    return (now or datetime.now(timezone.utc)) - timedelta(seconds=online_seconds())
 
 
 def total_capacity(db) -> int:
@@ -92,8 +108,9 @@ def can_claim(db, identity: str, mode: str) -> bool:
 
 
 def state(db) -> dict:
-    background = _slot_state(db, 'headless')
-    visible = _slot_state(db, 'headed')
+    cutoff = online_cutoff()
+    background = _slot_state(db, 'headless', cutoff)
+    visible = _slot_state(db, 'headed', cutoff)
     return {'max_slots': MAX_SLOTS, 'total_capacity': total_capacity(db), 'active_total': len(assignments(db)),
             'headless_capacity': capacity(db, 'headless'), 'headed_capacity': capacity(db, 'headed'),
             'online_capacity': sum(item['online'] and item['configured'] for item in background),
@@ -102,9 +119,9 @@ def state(db) -> dict:
             'slots': background, 'headed_slots': visible}
 
 
-def _slot_state(db, mode: str) -> list[dict]:
+def _slot_state(db, mode: str, cutoff: datetime | None = None) -> list[dict]:
     limit = capacity(db, mode)
-    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=90)).isoformat()
+    cutoff = (cutoff or online_cutoff()).isoformat()
     rows = {row['worker_id']: dict(row) for row in db.execute('SELECT * FROM flow_workers')}
     slots = []
     for slot in range(1, MAX_SLOTS + 1):

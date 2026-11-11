@@ -1,4 +1,6 @@
 import os
+import sys
+import threading
 from pathlib import Path
 
 from app import env_file
@@ -22,7 +24,11 @@ def _load_env_file() -> tuple[Path | None, dict]:
     return path, status
 
 
+# What the process was started with, before the settings file was applied. A
+# name later removed from the file falls back to this, not to nothing.
+_STARTING_ENVIRONMENT = dict(os.environ)
 ENV_FILE, ENV_FILE_STATUS = _load_env_file()
+_names_from_file = set(ENV_FILE_STATUS["loaded_names"])
 
 
 def current_setting(name: str) -> str | None:
@@ -47,25 +53,83 @@ PIPELINE_INSIGHTS_DB_PATH = os.environ.get(
 # new evidence; it only changes future schedule occurrences.
 FLOW_TIMEZONE = TIMEZONE
 
-# Folder where .pbix reports live (or TMDL exports as fallback)
-_report_root_env = (
-    os.environ.get("bio_path")
-    or os.environ.get("BIO_PATH")
-    or os.environ.get("DG_TMDL_ROOT")
-    or os.environ.get("DG_REPORTS_PATH")
-    or os.environ.get("DG_DEFAULT_REPORTS_PATH")
-    or "reports"
-)
+def _live_values(env) -> dict:
+    """Connections, credentials and folders as ``env`` defines them.
 
-REPORTS_PATH = _report_root_env
+    These are the values an operator changes on the Settings page. They are
+    derived in one place so that start-up and ``refresh`` cannot disagree.
+    """
+    # Folder where .pbix reports live (or TMDL exports as fallback). Prefer
+    # bio_path for BI report originals, while keeping the older documented
+    # variables as fallbacks for existing installs.
+    report_root = (
+        env.get("bio_path")
+        or env.get("BIO_PATH")
+        or env.get("DG_TMDL_ROOT")
+        or env.get("DG_REPORTS_PATH")
+        or env.get("DG_DEFAULT_REPORTS_PATH")
+        or "reports"
+    )
+    # Resolve relative paths against BASE_DIR (needed for Vercel/serverless)
+    tmdl_root = report_root if os.path.isabs(report_root) else str(BASE_DIR / report_root)
+    pbi_tenant = env.get("DG_PBI_TENANT_ID", "")
+    # PostgreSQL credentials for READ-ONLY freshness probing
+    # WARNING: These credentials must ONLY be used for SELECT queries.
+    # NEVER use them for INSERT, UPDATE, DELETE, DROP, or any write operation.
+    pghost = env.get("PGHOST", "")
+    pgport = env.get("PGPORT", "") or "5432"
+    pgdatabase = env.get("PGDATABASE", "postgres")
+    return {
+        "REPORTS_PATH": report_root,
+        "TMDL_ROOT": tmdl_root,
+        # Power BI workspace name for refresh schedule sync
+        "PBI_WORKSPACE": env.get("DG_PBI_WORKSPACE", ""),
+        "PBI_TENANT_ID": pbi_tenant,
+        "PBI_CLIENT_ID": env.get("DG_PBI_CLIENT_ID", ""),
+        "PBI_CLIENT_SECRET": env.get("DG_PBI_CLIENT_SECRET", ""),
+        "PBI_SYNC_WINDOWS_USER": env.get("DG_PBI_SYNC_WINDOWS_USER", env.get("USERNAME", "")),
+        # Headless Power BI sync with a saved Microsoft account (no tenant setup
+        # needed). The default client id is Microsoft's first-party Azure CLI
+        # public application, which is pre-consented in nearly every tenant and
+        # supports the device code flow plus long-lived refresh tokens. Override
+        # only if your tenant blocks it (the Azure PowerShell client
+        # 1950a258-227b-4e31-a9cf-717495945fc2 is a common alternative).
+        "PBI_PUBLIC_CLIENT_ID": env.get("DG_PBI_PUBLIC_CLIENT_ID", "04b07795-8ddb-461a-bbee-02f9e1bf7b46"),
+        "PBI_AUTH_TENANT": env.get("DG_PBI_AUTH_TENANT", pbi_tenant or "organizations"),
+        # Outbound proxy override for login.microsoftonline.com / api.powerbi.com,
+        # e.g. DG_PBI_PROXY=http://proxyhost:8080. When unset, the app uses
+        # HTTPS_PROXY/HTTP_PROXY if present, then asks Windows to evaluate the
+        # system proxy settings (including a configured PAC setup script), then
+        # goes direct. A PAC URL itself is NOT a valid value here.
+        "PBI_PROXY": env.get("DG_PBI_PROXY", ""),
+        # Folder containing the exported PBI usage CSV files. The lowercase name
+        # is kept because this app is often configured from Windows environment
+        # variables created by hand.
+        "USAGE_FILES_PATH": (
+            env.get("usage_files_path") or env.get("USAGE_FILES_PATH") or env.get("DG_USAGE_FILES_PATH") or ""
+        ),
+        "PGHOST": pghost,
+        "PGPORT": pgport,
+        "PGUSER": env.get("PGUSER", ""),
+        "PGPASSWORD": env.get("PGPASSWORD", ""),
+        "PGDATABASE": pgdatabase,
+        # PostgreSQL credentials for Flow SQL handoffs and explicit
+        # materialized-view refreshes. Kept separate from the read-only probing
+        # credentials above: user and password have no fallback, while
+        # host/port/database may reuse the probing connection's location.
+        "UPLOAD_PGHOST": env.get("DG_UPLOAD_PGHOST", "") or pghost,
+        "UPLOAD_PGPORT": env.get("DG_UPLOAD_PGPORT", "") or pgport,
+        "UPLOAD_PGDATABASE": env.get("DG_UPLOAD_PGDATABASE", "") or pgdatabase,
+        "UPLOAD_PGUSER": env.get("DG_UPLOAD_PGUSER", ""),
+        "UPLOAD_PGPASSWORD": env.get("DG_UPLOAD_PGPASSWORD", ""),
+    }
 
-# Prefer bio_path for BI report originals, while keeping the older documented
-# variables as fallbacks for existing installs.
-_tmdl_root_raw = _report_root_env
-# Resolve relative paths against BASE_DIR (needed for Vercel/serverless)
-if not os.path.isabs(_tmdl_root_raw):
-    _tmdl_root_raw = str(BASE_DIR / _tmdl_root_raw)
-TMDL_ROOT = _tmdl_root_raw
+
+_live = _live_values(os.environ)
+LIVE_NAMES = tuple(_live)
+
+REPORTS_PATH = _live["REPORTS_PATH"]
+TMDL_ROOT = _live["TMDL_ROOT"]
 
 
 # How often to run scheduled scans and checks (in hours)
@@ -125,32 +189,18 @@ AI_AGENT_MAX_OUTPUT_TOKENS = _bounded_int_env(
 AI_AGENT_TEMPERATURE = _bounded_float_env("DG_AI_AGENT_TEMPERATURE", 1.0, 0.0, 1.5)
 AI_AGENT_TOP_P = _bounded_float_env("DG_AI_AGENT_TOP_P", 0.95, 0.1, 1.0)
 
-# Power BI workspace name for refresh schedule sync
-PBI_WORKSPACE = os.environ.get("DG_PBI_WORKSPACE", "")
+PBI_WORKSPACE = _live["PBI_WORKSPACE"]
 PBI_SYNC_HOUR = int(os.environ.get("DG_PBI_SYNC_HOUR", "8"))
 PBI_SYNC_MINUTE = int(os.environ.get("DG_PBI_SYNC_MINUTE", "15"))
-PBI_TENANT_ID = os.environ.get("DG_PBI_TENANT_ID", "")
-PBI_CLIENT_ID = os.environ.get("DG_PBI_CLIENT_ID", "")
-PBI_CLIENT_SECRET = os.environ.get("DG_PBI_CLIENT_SECRET", "")
-PBI_SYNC_WINDOWS_USER = os.environ.get("DG_PBI_SYNC_WINDOWS_USER", os.environ.get("USERNAME", ""))
-
-# Headless Power BI sync with a saved Microsoft account (no tenant setup needed).
-# The default client id is Microsoft's first-party Azure CLI public application,
-# which is pre-consented in nearly every tenant and supports the device code
-# flow plus long-lived refresh tokens. Override only if your tenant blocks it
-# (the Azure PowerShell client 1950a258-227b-4e31-a9cf-717495945fc2 is a common
-# alternative).
-PBI_PUBLIC_CLIENT_ID = os.environ.get("DG_PBI_PUBLIC_CLIENT_ID", "04b07795-8ddb-461a-bbee-02f9e1bf7b46")
-PBI_AUTH_TENANT = os.environ.get("DG_PBI_AUTH_TENANT", PBI_TENANT_ID or "organizations")
+PBI_TENANT_ID = _live["PBI_TENANT_ID"]
+PBI_CLIENT_ID = _live["PBI_CLIENT_ID"]
+PBI_CLIENT_SECRET = _live["PBI_CLIENT_SECRET"]
+PBI_SYNC_WINDOWS_USER = _live["PBI_SYNC_WINDOWS_USER"]
+PBI_PUBLIC_CLIENT_ID = _live["PBI_PUBLIC_CLIENT_ID"]
+PBI_AUTH_TENANT = _live["PBI_AUTH_TENANT"]
 PBI_TOKEN_CACHE_PATH = os.environ.get("DG_PBI_TOKEN_CACHE", str(BASE_DIR / "pbi_token.json"))
 PBI_USAGE_DAYS_BACK = int(os.environ.get("DG_PBI_USAGE_DAYS_BACK", "30"))
-
-# Outbound proxy override for login.microsoftonline.com / api.powerbi.com,
-# e.g. DG_PBI_PROXY=http://proxyhost:8080. When unset, the app uses
-# HTTPS_PROXY/HTTP_PROXY if present, then asks Windows to evaluate the
-# system proxy settings (including a configured PAC setup script), then
-# goes direct. A PAC URL itself is NOT a valid value here.
-PBI_PROXY = os.environ.get("DG_PBI_PROXY", "")
+PBI_PROXY = _live["PBI_PROXY"]
 PBI_VISUAL_EXPORT_TIMEOUT_SECONDS = int(os.environ.get("DG_PBI_VISUAL_EXPORT_TIMEOUT_SECONDS", "120"))
 PBI_VISUAL_EXPORT_MAX_ROWS = min(30000, max(1, int(os.environ.get("DG_PBI_VISUAL_EXPORT_MAX_ROWS", "30000"))))
 
@@ -177,24 +227,16 @@ EMAIL_MAX_PBI_SYNC_AGE_HOURS = _float_env("DG_EMAIL_MAX_PBI_SYNC_AGE_HOURS", 24.
 EMAIL_PBI_SYNC_GRACE_MINUTES = _float_env("DG_EMAIL_PBI_SYNC_GRACE_MINUTES", 30.0)
 EMAIL_PBI_STALE_RETRY_MINUTES = _float_env("DG_EMAIL_PBI_STALE_RETRY_MINUTES", 30.0)
 
-# Folder containing the exported PBI usage CSV files.
-# The lowercase name is kept because this app is often configured from
-# Windows environment variables created by hand.
-USAGE_FILES_PATH = (
-    os.environ.get("usage_files_path")
-    or os.environ.get("USAGE_FILES_PATH")
-    or os.environ.get("DG_USAGE_FILES_PATH")
-    or ""
-)
+USAGE_FILES_PATH = _live["USAGE_FILES_PATH"]
 
 # PostgreSQL credentials for READ-ONLY freshness probing
 # WARNING: These credentials must ONLY be used for SELECT queries.
 # NEVER use them for INSERT, UPDATE, DELETE, DROP, or any write operation.
-PGHOST = os.environ.get("PGHOST", "")
-PGPORT = os.environ.get("PGPORT", "") or "5432"
-PGUSER = os.environ.get("PGUSER", "")
-PGPASSWORD = os.environ.get("PGPASSWORD", "")
-PGDATABASE = os.environ.get("PGDATABASE", "postgres")
+PGHOST = _live["PGHOST"]
+PGPORT = _live["PGPORT"]
+PGUSER = _live["PGUSER"]
+PGPASSWORD = _live["PGPASSWORD"]
+PGDATABASE = _live["PGDATABASE"]
 # Bound each read-only scanner statement so a broken PostgreSQL connection or
 # catalog lock cannot leave lineage discovery invisible for half an hour.  The
 # durable scanner heartbeat will flag a run sooner if it stops making progress.
@@ -206,8 +248,91 @@ PG_SCAN_STATEMENT_TIMEOUT_SECONDS = _bounded_int_env(
 # refreshes. Kept separate from the read-only probing credentials above:
 # user and password have no fallback, while host/port/database may reuse the
 # probing connection's location.
-UPLOAD_PGHOST = os.environ.get("DG_UPLOAD_PGHOST", "") or PGHOST
-UPLOAD_PGPORT = os.environ.get("DG_UPLOAD_PGPORT", "") or PGPORT
-UPLOAD_PGDATABASE = os.environ.get("DG_UPLOAD_PGDATABASE", "") or PGDATABASE
-UPLOAD_PGUSER = os.environ.get("DG_UPLOAD_PGUSER", "")
-UPLOAD_PGPASSWORD = os.environ.get("DG_UPLOAD_PGPASSWORD", "")
+UPLOAD_PGHOST = _live["UPLOAD_PGHOST"]
+UPLOAD_PGPORT = _live["UPLOAD_PGPORT"]
+UPLOAD_PGDATABASE = _live["UPLOAD_PGDATABASE"]
+UPLOAD_PGUSER = _live["UPLOAD_PGUSER"]
+UPLOAD_PGPASSWORD = _live["UPLOAD_PGPASSWORD"]
+
+
+# --- Changing these values while Metronome runs --------------------------------
+#
+# Most modules bind the names above at import (``from app.config import
+# PGHOST``). ``refresh`` re-reads the settings file, recomputes them, and
+# replaces the old value in every loaded Metronome module that still holds it,
+# so a connection saved on the Settings page, or an edit to ``.env``, applies
+# to the next query in the web service and in each worker without a restart.
+# A module that was given a different value on purpose (a test, a script) is
+# left alone, because only an attribute equal to the old value is replaced.
+
+_refresh_lock = threading.Lock()
+_env_file_signature: tuple | None = None
+_APP_DIR = str(BASE_DIR / "app")
+
+
+def _file_signature() -> tuple | None:
+    if ENV_FILE is None:
+        return None
+    try:
+        stat = Path(ENV_FILE).stat()
+    except OSError:
+        return None
+    return (stat.st_mtime_ns, stat.st_size)
+
+
+def _is_metronome_module(module) -> bool:
+    name = getattr(module, "__name__", "") or ""
+    if name == "app" or name.startswith("app."):
+        return True
+    # The worker runs app/flow_worker.py as a script, whose fallback imports
+    # load sibling modules under their bare names.
+    return str(getattr(module, "__file__", "") or "").startswith(_APP_DIR)
+
+
+def refresh() -> list[str]:
+    """Apply the settings file as it is now; return the names that changed."""
+    global ENV_FILE_STATUS, _names_from_file, _env_file_signature
+    with _refresh_lock:
+        if ENV_FILE is not None:
+            values, status = env_file.read(ENV_FILE)
+            if status.get("error"):
+                # Unreadable for a moment (being rewritten, locked): keep what
+                # is in force rather than fall back to an empty file.
+                return []
+            for name in _names_from_file - set(values):
+                if name in _STARTING_ENVIRONMENT:
+                    os.environ[name] = _STARTING_ENVIRONMENT[name]
+                else:
+                    os.environ.pop(name, None)
+            os.environ.update(values)
+            _names_from_file = set(values)
+            ENV_FILE_STATUS = status
+            _env_file_signature = _file_signature()
+        own = sys.modules[__name__]
+        changed = []
+        for name, value in _live_values(os.environ).items():
+            old = getattr(own, name)
+            if old == value:
+                continue
+            changed.append(name)
+            setattr(own, name, value)
+            for module in list(sys.modules.values()):
+                if module is None or module is own or not _is_metronome_module(module):
+                    continue
+                held = module.__dict__.get(name, _refresh_lock)
+                if type(held) is type(old) and held == old:
+                    setattr(module, name, value)
+        return changed
+
+
+def refresh_if_changed() -> list[str]:
+    """``refresh`` only when the settings file was written since the last look.
+
+    Cheap enough to call on every worker loop and scheduler tick: one ``stat``.
+    """
+    if ENV_FILE is None or _file_signature() == _env_file_signature:
+        return []
+    return refresh()
+
+
+_env_file_signature = _file_signature()

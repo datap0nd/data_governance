@@ -356,7 +356,7 @@ def _run_alert(tmp_path, monkeypatch, *, limit, mode="send"):
             "end_time": "2026-07-16T08:00:00Z", "error": None,
         },
     )
-    monkeypatch.setattr(recurrences, "PBI_VISUAL_EXPORT_MAX_ROWS", limit)
+    monkeypatch.setattr(recurrences, "export_row_limit", lambda: limit)
     monkeypatch.setattr(recurrences, "export_visual_data", lambda *args, **kwargs: {
         "data": _ALERT_CSV,
         "visual": {"name": "visual456", "type": "tableEx", "title": "Exceptions"},
@@ -421,7 +421,7 @@ def test_f14_warning_names_the_real_limit_and_can_refuse_delivery():
 
 
 def test_f14_preview_reports_the_row_limit_it_exported_with(monkeypatch):
-    monkeypatch.setattr(recurrences, "PBI_VISUAL_EXPORT_MAX_ROWS", 3)
+    monkeypatch.setattr(recurrences, "export_row_limit", lambda: 3)
     monkeypatch.setattr(recurrences, "export_visual_data", lambda *args, **kwargs: {
         "data": _ALERT_CSV, "export_method": "visual_export", "visual": {},
     })

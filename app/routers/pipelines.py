@@ -29,6 +29,7 @@ from app.flow_diagnostics import (
 )
 from app.flow_local_runner import HEADED_WORKER_ID, WORKER_ID, launch_local_worker
 from app.flow_sql import _engine, _quote_identifier, configuration_status
+from app.local_access import require_host
 from app.routers.eventlog import get_actor, log_event
 from app.scanner.findings import sync_managed_actions
 from app.scanner.pbi_fetch import (
@@ -55,9 +56,17 @@ router = APIRouter(prefix="/api/pipelines", tags=["pipelines"])
 TERMINAL_RUN_STATES = {"succeeded", "failed"}
 FLOW_TERMINAL_STATES = {"succeeded", "failed", "cancelled"}
 PBI_TERMINAL_STATES = {"completed", "failed", "disabled"}
-IDENTITY_MAX_AGE = timedelta(hours=48)
+
+
+def _identity_max_age() -> timedelta:
+    """How recent the lineage scan must be for a pipeline plan (Settings)."""
+    from app import settings_registry
+
+    return timedelta(hours=settings_registry.get("pipelines.scan_max_age_hours"))
+
+
 PLAN_TTL = timedelta(minutes=5)
-WORKER_READY_AGE = timedelta(seconds=90)
+WORKER_READY_AGE = timedelta(seconds=90)  # the default; see flow_capacity.online_seconds
 WORKER_START_DEADLINE = timedelta(seconds=60)
 FLOW_CLAIM_DEADLINE = timedelta(minutes=10)
 FLOW_WATCHDOG = timedelta(hours=12)
@@ -251,7 +260,8 @@ def _topological_mvs(mv_ids: set[int], edges: list[tuple[int, int]]) -> tuple[li
 
 
 def _worker_readiness(db, modes: set[str]) -> list[dict]:
-    cutoff = _iso(_now() - WORKER_READY_AGE)
+    # The same window every other page uses to call a worker online (Settings).
+    cutoff = _iso(_now() - timedelta(seconds=flow_capacity.online_seconds()))
     result = []
     for mode in sorted(modes):
         identities = [flow_capacity.worker_id(slot, mode) for slot in range(1, flow_capacity.capacity(db, mode) + 1)]
@@ -596,7 +606,7 @@ def build_refresh_plan(report_id: int, requester: str | None, *, probe_mvs: bool
                     continue
                 if row["server_name"]:
                     verified = _parse_time(row["verified_at"])
-                    if not verified or _now() - verified > IDENTITY_MAX_AGE:
+                    if not verified or _now() - verified > _identity_max_age():
                         blockers.append(f"PostgreSQL source identity is stale for {row['name']}.")
                     identities[int(row["id"])] = {
                         "source_id": int(row["id"]), "source_name": row["name"],
@@ -1910,6 +1920,7 @@ def pipeline_settings():
 
 @router.put("/settings")
 def update_pipeline_settings(body: PipelineSettingsWrite, request: Request):
+    require_host(request, "Only the host PC can change the full pipeline refresh settings.")
     set_setting("pipeline_full_refresh_enabled", "1" if body.enabled else "0")
     set_setting("pipeline_full_refresh_report_allowlist", _json(body.report_allowlist))
     with get_db() as db:

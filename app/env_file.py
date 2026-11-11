@@ -10,6 +10,7 @@ from __future__ import annotations
 import codecs
 import os
 import re
+import threading
 from pathlib import Path
 
 NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -72,6 +73,29 @@ def read(path: Path | None) -> tuple[dict[str, str], dict]:
     return values, status
 
 
+# Each save rewrites the whole file. Two saves at once (a SQL password and a
+# connection setting, say) must not interleave, or the later rewrite would
+# drop the earlier one's line.
+_write_lock = threading.RLock()
+
+
+def snapshot(path: Path) -> bytes:
+    """The file exactly as it is, so a save that fails later can put it back."""
+    with _write_lock:
+        return Path(path).read_bytes()
+
+
+def restore(path: Path, data: bytes) -> None:
+    """Put back a ``snapshot``. In place, for the same reason as ``write_value``."""
+    with _write_lock, Path(path).open("r+b") as handle:
+        handle.seek(0)
+        handle.write(data)
+        handle.flush()
+        handle.truncate(len(data))
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
 def write_value(path: Path, name: str, value: str | None) -> None:
     """Set one setting to ``value``, or remove it when ``value`` is None.
 
@@ -84,7 +108,7 @@ def write_value(path: Path, name: str, value: str | None) -> None:
         raise ValueError("Invalid setting name.")
     if value is not None and not is_single_line(value):
         raise ValueError("A setting value must be non-empty and on one line.")
-    with path.open("r+b") as handle:
+    with _write_lock, path.open("r+b") as handle:
         raw = handle.read()
         bom = raw.startswith(codecs.BOM_UTF8)
         original = raw[len(codecs.BOM_UTF8):].decode("utf-8") if bom else raw.decode("utf-8")
@@ -103,8 +127,13 @@ def write_value(path: Path, name: str, value: str | None) -> None:
         if value is not None:
             kept.append(f'{name}="{value}"')
         content = (newline.join(kept) + newline) if kept else ""
+        data = (codecs.BOM_UTF8 if bom else b"") + content.encode("utf-8")
+        # Write over the old content first and cut the file to length after.
+        # Emptying it first would leave no settings at all if the process
+        # stopped between the two steps.
         handle.seek(0)
-        handle.truncate()
-        handle.write((codecs.BOM_UTF8 if bom else b"") + content.encode("utf-8"))
+        handle.write(data)
+        handle.flush()
+        handle.truncate(len(data))
         handle.flush()
         os.fsync(handle.fileno())

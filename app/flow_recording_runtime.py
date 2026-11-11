@@ -15,10 +15,17 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+from app import flow_job_limits
 from app import flow_recording
 from app import flow_recording_diagnostics as diagnostics
 from app import flow_recording_pacing
 from app import flow_range_slider
+
+# How long one recorded action may take unless it was recorded with its own
+# limit: a click, an entry, a check, a popup, or a range control appearing.
+# The built-in value; a job queued by the server carries the one saved in
+# Settings (``flow_job_limits``).
+ACTION_TIMEOUT_MS = 120_000
 
 
 def _value(value):
@@ -264,7 +271,7 @@ def _range_scroll(container, *, reset=False):
     }''', {'reset': reset, 'timeout': _RANGE_REPAINT_TIMEOUT_SECONDS * 1000})
 
 
-def _select_week_range(container, step, update) -> dict:
+def _select_week_range(container, step, update, *, timeout_ms: int = ACTION_TIMEOUT_MS) -> dict:
     """Select an exact, expanding ISO-week range inside one recorded box."""
     contract = step['range']
     selector = contract['cell_selector']
@@ -272,7 +279,7 @@ def _select_week_range(container, step, update) -> dict:
     start_match = re.fullmatch(r'(20\d{2})-W(\d{2})', contract['start'])
     start = (int(start_match.group(1)), int(start_match.group(2)))
     navigation = contract.get('navigation', {'kind': 'scroll'}).get('kind', 'scroll')
-    container.wait_for(state='visible', timeout=120_000)
+    container.wait_for(state='visible', timeout=timeout_ms)
     if navigation == 'scroll':
         _range_scroll(container, reset=True)
     elif navigation == 'controls':
@@ -387,12 +394,13 @@ def _select_week_range(container, step, update) -> dict:
     }
 
 
-def _set_slider_range(target, step, definition, parameters, update) -> dict:
+def _set_slider_range(target, step, definition, parameters, update, *,
+                      timeout_ms: int = ACTION_TIMEOUT_MS) -> dict:
     """Move a two-handle date range control to its requested bounds and prove them."""
     contract = step['range']
     kind = contract['kind']
     week_days = contract.get('week_days', 'sunday')
-    target.wait_for(state='visible', timeout=120_000)
+    target.wait_for(state='visible', timeout=timeout_ms)
     levels = contract.get('container_ancestor_levels', 1)
     if levels == 0:
         container, handles, resolved_levels = flow_range_slider.find_range_container(target)
@@ -506,6 +514,13 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
 
     outcomes = {}
     pacing = flow_recording_pacing.Pacing(job)
+    # Frozen into the job when it was queued. ``action_limit`` is empty unless
+    # the job changes the limit, so its helpers are otherwise called as before.
+    action_limit = {key: int(seconds * 1000) for key, seconds in flow_job_limits.given(
+        job, timeout_ms=('recorded_action_seconds', ACTION_TIMEOUT_MS // 1000)).items()}
+    action_timeout_ms = action_limit.get('timeout_ms', ACTION_TIMEOUT_MS)
+    download_event_ms = int(flow_job_limits.value(
+        job, 'download_event_seconds', flow_worker.DOWNLOAD_EVENT_TIMEOUT_SECONDS) * 1000)
     previous_step = None
     step_started = {}
 
@@ -595,7 +610,7 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
                 # an input may itself be created during the requested pause.
                 buffer(step, timing)
             if action == 'click' and definition.get('adapter', job.get('site', {}).get('adapter')) == 'gscm_portal':
-                from app.flow_recording_gscm_bookmark import is_target, select
+                from app.flow_recording_gscm_bookmark import DEADLINE_SECONDS, is_target, select
                 if is_target(step):
                     phases = {'gscm_bookmark_resolved': 'bookmark identity resolved; checking the rendered Favorite rows.',
                               'gscm_bookmark_to_top': 'moving the Favorite list to its top with its own scrollbar.',
@@ -604,7 +619,9 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
                     # the helper before its next scrollbar movement.
                     result = select(pages[step['page']], step, lambda detail: notify(step,
                         f"{label}: {phases.get(detail.get('phase'), 'selecting exact GSCM Favorite bookmark.')}",
-                        outcome='running', diagnostic=detail))
+                        outcome='running', diagnostic=detail),
+                        **flow_job_limits.given(
+                            job, deadline_seconds=('recorded_action_seconds', DEADLINE_SECONDS)))
                     notify(step, 'GSCM Favorite bookmark selected.', outcome='completed', confirmation='exact_identity',
                            diagnostic={'phase': 'action_finished', 'timing': timing, 'bookmark': result})
                     previous_step = step
@@ -617,6 +634,7 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
                         step, message, outcome='running',
                         diagnostic={'phase': 'range_selection', **detail},
                     ),
+                    **action_limit,
                 )
                 notify(
                     step,
@@ -635,6 +653,7 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
                         step, f'{label}: {message}', outcome='running',
                         diagnostic={'phase': 'range_slider', **detail},
                     ),
+                    **action_limit,
                 )
                 for name, value in result['actual'].items():
                     actual_parameters[name] = value
@@ -661,7 +680,7 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
             if action in {'fill', 'press_sequentially'} and node.get_attribute('type') == 'password':
                 raise RuntimeError('Authentication values cannot be replayed or exported in a recorded Flow.')
             args, kwargs = copy.deepcopy(step.get('args', [])), _value(step.get('kwargs', {}))
-            kwargs.setdefault('timeout', 120_000)
+            kwargs.setdefault('timeout', action_timeout_ms)
             if step.get('expected_text'):
                 expect(node).to_have_text(step['expected_text'])
             skip = False
@@ -689,7 +708,7 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
                     if parameter.get('target') and not parameter.get('step_id') and parameters.get(name) is not None:
                         raise ValueError('Fixed/calculated parameters require a recorded step before report generation.')
                 files_before = flow_worker._download_staging_snapshot(staging)
-                event_timeout = flow_worker.DOWNLOAD_EVENT_TIMEOUT_SECONDS * 1_000 + pacing.event_budget_ms(step['steps'])
+                event_timeout = download_event_ms + pacing.event_budget_ms(step['steps'])
                 notify(step, 'Waiting for download.', outcome='running', diagnostic={
                     'phase': 'event_listener', 'timing': {'event_timeout_ms': event_timeout}})
                 with pages[step['page']].expect_download(timeout=event_timeout) as pending:
@@ -748,7 +767,7 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
                 notify(step, 'Download completed.', outcome='completed')
                 continue
             if action == 'popup':
-                event_timeout = 120_000 + pacing.event_budget_ms(step['steps'])
+                event_timeout = action_timeout_ms + pacing.event_budget_ms(step['steps'])
                 notify(step, 'Waiting for popup.', outcome='running', diagnostic={
                     'phase': 'event_listener', 'timing': {'event_timeout_ms': event_timeout}})
                 with pages[step['page']].expect_popup(timeout=event_timeout) as pending:
@@ -894,7 +913,7 @@ def acquire(page, job, progress, profile_dir, staging, *, target, run_id, artifa
 def execute_recorded_flow(page, job, progress, profile_dir, download_staging_dir=None, *,
                           run_id, register_folder, headed=False, artifacts=None, state=None,
                           run_started=None, **unused):
-    from app import flow_worker, flow_paths, flow_sql
+    from app import flow_worker, flow_paths, flow_python, flow_sql
     job = copy.deepcopy(job)
     artifacts = artifacts if artifacts is not None else []
     state = state if state is not None else {}
@@ -930,7 +949,8 @@ def execute_recorded_flow(page, job, progress, profile_dir, download_staging_dir
                 script = Path(temporary) / 'transform.py'
                 script.write_text(source, encoding='utf-8')
                 transform['script_path'] = str(script)
-                sql_artifacts = flow_worker._run_transformations(artifacts, transform)
+                sql_artifacts = flow_worker._run_transformations(artifacts, transform, **flow_job_limits.given(
+                    job, timeout_seconds=('script_timeout_seconds', flow_python.SCRIPT_TIMEOUT_SECONDS)))
             artifacts.extend(sql_artifacts)
         view_results = None
         if job.get('sql_handoff', {}).get('enabled'):
@@ -939,7 +959,8 @@ def execute_recorded_flow(page, job, progress, profile_dir, download_staging_dir
             state['sql_started'] = time.perf_counter()
             progress('running', {'stage': 'sql_insertion', 'message': 'Loading recorded-flow outputs into SQL.'}, artifacts, timings)
             state['sql_result'] = flow_sql.load_artifacts(sql_artifacts, job['sql_handoff'],
-                progress=lambda detail: progress('running', detail, artifacts, timings))
+                progress=lambda detail: progress('running', detail, artifacts, timings),
+                **flow_sql.limits_argument(job))
             progress('running', {'stage': 'sql_insertion_complete',
                 'message': f"Inserted {state['sql_result']['rows_written']} row(s) from {state['sql_result']['files_loaded']} file(s).",
                 **state['sql_result']}, artifacts, timings)

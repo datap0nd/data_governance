@@ -11547,7 +11547,7 @@ function _flowEmailHtml(existing) {
     const config = existing?.email_delivery || { enabled: false, recipients: [], subject: null };
     return `<label class="flow-check flow-span-2"><input id="flow-email-enabled" type="checkbox" ${config.enabled ? "checked" : ""}><span>Email the final file when the run completes</span></label>
                         <div id="flow-email-fields" class="flow-form-grid flow-span-2">
-                            <label class="flow-span-2"><span>Recipients</span><input id="flow-email-recipients" maxlength="2000" value="${esc((config.recipients || []).join("; "))}" placeholder="name@example.com; team@example.com"><small>Sends the file SQL insertion receives (the normalized CSV, or the transformed result) through Outlook on the BI desktop after every successful run, including scheduled runs. Separate addresses with semicolons. Files over 20 MB are described instead of attached. Nothing is sent when a run fails or finds nothing new.</small></label>
+                            <label class="flow-span-2"><span>Recipients</span><input id="flow-email-recipients" maxlength="2000" value="${esc((config.recipients || []).join("; "))}" placeholder="name@example.com; team@example.com"><small>Sends the file SQL insertion receives (the normalized CSV, or the transformed result) through Outlook on the BI desktop after every successful run, including scheduled runs. Separate addresses with semicolons. Files over the attachment size limit (20 MB unless changed in Settings) are described instead of attached. Nothing is sent when a run fails or finds nothing new.</small></label>
                             <label class="flow-span-2"><span>Subject (optional)</span><input id="flow-email-subject" maxlength="200" value="${esc(config.subject || "")}" placeholder="Metronome flow file: ${esc(existing?.name || "Flow name")} (run #123)"><small>Leave empty to use the default subject with the Flow name and run number.</small></label>
                         </div>`;
 }
@@ -13950,6 +13950,9 @@ const pages = {
     changelog: renderChangelog,
     create: renderCreate,
     users: renderUsers,
+    // settings.js is a separate file. Looked up when the page is opened, so
+    // app.js still loads where that file is not included (the preview pages).
+    settings: () => renderSettings(),
     dataquality: renderDataQuality,
     dataauditor: () => window.DataAuditor.render(),
     email: renderEmail,
@@ -14094,6 +14097,7 @@ async function navigate(page) {
         if (page === "flows") bindFlowsPage();
         if (page === "create") bindCreatePage();
         if (page === "users") bindUsersPage();
+        if (page === "settings") bindSettingsPage();
         if (page === "changelog") bindChangelogPage();
         if (page === "dataquality") bindDataQualityPage();
         if (page === "dataauditor") window.DataAuditor.bind();

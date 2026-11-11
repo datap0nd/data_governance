@@ -18,6 +18,10 @@ from app.config import FLOW_TIMEZONE
 from app.flow_clock import TIMEZONE as DISPLAY_TIMEZONE
 
 UTC = timezone.utc
+# A source or Flow may deliver this long after its scheduled time before it
+# counts as late.
+GRACE_HOURS = 24
+_grace: timedelta | None = None  # loaded on first use; see grace_period()
 WEEKDAY_NUMBERS = {
     "monday": 0,
     "tuesday": 1,
@@ -33,6 +37,26 @@ def _row_value(row, key: str, default=None):
     if hasattr(row, "keys") and key in row.keys():
         return row[key]
     return default
+
+
+def grace_period() -> timedelta:
+    """How long after a scheduled time evidence may still arrive (Settings).
+
+    This is evaluated for every source and Flow row a page lists, so the value
+    is held in memory instead of being read from the database each time. It
+    is loaded on first use and refreshed the moment the setting is saved.
+    """
+    return _grace if _grace is not None else refresh_grace_period()
+
+
+def refresh_grace_period() -> timedelta:
+    """Read the saved grace again: at start-up and whenever the setting is saved."""
+    global _grace
+    from app.scanner import limits
+
+    hours = limits.value("freshness.grace_hours", GRACE_HOURS)
+    _grace = timedelta(hours=max(0.0, float(hours)))
+    return _grace
 
 
 def host_timezone() -> ZoneInfo:
@@ -279,8 +303,10 @@ def latest_enforceable_occurrence(
     *,
     as_of: datetime | None = None,
     baseline: datetime | None = None,
-    grace: timedelta = timedelta(hours=24),
+    grace: timedelta | None = None,
 ) -> tuple[datetime | None, datetime | None]:
+    if grace is None:
+        grace = grace_period()
     as_of = as_of or utc_now()
     if as_of.tzinfo is None:
         as_of = as_of.replace(tzinfo=UTC)

@@ -25,6 +25,23 @@ logger = logging.getLogger(__name__)
 PBI_API_BASE = "https://api.powerbi.com/v1.0/myorg"
 REQUEST_TIMEOUT_SECONDS = 120
 MAX_ACTIVITY_PAGES_PER_DAY = 200
+# Past days a usage sync asks for. The setting itself falls back to
+# DG_PBI_USAGE_DAYS_BACK in the environment.
+USAGE_DAYS_BACK = 30
+
+
+def _request_timeout() -> int:
+    """Seconds to wait for one answer from Power BI (Settings)."""
+    from app.scanner import limits
+
+    return max(1, int(limits.value("pbi.request_timeout_seconds", REQUEST_TIMEOUT_SECONDS)))
+
+
+def usage_days_back() -> int:
+    """How many past days of report views a usage sync asks for (Settings)."""
+    from app.scanner import limits
+
+    return max(1, int(limits.value("pbi.usage_days", USAGE_DAYS_BACK)))
 
 
 class PbiFetchError(RuntimeError):
@@ -92,7 +109,7 @@ def fetch_workspace_reports(workspace_name: str | None = None) -> dict:
 
     auth = get_access_token()
     token = auth["access_token"]
-    with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS, proxy=resolve_proxy(PBI_API_BASE)) as client:
+    with httpx.Client(timeout=_request_timeout(), proxy=resolve_proxy(PBI_API_BASE)) as client:
         workspace = _find_workspace(client, token, selected_workspace)
         if not workspace:
             account = auth.get("account") or "the signed-in account"
@@ -177,7 +194,7 @@ def trigger_dataset_refresh(
     auth = get_access_token()
     token = auth["access_token"]
 
-    with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS, proxy=resolve_proxy(PBI_API_BASE)) as client:
+    with httpx.Client(timeout=_request_timeout(), proxy=resolve_proxy(PBI_API_BASE)) as client:
         workspace = _find_workspace(client, token, selected_workspace)
         if not workspace:
             account = auth.get("account") or "the signed-in account"
@@ -218,7 +235,7 @@ def fetch_report_pages(workspace_id: str, report_id: str) -> list[dict]:
     report_guid = _uuid_text(report_id, "Report ID")
     auth = get_access_token()
     token = auth["access_token"]
-    with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS, proxy=resolve_proxy(PBI_API_BASE)) as client:
+    with httpx.Client(timeout=_request_timeout(), proxy=resolve_proxy(PBI_API_BASE)) as client:
         body = _get_json(
             client,
             token,
@@ -288,7 +305,7 @@ def fetch_dataset_last_refresh(workspace_id: str, dataset_id: str) -> dict:
     dataset_guid = _uuid_text(dataset_id, "Dataset ID")
     auth = get_access_token()
     url = f"{PBI_API_BASE}/groups/{workspace_guid}/datasets/{dataset_guid}/refreshes"
-    with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS, proxy=resolve_proxy(url)) as client:
+    with httpx.Client(timeout=_request_timeout(), proxy=resolve_proxy(url)) as client:
         history = _get_json(
             client,
             auth["access_token"],
@@ -327,7 +344,7 @@ def fetch_dataset_refresh_by_request_id(
         raise PbiFetchError("Power BI refresh request ID is missing.")
     auth = get_access_token()
     url = f"{PBI_API_BASE}/groups/{workspace_guid}/datasets/{dataset_guid}/refreshes"
-    with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS, proxy=resolve_proxy(url)) as client:
+    with httpx.Client(timeout=_request_timeout(), proxy=resolve_proxy(url)) as client:
         history = _get_json(
             client,
             auth["access_token"],
@@ -364,7 +381,7 @@ def fetch_refresh_execution_details(
         f"/refreshes/{refresh_guid}"
     )
     try:
-        with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS, proxy=resolve_proxy(url)) as client:
+        with httpx.Client(timeout=_request_timeout(), proxy=resolve_proxy(url)) as client:
             return _get_json(client, auth["access_token"], url)
     except PbiFetchError:
         logger.info("Execution details unavailable for standard refresh %s", refresh_id)
@@ -380,7 +397,7 @@ def fetch_refresh_payload(
     auth = get_access_token()
     token = auth["access_token"]
 
-    with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS, proxy=resolve_proxy(PBI_API_BASE)) as client:
+    with httpx.Client(timeout=_request_timeout(), proxy=resolve_proxy(PBI_API_BASE)) as client:
         workspace = _find_workspace(client, token, workspace_name)
         if not workspace:
             raise PbiFetchError(f"Workspace '{workspace_name}' not found for {auth.get('account') or 'the signed-in account'}.")
@@ -510,8 +527,17 @@ def _already_synced_usage_days() -> set[str]:
 
 def fetch_usage_payload(days_back: int = 30, cancel_generation: int | None = None) -> dict:
     """Build the same payload shape that pbi_usage_sync.ps1 POSTs back."""
+    from app.scanner import limits
+
     auth = get_access_token()
     token = auth["access_token"]
+    # One read for the whole sync, not one per day or page.
+    current = limits.values({
+        "pbi.request_timeout_seconds": REQUEST_TIMEOUT_SECONDS,
+        "pbi.activity_pages_per_day": MAX_ACTIVITY_PAGES_PER_DAY,
+    })
+    request_timeout = max(1, int(current["pbi.request_timeout_seconds"]))
+    page_limit = max(1, int(current["pbi.activity_pages_per_day"]))
 
     synced = _already_synced_usage_days()
     today = datetime.now(timezone.utc).date()
@@ -528,7 +554,7 @@ def fetch_usage_payload(days_back: int = 30, cancel_generation: int | None = Non
     zero_activity_days = 0
     authorization_denied = False
 
-    with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS, proxy=resolve_proxy(PBI_API_BASE)) as client:
+    with httpx.Client(timeout=request_timeout, proxy=resolve_proxy(PBI_API_BASE)) as client:
         for index, day in enumerate(days_to_fetch):
             assert_not_cancelled(cancel_generation, "Power BI usage sync")
             url = f"{PBI_API_BASE}/admin/activityevents"
@@ -541,7 +567,7 @@ def fetch_usage_payload(days_back: int = 30, cancel_generation: int | None = Non
             truncated = False
             try:
                 pages = 0
-                while url and pages < MAX_ACTIVITY_PAGES_PER_DAY:
+                while url and pages < page_limit:
                     body = _get_json(client, token, url, params=params)
                     params = None  # continuationUri already carries the query
                     pages += 1
@@ -556,7 +582,7 @@ def fetch_usage_payload(days_back: int = 30, cancel_generation: int | None = Non
                         break
                     url = body.get("continuationUri")
                     # More activity is pending but the per-day page cap is reached.
-                    truncated = bool(url) and pages >= MAX_ACTIVITY_PAGES_PER_DAY
+                    truncated = bool(url) and pages >= page_limit
             except PbiFetchError as exc:
                 if exc.permission:
                     authorization_denied = True
@@ -593,7 +619,7 @@ def fetch_usage_payload(days_back: int = 30, cancel_generation: int | None = Non
                     "Usage fetch for %s stopped at the %s-page limit with more activity "
                     "pending; the day is incomplete and will be fetched again",
                     day,
-                    MAX_ACTIVITY_PAGES_PER_DAY,
+                    page_limit,
                 )
                 continue
             days_synced.append(day)

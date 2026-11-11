@@ -7,12 +7,7 @@ from datetime import date, datetime, timezone, time, timedelta
 
 from fastapi import APIRouter, HTTPException, Request
 
-from app.config import (
-    EMAIL_MAX_PBI_SYNC_AGE_HOURS,
-    EMAIL_PBI_STALE_RETRY_MINUTES,
-    EMAIL_PBI_SYNC_GRACE_MINUTES,
-    EMAIL_REQUIRE_FRESH_PBI,
-)
+from app import settings_registry
 from app.database import get_db
 from app.models import EmailScheduleOut, EmailScheduleUpdate
 from app.routers.eventlog import get_actor, log_event
@@ -565,20 +560,20 @@ def _required_pbi_sync_after() -> datetime | None:
         time(refresh_time["hour"], refresh_time["minute"]),
         tzinfo=now_local.tzinfo,
     )
-    if now_local < expected_local + timedelta(minutes=EMAIL_PBI_SYNC_GRACE_MINUTES):
+    if now_local < expected_local + timedelta(minutes=settings_registry.get("email.pbi_sync_grace_minutes")):
         return None
     return expected_local.astimezone(timezone.utc)
 
 
 def _require_fresh_pbi_for_scheduled_email(schedule: dict) -> None:
-    if not EMAIL_REQUIRE_FRESH_PBI:
+    if not settings_registry.get("email.require_fresh_pbi"):
         return
     content_types = _normalize_content_types(schedule.get("content_types"))
     schedule_key = schedule.get("schedule_key") or ""
     needs_pbi_guard = schedule_key == TASK_SUMMARY_KEY or not content_types or "alerts" in content_types
     if not needs_pbi_guard:
         return
-    freshness = pbi_sync_freshness(EMAIL_MAX_PBI_SYNC_AGE_HOURS, "refresh")
+    freshness = pbi_sync_freshness(settings_registry.get("email.pbi_sync_max_age_hours"), "refresh")
     if freshness.get("fresh"):
         required_after = _required_pbi_sync_after()
         if not required_after:
@@ -634,7 +629,7 @@ def _mark_result(schedule_id: int, schedule: dict, error: str | None) -> None:
 
 
 def _defer_result(schedule_id: int, error: str) -> None:
-    retry_at = _now() + timedelta(minutes=EMAIL_PBI_STALE_RETRY_MINUTES)
+    retry_at = _now() + timedelta(minutes=settings_registry.get("email.pbi_stale_retry_minutes"))
     now_iso = _iso(_now())
     with get_db() as db:
         db.execute(

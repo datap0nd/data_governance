@@ -6,7 +6,7 @@ import json
 
 from app import flow_capacity, flow_paths, flow_parallel, flow_browser, flow_recording_timing
 from app.database import get_db
-from app.local_access import require_app_access
+from app.local_access import require_app_access, require_host
 from app.routers.eventlog import get_actor, log_event
 
 router = APIRouter(prefix='/api/system/flows', tags=['flows'])
@@ -54,7 +54,7 @@ def get_capacity():
 
 @router.put('')
 def save_capacity(body: CapacityWrite, request: Request):
-    require_app_access(request)
+    require_host(request, "Only the host PC can change Flows settings.")
     with get_db() as db:
         db.execute('BEGIN IMMEDIATE')
         if body.headless_capacity is not None:
@@ -74,7 +74,7 @@ def save_capacity(body: CapacityWrite, request: Request):
 
 @router.put('/portals/{site_id}')
 def save_portal_capacity(site_id: int, body: PortalCapacityWrite, request: Request):
-    require_app_access(request)
+    require_host(request, "Only the host PC can change portal settings.")
     with get_db() as db:
         db.execute('BEGIN IMMEDIATE')
         if not db.execute("SELECT 1 FROM flow_sites WHERE id=? AND adapter IN ('asap_portal','gscm_portal','web_export')", (site_id,)).fetchone():
@@ -91,6 +91,7 @@ def save_portal_capacity(site_id: int, body: PortalCapacityWrite, request: Reque
 
 @router.post('/start')
 def start_capacity(request: Request, mode: Literal['headless', 'headed'] = 'headless'):
+    # Starting workers changes no setting, so any signed-in computer may do it.
     require_app_access(request)
     from app.routers.flows import ensure_local_worker, launch_local_worker
     if mode == 'headed':

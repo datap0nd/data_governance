@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field, ValidationError, ValidationInfo, field_va
 from app.config import DB_PATH, UPLOAD_PGHOST, UPLOAD_PGPORT
 from app.database import get_db
 from app import flow_paths, flow_layout, flow_capacity, flow_tasks, flow_parallel, flow_browser, flow_recording, flow_view_refresh
-from app import flow_email_delivery, flow_excel, flow_python, user_identity
+from app import flow_email_delivery, flow_excel, flow_job_limits, flow_python, settings_registry, user_identity
 from app.flow_credentials import asap_credential_status, save_asap_credentials
 from app.flow_asap_exports import (
     public_asap_download_types,
@@ -83,6 +83,8 @@ SCAN_MODES = {"full", "partial"}
 BROWSER_MODES = {"headless", "headed"}
 OUTPUT_MODES = {"run_folders", "direct_replace", "private_snapshot"}
 TRANSFORM_SCRIPT_SUFFIXES = {".py", ".ps1", ".exe"}
+# The built-in silence after which a run is failed: the default of the
+# Settings value fail_stale_runs reads on every pass.
 RUN_STALE_TIMEOUT_SECONDS = 600
 WEEKDAYS = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3, "friday": 4, "saturday": 5, "sunday": 6}
 RUN_TERMINAL = {"succeeded", "failed", "cancelled"}
@@ -392,9 +394,15 @@ def _contact_time(value: str | None) -> datetime | None:
 
 
 def fail_stale_runs(
-    timeout_seconds: int = RUN_STALE_TIMEOUT_SECONDS,
+    timeout_seconds: int | None = None,
 ) -> dict:
-    """Fail runs whose assigned worker has stopped responding."""
+    """Fail runs whose assigned worker has stopped responding.
+
+    Without an explicit ``timeout_seconds`` the limit is the Settings value,
+    read on every pass so a change applies to the next one.
+    """
+    if timeout_seconds is None:
+        timeout_seconds = int(settings_registry.get("flows.run_silent_minutes")) * 60
     now = _now()
     now_text = _iso(now)
     cutoff = now.replace(tzinfo=timezone.utc) - timedelta(seconds=timeout_seconds)
@@ -2117,6 +2125,10 @@ def _build_job(db, flow_id: int, *, force_reprocess: bool = False, recording_dra
     elif source_type == "python":
         execution["required_adapter"] = PYTHON_SCRIPT_ADAPTER
     execution['browser_channel'] = flow_browser.configured(db)
+    # A worker never reads Metronome's database: the limits it obeys are read
+    # from Settings once, here, and travel with the job. A later change on the
+    # Settings page reaches new runs only.
+    limits = flow_job_limits.frozen()
     job = {
         "schema_version": 3,
         **({"paths": paths} if paths else {}),
@@ -2163,7 +2175,9 @@ def _build_job(db, flow_id: int, *, force_reprocess: bool = False, recording_dra
             "private_store_key": flow.get("target_folder") if source_type == "file" else None,
             "supported_extensions": sorted(SUPPORTED_LOCAL_FILE_EXTENSIONS),
         },
-        "python_source": flow_python.job_section(flow),
+        "python_source": flow_python.job_section(
+            flow, default_timeout_minutes=limits["script_timeout_seconds"] // 60,
+        ),
         "downloads": {
             "mode": flow["download_mode"], "periods": periods,
             "period_strategy": flow.get("period_strategy") or "fixed",
@@ -2221,6 +2235,9 @@ def _build_job(db, flow_id: int, *, force_reprocess: bool = False, recording_dra
     # Frozen with the run like every other step; excluded from recording,
     # script and handover hashes because only the app sends email.
     job["email_delivery"] = flow_email_delivery.saved_config(flow.get("email_delivery"))
+    # Excluded from the same hashes: the limits belong to this installation,
+    # not to the Flow.
+    job[flow_job_limits.KEY] = limits
     if flow.get('execution_method') == 'recorded':
         from app.flow_recordings import attach_job
         attach_job(db, flow, job, allow_draft=recording_draft)
@@ -2736,7 +2753,7 @@ def flow_activity():
     """A read-only display snapshot, independent of the run-history limit."""
     columns = """r.id, r.flow_id, f.name AS flow_name, r.status,
                  r.created_at, r.claimed_at, r.started_at, r.finished_at, r.live_json"""
-    cutoff = _iso(_now() - timedelta(seconds=90))
+    cutoff = _iso(_now() - timedelta(seconds=flow_capacity.online_seconds()))
     with get_db() as db:
         db.execute("BEGIN")
         latest = db.execute(
@@ -3340,6 +3357,9 @@ def inspect_resume_eligibility(db, run_id: int) -> dict:
     except HTTPException as exc:
         return _recovery_result("blocked", "sql_credentials_missing", str(exc.detail),
                                 http_status=409, _source=source)
+    # The Flow's configuration is the current one, but the limits stay those
+    # of the run being resumed, as they do for a retry of its stored job.
+    flow_job_limits.carry(job, source_job)
     source_output_mode = (source_job.get("downloads") or {}).get("output_mode", "run_folders")
     current_output_mode = (job.get("downloads") or {}).get("output_mode", "run_folders")
     if source_output_mode != current_output_mode:
@@ -3726,7 +3746,7 @@ def resume_run(run_id: int, request: Request):
 
 @router.get("/workers")
 def list_workers():
-    cutoff = _iso(_now() - timedelta(seconds=90))
+    cutoff = _iso(_now() - timedelta(seconds=flow_capacity.online_seconds()))
     with get_db() as db:
         rows = db.execute("SELECT * FROM flow_workers ORDER BY display_name").fetchall()
     result = []
@@ -3759,6 +3779,33 @@ def sql_catalog():
         ],
         "scan": dict(state) if state else {"status": "never_scanned"},
     }
+
+
+SQL_CATALOG_REFRESH_JOB = "flow_sql_catalog_refresh"
+
+
+def sql_catalog_refresh_time() -> dict:
+    """``hour`` and ``minute`` of the daily SQL table scan, from Settings.
+
+    The scheduler runs on Dubai time, so these are Dubai wall-clock values.
+    """
+    hour, minute = str(settings_registry.get("flows.sql_catalog_time")).split(":")
+    return {"hour": int(hour), "minute": int(minute)}
+
+
+def reschedule_sql_catalog_refresh(scheduler=None) -> bool:
+    """Move the running service's daily SQL table scan to the saved time.
+
+    False when this process schedules nothing (a test, a script): the saved
+    time is then simply the one the next start uses.
+    """
+    if scheduler is None:
+        import sys
+        scheduler = getattr(sys.modules.get("app.main"), "_scheduler", None)
+    if scheduler is None or scheduler.get_job(SQL_CATALOG_REFRESH_JOB) is None:
+        return False
+    scheduler.reschedule_job(SQL_CATALOG_REFRESH_JOB, trigger="cron", **sql_catalog_refresh_time())
+    return True
 
 
 def refresh_sql_catalog() -> dict:
@@ -4796,7 +4843,7 @@ def stop_run(flow_id: int, request: Request):
 
 def ensure_local_worker() -> dict:
     """Ensure configured fixed slots; never stop busy slots after a reduction."""
-    cutoff = _iso(_now() - timedelta(seconds=90))
+    cutoff = _iso(_now() - timedelta(seconds=flow_capacity.online_seconds()))
     with get_db() as db:
         capacity = flow_capacity.headless_capacity(db)
         rows = {row["worker_id"]: row for row in db.execute(
@@ -4930,6 +4977,11 @@ def _queue_scan(db, site, trigger_type: str, requested_by: str | None, report=No
         if category_path and str(category_path[-1]).strip()
         else str(report["name"]).strip() if report else ""
     )
+    # Frozen with the scan, like a run's limits: the worker reads them from the
+    # job. The time budget keeps its long-standing place under "discovery",
+    # which workers of every version read.
+    limits = flow_job_limits.frozen(flow_job_limits.SCAN)
+    scan_budget_minutes = limits.pop("scan_budget_minutes")
     job = {
         "schema_version": 1,
         "job_type": "catalog_scan",
@@ -4938,8 +4990,9 @@ def _queue_scan(db, site, trigger_type: str, requested_by: str | None, report=No
             "base_url": site["base_url"], "auth_url": site["auth_url"],
         },
         "execution": {"browser_mode": browser_mode, "browser_channel": flow_browser.configured(db)},
+        flow_job_limits.KEY: limits,
         "discovery": {
-            "scope": ["*"], "delete_missing": False, "max_duration_minutes": 90,
+            "scope": ["*"], "delete_missing": False, "max_duration_minutes": scan_budget_minutes,
             "mode": mode if mode in SCAN_MODES else "full",
             # Kept for one release so workers predating target_report can still
             # execute a targeted refresh.
@@ -6503,14 +6556,15 @@ def _release_retention_ops(db, assigned_run_id: int, now: str):
     )
 
 
-def _assign_retention_ops(db, run_id: int, folder_key: str, now: str) -> list[dict]:
+def _assign_retention_ops(db, run_id: int, folder_key: str, now: str, keep: int = RUN_FOLDER_KEEP) -> list[dict]:
     """Pick the run folders this run should clean up, transactionally.
 
     Runs inside the registration transaction, with the registering run's own
-    folder already counted: the newest RUN_FOLDER_KEEP recorded folders under
-    this target keep their place, non-terminal runs and pinned sources are
-    never candidates, and every deletion is pre-recorded as an operation with
-    its tombstone path before the worker hears about it.
+    folder already counted: the newest ``keep`` recorded folders under this
+    target keep their place (RUN_FOLDER_KEEP unless Settings says otherwise),
+    non-terminal runs and pinned sources are never candidates, and every
+    deletion is pre-recorded as an operation with its tombstone path before
+    the worker hears about it.
     """
     # Re-offer operations whose assigned run died before reporting.
     db.execute(
@@ -6526,7 +6580,7 @@ def _assign_retention_ops(db, run_id: int, folder_key: str, now: str) -> list[di
         (folder_key,),
     ).fetchall()
     ops: list[dict] = []
-    for row in recorded[RUN_FOLDER_KEEP:]:
+    for row in recorded[max(1, int(keep)):]:
         if row["status"] not in RUN_TERMINAL:
             continue
         if _source_has_live_consumer(db, row["id"]):
@@ -6672,6 +6726,7 @@ def register_run_folder(worker_id: str, run_id: int, body: FolderRegister):
     operations against paths this server stored itself.
     """
     now = _iso(_now())
+    keep = int(settings_registry.get("flows.run_folders_kept"))
     with get_db() as db:
         row = db.execute(
             "SELECT * FROM flow_runs WHERE id=? AND worker_id=?", (run_id, worker_id),
@@ -6691,8 +6746,9 @@ def register_run_folder(worker_id: str, run_id: int, body: FolderRegister):
                heartbeat_at=? WHERE id=?""",
             (run_folder, _folder_key(run_folder), now, run_id),
         )
-        ops = _assign_retention_ops(db, run_id, _folder_key(run_folder), now)
-    return {"run_id": run_id, "ops": ops}
+        ops = _assign_retention_ops(db, run_id, _folder_key(run_folder), now, keep)
+    # ``keep`` lets the worker name the number in force in its run log.
+    return {"run_id": run_id, "ops": ops, "keep": keep}
 
 
 def _outlook_receipt_is_current(db, flow_id: int, receipt: dict) -> bool:

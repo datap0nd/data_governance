@@ -20,11 +20,13 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.config import BASE_DIR, PBI_VISUAL_EXPORT_MAX_ROWS
+from app import settings_registry
+from app.config import BASE_DIR
 from app.database import get_db
 from app.pbi_visual_export import (
     PbiVisualExportError,
     TABLE_VISUAL_TYPES,
+    export_row_limit,
     export_visual_data,
     list_visuals,
     visual_export_runtime_status,
@@ -615,9 +617,8 @@ def _export_limit_warning(
     Power BI returns at most ``limit`` rows and never says that more existed,
     so an export that fills the limit is reported as cut off. The cut-off table
     is still delivered: this text goes at the top of every email and onto the
-    stored run. ``send_cut_off=False`` is the future operator choice to refuse
-    delivery instead; it raises into the existing failure path and nothing
-    passes it yet.
+    stored run. ``send_cut_off=False`` is the operator's choice on the Settings
+    page to refuse delivery instead; it raises into the existing failure path.
     """
     if exported_rows < limit:
         return None
@@ -1184,23 +1185,27 @@ def run_recurrence(recurrence_id: int, *, mode: str = "send", trigger_type: str 
                 "Users."
             ) from exc
         refresh = _require_successful_refresh(recurrence)
+        # Read once for this run: the export, the notice and the stored run
+        # must all name the same limit.
+        row_limit = export_row_limit()
+        send_cut_off = settings_registry.get("email.visual_export_cut_off") != "hold"
         exported = export_visual_data(
             recurrence["report_id"],
             recurrence["embed_url"],
             recurrence["page_name"],
             recurrence["visual_name"],
-            PBI_VISUAL_EXPORT_MAX_ROWS,
+            row_limit,
             workspace_id=recurrence["workspace_id"],
             dataset_id=recurrence.get("dataset_id"),
         )
         _apply_live_visual_title(recurrence, exported)
         columns, rows = parse_visual_csv(exported["data"])
-        export_warning = _export_limit_warning(len(rows), PBI_VISUAL_EXPORT_MAX_ROWS)
+        export_warning = _export_limit_warning(len(rows), row_limit, send_cut_off=send_cut_off)
         if export_warning:
             logger.warning(
                 "Power BI recurrence %s reached the %s row export limit; the table is cut off",
                 recurrence_id,
-                PBI_VISUAL_EXPORT_MAX_ROWS,
+                row_limit,
             )
         delivery_mode = recurrence.get("delivery_mode") or "subgroups"
         required_columns = {rule["column_name"] for rule in recurrence["rules"]}
@@ -1274,7 +1279,7 @@ def run_recurrence(recurrence_id: int, *, mode: str = "send", trigger_type: str 
             "owner": {"name": owner["name"], "email": owner["email"]},
             "refresh": refresh,
             "export_limit_reached": export_warning is not None,
-            "export_row_limit": PBI_VISUAL_EXPORT_MAX_ROWS,
+            "export_row_limit": row_limit,
             "warning": export_warning,
         }
         _finish_run(
@@ -1421,13 +1426,14 @@ def discover_report_visuals(body: VisualSelection):
 
 @router.post("/preview")
 def preview_report_visual(body: VisualPreview):
+    row_limit = export_row_limit()
     try:
         exported = export_visual_data(
             body.report_id,
             body.embed_url,
             body.page_name,
             body.visual_name,
-            PBI_VISUAL_EXPORT_MAX_ROWS,
+            row_limit,
             workspace_id=body.workspace_id,
             dataset_id=body.dataset_id,
         )
@@ -1445,8 +1451,8 @@ def preview_report_visual(body: VisualPreview):
         "export_method": exported.get("export_method"),
         "values": values,
         "values_limited": {column: len({str(row.get(column, "")) for row in rows}) > 500 for column in columns},
-        "export_limit_reached": len(rows) >= PBI_VISUAL_EXPORT_MAX_ROWS,
-        "export_row_limit": PBI_VISUAL_EXPORT_MAX_ROWS,
+        "export_limit_reached": len(rows) >= row_limit,
+        "export_row_limit": row_limit,
         "visual": exported.get("visual"),
     }
 

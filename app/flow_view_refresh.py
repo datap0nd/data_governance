@@ -15,7 +15,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app import flow_sql
+from app import flow_job_limits, flow_sql
 
 CAPABILITY = 'post_sql_refresh_v1'
 MODES = ('off', 'automatic', 'manual')
@@ -282,15 +282,19 @@ def read_checkpoint(path: Path | None) -> list[str]:
 
 def refresh_views(views: list[dict], progress, *, completed: list[str] | None = None,
                   checkpoint: Path | None = None, engine_factory=None,
-                  sql_committed: bool = True, source_run_id=None) -> list[dict]:
+                  sql_committed: bool = True, source_run_id=None,
+                  lock_timeout_ms: int | None = None, statement_timeout_ms: int | None = None) -> list[dict]:
     """Refresh each view in its own transaction, upstream first.
 
     ``progress(detail)`` receives one payload before and after every view. A
     failure stops the remaining chain and raises ``ViewRefreshError`` whose
-    ``results`` retain every completed checkpoint.
+    ``results`` retain every completed checkpoint. The two timeouts are the
+    limits a job carries; without them the built-in ones apply.
     """
     from sqlalchemy import text
     factory = engine_factory or flow_sql._engine
+    lock_timeout_ms = LOCK_TIMEOUT_MS if lock_timeout_ms is None else int(lock_timeout_ms)
+    statement_timeout_ms = STATEMENT_TIMEOUT_MS if statement_timeout_ms is None else int(statement_timeout_ms)
     done = set(completed or [])
     results = [_result_template(view) for view in views]
     for item in results:
@@ -323,8 +327,8 @@ def refresh_views(views: list[dict], progress, *, completed: list[str] | None = 
             # and refresh-only recovery as a connection/statement failure.
             engine = factory(item['database'])
             with engine.begin() as connection:
-                connection.execute(text(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT_MS}ms'"))
-                connection.execute(text(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT_MS}ms'"))
+                connection.execute(text(f"SET LOCAL lock_timeout = '{lock_timeout_ms}ms'"))
+                connection.execute(text(f"SET LOCAL statement_timeout = '{statement_timeout_ms}ms'"))
                 connection.execute(text(f'REFRESH MATERIALIZED VIEW {qualified(item)}'))
             item.update(status='succeeded', finished_at=_now(),
                         duration_ms=round((time.perf_counter() - started) * 1000))
@@ -361,8 +365,10 @@ def execute_after_sql(job: dict, progress, artifacts, timings, state, *, checkpo
     views = plan_views(job)
     if not views:
         return None
-    # The refresh belongs to the Flow, so it runs as the same SQL user as its load.
-    engine_factory = engine_factory or flow_sql.engine_factory_for(job.get('sql_handoff') or {})
+    # The refresh belongs to the Flow, so it runs as the same SQL user as its
+    # load, with the same limit on connecting.
+    engine_factory = engine_factory or flow_sql.engine_factory_for(
+        job.get('sql_handoff') or {}, **flow_sql.connect_limit(job))
     retry = job.get('job_type') == RETRY_JOB_TYPE
     completed = list((job.get('view_retry') or {}).get('completed') or []) if retry else []
     if checkpoint is not None:
@@ -373,10 +379,15 @@ def execute_after_sql(job: dict, progress, artifacts, timings, state, *, checkpo
     def report(detail):
         progress('running', detail, artifacts, timings)
 
+    # The limits the job changes, frozen when it was queued, in milliseconds.
+    timeouts = {argument: int(seconds * 1000) for argument, seconds in flow_job_limits.given(
+        job, lock_timeout_ms=('view_lock_seconds', LOCK_TIMEOUT_MS // 1000),
+        statement_timeout_ms=('view_refresh_seconds', STATEMENT_TIMEOUT_MS // 1000)).items()}
     try:
         results = refresh_views(views, report, completed=completed, checkpoint=checkpoint,
                                 engine_factory=engine_factory,
-                                source_run_id=(job.get('view_retry') or {}).get('source_run_id') if retry else None)
+                                source_run_id=(job.get('view_retry') or {}).get('source_run_id') if retry else None,
+                                **timeouts)
     except ViewRefreshError as exc:
         state['view_refresh_results'] = exc.results
         timings.insert(max(0, len(timings) - 1), {'phase': 'view_refresh', 'status': 'failed',
@@ -395,7 +406,8 @@ def precheck_before_sql(job: dict, progress, artifacts, timings, *, engine_facto
         return
     progress('running', {'stage': 'view_refresh_precheck',
                          'message': f'Checking {len(views)} materialized view(s) before SQL insertion.'}, artifacts, timings)
-    verify_views(views, engine_factory=engine_factory or flow_sql.engine_factory_for(job.get('sql_handoff') or {}))
+    verify_views(views, engine_factory=engine_factory or flow_sql.engine_factory_for(
+        job.get('sql_handoff') or {}, **flow_sql.connect_limit(job)))
 
 
 def checkpoint_path(job: dict) -> Path | None:

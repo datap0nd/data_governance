@@ -28,7 +28,6 @@ from app.config import (
     PGUSER,
     PGPASSWORD,
     PGDATABASE,
-    PG_SCAN_STATEMENT_TIMEOUT_SECONDS,
     UPLOAD_PGDATABASE,
     UPLOAD_PGHOST,
     UPLOAD_PGPASSWORD,
@@ -55,6 +54,21 @@ FILE_SOURCE_TYPES = {"csv", "excel", "folder"}
 # freshness queries that sort it per source.
 SOURCE_PROBE_RETENTION_DAYS = 90
 
+# A report may have refreshed this long before its newest source data without
+# a schedule alert, so clock skew and tight back-to-back schedules stay quiet.
+REPORT_LAG_HOURS = 1
+
+# The level of the alert raised for a source outside its freshness rule.
+FRESHNESS_ALERT_SEVERITY = "critical"
+FRESHNESS_ALERT_SEVERITIES = ("critical", "warning")
+
+# Bounds on one read-only probe session. The statement limit is the built-in
+# value of app.config.PG_SCAN_STATEMENT_TIMEOUT_SECONDS; the setting itself
+# falls back to that variable in the environment.
+CONNECT_TIMEOUT_SECONDS = 10
+LOCK_TIMEOUT_SECONDS = 30
+STATEMENT_TIMEOUT_SECONDS = 180
+
 # PostgreSQL source types
 PG_SOURCE_TYPES = {"postgresql"}
 
@@ -62,6 +76,47 @@ WEEKDAY_ORDER = {
     "Monday": 0, "Tuesday": 1, "Wednesday": 2, "Thursday": 3,
     "Friday": 4, "Saturday": 5, "Sunday": 6,
 }
+
+
+def freshness_limits() -> dict:
+    """Alert level, report lag and history kept for one probe run (Settings).
+
+    Read together, once per run; the helpers below take the values as arguments.
+    """
+    from app.scanner import limits
+
+    current = limits.values({
+        "freshness.alert_severity": FRESHNESS_ALERT_SEVERITY,
+        "freshness.report_lag_hours": REPORT_LAG_HOURS,
+        "freshness.probe_history_days": SOURCE_PROBE_RETENTION_DAYS,
+    })
+    severity = current["freshness.alert_severity"]
+    return {
+        "alert_severity": severity if severity in FRESHNESS_ALERT_SEVERITIES else FRESHNESS_ALERT_SEVERITY,
+        "report_lag_hours": max(0.0, float(current["freshness.report_lag_hours"])),
+        "probe_history_days": max(1, int(current["freshness.probe_history_days"])),
+    }
+
+
+def pg_session_limits() -> tuple[int, str]:
+    """``(connect_timeout, options)`` for one read-only PostgreSQL session (Settings).
+
+    The options bound every statement and lock wait of the session. They only
+    limit how long a probe waits; the session is still forced read-only by
+    its caller. Read once per connection.
+    """
+    from app.scanner import limits
+
+    current = limits.values({
+        "probe.connect_timeout_seconds": CONNECT_TIMEOUT_SECONDS,
+        "probe.statement_timeout_seconds": STATEMENT_TIMEOUT_SECONDS,
+        "probe.lock_timeout_seconds": LOCK_TIMEOUT_SECONDS,
+    })
+    options = (
+        f"-c statement_timeout={int(current['probe.statement_timeout_seconds']) * 1000} "
+        f"-c lock_timeout={int(current['probe.lock_timeout_seconds']) * 1000}"
+    )
+    return int(current["probe.connect_timeout_seconds"]), options
 
 
 def _compute_status(last_activity_str: str | None,
@@ -463,17 +518,15 @@ def _get_pg_connection(database: str | None = None):
 
     try:
         import psycopg2
+        connect_timeout, options = pg_session_limits()
         conn = psycopg2.connect(
             host=PGHOST,
             port=int(PGPORT),
             user=PGUSER,
             password=PGPASSWORD,
             database=(database or PGDATABASE),
-            connect_timeout=10,
-            options=(
-                f"-c statement_timeout={int(PG_SCAN_STATEMENT_TIMEOUT_SECONDS) * 1000} "
-                "-c lock_timeout=30000"
-            ),
+            connect_timeout=connect_timeout,
+            options=options,
         )
         # Force read-only at the session level as an extra safeguard
         conn.set_session(readonly=True, autocommit=True)
@@ -491,15 +544,13 @@ def _get_flow_pg_connection(database: str | None = None):
     try:
         import psycopg2
 
+        connect_timeout, options = pg_session_limits()
         kwargs = {
             "host": UPLOAD_PGHOST,
             "port": int(UPLOAD_PGPORT),
             "database": database or UPLOAD_PGDATABASE,
-            "connect_timeout": 10,
-            "options": (
-                f"-c statement_timeout={int(PG_SCAN_STATEMENT_TIMEOUT_SECONDS) * 1000} "
-                "-c lock_timeout=30000"
-            ),
+            "connect_timeout": connect_timeout,
+            "options": options,
         }
         if UPLOAD_PGUSER:
             kwargs["user"] = UPLOAD_PGUSER
@@ -580,6 +631,7 @@ def _probe_pg_sources(
     *,
     cancel_generation: int | None = None,
     operation_id: int | None = None,
+    alert_severity: str | None = None,
 ) -> dict:
     """Probe PostgreSQL sources using track_commit_timestamp.
 
@@ -814,6 +866,7 @@ def _probe_pg_sources(
                             status,
                             now,
                             rule.get("description"),
+                            severity=alert_severity,
                         )
                         log_lines.append(f"PG: {database}/{short} - {status} ({msg})")
                 except Exception as e:
@@ -853,13 +906,19 @@ def _probe_pg_sources(
 
 
 def _create_action_and_alert(db, source_id: int, status: str, now: str,
-                             rule_description: str | None = None):
-    """Create an action item and alert for outdated sources if not already open."""
+                             rule_description: str | None = None,
+                             severity: str | None = None):
+    """Create an action item and alert for outdated sources if not already open.
+
+    ``severity`` is the level of a newly raised alert; a probe run reads it
+    once and passes it in. An alert that is already open keeps its level.
+    """
     if status != "outdated" or rule_description is None:
         return
 
     action_type = "stale_source"
-    severity = "critical"
+    if severity is None:
+        severity = freshness_limits()["alert_severity"]
     msg = f"Source data is outside freshness rule ({rule_description})"
 
     # Find owner for assignment (from linked report)
@@ -883,15 +942,15 @@ def _create_action_and_alert(db, source_id: int, status: str, now: str,
             (source_id, action_type, assigned, msg, now),
         )
 
-    # Alert
+    # Alert. Any open freshness alert for the source counts, whatever level it
+    # was raised at, so changing the level never raises a second one.
     existing_alert = db.execute(
         """SELECT id FROM alerts
            WHERE source_id = ?
-             AND severity = ?
              AND message LIKE 'Source data is outside freshness rule%'
              AND acknowledged = 0
              AND resolution_status IS NULL""",
-        (source_id, severity),
+        (source_id,),
     ).fetchone()
     if not existing_alert:
         db.execute(
@@ -900,15 +959,17 @@ def _create_action_and_alert(db, source_id: int, status: str, now: str,
         )
 
 
-def _prune_probe_history(db, now: str) -> int:
+def _prune_probe_history(db, now: str, retention_days: int | None = None) -> int:
     """Delete probe rows past retention without losing per-source context.
 
     Each source keeps its most recent probe, plus its most recent probe with a
     row count - that row backs the empty-source alert comparison even when the
     source has been unreachable for longer than the retention window.
     """
+    if retention_days is None:
+        retention_days = freshness_limits()["probe_history_days"]
     cutoff = (
-        datetime.fromisoformat(now) - timedelta(days=SOURCE_PROBE_RETENTION_DAYS)
+        datetime.fromisoformat(now) - timedelta(days=retention_days)
     ).isoformat()
     cursor = db.execute(
         """DELETE FROM source_probes
@@ -1049,8 +1110,7 @@ def _auto_close_stale_entries(db, now: str) -> tuple[int, int]:
            SET resolution_status = 'resolved', resolved_at = ?,
                acknowledged = 1, acknowledged_by = 'auto',
                resolution_reason = 'Source no longer outdated'
-           WHERE severity = 'critical'
-             AND message LIKE 'Source data is outside freshness rule%'
+           WHERE message LIKE 'Source data is outside freshness rule%'
              AND resolution_status IS NULL
              AND source_id IN (
                  SELECT source_id FROM (
@@ -1132,7 +1192,9 @@ def _backfill_alert_owners(db):
             )
 
 
-def _check_report_source_schedule(db, now: str, log_lines: list) -> int:
+def _check_report_source_schedule(
+    db, now: str, log_lines: list, buffer_hours: float | None = None,
+) -> int:
     """Flag reports that refreshed BEFORE their sources' most recent data.
 
     Scenario: Source X updated at 10am, Report Y that uses X refreshed at
@@ -1143,10 +1205,11 @@ def _check_report_source_schedule(db, now: str, log_lines: list) -> int:
     report per problem period. Auto-resolves when the report's refresh
     catches up past all its sources.
 
-    A 1-hour buffer is applied so clock skew and tight back-to-back
-    schedules don't generate spurious alerts.
+    A buffer (one hour unless the Settings page says otherwise) is applied so
+    clock skew and tight back-to-back schedules don't generate spurious alerts.
     """
-    BUFFER_HOURS = 1
+    if buffer_hours is None:
+        buffer_hours = freshness_limits()["report_lag_hours"]
 
     rows = db.execute("""
         SELECT r.id AS report_id, r.name AS report_name, r.owner,
@@ -1198,7 +1261,7 @@ def _check_report_source_schedule(db, now: str, log_lines: list) -> int:
             continue
 
         behind_hours = (info["src_dt"] - rep_dt).total_seconds() / 3600
-        is_mismatched = behind_hours > BUFFER_HOURS
+        is_mismatched = behind_hours > buffer_hours
 
         short_src = info["src_name"].replace("\\", "/").split("/")[-1]
         msg = (
@@ -1409,6 +1472,7 @@ def run_probe(
     skipped = 0
     statuses = {"fresh": 0, "outdated": 0, "unknown": 0, "no_rule": 0}
     log_lines = []
+    rules = freshness_limits()  # one read for the whole run
 
     with get_db() as db:
         # 1. Probe file-based sources
@@ -1441,7 +1505,10 @@ def run_probe(
             # publish that result after the slow metadata call returns.
             assert_not_cancelled(generation, "Source probe")
             statuses[status] = statuses.get(status, 0) + 1
-            _create_action_and_alert(db, src["id"], status, now, rule.get("description"))
+            _create_action_and_alert(
+                db, src["id"], status, now, rule.get("description"),
+                severity=rules["alert_severity"],
+            )
             file_probed += 1
             probed += 1
             short = file_path.replace("\\", "/").split("/")[-1]
@@ -1481,6 +1548,7 @@ def run_probe(
                 log_lines,
                 cancel_generation=generation,
                 operation_id=operation_id,
+                alert_severity=rules["alert_severity"],
             )
             for k, v in pg_statuses.items():
                 statuses[k] = statuses.get(k, 0) + v
@@ -1535,7 +1603,9 @@ def run_probe(
 
         # 4b. Schedule mismatch: report refreshed before its sources
         assert_not_cancelled(generation, "Source probe")
-        _check_report_source_schedule(db, now, log_lines)
+        _check_report_source_schedule(
+            db, now, log_lines, buffer_hours=rules["report_lag_hours"]
+        )
 
         # 5. Auto-close stale_source actions/alerts for sources no longer outdated
         closed_actions, closed_alerts = _auto_close_stale_entries(db, now)
@@ -1564,10 +1634,10 @@ def run_probe(
             )
 
         # 7. Retention: prune old probe history so freshness queries stay fast
-        pruned = _prune_probe_history(db, now)
+        pruned = _prune_probe_history(db, now, retention_days=rules["probe_history_days"])
         if pruned:
             log_lines.append(
-                f"Pruned {pruned} probe rows older than {SOURCE_PROBE_RETENTION_DAYS} days"
+                f"Pruned {pruned} probe rows older than {rules['probe_history_days']} days"
             )
 
     log_text = "\n".join(log_lines) if log_lines else "No sources to probe."

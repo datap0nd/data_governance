@@ -256,7 +256,9 @@ def _get_flow_run(args: FlowRunArgs) -> ToolEnvelope:
             if worker_row:
                 worker = dict(worker_row)
                 worker["registered"] = True
-                cutoff = _now() - timedelta(seconds=90)
+                from app import flow_capacity
+
+                cutoff = _now() - timedelta(seconds=flow_capacity.online_seconds())
                 try:
                     seen = datetime.fromisoformat(str(worker["last_seen_at"]).replace("Z", "+00:00"))
                     if seen.tzinfo is None:
