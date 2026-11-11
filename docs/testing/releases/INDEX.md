@@ -5,6 +5,7 @@ in [the testing workflow](../README.md); this file is the complete history.
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-11-11: Setup refuses to start a second, empty installation | [Test plan](2026-11-11-installer-one-installation/test-plan.md) | [Test report](2026-11-11-installer-one-installation/test-report.md) |
 | 2026-11-11: Recorded-Flow saves no longer rebuild their source; tests stop paying fixed costs | [Test plan](2026-11-11-test-time-waste/test-plan.md) | [Test report](2026-11-11-test-time-waste/test-report.md) |
 | 2026-11-11: Faster merge gate and no Vercel deployment | [Test plan](2026-11-11-faster-merge-gate-no-vercel/test-plan.md) | [Test report](2026-11-11-faster-merge-gate-no-vercel/test-report.md) |
 | 2026-11-11: Installer no longer needs pandas before it installs pandas | [Test plan](2026-11-11-installer-bundled-wheels/test-plan.md) | [Test report](2026-11-11-installer-bundled-wheels/test-report.md) |

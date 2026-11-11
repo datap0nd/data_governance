@@ -1,0 +1,185 @@
+"""setup.ps1 refuses to start a second, empty Metronome beside the installed one.
+
+setup.ps1 installs into the folder it is run from and keeps the database
+beside that folder. Run from a second copy of the code, it built a new empty
+database and pointed the services at it: the app opened blank while the real
+database sat unused on disk.
+
+Every case needs Windows PowerShell, so they run in the pull-request "Windows
+verifier contracts" job, before a merge can install the script on a live PC.
+"""
+import os
+import subprocess
+import tempfile
+import uuid
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+GUARD = ROOT / "tools" / "setup_install_guard.ps1"
+
+pytestmark = pytest.mark.skipif(os.name != "nt", reason="needs Windows PowerShell")
+# The last case starts the real installer. It stops at the guard; if the guard
+# ever failed to stop it, the installer would go on to install services, so it
+# runs only on the disposable Windows CI runner and never on somebody's PC.
+ci_runner_only = pytest.mark.skipif(
+    os.environ.get("GITHUB_ACTIONS") != "true",
+    reason="starts the real setup.ps1; only on the disposable Windows CI runner",
+)
+
+
+def _powershell(script: str) -> subprocess.CompletedProcess:
+    with tempfile.TemporaryDirectory() as folder:
+        path = Path(folder) / "case.ps1"
+        path.write_text(script, encoding="ascii")
+        return subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(path)],
+            capture_output=True, text=True, timeout=120,
+        )
+
+
+def _check(code_dir, db_path, installed_code="", installed_db="", allow_new=False):
+    """The guard's verdict and its message for one situation."""
+    result = _powershell(
+        f"$ErrorActionPreference = 'Stop'; . '{GUARD}'; "
+        f"$check = Get-MetronomeInstallCheck -CodeDir '{code_dir}' -DbPath '{db_path}' "
+        f"-Installed @{{ CodeDir = '{installed_code}'; Database = '{installed_db}' }}"
+        + (" -AllowNewDatabase" if allow_new else "")
+        + "; $check.Action; $check.Lines"
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    lines = result.stdout.splitlines()
+    return lines[0].strip(), "\n".join(lines[1:])
+
+
+@pytest.fixture
+def places(tmp_path):
+    """An installed Metronome with data, and a second copy of the code elsewhere."""
+    installed_code = tmp_path / "installed" / "data_governance-main"
+    installed_code.mkdir(parents=True)
+    (installed_code / "setup.ps1").write_text("# the installed copy\n", encoding="ascii")
+    installed_db = tmp_path / "installed" / "governance.db"
+    installed_db.write_bytes(b"d" * 5000)
+    code = tmp_path / "download" / "data_governance-main"
+    code.mkdir(parents=True)
+    return SimpleNamespace(
+        installed_code=installed_code, installed_db=installed_db,
+        code=code, db=code.parent / "governance.db",
+    )
+
+
+@pytest.fixture
+def service_settings():
+    """Describe an installed service under a throwaway registry key."""
+    root = rf"HKCU:\Software\MetronomeSetupTest\{uuid.uuid4().hex}"
+
+    def write(code_dir, database):
+        result = _powershell(
+            "$ErrorActionPreference = 'Stop'; "
+            f"$key = '{root}\\MXAnalytics\\Parameters'; "
+            "New-Item -Path $key -Force | Out-Null; "
+            f"New-ItemProperty -Path $key -Name AppDirectory -Value '{code_dir}' -PropertyType String -Force | Out-Null; "
+            "New-ItemProperty -Path $key -Name AppEnvironmentExtra -PropertyType MultiString -Force "
+            f"-Value @('DG_FLOWS_ROOT=C:\\elsewhere\\flows', 'DG_DB_PATH={database}', 'DG_AI_MOCK=true') | Out-Null"
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        return root
+
+    yield write
+    _powershell(f"Remove-Item -LiteralPath '{root}' -Recurse -Force -ErrorAction SilentlyContinue")
+
+
+def test_a_second_copy_with_no_database_is_refused_and_told_where_to_run(places):
+    action, message = _check(places.code, places.db, places.installed_code, places.installed_db)
+
+    assert action == "stop"
+    assert str(places.installed_db) in message
+    assert str(places.installed_code / "setup.ps1") in message
+    assert str(places.code) in message
+    assert "Nothing was changed" in message
+
+
+def test_the_installed_folder_continues_without_comment(places):
+    assert _check(places.installed_code, places.installed_db,
+                  places.installed_code, places.installed_db) == ("continue", "")
+    # The same file spelled the way nssm or a person might have typed it.
+    respelled = str(places.installed_db).upper()
+    assert _check(places.installed_code, places.installed_db,
+                  places.installed_code, respelled) == ("continue", "")
+
+
+def test_a_folder_that_has_its_own_database_takes_the_services_back_and_says_so(places):
+    # How a PC recovers after a second copy was installed by mistake: setup is
+    # run again from the folder whose database holds the data. That must not
+    # be refused, and it names both databases so the switch is visible.
+    places.db.write_bytes(b"s" * 300)
+
+    action, message = _check(places.installed_code, places.installed_db, places.code, places.db)
+
+    assert action == "notice"
+    assert str(places.db) in message and str(places.installed_db) in message
+
+
+def test_no_service_or_a_database_that_is_gone_is_an_ordinary_first_install(places):
+    assert _check(places.code, places.db) == ("continue", "")
+    gone = places.installed_db.with_name("moved-away.db")
+    assert _check(places.code, places.db, places.installed_code, gone) == ("continue", "")
+
+
+def test_a_new_empty_database_beside_an_installed_one_has_to_be_asked_for(places):
+    action, message = _check(places.code, places.db, places.installed_code, places.installed_db,
+                             allow_new=True)
+
+    assert action == "notice"
+    assert "DG_SETUP_NEW_DATABASE" in message and str(places.installed_db) in message
+
+
+def test_the_installed_location_is_read_from_the_service_settings(places, service_settings):
+    root = service_settings(places.installed_code, places.installed_db)
+
+    result = _powershell(
+        f"$ErrorActionPreference = 'Stop'; . '{GUARD}'; "
+        f"$found = Get-MetronomeInstalledLocation -RegistryRoot '{root}'; "
+        f"$none = Get-MetronomeInstalledLocation -ServiceName 'NotInstalled' -RegistryRoot '{root}'; "
+        "\"$($found.CodeDir)|$($found.Database)|[$($none.CodeDir)$($none.Database)]\""
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip() == f"{places.installed_code}|{places.installed_db}|[]"
+
+
+@ci_runner_only
+def test_setup_itself_stops_before_it_creates_or_replaces_anything(places, service_settings):
+    # The real setup.ps1, placed in a second copy of the code while the
+    # service settings name the installed one.
+    (places.code / "setup.ps1").write_bytes((ROOT / "setup.ps1").read_bytes())
+    (places.code / "tools").mkdir()
+    for script in (ROOT / "tools").glob("*.ps1"):
+        (places.code / "tools" / script.name).write_bytes(script.read_bytes())
+    (places.code / "app").mkdir()
+    (places.code / "app" / "main.py").write_text("# stand-in\n", encoding="ascii")
+    before = sorted(str(path.relative_to(places.code)) for path in places.code.rglob("*"))
+
+    environment = {
+        name: value for name, value in os.environ.items()
+        if name not in {"DG_FLOWS_ROOT", "DG_GITHUB_TOKEN", "DG_UPDATE_ZIP_URL",
+                        "DG_SETUP_NEW_DATABASE", "DG_SETUP_RELAUNCHED"}
+    }
+    environment["DG_SETUP_TEST_SERVICE_ROOT"] = service_settings(places.installed_code, places.installed_db)
+    environment["DG_UPDATE_COMMIT_SHA"] = "0" * 40  # no call to GitHub
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+         "-File", str(places.code / "setup.ps1"), "-Unattended"],
+        capture_output=True, text=True, timeout=180, env=environment,
+    )
+
+    output = result.stdout + result.stderr
+    assert result.returncode == 1, output
+    assert "SETUP STOPPED" in output and str(places.installed_db) in output, output
+    # No database, Python, download, Flow folders or state beside the copy...
+    assert [path.name for path in places.code.parent.iterdir()] == ["data_governance-main"], output
+    # ...and nothing added to the copy itself.
+    assert sorted(str(path.relative_to(places.code)) for path in places.code.rglob("*")) == before
+    assert places.installed_db.read_bytes() == b"d" * 5000
