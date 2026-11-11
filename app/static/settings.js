@@ -256,7 +256,7 @@ function settingsPageHtml() {
     }
     return `<div class="st-page" id="st-page">
         <div class="page-header st-header"><div><h1>Settings</h1>
-            <p class="subtitle">Limits, schedules and options for the whole app. Every change is recorded in the Event Log with who made it.</p></div>
+            <p class="subtitle">Connections, folders, schedules and limits for the whole app. Every change is recorded in the Event Log with who made it.</p></div>
             <div class="st-tools"><label class="sr-only" for="st-search">Find a setting</label>
                 <input type="search" id="st-search" placeholder="Find a setting" value="${esc(settingsState.query)}">
                 <label class="st-check"><input type="checkbox" id="st-only-changed"${settingsState.onlyChanged ? ' checked' : ''}> Only changed from default</label></div></div>
