@@ -421,6 +421,21 @@ async function settingsReloadRegistry() {
     settingsRefresh();
 }
 
+// The other direction: the save bar stays in reach while a moved page is
+// open, so the registry can save a value that page's form is also showing.
+// The form's control is then set to the saved value. Left as it was, the
+// form's own Save, which sends every field, would put the old value back.
+// Nothing else typed into the form is touched.
+function settingsReconcilePage(changedKeys) {
+    const page = settingsPage(settingsState.section), host = $('#st-embed');
+    if (!page || !page.shared || !host) return;
+    for (const key of changedKeys) {
+        const selector = page.shared[key], row = settingsRow(key);
+        const control = selector ? host.querySelector(selector) : null;
+        if (control && row) control.value = String(row.value);
+    }
+}
+
 // Open one section without leaving the page: a registry section at once, a
 // moved page as soon as its own data has loaded.
 async function settingsOpenSection(id) {
@@ -511,6 +526,7 @@ async function settingsSave() {
         settingsState.saving = false;
         settingsState.tests = {};  // an earlier test result described the old values
         settingsRefresh();
+        settingsReconcilePage(payload.changed || []);
         const saved = (payload.changed || []).length;
         const newRuns = (payload.changed || []).some(key => settingsRow(key)?.applies === 'new_runs');
         toast(`Saved ${saved} ${saved === 1 ? 'setting' : 'settings'}.${newRuns ? ' Runs already in progress keep their old values.' : ''}`);

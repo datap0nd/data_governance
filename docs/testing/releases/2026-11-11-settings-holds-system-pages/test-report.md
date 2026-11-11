@@ -37,6 +37,7 @@
 | Page walk, step 9 | Playwright script that opens each preview page loading `app.js` and collects page errors | `8ec5a66` | PASS: 8 pages, no page error | Console output |
 | Rerun after the rebase onto `main` at `a26bb04` | `python tools/check.py verify` over the three changed Python test files plus the settings, AI, Data Auditor, Flow capacity, Premium Viewers and Flow paths test files; `node` on the five changed or new `.mjs` tests; `node --check` on `app.js` and `settings.js` | `d0e52ba` (the same change, rebased; the only conflict was the two index tables), Linux | PASS: 317 passed, 0 failed, 19 skipped, 52.8 s; five Node files passed. The 16 cases of `tests/test_settings_sections_browser.py` are among the skips: no browser starts under the verifier in this container. They passed in the direct run above and run in the pull request's CI | `.test-runs/20261111T140249982Z-25612-72501ccb/result.json` |
 | Recheck after `main` moved to `d75c08e` | `python tools/check.py verify` over the three changed Python test files and the CI install and sharding tests; `node` on three of the `.mjs` tests | `e04a2d7` (the same change again; `main` gained only installer and CI files) | PASS: 85 passed, 0 failed, 16 skipped (the browser cases, as above), 19.8 s; three Node files passed | `.test-runs/20261111T142328878Z-244-a913161a/result.json` |
+| Review finding on the pull request | `python -m pytest tests/test_settings_sections_browser.py` with the container's Chromium; the new case also run with the fix taken out | The commit that adds this row, Linux, Chromium 153 | PASS: 17 passed, 26 s (16 earlier cases and the new one). Without the fix the new case fails | Console output |
 
 The 3 skips are 2 that need PowerShell service configuration and 1 that
 needs native Windows paths. The 2 warnings come from Starlette's test
@@ -138,6 +139,19 @@ for a preview first.
 | Each page's own Save | Unchanged labels: Save paths, Save settings, Save portal settings, Save Premium Viewers, Save AI settings | The same messages as before, each seen in step 2; refusals in S-05, S-06, S-08, S-09 and step 7 | After a save the section stays open and shows the saved values |
 
 ## Findings, limitations and retests
+
+### Found by the automated review of the pull request
+
+- A value saved from the registry could be sent back as it was. The save bar
+  stays in reach while Flow workers is open, and the form there also holds
+  Visible browser windows and four more values. With an unsaved registry edit
+  saved from the bar while the form was open, the form still showed the old
+  value, and its own Save, which sends every field, would have put it back.
+  After a registry save the open form's control for each saved value is now
+  set to that value; other text typed into the form is left alone. Covered by
+  `test_a_registry_save_reaches_the_open_flow_workers_form`, which fails with
+  the fix removed. The cause underneath is that five values can be edited in
+  two sections; whether one of the two should go is the owner's decision.
 
 ### Found and fixed while building this
 
