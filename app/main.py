@@ -2295,10 +2295,14 @@ def get_system_updates(request: Request):
 def _require_local_remote_control(request: Request) -> None:
     """Keep the enable switch and browser hand-off on the server machine.
 
-    The address alone is not enough: a page from another site, open in a
-    browser on the host PC, also arrives from this machine.
+    The peer address must be this machine's. That alone is not enough: a page
+    from another site, open in a browser on the host PC, also arrives from
+    this machine, so a request the identity middleware judged not to be the
+    host's own is refused as well.
     """
-    if not is_host_request(request):
+    ip = request.client.host if request.client else ""
+    judged = getattr(getattr(request, "state", None), "is_host", None)
+    if not _is_localhost(ip) or judged is False:
         raise HTTPException(status_code=403, detail="Remote Flow control is local-only.")
 
 

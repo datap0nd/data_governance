@@ -2,16 +2,19 @@
 
 - Plan: [test-plan.md](test-plan.md)
 - Change/PR: link in the PR's testing section
-- Evidence cutoff (UTC): 2026-11-11 09:25
-- Tested code revision: `9ee6d44` on `main` at `7e406f2`; the commit that adds
-  this package changes documentation only
+- Evidence cutoff (UTC): 2026-11-11 09:40
+- Tested code revisions: `9ee6d44` on `main` at `7e406f2` for the main run;
+  `8ccc0ca` in the pull request's first CI run; and the commit this report is
+  updated in, which fixes the one failure that run found
 - Environment: Linux 6.18 (cloud container), Python 3.13.18 checkout-owned
   `.venv` with the locked CI dependencies, Node 22.23. The project's Playwright
   has no browser it can start in this container
 - Overall finding: every case in the plan passes here (automated, synthetic
-  fixtures). Tests that launch a browser were not run and are left to the pull
-  request's CI, which is also the full regression. Nothing was checked against
-  a real portal, Power BI tenant, PostgreSQL server or the work PC.
+  fixtures). The pull request's first CI run found one real failure in an
+  existing test that the local selection had left out; it is fixed and
+  retested. Tests that launch a browser are left to CI, which is also the
+  full regression. Nothing was checked against a real portal, Power BI
+  tenant, PostgreSQL server or the work PC.
 
 ## Executed checks
 
@@ -19,6 +22,8 @@
 | --- | --- | --- | --- | --- |
 | Every case in the plan, plus existing suites for the changed modules | `python tools/check.py verify` with the eight `tests/test_audit_*.py` files and the 27 existing files listed below, and eight `--syntax` paths | `9ee6d44`, Linux | PASS: 1,257 passed, 0 failed, 1 skipped (NTFS junctions, Windows only), 12 third-party deprecation warnings, 231.9 s; eight syntax checks passed | `.test-runs/20261111T090750422Z-17124-cdcf8fef/result.json` |
 | Frontend contracts, including F-14's display test | `for f in tests/test_*.mjs; do node "$f"; done`, leaving out `tests/test_gemini_extension.mjs` | `9ee6d44`, Node 22.23 | PASS: 27 files. The left-out file needs the extension's npm packages, which are not installed here; nothing it covers changed | Console output |
+| Full regression, first CI run | Pull request jobs on the first pushed head | `8ccc0ca`, GitHub runners | FAIL: `Python (shard 0)` 1 failed, 1,390 passed, 36 skipped. `tests/test_remote_flow_control.py::test_control_endpoints_use_socket_locality_not_permissive_access` raised `AttributeError`: the remote Flow control check had been changed to need a full request, and this test calls the route with only a peer address. Shard 1, Windows, Frontend and both PostgreSQL jobs passed | [run 42994331230](https://github.com/datap0nd/data_governance/actions/runs/42994331230) |
+| Retest of that failure | Reproduced locally (1 failed, 14 passed), fixed in `app/main.py`, then `python tools/check.py verify --test tests/test_remote_flow_control.py --test tests/test_audit_access.py --syntax app/main.py` | The commit this report is updated in, Linux | PASS: 41 passed, 0 failed | `.test-runs/20261111T093541651Z-21951-7bacd9cb/result.json` |
 | New tests against the previous code | The eight `tests/test_audit_*.py` files copied into a checkout of `7e406f2` and run with `python -m pytest` | Application code of `7e406f2`, new tests | 242 failed, 120 passed. The failures are the defects; the passes are guards on behaviour that must not change | Console output |
 
 Existing files in the first run: `test_auto_update`, `test_flows`,
@@ -102,6 +107,18 @@ on purpose:
 - A Power BI visual export that cannot read a filter no longer sends broader
   data; it fails with the filter level named (F-15).
 - Only the three newest recording-test folders per Flow are kept (F-16).
+
+### The failure CI found
+
+The remote Flow control routes were switched from "the peer address is this
+PC" to the stricter host check, which reads the request's address and
+headers. An existing test calls those routes with nothing but a peer address
+and failed. The check now keeps the peer-address rule exactly as it was and
+additionally refuses a request that the identity middleware judged not to be
+the host's own, which is what stops a cross-site page open on the host PC.
+Both the existing test and the new cross-site test pass. The local run had
+not included `tests/test_remote_flow_control.py`; it should have, since the
+change touched that route.
 
 ### Limits of these fixes
 
