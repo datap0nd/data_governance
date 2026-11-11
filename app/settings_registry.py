@@ -86,6 +86,18 @@ class SettingsRejected(ValueError):
         self.errors = errors
 
 
+class SaveFailed(RuntimeError):
+    """A save stopped for a reason no single field explains.
+
+    ``saved`` lists the change records that are in force all the same. It is
+    empty when everything was put back, which is the usual case.
+    """
+
+    def __init__(self, message: str, saved: list[dict] | None = None):
+        super().__init__(message)
+        self.saved = saved or []
+
+
 @dataclass(frozen=True)
 class Setting:
     key: str
@@ -524,50 +536,114 @@ def save(changes: dict[str, Any]) -> list[dict]:
             errors[key] = str(exc)
     if errors:
         raise SettingsRejected(errors)
-    if any(setting.store == "file" and setting.writer is None for setting, _ in planned) and config.ENV_FILE is None:
-        raise SettingsRejected({
-            setting.key: NO_SETTINGS_FILE for setting, _ in planned if setting.store == "file" and setting.writer is None
-        })
+    in_file = [setting for setting, _ in planned if setting.store == "file"]
+    if in_file and config.ENV_FILE is None:
+        raise SettingsRejected({setting.key: NO_SETTINGS_FILE for setting in in_file})
 
-    changed: list[dict] = []
+    # A save touches up to three stores: the settings file, older settings
+    # with their own writer, and the app database. They are written in that
+    # order, least reliable first, and anything already written is put back
+    # if a later write fails, so "nothing was saved" stays true.
+    def order(item: tuple[Setting, Any]) -> int:
+        setting = item[0]
+        return 0 if setting.store == "file" else 1 if setting.writer is not None else 2
+
+    records: dict[str, dict] = {}
+    undo: list[Callable[[], None]] = []
     with _lock:
         saved = _read_all()
+        file_before: bytes | None = None
+        if in_file:
+            try:
+                file_before = env_file.snapshot(config.ENV_FILE)
+            except OSError:
+                raise SettingsRejected({setting.key: NO_SETTINGS_FILE for setting in in_file}) from None
         plain: dict[str, str | None] = {}
-        for setting, value in planned:
-            old, _source = _resolve(setting, saved)
-            new = setting.default if value is None else value
-            if setting.writer is not None:
-                if new == old:
-                    continue
-                try:
+        current: Setting | None = None
+        try:
+            for setting, value in sorted(planned, key=order):
+                current = setting
+                old, _source = _resolve(setting, saved)
+                new = setting.default if value is None else value
+                if setting.writer is not None:
+                    if new == old:
+                        continue
                     setting.writer(new)
-                except ValueError as exc:
-                    raise SettingsRejected({setting.key: str(exc)}) from None
-            elif setting.store == "file":
-                if value is not None and value == old and _resolve_file(setting)[1] == "app":
-                    continue
-                try:
+                    if setting.store != "file":
+                        # Writing the old value back keeps the value in force,
+                        # though it may now count as set here.
+                        undo.append(lambda setting=setting, old=old: setting.writer(old))
+                elif setting.store == "file":
+                    if value is not None and value == old and _resolve_file(setting)[1] == "app":
+                        continue
                     _write_file(setting, value)
-                except SettingError as exc:
-                    raise SettingsRejected({setting.key: str(exc)}) from None
-                new = _resolve_file(setting)[0]
-            else:
-                # Saving the default explicitly still pins it against an
-                # environment value; resetting removes the saved row.
-                plain[setting.stored_as] = None if value is None else _encode(setting, value)
-                if value is None:
-                    new = _resolve(setting, {k: v for k, v in (saved or {}).items() if k != setting.stored_as})[0]
-            if new != old:
-                changed.append({"key": setting.key, "label": setting.label, "old": old, "new": new})
-        if plain:
-            store.set_many(plain)
+                    new = _resolve_file(setting)[0]
+                else:
+                    # Saving the default explicitly still pins it against an
+                    # environment value; resetting removes the saved row.
+                    plain[setting.stored_as] = None if value is None else _encode(setting, value)
+                    if value is None:
+                        new = _resolve(setting, {k: v for k, v in (saved or {}).items() if k != setting.stored_as})[0]
+                if new != old:
+                    records[setting.key] = {"key": setting.key, "label": setting.label, "old": old, "new": new}
+            current = None
+            if plain:
+                store.set_many(plain)
+        except Exception as exc:
+            if not _put_back(undo, file_before):
+                # Both the save and the repair failed: say exactly what is in
+                # force now, and let its listeners act on it.
+                in_force = [
+                    record for key, record in records.items()
+                    if _registry[key].stored_as not in plain and _resolve(_registry[key])[0] == record["new"]
+                ]
+                _notify(in_force)
+                raise SaveFailed(
+                    "Saving stopped part-way and could not be undone.", saved=in_force,
+                ) from exc
+            if current is not None and isinstance(exc, (SettingError, ValueError)):
+                raise SettingsRejected({current.key: str(exc)}) from None
+            if current is not None:
+                where = "the settings file" if current.store == "file" else "this setting"
+                raise SettingsRejected({
+                    current.key: f"Nothing was saved: {where} could not be written ({type(exc).__name__}). Try again.",
+                }) from exc
+            raise SaveFailed(
+                f"Nothing was saved: Metronome's database could not be written ({type(exc).__name__}). Try again.",
+            ) from exc
+    changed = [records[setting.key] for setting, _ in planned if setting.key in records]
+    _notify(changed)
+    return changed
+
+
+def _put_back(undo: list[Callable[[], None]], file_before: bytes | None) -> bool:
+    """Undo the writes of a save that failed. False when something could not be undone."""
+    complete = True
+    for step in reversed(undo):
+        try:
+            step()
+        except Exception:
+            logger.exception("A setting could not be put back after a failed save")
+            complete = False
+    if file_before is not None:
+        try:
+            if env_file.snapshot(config.ENV_FILE) != file_before:
+                env_file.restore(config.ENV_FILE, file_before)
+            config.refresh()
+        except Exception:
+            logger.exception("The settings file could not be put back after a failed save")
+            complete = False
+    return complete
+
+
+def _notify(changed: list[dict]) -> None:
+    """Tell the listeners of each changed setting; one that fails is logged."""
     for record in changed:
         for callback in _listeners.get(record["key"], ()):
             try:
                 callback()
             except Exception:
                 logger.exception("A setting was saved but could not be applied at once: %s", record["key"])
-    return changed
 
 
 def secret(key: str) -> str | None:

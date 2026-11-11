@@ -79,6 +79,23 @@ def read(path: Path | None) -> tuple[dict[str, str], dict]:
 _write_lock = threading.RLock()
 
 
+def snapshot(path: Path) -> bytes:
+    """The file exactly as it is, so a save that fails later can put it back."""
+    with _write_lock:
+        return Path(path).read_bytes()
+
+
+def restore(path: Path, data: bytes) -> None:
+    """Put back a ``snapshot``. In place, for the same reason as ``write_value``."""
+    with _write_lock, Path(path).open("r+b") as handle:
+        handle.seek(0)
+        handle.write(data)
+        handle.flush()
+        handle.truncate(len(data))
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
 def write_value(path: Path, name: str, value: str | None) -> None:
     """Set one setting to ``value``, or remove it when ``value`` is None.
 

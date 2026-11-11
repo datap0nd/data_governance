@@ -2,11 +2,12 @@
 
 - Plan: [test-plan.md](test-plan.md)
 - Change/PR: link in the PR's testing section
-- Evidence cutoff (UTC): 2026-11-11 10:55
+- Evidence cutoff (UTC): 2026-11-11 11:05
 - Tested code revisions: the main run is `fd2e04b`, whose files are those of
   `37c0ec6` on `main` at `9400191`. The page walk is `63e2aff`. The commits
   after `37c0ec6` change one sentence on the page, its cache version and
-  documentation; no Python or test file differs
+  documentation; no Python or test file differs. The commit this report is
+  updated in fixes a review finding (K-10) and was retested as listed
 - Environment: Linux 6.18 (cloud container), Python 3.13.18 checkout-owned
   `.venv` with the locked CI dependencies, Node 22.23, Chromium driven by the
   container's Playwright for the page walk. The project's own Playwright has
@@ -24,6 +25,7 @@
 | --- | --- | --- | --- | --- |
 | Every case in the plan, plus every existing test that does not launch a browser | `python tools/check.py verify` with 119 `tests/test_*.py` files and a `--syntax` check of each of the 50 changed Python files under `app/` | `fd2e04b`, Linux | PASS: 2,583 passed, 0 failed, 67 skipped, 14 third-party deprecation warnings, 715.5 s; 50 syntax checks passed | `.test-runs/20261111T103905684Z-3936-f6d11ac5/result.json` |
 | Frontend contracts and script syntax | `for f in tests/test_*.mjs; do node "$f"; done` without `tests/test_gemini_extension.mjs`; `node --check` on every `app/static/*.js` | `fd2e04b`; `node --check app/static/settings.js` again at `63e2aff` | PASS: 27 contract files, every script parses. The left-out file needs npm packages that are not installed here; nothing it covers changed | Console output |
+| K-10, review finding | Four new tests written first and seen to fail (4 failed), then `python tools/check.py verify` with `tests/test_settings_connections.py`, `tests/test_settings_registry.py`, `tests/test_settings_scanner_schedules.py`, `tests/test_settings_flows.py`, `tests/test_env_file.py` and three `--syntax` paths | The commit this report is updated in, Linux | PASS: 96 passed, 0 failed | `.test-runs/20261111T105800344Z-6355-b2c4e753/result.json`; console output for the failing first run |
 | Whitespace check the scope job runs | `git diff --check origin/main HEAD` | Head of the branch | PASS: no output | Console output |
 | Page walk, steps 1, 2, 4 and 5 | Playwright script against a temporary instance on `127.0.0.1:8767` with an empty database | `63e2aff`, Chromium, 1360 px | PASS, details below | Console output; screenshots kept outside the repository |
 | Page walk, step 3 | The same instance: add, replace-with-nothing, save, test and clear the probe password | `63e2aff` | PASS, details below | Console output |
@@ -85,6 +87,17 @@ request's Windows and PostgreSQL jobs cover the ones in their selections.
   Their assertions are unchanged.
 - Port numbers were shown with thousands separators ("5,432"). Numbers
   without a unit are now shown plain.
+- Review finding on the pull request: a save that changed several settings
+  could stop part-way and still answer "Nothing was saved". A batch with a
+  schedule and a folder, on a computer without a settings file, saved the
+  schedule and then refused the folder; the schedule's job was not moved and
+  no Event Log entry was written. A save now checks every value that needs
+  the settings file before writing anything, writes the settings file first,
+  and puts back whatever it already wrote if a later write fails, so the
+  answer is true. If the repair itself fails, the answer names what was
+  saved, those settings' jobs are rescheduled and the Event Log records them.
+  The page shows the server's sentence instead of always saying "Nothing was
+  saved".
 
 ### What is on the page
 

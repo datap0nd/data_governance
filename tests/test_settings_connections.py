@@ -388,3 +388,76 @@ def test_a_save_that_stops_half_way_never_leaves_an_empty_settings_file(tmp_path
 
     values, _status = env_file.read(path)
     assert values == {"PGHOST": "db", "PGPASSWORD": "new"}
+
+
+# --- A save is all or nothing, across the database and the settings file -------------
+
+def test_a_batch_that_needs_a_missing_settings_file_saves_nothing_at_all(installed, monkeypatch, tmp_path):
+    before = registry.get("scan.daily_time")
+    monkeypatch.setattr(config, "ENV_FILE", None)
+    with pytest.raises(registry.SettingsRejected) as rejected:
+        registry.save({"scan.daily_time": "09:45", "folders.reports": str(tmp_path)})
+    assert list(rejected.value.errors) == ["folders.reports"]
+    assert "settings file" in rejected.value.errors["folders.reports"]
+    assert registry.get("scan.daily_time") == before
+
+
+def test_a_write_that_fails_part_way_puts_back_what_was_already_written(installed, monkeypatch):
+    from app import env_file
+
+    registry.save({"conn.probe_host": "old-host"})
+    file_before = installed.read_bytes()
+    daily_before, keep_before = registry.get("scan.daily_time"), registry.get("logs.keep_days")
+    told = []
+    registry.subscribe(("scan.daily_time", "logs.keep_days"), lambda: told.append("listener"))
+    real_write = env_file.write_value
+
+    def locked_for_one_name(path, name, value):
+        if name == "PGUSER":
+            raise PermissionError("the file is locked")
+        return real_write(path, name, value)
+
+    monkeypatch.setattr(env_file, "write_value", locked_for_one_name)
+    with pytest.raises(registry.SettingsRejected) as rejected:
+        registry.save({
+            "scan.daily_time": "09:45", "conn.probe_host": "new-host", "conn.probe_user": "reader",
+            "logs.keep_days": 30,
+        })
+
+    assert list(rejected.value.errors) == ["conn.probe_user"]
+    assert "Nothing was saved" in rejected.value.errors["conn.probe_user"]
+    assert installed.read_bytes() == file_before
+    assert registry.get("conn.probe_host") == "old-host" and config.PGHOST == "old-host"
+    assert registry.get("scan.daily_time") == daily_before
+    assert registry.get("logs.keep_days") == keep_before
+    assert told == []
+
+
+def test_a_database_that_refuses_the_save_puts_the_settings_file_back(installed, monkeypatch):
+    file_before = installed.read_bytes()
+
+    def busy(values):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(settings, "set_many", busy)
+    with pytest.raises(registry.SaveFailed) as failed:
+        registry.save({"conn.probe_host": "new-host", "logs.keep_days": 30})
+    assert failed.value.saved == []
+    assert "Nothing was saved" in str(failed.value)
+    assert installed.read_bytes() == file_before
+    assert config.PGHOST != "new-host"
+
+
+def test_when_putting_back_also_fails_the_answer_says_what_was_saved(installed, monkeypatch):
+    from app import env_file
+
+    monkeypatch.setattr(settings, "set_many", lambda values: (_ for _ in ()).throw(RuntimeError("database is locked")))
+    monkeypatch.setattr(env_file, "restore", lambda path, data: (_ for _ in ()).throw(PermissionError("locked")))
+    response = system_settings.save_settings(
+        system_settings.SettingsWrite(values={"conn.probe_host": "new-host", "logs.keep_days": 30}), host())
+    assert response.status_code == 503
+    detail = json.loads(response.body)["detail"]
+    assert "Host" in detail and "saved" in detail and "Nothing was saved" not in detail
+    with database.get_db() as db:
+        actions = [row["action"] for row in db.execute("SELECT action FROM event_log WHERE entity_name='Settings'")]
+    assert actions == ["setting_changed"]
