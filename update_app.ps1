@@ -9,6 +9,7 @@
 # dependencies and restarts the app service.
 #
 # Safe to run from anywhere: your Downloads folder or the app folder itself.
+# It always updates the copy of Metronome that is installed on this PC.
 
 $ErrorActionPreference = "Stop"
 $Repo = "datap0nd/data_governance"
@@ -29,11 +30,22 @@ trap {
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 # --- Find the installed app folder ---
-# 1) the folder this script sits in, 2) wherever the Windows service points.
+# 1) where the installed service runs from, 2) the folder this script sits in,
+# 3) the folder of the service's own nssm.exe. The installed folder comes
+# first: this file may sit in a second, freshly downloaded copy of the code,
+# and updating that copy would start a second, empty Metronome beside the
+# real one.
 $CodeDir = $null
-if ($PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot "app\main.py"))) {
+try {
+    $InstalledDir = (Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\MXAnalytics\Parameters' -ErrorAction Stop).AppDirectory
+    if ($InstalledDir -and (Test-Path (Join-Path $InstalledDir "app\main.py")) -and (Test-Path (Join-Path $InstalledDir "setup.ps1"))) {
+        $CodeDir = "$InstalledDir"
+    }
+} catch {}
+if (-not $CodeDir -and $PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot "app\main.py"))) {
     $CodeDir = $PSScriptRoot
-} else {
+}
+if (-not $CodeDir) {
     $svc = Get-CimInstance Win32_Service -Filter "Name='MXAnalytics'" -ErrorAction SilentlyContinue
     if ($svc -and $svc.PathName -match '"?([^"]*?nssm\.exe)') {
         $candidate = Split-Path (Split-Path $Matches[1])

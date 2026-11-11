@@ -185,7 +185,8 @@ def test_installer_scripts_are_checked_on_windows_before_merge():
     step = workflow[workflow.index("Check Windows verifier contracts before merge"):]
     command = step[:step.index("- uses:")]
     for test_file in ("tests/test_check_command.py", "tests/test_setup_fast_path.py",
-                      "tests/test_unattended_update_scripts.py", "tests/test_setup_worker_health.py"):
+                      "tests/test_unattended_update_scripts.py", "tests/test_setup_worker_health.py",
+                      "tests/test_setup_install_guard.py"):
         assert test_file in command, test_file
 
 
