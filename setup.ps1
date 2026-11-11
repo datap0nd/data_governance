@@ -270,7 +270,15 @@ $InstallCheck = Get-MetronomeInstallCheck -CodeDir $CodeDir -DbPath $DbPath -Ins
 $IsRelaunchedCopy = [bool](Test-MetronomeRelaunchedCopy)
 $InstallSwitchConfirmed = $false
 $InstallRefused = $false
-if ($InstallCheck.Action -eq 'stop') {
+# A copy of the code sitting in the data folder, beside the database, is the
+# commonest way to end up one folder too high. It is recognised on its own,
+# whatever the service settings say, and takes precedence.
+$DataFolderCheck = Get-MetronomeDataFolderCheck -CodeDir $CodeDir
+if ($DataFolderCheck.Action -eq 'stop') {
+    Write-Host ""
+    foreach ($InstallCheckLine in $DataFolderCheck.Lines) { Write-Host $InstallCheckLine -ForegroundColor Red }
+    $InstallRefused = $true
+} elseif ($InstallCheck.Action -eq 'stop') {
     Write-Host ""
     foreach ($InstallCheckLine in $InstallCheck.Lines) { Write-Host $InstallCheckLine -ForegroundColor Red }
     $InstallRefused = $true
