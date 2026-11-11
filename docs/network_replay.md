@@ -59,11 +59,16 @@ captures that request once and replays it directly on later runs.
   the portal returns its sign-in page, the replay is rejected, and the
   browser flow's existing unattended re-login takes over.
 - **Recipes expire.** After 14 days a recipe is dropped and the next run uses
-  the browser, refreshing the recipe on success.
+  the browser, refreshing the recipe on success. The number of days is the
+  **Reuse a saved export request for** setting.
 
 ## Turning it off
 
-- Whole worker: set the environment variable `DG_FLOW_REPLAY=0`.
+- Every Flow: switch off **Repeat the portal's own export request when
+  possible** under **System > Settings > Flows**. The value is copied into
+  each run when it is queued, so runs already queued keep what they had. The
+  environment variable `DG_FLOW_REPLAY=0` still works as the starting value
+  until the setting is saved, and for a job that carries no value.
 - One flow: set `network_replay: false` inside the flow's `downloads`
   configuration.
 
