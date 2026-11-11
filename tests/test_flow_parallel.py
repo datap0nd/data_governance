@@ -13,6 +13,9 @@ from app.flow_parallel_worker import task_output_folder, assemble_bundle
 from app.routers import flows, flow_tasks as routes
 from test_flows import flow_db, _request, _seed_catalog, _mark_discovered, _flow
 
+# Saving a Flow here is set-up, not the subject: see skip_flow_files in conftest.py.
+pytestmark = pytest.mark.usefixtures("skip_flow_files")
+
 
 @pytest.fixture
 def bundle(flow_db, tmp_path, monkeypatch, request):

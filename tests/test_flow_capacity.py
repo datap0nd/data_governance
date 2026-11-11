@@ -15,6 +15,9 @@ from app.routers import flows, pipelines, system_flows
 from test_flows import flow_db, _seed_catalog, _mark_discovered, _flow, _request
 from tools.flow_pool_config import capacity as installer_capacity
 
+# Saving a Flow here is set-up, not the subject: see skip_flow_files in conftest.py.
+pytestmark = pytest.mark.usefixtures("skip_flow_files")
+
 
 @pytest.fixture(autouse=True)
 def no_service_launch(monkeypatch):

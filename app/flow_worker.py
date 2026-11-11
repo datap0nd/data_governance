@@ -6127,6 +6127,11 @@ def _read_size_and_checksum(path: Path) -> dict:
     return {"file_size": size, "checksum": digest.hexdigest()}
 
 
+# The first pause between two reads of a downloaded or local file while its
+# tail may still be flushing; it doubles on each further read, up to 4 seconds.
+SOURCE_SETTLE_SECONDS = 0.5
+
+
 def _stable_source_snapshot(source_path: Path) -> dict:
     """Read the staged download until two consecutive passes agree.
 
@@ -6140,7 +6145,7 @@ def _stable_source_snapshot(source_path: Path) -> dict:
     previous = None
     for attempt in range(6):
         if attempt:
-            time.sleep(min(4.0, 0.5 * 2 ** (attempt - 1)))
+            time.sleep(min(4.0, SOURCE_SETTLE_SECONDS * 2 ** (attempt - 1)))
         current = _read_size_and_checksum(source_path)
         if current == previous:
             return current

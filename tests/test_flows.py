@@ -12,6 +12,9 @@ from app import flow_local_runner
 from app import flow_worker
 from app.routers import flows, pipelines
 
+# Saving a Flow here is set-up, not the subject: see skip_flow_files in conftest.py.
+pytestmark = pytest.mark.usefixtures("skip_flow_files")
+
 
 @pytest.fixture()
 def flow_db(tmp_path, monkeypatch):

@@ -14,6 +14,9 @@ from app import database, flow_paths
 from app.routers import flows
 from test_flows import _flow, _mark_discovered, _report, _request, _seed_catalog, _site, flow_db  # noqa: F401
 
+# Saving a Flow here is set-up, not the subject: see skip_flow_files in conftest.py.
+pytestmark = pytest.mark.usefixtures("skip_flow_files")
+
 DUE = "2000-01-01T00:00:00"
 
 
