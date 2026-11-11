@@ -70,7 +70,8 @@ def _live_values(env) -> dict:
         or env.get("DG_DEFAULT_REPORTS_PATH")
         or "reports"
     )
-    # Resolve relative paths against BASE_DIR (needed for Vercel/serverless)
+    # A relative reports path is taken from the code folder, wherever the
+    # process was started from.
     tmdl_root = report_root if os.path.isabs(report_root) else str(BASE_DIR / report_root)
     pbi_tenant = env.get("DG_PBI_TENANT_ID", "")
     # PostgreSQL credentials for READ-ONLY freshness probing

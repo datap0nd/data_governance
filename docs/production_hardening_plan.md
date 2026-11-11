@@ -72,7 +72,7 @@ The proposed values are review prompts, not approved commitments. Restoring an o
 | R-06 | SQLite uses WAL, but backup copies only the main file and can omit committed pages. | [`app/database.py`](../app/database.py#L1391-L1397), [`app/scanner/runner.py`](../app/scanner/runner.py#L56-L72) | SQLite online backup, verification, rotation, off-host copy, restore drill |
 | R-07 | DPAPI failure stores Power BI tokens as base64 plaintext. | [`app/scanner/pbi_auth.py`](../app/scanner/pbi_auth.py#L164-L173) | Fail-closed protected storage and rotation of affected tokens |
 | R-08 | Schedulers, locks, futures, and cancellation are process-local. | [`app/main.py`](../app/main.py#L374-L507), [`app/routers/recurrences.py`](../app/routers/recurrences.py#L63-L64), [`app/routers/pipelines.py`](../app/routers/pipelines.py#L58-L61) | Enforced singleton first; durable jobs, occurrences, and leases next |
-| R-09 | Vercel uses ephemeral state while app startup launches background Windows-oriented services. | [`api/index.py`](../api/index.py#L12-L17), [`vercel.json`](../vercel.json#L26-L29) | Remove production Vercel target or make it explicitly read-only |
+| R-09 | Vercel uses ephemeral state while app startup launches background Windows-oriented services. | Addressed 2026-11-11: the serverless entry point `api/index.py` is removed and [`vercel.json`](../vercel.json) only switches off Git deployments. The Vercel project itself still has to be disconnected in Vercel's dashboard. | Remove production Vercel target or make it explicitly read-only |
 | R-10 | The frontend accumulates global handlers and sometimes reports success without checking HTTP status. | [`app/static/app.js`](../app/static/app.js#L3574-L3589), [`app/static/app.js`](../app/static/app.js#L4417-L4457) | Immediate regression fixes, then one API client and explicit page lifecycle |
 | R-11 | Production HTTP, browser, migration, and restore boundaries are weakly tested. | [`.github/workflows/tests.yml`](../.github/workflows/tests.yml#L20-L40) | API integration, worker contract, browser, migration, recovery, and failure-injection coverage |
 
@@ -147,7 +147,7 @@ The minimal final-form schema for principals, operations, occurrences, outbox an
 | D-05 Transform policy | No arbitrary web uploads; reviewed, versioned, signed/hash-allowlisted registry | Milestone 0 | |
 | D-06 Outlook integration | Keep COM initially with durable receipts; separately assess Microsoft Graph | Milestone 1 | |
 | D-07 Operational database | Stabilize durable model on SQLite; migrate to dedicated PostgreSQL before multiple API replicas | Milestone 4 | |
-| D-08 Release target | Windows service is production; Vercel is removed or replaced by a separate read-only entrypoint with no lifecycle, mutation, credentials or local state | Milestone 0 | |
+| D-08 Release target | Windows service is production; Vercel is removed or replaced by a separate read-only entrypoint with no lifecycle, mutation, credentials or local state | Milestone 0 | Vercel removed from the repository 2026-11-11; no read-only entrypoint replaces it |
 | D-09 Frontend evolution | Incremental ES modules/TypeScript and Vite; no framework rewrite | Milestone 2 | |
 | D-10 Recovery requirements | Approve RPO, RTO, audit retention, artifact retention and break-glass process | Milestone 1C | |
 
