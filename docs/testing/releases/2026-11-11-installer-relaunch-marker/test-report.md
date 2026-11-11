@@ -8,7 +8,7 @@
 - Environment: Linux 6.18 (cloud container), Python 3.13.18 checkout-owned
   `.venv`. No PowerShell is available here
 - Overall finding: the test files collect and the cases that need no
-  PowerShell pass. Every case that exercises the change (R-01 to R-05) is NOT
+  PowerShell pass. Every case that exercises the change (R-01 to R-07) is NOT
   RUN here and is left to the pull request's Windows job, which is required
   before the merge.
 
@@ -51,18 +51,39 @@ the same flaw.
   the download, stop and extraction again. That costs a few seconds once and
   is what every update did before the faster-update change.
 
+## Second report, same day: "a Database and also a DB"
+
+Setup opened with `Database: <path>` and, on the next line, `DB exists: 1364
+KB (will be preserved)` or `DB: new (will be created on first run)`. Both
+lines describe the one path setup uses. The owner read them as two things
+setup was looking for, and the size in KB did not show that the file found was
+about 1 MB when the real database is about 1 GB. That reading was reasonable,
+and it hid the actual finding for several hours: no file, and later only a
+small one, at the path setup uses, while the real database is somewhere else.
+
+- The opening now prints the code folder, the database path, and one sentence
+  under it: `This file exists: 1.3 MB, last changed ... It is kept.` or `No
+  file at this path. Setup would create a new, empty database here.`
+- Sizes are shown in KB, MB or GB as fits.
+- When a `governance.db` also sits inside the code folder, where Metronome
+  looks when started without its service settings, setup says so and that it
+  does not use that file.
+
+Where the real database is on the work PC is not yet known; this release does
+not move or adopt any file.
+
 ## Executed checks
 
 | Check/case IDs | Command or procedure | Revision/environment | Result/counts/duration | Evidence |
 | --- | --- | --- | --- | --- |
-| Collection and non-PowerShell cases | The `python tools/check.py verify` command in the plan | Working tree, Linux | PASS: 9 passed, 0 failed, 39 skipped (all need Windows PowerShell, among them the 14 cases of the installer check), 3.5 s | `.test-runs/20261111T133215066Z-3104-e52472bd/result.json` |
+| Collection and non-PowerShell cases | The `python tools/check.py verify` command in the plan | Working tree, Linux | PASS: 9 passed, 0 failed, 40 skipped (all need Windows PowerShell, among them the 15 cases of the installer check) | `.test-runs/20261111T133802974Z-8063-52821f7f/result.json` |
 | Plain-text review | `grep` for bytes outside ASCII in `setup.ps1` and the helper; brace and parenthesis balance | Working tree | None found; balanced | Console output |
 
 ## Unperformed or blocked in-scope checks
 
 | IDs | Status | Reason | Next action |
 | --- | --- | --- | --- |
-| R-01 to R-05 | NOT RUN | Need Windows PowerShell | The pull request's `Windows verifier contracts` job runs them; record the run in the PR testing section |
+| R-01 to R-07 | NOT RUN | Need Windows PowerShell | The pull request's `Windows verifier contracts` job runs them; record the run in the PR testing section |
 | Full regression | NOT RUN | Final-head CI (`Merge ready`) | Record the run URL and tested head in the PR testing section |
 
 ## Findings, limitations and retests

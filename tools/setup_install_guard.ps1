@@ -61,12 +61,22 @@ function Test-MetronomeSameFile {
     }
 }
 
+function Get-MetronomeSizeText {
+    # A size a person can compare at a glance: "640 KB", "1.3 MB", "1.02 GB".
+    # In KB alone, a new empty database and a real one differ only in how many
+    # digits the number has.
+    param([long]$Bytes)
+    if ($Bytes -ge 1GB) { return ('{0:N2} GB' -f ($Bytes / 1GB)) }
+    if ($Bytes -ge 1MB) { return ('{0:N1} MB' -f ($Bytes / 1MB)) }
+    return ('{0:N0} KB' -f [math]::Ceiling($Bytes / 1KB))
+}
+
 function Get-MetronomeFileText {
-    # "1,234 KB, last changed 2026-11-11 14:02" for a message.
+    # "1.3 MB, last changed 2026-11-11 14:02" for a message.
     param([string]$Path)
     try {
         $file = Get-Item -LiteralPath $Path -ErrorAction Stop
-        return ('{0:N0} KB, last changed {1}' -f [math]::Ceiling($file.Length / 1024), $file.LastWriteTime.ToString('yyyy-MM-dd HH:mm'))
+        return ('{0}, last changed {1}' -f (Get-MetronomeSizeText -Bytes $file.Length), $file.LastWriteTime.ToString('yyyy-MM-dd HH:mm'))
     } catch {
         return 'size unknown'
     }
