@@ -28,6 +28,8 @@ from app.database import get_db, init_db
 from app import remote_flow_control
 from app.routers.system_paths import router as system_paths_router
 from app.routers.system_flows import router as system_flows_router
+from app.routers.system_logs import router as system_logs_router
+from app import log_housekeeping, logging_setup
 from app.routers.flow_tasks import router as flow_tasks_router
 from app.local_access import is_host_request, is_server_machine, require_app_access
 from app import user_identity
@@ -47,8 +49,9 @@ from app.ai.router import router as ai_router
 from app.auditor.router import router as auditor_router
 from app.auditor import engine as auditor_engine, store as auditor_store
 
-# Show scanner logs in the console
-logging.basicConfig(level=logging.INFO, format="%(name)s | %(message)s")
+# Show scanner logs in the console, without the request and scheduler chatter
+# that used to fill the service logs (see app/logging_setup.py).
+logging_setup.configure()
 
 def _is_localhost(ip: str) -> bool:
     """Check if a request came from the machine running the app."""
@@ -480,8 +483,22 @@ def _scheduled_remote_flow_control():
     return remote_flow_control.poll_once()
 
 
+def _scheduled_log_housekeeping():
+    logging_setup.refresh_request_log_mode()
+    return log_housekeeping.run()
+
+
 def _configure_scheduler_jobs() -> dict:
     _scheduler.add_job(_scheduled_backup, "cron", hour=6, minute=0, id="daily_backup", replace_existing=True)
+    # The first run is two minutes after start-up: an update restarts every
+    # service, which is when nssm rotates an oversized log, and that file
+    # should go now rather than at the next six-hourly pass.
+    logging_setup.refresh_request_log_mode()
+    _scheduler.add_job(
+        _scheduled_log_housekeeping, "interval", hours=6, id="log_housekeeping",
+        replace_existing=True, max_instances=1, coalesce=True,
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=2),
+    )
     refresh_time = _configure_overall_refresh_job()
     _scheduler.add_job(auditor_engine.tick, "interval", seconds=30,
                        id="data_auditor_tick", replace_existing=True,
@@ -841,6 +858,7 @@ app.include_router(flow_recordings_router)
 app.include_router(flows.router)
 app.include_router(system_paths_router)
 app.include_router(system_flows_router)
+app.include_router(system_logs_router)
 app.include_router(flow_tasks_router)
 app.include_router(pipelines.router)
 app.include_router(pipeline_insights.router)

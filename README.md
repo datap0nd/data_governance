@@ -75,7 +75,7 @@ All registered users have the same application access, including remote PCs on t
 
 ### Automatic main updates
 
-Production installs watch the GitHub `main` branch every five minutes by
+Production installs watch the GitHub `main` branch every 90 seconds by
 default. When a new commit appears, Metronome immediately starts one
 pre-registered elevated Windows task. That task validates the exact
 40-character commit and runs the same `setup.ps1` used for manual installs in
@@ -91,6 +91,33 @@ account. After that, use **System > Updates** to enable/disable automatic
 installs, force a check, install manually, or inspect the latest durable
 attempt. Private-repository installs must expose `DG_GITHUB_TOKEN` to the
 service account.
+
+An automatic update skips work whose inputs have not changed since the last
+successful setup: installing dependencies (same `requirements.txt` and bundled
+wheels), re-applying Windows service settings, re-registering the 32
+visible-worker tasks, the recursive permission pass over the Flows folder and
+the RDP guard install. The record is `updates\setup_state.json`; deleting it
+makes the next update do everything again. Running `setup.ps1` by hand never
+skips anything, so it remains the repair path. Each stage prints a
+`[timing]` line into the attempt's log under `updates\logs`, which is where
+to look when an update feels slow.
+
+### Service logs
+
+Each Windows service writes its output to `logs` beside the code folder. A
+log is rotated when it reaches 10 MB, while the service runs and when it
+starts, and Metronome deletes rotated logs itself: every log nobody has
+written to for 14 days, then the oldest rotated logs until the folder is under
+1 GB. The clean-up runs two minutes after start-up and every six hours;
+`POST /api/system/logs/prune` from the host PC runs it at once and
+`GET /api/system/logs` shows what the folder holds. The limits are the
+`logs.keep_days` and `logs.max_total_mb` settings.
+
+The request log keeps failed requests and successful requests that change
+something. Page refreshes and the workers' own polling are left out; set
+`logs.request_log` to `all` to record every request while diagnosing, or
+`errors` for failures only. A message that repeats identically is written
+five times a minute at most, with a count of the rest.
 
 ### Read-only Operations Investigator
 

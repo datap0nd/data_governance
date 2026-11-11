@@ -115,8 +115,14 @@ jobs:
           cache-dependency-path: requirements-ci.lock
       - name: Install locked test dependencies
         run: pip install -r requirements-ci.lock
+      # setup.ps1 and its helpers cannot be parsed or run on the Ubuntu
+      # shards, and a merge installs them on the work PC within minutes, so
+      # their Windows-only cases run here before the merge.
       - name: Check Windows verifier contracts before merge
-        run: python -m pytest tests/test_check_command.py -q --junitxml=windows-contracts.xml
+        run: >-
+          python -m pytest tests/test_check_command.py tests/test_setup_fast_path.py
+          tests/test_unattended_update_scripts.py tests/test_setup_worker_health.py
+          -q -ra --junitxml=windows-contracts.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:

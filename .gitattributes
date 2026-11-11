@@ -2,3 +2,7 @@
 # (films, audio, renders) belongs in that download, even if files are added
 # there again later.
 /media export-ignore
+# Release test plans and reports are for reviewing a pull request on GitHub.
+# They were three quarters of the download and a third of the files every
+# update extracted, and the running app never reads them.
+/docs/testing export-ignore

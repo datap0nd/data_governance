@@ -5,6 +5,7 @@ in [the testing workflow](../README.md); this file is the complete history.
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-11-11: Faster updates and bounded service logs | [Test plan](2026-11-11-faster-updates-bounded-logs/test-plan.md) | [Test report](2026-11-11-faster-updates-bounded-logs/test-report.md) |
 | 2026-11-04: Film removed, media/ kept out of updates, quiet setup | [Test plan](2026-11-04-media-out-of-update/test-plan.md) | [Test report](2026-11-04-media-out-of-update/test-report.md) |
 | 2026-11-04: ASAP week ranges past 105 weeks | [Test plan](2026-11-04-asap-weeks-past-105/test-plan.md) | [Test report](2026-11-04-asap-weeks-past-105/test-report.md) |
 | 2026-10-29: Flows list filters and no sub-groups | [Test plan](2026-10-29-flow-list-filters/test-plan.md) | [Test report](2026-10-29-flow-list-filters/test-report.md) |
