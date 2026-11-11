@@ -265,3 +265,87 @@ def test_a_failed_test_explains_itself_without_the_password(installed, monkeypat
         system_settings.test_connection("nothing", host())
     assert unknown.value.status_code == 404
     assert connection_tests.upload()["message"].startswith("Not tested: these are not set:")
+
+
+# --- Portal sign-in -----------------------------------------------------------------
+
+@pytest.fixture
+def portal_store(tmp_path, monkeypatch):
+    """Stand in for the Windows-protected file: record what would be stored."""
+    from app import flow_credentials
+
+    monkeypatch.setenv("METRONOME_FLOW_PROFILE", str(tmp_path / "profile"))
+    stored = {}
+
+    def save(username, password, profile_dir=None):
+        if not username.strip() or not password:
+            raise ValueError("ASAP username and password are required.")
+        stored.update(username=username.strip(), password=password)
+        path = flow_credentials.credential_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("protected", encoding="utf-8")
+        return {"configured": True, "updated_at": "2026-11-11T12:00:00+04:00"}
+
+    def status(profile_dir=None):
+        saved = flow_credentials.credential_path().exists()
+        return {"configured": saved, "updated_at": "2026-11-11T12:00:00+04:00" if saved else None}
+
+    monkeypatch.setattr(flow_credentials, "save_asap_credentials", save)
+    monkeypatch.setattr(flow_credentials, "asap_credential_status", status)
+    return stored
+
+
+def test_the_portal_sign_in_is_saved_and_cleared_from_the_host_pc_only(installed, portal_store):
+    from app import flow_credentials
+
+    body = system_settings.PortalLoginWrite(username="  maya.k  ", password=SECRET)
+    assert system_settings.get_portal_login()["configured"] is False
+
+    for action in (lambda: system_settings.save_portal_login(body, colleague()),
+                   lambda: system_settings.clear_portal_login(colleague())):
+        with pytest.raises(HTTPException) as refused:
+            action()
+        assert refused.value.status_code == 403
+        assert "localhost" in refused.value.detail
+    assert portal_store == {}
+
+    saved = system_settings.save_portal_login(body, host())
+    assert saved["configured"] is True and SECRET not in json.dumps(saved)
+    assert portal_store == {"username": "maya.k", "password": SECRET}
+
+    cleared = system_settings.clear_portal_login(host())
+    assert cleared["configured"] is False
+    assert not flow_credentials.credential_path().exists()
+    # Clearing twice is not an error: there is simply nothing left to clear.
+    assert system_settings.clear_portal_login(host())["configured"] is False
+
+    with database.get_db() as db:
+        events = [tuple(row) for row in db.execute(
+            "SELECT action, detail, actor FROM event_log WHERE entity_name='Settings' ORDER BY id")]
+    assert [event[0] for event in events] == ["secret_replaced", "secret_cleared", "secret_cleared"]
+    assert all(SECRET not in str(event) and "maya.k" not in str(event) for event in events)
+    assert {event[2] for event in events} == {"Host PC"}
+
+
+def test_a_portal_sign_in_that_cannot_be_stored_says_why(installed, monkeypatch):
+    from app import flow_credentials
+
+    def refuse(username, password, profile_dir=None):
+        raise RuntimeError("ASAP credential storage is only available on the Windows BI desktop.")
+
+    monkeypatch.setattr(flow_credentials, "save_asap_credentials", refuse)
+    with pytest.raises(HTTPException) as failed:
+        system_settings.save_portal_login(
+            system_settings.PortalLoginWrite(username="maya.k", password=SECRET), host())
+    assert failed.value.status_code == 422
+    assert "only available on the Windows" in failed.value.detail and SECRET not in failed.value.detail
+
+
+def test_clearing_the_real_credential_file_removes_it(tmp_path):
+    from app import flow_credentials
+
+    path = flow_credentials.credential_path(tmp_path)
+    path.write_text("protected", encoding="utf-8")
+    assert flow_credentials.clear_asap_credentials(tmp_path) == {"configured": False, "updated_at": None}
+    assert not path.exists()
+    assert flow_credentials.clear_asap_credentials(tmp_path)["configured"] is False

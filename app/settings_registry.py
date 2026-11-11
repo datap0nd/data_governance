@@ -66,7 +66,7 @@ SECTION_LINKS = {
         ("SQL users and passwords", "users", "Each person's SQL identity for Flow writes."),
         ("AI assistant endpoint and key", "ai", ""),
         ("Power BI sign-in", "scanner", "Connect or disconnect the saved Microsoft account."),
-        ("Portal sign-in and site addresses", "flows", "Under Catalog."),
+        ("Portal site addresses", "flows", "Under Catalog."),
     ),
     "folders": (("Flows root and enforced paths", "paths", "Shows which Flows a change would affect."),),
     "flows": (("Worker status and per-portal limits", "flow-settings", ""),),

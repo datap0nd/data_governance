@@ -6,6 +6,7 @@ let settingsState = {
     sections: [], canEdit: false, section: null, query: '', onlyChanged: false,
     edits: {}, errors: {}, saving: false, saveError: '', loadError: null, logs: null, logsMessage: '',
     secretEditing: null, secretConfirming: null, secretError: '', tests: {},
+    portal: null, portalMode: '', portalError: '',
 };
 
 function settingsRows() {
@@ -154,6 +155,44 @@ function settingsLogsHtml() {
             <span class="st-help" id="st-logs-message" role="status">${esc(settingsState.logsMessage)}</span></p></div>`;
 }
 
+// The ASAP and GSCM login is one Windows-protected file, not a settings-file
+// value, so it has its own block: saved or not, replace, clear.
+function settingsPortalHtml() {
+    const portal = settingsState.portal;
+    if (!portal) return '';
+    const off = !settingsState.canEdit || !portal.available ? ' disabled' : '';
+    const error = settingsState.portalError ? `<p class="st-error" role="alert">${esc(settingsState.portalError)}</p>` : '';
+    let control;
+    if (settingsState.portalMode === 'edit') {
+        control = `<div class="st-field"><input type="text" id="st-portal-user" autocomplete="off" spellcheck="false" placeholder="User ID" aria-label="Portal user ID"></div>
+            <div class="st-field"><input type="password" id="st-portal-password" autocomplete="new-password" placeholder="Password" aria-label="Portal password"></div>
+            <div class="st-field"><button type="button" class="btn-sm" data-st-portal="save">Save</button>
+            <button type="button" class="btn-sm btn-outline" data-st-portal="cancel">Cancel</button></div>${error}`;
+    } else if (settingsState.portalMode === 'confirm') {
+        control = `<p class="st-confirm">Clear the saved portal sign-in? When a portal session expires, Flows that need it wait for someone to sign in by hand on the host PC.</p>
+            <div class="st-field"><button type="button" class="btn-sm btn-red" data-st-portal="clear">Clear it</button>
+            <button type="button" class="btn-sm btn-outline" data-st-portal="cancel">Keep it</button></div>${error}`;
+    } else {
+        control = `<div class="st-secret">${portal.configured ? '<strong>Saved</strong> <span aria-hidden="true">••••••••</span>' : 'Not set'}</div>
+            <div class="st-field"><button type="button" class="btn-sm btn-outline" id="st-portal-edit" data-st-portal="edit"${off}>${portal.configured ? 'Replace' : 'Add'}</button>
+            ${portal.configured ? `<button type="button" class="btn-sm btn-outline" data-st-portal="ask"${off}>Clear</button>` : ''}</div>`;
+    }
+    const chips = [`<span class="st-chip ${portal.configured ? 'st-chip-set' : ''}">${portal.configured && portal.updated_at ? 'Saved ' + esc(formatDate(portal.updated_at)) : portal.configured ? 'Saved' : 'Not set'}</span>`,
+        '<span class="st-chip">Used at the next portal sign-in</span>'];
+    return `<div class="st-group"><div class="st-group-head"><h3>Portal sign-in</h3></div>
+        <div class="st-row"><div class="st-row-text"><label for="st-portal-edit">ASAP and GSCM login</label>
+            <p class="st-help">The one company sign-on that Flow workers use when an ASAP or GSCM session expires. It is kept encrypted for the Windows account the Metronome services run as; it is never shown here.${portal.available ? '' : ' It can only be saved on the Windows host PC.'}</p>
+            <div class="st-meta">${chips.join('')}</div></div>
+            <div class="st-row-control">${control}</div></div></div>`;
+}
+
+function settingsPortalMatches() {
+    if (settingsState.onlyChanged) return false;
+    const words = settingsState.query.toLowerCase().split(/\s+/).filter(Boolean);
+    const haystack = 'portal sign-in asap gscm login password user connections';
+    return words.every(word => haystack.includes(word));
+}
+
 function settingsGroupHtml(section, group, prefix) {
     const rows = group.settings.map(row => ({ ...row, section, group })).filter(settingsMatches);
     if (!rows.length) return '';
@@ -170,7 +209,8 @@ function settingsPanelHtml() {
     const filtering = settingsState.query || settingsState.onlyChanged;
     if (filtering) {
         const body = settingsState.sections.map(section =>
-            section.groups.map(group => settingsGroupHtml(section, group, section.name)).join('')).join('');
+            section.groups.map(group => settingsGroupHtml(section, group, section.name)).join('')).join('')
+            + (settingsPortalMatches() ? settingsPortalHtml() : '');
         const title = settingsState.query ? `Settings matching "${esc(settingsState.query)}"` : 'Settings changed from their defaults';
         return `<header><h2>${title}</h2></header>${body || '<p class="st-empty">Nothing matches. Clear the search box or untick "Only changed from default" to see every setting.</p>'}`;
     }
@@ -180,6 +220,7 @@ function settingsPanelHtml() {
         `<li><a href="#${esc(link.page)}" data-st-page="${esc(link.page)}">${esc(link.label)}</a>${link.note ? ` <span class="st-help">${esc(link.note)}</span>` : ''}</li>`).join('');
     return `<header><h2>${esc(section.name)}</h2><p>${esc(section.blurb)}</p></header>
         ${section.groups.map(group => settingsGroupHtml(section, group, '')).join('')}
+        ${section.id === 'connections' ? settingsPortalHtml() : ''}
         ${links ? `<div class="st-group"><h3>Set on another page</h3><ul class="st-links">${links}</ul></div>` : ''}`;
 }
 
@@ -236,6 +277,7 @@ async function settingsLoad() {
         settingsState.loadError = error.message;
     }
     try { settingsState.logs = await api('/api/system/logs'); } catch (_) { settingsState.logs = null; }
+    try { settingsState.portal = await api('/api/system/settings/portal-login'); } catch (_) { settingsState.portal = null; }
 }
 
 async function renderSettings() {
@@ -332,6 +374,39 @@ async function settingsSecretAction(button) {
     }
 }
 
+async function settingsPortalAction(button) {
+    const action = button.dataset.stPortal;
+    settingsState.portalError = '';
+    if (action === 'cancel') { settingsState.portalMode = ''; settingsRefresh('st-portal-edit'); return; }
+    if (action === 'edit') { settingsState.portalMode = 'edit'; settingsRefresh('st-portal-user'); return; }
+    if (action === 'ask') { settingsState.portalMode = 'confirm'; settingsRefresh(); return; }
+    const user = $('#st-portal-user'), password = $('#st-portal-password');
+    const typed = { user: user ? user.value : '', password: password ? password.value : '' };
+    if (action === 'save' && (!typed.user.trim() || !typed.password)) {
+        settingsState.portalError = 'Enter both the user ID and the password, or choose Cancel.';
+        settingsRefresh(typed.user.trim() ? 'st-portal-password' : 'st-portal-user');
+        $('#st-portal-user').value = typed.user; $('#st-portal-password').value = typed.password;
+        return;
+    }
+    button.disabled = true;
+    try {
+        const response = await fetch('/api/system/settings/portal-login', action === 'clear'
+            ? { method: 'DELETE', headers: apiHeaders() }
+            : { method: 'PUT', headers: apiHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ username: typed.user, password: typed.password }) });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : `The server answered ${response.status}.`);
+        settingsState.portal = payload;
+        settingsState.portalMode = '';
+        settingsRefresh('st-portal-edit');
+        toast(action === 'clear' ? 'Portal sign-in cleared.' : 'Portal sign-in saved. Workers use it the next time a portal asks them to sign in.');
+    } catch (error) {
+        // What was typed stays in the fields so it can be corrected or retried.
+        settingsState.portalError = error.message;
+        settingsRefresh();
+        if ($('#st-portal-user')) { $('#st-portal-user').value = typed.user; $('#st-portal-password').value = typed.password; }
+    }
+}
+
 async function settingsTest(name) {
     const group = settingsState.sections.flatMap(section => section.groups.map(item => ({ ...item, section }))).find(item => item.test === name);
     const unsaved = group && group.settings.some(row => settingsIsDirty({ ...row, section: group.section, group }));
@@ -396,6 +471,8 @@ function bindSettingsPage() {
         }
         const secretButton = event.target.closest('[data-st-secret-edit], [data-st-secret-ask], [data-st-secret-cancel], [data-st-secret-save], [data-st-secret-clear]');
         if (secretButton) { await settingsSecretAction(secretButton); return; }
+        const portalButton = event.target.closest('[data-st-portal]');
+        if (portalButton) { await settingsPortalAction(portalButton); return; }
         const testButton = event.target.closest('[data-st-test]');
         if (testButton) { await settingsTest(testButton.dataset.stTest); return; }
         const link = event.target.closest('[data-st-page]');

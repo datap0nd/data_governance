@@ -79,6 +79,16 @@ def load_asap_credentials(profile_dir: Path | None = None) -> dict | None:
     return record
 
 
+def clear_asap_credentials(profile_dir: Path | None = None) -> dict:
+    """Forget the stored portal login. Workers then wait for a manual sign-in."""
+    path = credential_path(profile_dir)
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    return {"configured": False, "updated_at": None}
+
+
 def asap_credential_status(profile_dir: Path | None = None) -> dict:
     """Report shared credential status without returning decrypted values."""
     path = credential_path(profile_dir)
