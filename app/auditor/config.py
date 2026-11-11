@@ -77,7 +77,7 @@ def settings():
 
 def readiness():
     reader = {"available": False, "detail": "The managed restricted reader is not installed."}
-    model = {"available": False, "detail": "Configure Local AI in System → AI."}
+    model = {"available": False, "detail": "Configure Local AI in System → Settings → AI."}
     try:
         value = _managed_reader()
         endpoint(str(value.get("reader_url") or ""))

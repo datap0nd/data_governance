@@ -79,3 +79,16 @@ button.st-link:hover { filter: none; }
 .st-secret strong { color: var(--text); font-weight: 600; }
 .st-confirm { font-size: 0.8rem; color: var(--text-secondary); border: 1px solid var(--red-border); background: var(--red-bg); padding: var(--space-sm) var(--space-md); border-radius: 5px; }
 .st-field input[type="password"] { flex: 1 1 10rem; width: 100%; }
+
+/* The configuration pages that moved here from the System menu: a labelled
+   group at the end of the rail, and a place beside it where the page draws
+   its own panels. */
+.st-layout > [hidden] { display: none; }
+.st-rail-label { margin-top: var(--space-md); padding: var(--space-md) 0.65rem var(--space-xs); border-top: 1px solid var(--border); color: var(--text-muted); font-size: 0.72rem; font-weight: 600; }
+.st-embed { min-width: 0; }
+.st-embed .page-header h2 { font-size: 1.05rem; font-weight: 700; color: var(--text); }
+.st-embed .page-header p, .st-embed .page-header .subtitle { color: var(--text-muted); font-size: 0.85rem; }
+.st-embed-retry { margin-top: var(--space-md); }
+@media (max-width: 900px) {
+    .st-rail-label { flex-basis: 100%; margin-top: var(--space-xs); padding: var(--space-sm) 0 0; }
+}

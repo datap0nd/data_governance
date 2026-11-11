@@ -24,7 +24,7 @@
         const token=++sequence,outcome=document.getElementById('startup-outcome').value;
         if(window.RECORDING_STARTUP_AUTOPLAY===false)return;
         if(outcome==='unavailable'){
-            after(6500,token,()=>transition('failed',{},'The recording browser did not start. Try again. If it repeats, check Flow workers in System.'));
+            after(6500,token,()=>transition('failed',{},'The recording browser did not start. Try again. If it repeats, check Flow workers in System > Settings.'));
             return;
         }
         after(3500,token,()=>transition('claimed'));

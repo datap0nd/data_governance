@@ -304,7 +304,7 @@ each script in the signed-in desktop session, as described above.
 
 ## Path policy
 
-System > Paths lists a `Python` subfolder beside ASAP, GSCM, Outlook, Local and
+System > Settings > Paths lists a `Python` subfolder beside ASAP, GSCM, Outlook, Local and
 Web. Scripts may live in any folder, whether or not **Enforce paths** is on:
 enforcement never requires them inside `<root>/Python`. It still requires the
 Flow's target folder to be inside its own managed folder; Save and queued jobs

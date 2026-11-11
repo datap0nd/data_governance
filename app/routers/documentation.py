@@ -396,7 +396,7 @@ def ai_suggest_doc(report_id: int):
     ):
         raise HTTPException(
             status_code=503,
-            detail="AI documentation suggestions require Local AI mode in System > AI.",
+            detail="AI documentation suggestions require Local AI mode in System > Settings > AI.",
         )
     return _ai_suggest_doc(report_id, ai_settings)
 
@@ -415,7 +415,7 @@ def ai_suggest_all(request: Request):
     ):
         raise HTTPException(
             status_code=503,
-            detail="AI documentation suggestions require Local AI mode in System > AI.",
+            detail="AI documentation suggestions require Local AI mode in System > Settings > AI.",
         )
 
     actor = get_actor(request)

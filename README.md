@@ -4,7 +4,7 @@ For Gemini CLI, install the external [reporting extension](integrations/metronom
 to use `/metronome` and `/html_replicate "<report folder>"`. It leaves the application
 logic unchanged and keeps generated reports in your reporting folder.
 
-Configure Flow folders in **System > Paths**. See
+Configure Flow folders in **System > Settings > Paths**. See
 [Flow paths](docs/flow_paths.md) for staged enforcement and migration behavior.
 New builder flows receive stable folders with Downloads and Scripts automatically.
 
@@ -71,15 +71,17 @@ For other people on the network to access it, they go to `http://YOUR_COMPUTER_I
 
 ### Access
 
-Everyone on the network can use Metronome, and each browser chooses its person from Users. One thing is reserved for the host PC, the computer running Metronome: changing app-wide configuration. That covers **System > Settings**, Users, SQL passwords, portal sign-in details and the other settings pages. A request counts as coming from the host PC when it arrives from one of that computer's own addresses and asks for one of its own names: `localhost`, `127.0.0.1`, its IP addresses or its computer name. If the host PC is reached under another name, list it in the `DG_HOST_NAMES` environment variable (comma separated). Other computers can read Settings but not change them.
+Everyone on the network can use Metronome, and each browser chooses its person from Users. One thing is reserved for the host PC, the computer running Metronome: changing app-wide configuration. That covers the settings in **System > Settings** and its AI, Paths and Flow workers sections, Users, SQL passwords and portal sign-in details. A request counts as coming from the host PC when it arrives from one of that computer's own addresses and asks for one of its own names: `localhost`, `127.0.0.1`, its IP addresses or its computer name. If the host PC is reached under another name, list it in the `DG_HOST_NAMES` environment variable (comma separated). Other computers can read Settings but not change them; the Premium Viewers list is the one section any computer can save.
 
 ### Settings
 
 **System > Settings** holds the app-wide connections, folders, limits, schedules and options in one place. Each setting shows where its value comes from (set here, the settings file, a Windows variable, or the default), when a change takes effect (immediately, at the next scan, or for new runs) and its allowed range. A value saved on the page wins over the Windows environment variable it replaces, and **Reset to default** hands control back to that variable. Nothing needs a restart. Every change is recorded in the Event Log with who made it.
 
-**Connections and passwords.** The probe database, the Flow upload database and its shared account, the Power BI workspace and service principal, the proxy and the GitHub token are edited under **Connections**. They are written to the protected settings file (`.env`, one level above the code folder), because the worker processes read them too; the web service applies a change at once and each worker picks it up on its next loop. A password or token can be replaced or cleared but is never sent to a browser, and a change is logged without its value. **Test connection** signs in with the saved values and reports what happened; the probe test also fails if that account is able to write. The ASAP and GSCM login is saved under **Portal sign-in** and kept encrypted for the Windows account the services run as. Each person's SQL user and password stay on **Users**, the AI assistant's endpoint and key on **System > AI**, and the Microsoft account for Power BI on **System > Scanner**; the Settings page links to each.
+**Connections and passwords.** The probe database, the Flow upload database and its shared account, the Power BI workspace and service principal, the proxy and the GitHub token are edited under **Connections**. They are written to the protected settings file (`.env`, one level above the code folder), because the worker processes read them too; the web service applies a change at once and each worker picks it up on its next loop. A password or token can be replaced or cleared but is never sent to a browser, and a change is logged without its value. **Test connection** signs in with the saved values and reports what happened; the probe test also fails if that account is able to write. The ASAP and GSCM login is saved under **Portal sign-in** and kept encrypted for the Windows account the services run as. Each person's SQL user and password stay on **Users**, the AI assistant's endpoint and key in the **AI** section of the same page, and the Microsoft account for Power BI on **System > Scanner**; the Settings page links to each.
 
 Worker limits (download waits, SQL time limits, attempts) are copied into each run when it is queued, so a change applies to new runs and never alters one in progress.
+
+**AI, Paths, Flow workers and Premium Viewers.** These used to be entries of the System menu and are now sections of the Settings page, listed under **More settings** in its left rail. Each keeps its own form and its own Save button, so the shared **Save changes** bar, **Reset to default** and the "where does this value come from" labels do not apply to them; the search box finds them by name. Their old addresses (`#ai`, `#paths`, `#flow-settings`, `#premiumviewers`) open the matching section. Every section has an address of the form `#settings/<section>`, for example `#settings/paths`. Scanner and Updates remain System menu pages because they are mainly for running and watching work.
 
 [docs/settings.md](docs/settings.md) explains how a setting is declared and read.
 

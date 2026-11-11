@@ -15,7 +15,7 @@ publishes sanitized scope through a private exchange folder, and applies ACLs
 that deny the reader access to `governance.db` and the host credential. Updates
 preserve the reader token and category-hashing key.
 
-The existing **System → AI** Local AI connection supplies the Qwen-compatible
+The existing **System → Settings → AI** Local AI connection supplies the Qwen-compatible
 inference endpoint. A local same-origin settings change updates the auditor's
 non-secret endpoint/model trust pin. The model credential is never copied into
 auditor settings, the manifest, policy, evidence, or prompts.

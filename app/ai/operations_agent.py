@@ -435,7 +435,7 @@ def execute_run(
             else "operations_investigator"
         )
         if not snapshot.feature_enabled(required_feature):
-            raise AIConfigurationError("This AI function is disabled in System > AI.")
+            raise AIConfigurationError("This AI function is disabled in System > Settings > AI.")
         specs = specs_for_focus(focus_type)
         if not specs:
             raise AIProtocolError("No read tools are registered for this investigation type.")

@@ -6,7 +6,8 @@ capacity, recording reservations and work-PC benchmarking checks. See the
 
 For global Chrome/Edge selection and the new ASAP/GSCM recorded method, see [recorded Flows](recorded_flows.md). The existing behavior below applies to catalog/bookmark Flows.
 
-Flows > Settings configures 1–32 background slots and 1–32 visible (headed)
+Flows > Settings (the same form is at System > Settings > Flow workers)
+configures 1–32 background slots and 1–32 visible (headed)
 slots, with one **shared total limit** across both modes (1–32, default 12).
 New background pools default to 12 slots; visible pools default to one. Existing
 saved pool and portal settings are preserved on upgrade. Raising the shared
