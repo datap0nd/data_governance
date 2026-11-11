@@ -152,6 +152,34 @@ function Get-MetronomeInstallCheck {
     return $check
 }
 
+function Get-MetronomeParentProcessId {
+    # The process that started this one; 0 when it cannot be read.
+    param([int]$ProcessId = $PID)
+    try {
+        $process = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction Stop
+        return [int]$process.ParentProcessId
+    } catch {
+        return 0
+    }
+}
+
+function Test-MetronomeRelaunchedCopy {
+    # True only in the copy of setup.ps1 that another copy started to finish
+    # the same run. A copy that relaunches sets the marker and records its own
+    # process id, and only a process it started itself matches. The marker
+    # alone proves nothing: an older copy leaves it behind in the PowerShell
+    # window it was run from, where it outlives the run.
+    param(
+        [string]$Marker = $env:DG_SETUP_RELAUNCHED,
+        [string]$RecordedParent = $env:DG_SETUP_RELAUNCH_PARENT,
+        [int]$ActualParent = -1
+    )
+    if ($Marker -ne '1' -or -not "$RecordedParent".Trim()) { return $false }
+    if ($ActualParent -lt 0) { $ActualParent = Get-MetronomeParentProcessId }
+    if ($ActualParent -le 0) { return $false }
+    return ("$RecordedParent".Trim() -eq "$ActualParent")
+}
+
 function Start-MetronomeInstalledServices {
     # Start again the services an earlier part of the run stopped, when setup
     # then refuses to go on. Only services Windows starts by itself; a slot
