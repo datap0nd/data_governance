@@ -96,9 +96,6 @@ $CodeDir     = $PSScriptRoot
 $ProjectDir  = Split-Path $CodeDir
 $DbPath      = "$ProjectDir\governance.db"
 $FlowsRoot = if ($env:DG_FLOWS_ROOT) { $env:DG_FLOWS_ROOT } else { Join-Path $ProjectDir 'metronome\flows' }
-foreach ($FlowSourceFolder in @('ASAP', 'GSCM', 'Outlook', 'Local', 'Web')) {
-    New-Item -ItemType Directory -Force -Path (Join-Path $FlowsRoot $FlowSourceFolder) | Out-Null
-}
 $ReportsPath = "\\MX-SHARE\Users\METOMX\Desktop\BI Report Originals"
 $ScriptsPath = "\\MX-SHARE\Users\METOMX\Desktop;\\MX-SHARE\Users\meto.mx\Desktop;\\METO-MX02\Users\METOMX\Desktop"
 $Port        = 8000
@@ -232,6 +229,40 @@ if (Test-Path $DbPath) {
     Write-Host "  DB exists: ${dbSize} KB (will be preserved)" -ForegroundColor Green
 } else {
     Write-Host "  DB: new (will be created on first run)" -ForegroundColor Yellow
+}
+
+# --- One installation per PC ---
+# Everything above only reads. This script installs into the folder it is run
+# from and keeps the database beside that folder, so a second copy of the code
+# (a fresh download, an archive extracted one folder too deep) would build a
+# second, empty Metronome and point the services at it, leaving the real
+# database unused. Stop here, before anything is created, stopped or replaced.
+$InstallGuardPath = Join-Path $CodeDir 'tools\setup_install_guard.ps1'
+if (-not (Test-Path $InstallGuardPath -PathType Leaf)) {
+    Write-Host "ERROR: This copy of Metronome is incomplete: tools\setup_install_guard.ps1 is missing." -ForegroundColor Red
+    if (-not $Unattended) { pause }
+    exit 1
+}
+. $InstallGuardPath
+# DG_SETUP_TEST_SERVICE_ROOT lets the installer's own tests describe an
+# installed service without touching the real one.
+$InstalledLocation = if ($env:DG_SETUP_TEST_SERVICE_ROOT) {
+    Get-MetronomeInstalledLocation -ServiceName $ServiceName -RegistryRoot $env:DG_SETUP_TEST_SERVICE_ROOT
+} else {
+    Get-MetronomeInstalledLocation -ServiceName $ServiceName
+}
+$InstallCheck = Get-MetronomeInstallCheck -CodeDir $CodeDir -DbPath $DbPath -Installed $InstalledLocation `
+    -AllowNewDatabase:($env:DG_SETUP_NEW_DATABASE -eq '1')
+if ($InstallCheck.Action -eq 'stop') {
+    Write-Host ""
+    foreach ($InstallCheckLine in $InstallCheck.Lines) { Write-Host $InstallCheckLine -ForegroundColor Red }
+    if (-not $Unattended) { pause }
+    exit 1
+}
+foreach ($InstallCheckLine in $InstallCheck.Lines) { Write-Host "  $InstallCheckLine" -ForegroundColor Yellow }
+
+foreach ($FlowSourceFolder in @('ASAP', 'GSCM', 'Outlook', 'Local', 'Web')) {
+    New-Item -ItemType Directory -Force -Path (Join-Path $FlowsRoot $FlowSourceFolder) | Out-Null
 }
 
 # --- Portable Python 3.13 ---
