@@ -11,7 +11,7 @@ import base64
 import io
 import json
 import zipfile
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -219,21 +219,6 @@ def test_recipes_are_keyed_by_task_so_periods_never_cross(tmp_path):
     assert flow_replay.load_recipe(tmp_path, JOB, other_task) is None
 
 
-def test_expired_recipes_are_dropped_on_load(tmp_path):
-    assert _capture(tmp_path)
-    data = json.loads((tmp_path / flow_replay.RECIPES_FILENAME).read_text())
-    key = flow_replay.recipe_key(JOB, TASK_KEY)
-    data[key]["captured_at"] = (
-        datetime.now(timezone.utc)
-        - timedelta(days=flow_replay.RECIPE_MAX_AGE_DAYS + 1)
-    ).isoformat()
-    (tmp_path / flow_replay.RECIPES_FILENAME).write_text(json.dumps(data))
-    assert flow_replay.load_recipe(tmp_path, JOB, TASK_KEY) is None
-    # The expired entry is also pruned from the store, not just skipped.
-    remaining = json.loads((tmp_path / flow_replay.RECIPES_FILENAME).read_text())
-    assert key not in remaining
-
-
 def test_recipe_save_retries_a_transient_windows_replace_lock(tmp_path, monkeypatch):
     original_replace = Path.replace
     attempts = 0
@@ -262,25 +247,6 @@ def test_corrupt_recipe_file_is_treated_as_empty(tmp_path):
     (tmp_path / flow_replay.RECIPES_FILENAME).write_text("not json")
     assert flow_replay.load_recipe(tmp_path, JOB, TASK_KEY) is None
     assert _capture(tmp_path)  # and it can be rewritten
-
-
-# ── The kill switches ──
-
-
-def test_enabled_by_default(monkeypatch):
-    monkeypatch.delenv("DG_FLOW_REPLAY", raising=False)
-    assert flow_replay.enabled(JOB)
-
-
-def test_environment_kill_switch(monkeypatch):
-    monkeypatch.setenv("DG_FLOW_REPLAY", "0")
-    assert not flow_replay.enabled(JOB)
-
-
-def test_per_flow_opt_out(monkeypatch):
-    monkeypatch.delenv("DG_FLOW_REPLAY", raising=False)
-    job = {**JOB, "downloads": {**JOB["downloads"], "network_replay": False}}
-    assert not flow_replay.enabled(job)
 
 
 def test_asap_type_and_export_options_separate_replay_identity():

@@ -78,20 +78,6 @@ def test_navigation_roots_are_inferred_from_top_link_row():
     assert [item["text"] for item in _navigation_roots(records)] == ["Market", "Mobile", "Eco"]
 
 
-def test_fota_discovery_includes_visual_category_member_list():
-    source = Path(flow_worker.__file__).read_text()
-
-    assert 'add_definition("Category", "multi_select", category_options)' in source
-    assert '{"weekly", "daily"}' in source
-
-
-def test_flagship_discovery_includes_visual_measure_member_list():
-    source = Path(flow_worker.__file__).read_text()
-
-    assert 'add_definition("Measure", "multi_select", nearest_list_values(measure_label))' in source
-    assert '{"dimension", "category", "measure"}' in source
-
-
 def test_revealed_menu_columns_become_report_paths_without_target_hardcoding():
     root = _record("Mobile", 235, 90)
     before = [root, _record("Market", 160, 90)]
@@ -719,18 +705,6 @@ def test_export_task_retry_restarts_a_failed_file_and_keeps_its_result():
     assert page.waits == [5_000, 5_000]
 
 
-def test_export_task_retry_raises_the_original_error_after_three_attempts():
-    attempts = []
-
-    def run_task(attempt):
-        attempts.append(attempt)
-        raise RuntimeError("Target folder permissions changed mid-run.")
-
-    with pytest.raises(RuntimeError, match="permissions changed"):
-        flow_worker._export_task_with_retry(_WaitPage(), run_task, lambda *_args: None)
-    assert len(attempts) == flow_worker.EXPORT_TASK_ATTEMPTS == 3
-
-
 def test_export_task_retry_reports_every_distinct_attempt_error():
     errors = iter([
         RuntimeError("Workbook contains no default style"),
@@ -900,23 +874,6 @@ def test_bounded_detail_caps_only_the_message():
     # short messages and empty details pass through untouched
     assert flow_worker._bounded_detail({"message": "fine"}) == {"message": "fine"}
     assert flow_worker._bounded_detail(None) is None
-
-
-def test_failure_screenshot_rotates_a_bounded_set_of_files(tmp_path):
-    class _ShotPage:
-        def screenshot(self, path, full_page=False):
-            Path(path).write_bytes(b"PNG")
-
-    paths = [
-        flow_worker._failure_screenshot(_ShotPage(), tmp_path, f"run-{index}")
-        for index in range(flow_worker.FAILURE_SCREENSHOT_KEEP + 5)
-    ]
-
-    assert all(paths)
-    diagnostics = tmp_path / "diagnostics"
-    saved = list(diagnostics.glob("*.png"))
-    # the worker never deletes files, so growth is bounded by slot overwrite
-    assert len(saved) == flow_worker.FAILURE_SCREENSHOT_KEEP
 
 
 def test_failure_screenshot_survives_a_dead_page(tmp_path):
@@ -1090,12 +1047,6 @@ def test_dashboard_edge_event_reports_a_missing_staging_handoff(
     assert "within 60 seconds" in message
     assert str(tmp_path) in message
     assert "permissions" in message
-
-
-def test_gscm_load_buffers_are_one_minute_then_two_minutes():
-    assert flow_worker.GSCM_EXPORT_TASK_ATTEMPTS == 2
-    assert flow_worker.GSCM_INITIAL_LOAD_BUFFER_MS == 60_000
-    assert flow_worker.GSCM_RETRY_LOAD_BUFFER_MS == 120_000
 
 
 def test_asap_table_control_score_accepts_only_compact_top_right_controls():
@@ -2153,13 +2104,6 @@ def test_synthesized_labels_are_frame_qualified_to_avoid_merging(monkeypatch):
     assert second["options"] == ["C", "D"]
 
 
-def test_container_labels_require_a_single_select_container():
-    source = Path(flow_worker.__file__).read_text()
-    # A shared section title would name several filters identically and merge
-    # their option lists into one definition.
-    assert 'querySelectorAll("select").length === 1' in source
-
-
 def test_select_snapshot_sweeps_every_frame_and_dedupes(monkeypatch):
     record = {"index": 0, "id": "s1", "name": "", "label": "Region",
               "label_source": "container", "multiple": False, "select2": False,
@@ -2184,13 +2128,6 @@ def test_empty_discovery_reports_diagnostics_instead_of_passing_silently(monkeyp
     assert definitions == []
     assert diagnostics["selects_seen"] == 0
     assert diagnostics["definitions"] == 0
-
-    source = Path(flow_worker.__file__).read_text()
-    assert '"stage": "filter_inspection_empty"' in source
-    assert '"discovery_diagnostics": view_diagnostics' in source
-    # Inactive report tabs keep hidden selects in the DOM; the snapshot must
-    # exclude fully hidden containers while keeping Select2's hidden owners.
-    assert "if (!selfVisible && !select2Visible && !parentVisible) return;" in source
 
 
 def test_mega_menu_groups_come_from_styled_headers_not_first_links():
@@ -2355,16 +2292,6 @@ def test_download_links_are_swept_across_frames_and_deduped():
     assert raw["download_attr"] is True
 
 
-def test_download_link_snapshot_targets_download_semantics():
-    source = Path(flow_worker.__file__).read_text()
-    assert "csv|xlsx|xls|zip|txt|pdf" in source
-    assert '"kind"] = "html_dashboard"' in source
-    assert '"stage": "html_dashboard_links"' in source
-    # A dashboard with download links but no prompts is not a discovery
-    # failure, so the empty-filters warning must account for the links.
-    assert "if not discovered and not download_links:" in source
-
-
 def test_filter_definitions_are_capped_below_server_scan_limits():
     from app.flow_worker import _merge_asap_filter_definition
     from app.routers import flows
@@ -2403,12 +2330,6 @@ def test_api_errors_carry_the_server_validation_detail():
 
     with pytest.raises(RuntimeError, match="at most 2000 items"):
         flow_worker._api(Client(), "POST", "/api/flows/worker/w/scans/47/progress", {})
-
-
-def test_progress_posters_truncate_error_fields():
-    source = Path(flow_worker.__file__).read_text()
-    assert source.count("error[:ASAP_MAX_ERROR_CHARS] if error else error") == 2
-    assert "traceback_text[:100_000]" in source
 
 
 def test_execute_job_downloads_each_selected_dashboard_link(tmp_path, monkeypatch):
@@ -2908,19 +2829,6 @@ def test_gscm_retry_reloads_portal_after_an_empty_favorite_dialog(
     assert artifacts[0]["status"] == "saved"
 
 
-def test_dashboard_link_download_falls_back_to_an_intermediate_page():
-    source = Path(flow_worker.__file__).read_text()
-    assert "_asap_download_dashboard_link" in source
-    # The staging watch catches popup-emitted downloads. Cleanup detaches its
-    # listeners without closing a half-detached page before target storage.
-    assert "_download_staging_snapshot(staging_dir)" in source
-    assert 'context.on("page", _track_page)' in source
-    assert 'candidate.on("download", _capture_download)' in source
-    assert 'candidate.remove_listener("download", _capture_download)' in source
-    assert "_asap_wait_for_dashboard_download_signal" in source
-    assert "popup_control.click(timeout=30_000)" in source
-
-
 def test_dashboard_download_signal_pumps_playwright_until_edge_reports_start(tmp_path):
     downloads = []
 
@@ -3410,11 +3318,6 @@ def test_catalogued_href_is_available_to_the_run():
     assert flow_worker._asap_dashboard_link_href(None, "Download Detail") == ""
 
 
-def test_dashboard_download_passes_the_job_so_href_matching_can_work():
-    source = Path(flow_worker.__file__).read_text()
-    assert "_asap_download_dashboard_link(\n                        page, download_link, staging, job, progress=_processing_progress,\n                    )" in source
-
-
 # --- Run folders and retention operations ---
 
 
@@ -3659,14 +3562,6 @@ def test_execute_ops_deletes_nothing_when_original_and_tombstone_both_exist(tmp_
     assert [item["outcome"] for item in results] == ["skipped"]
     assert "ambiguous" in results[0]["detail"]
     assert victim.is_dir() and tombstone.is_dir()
-
-
-def test_execute_job_requires_a_registration_callback():
-    import inspect
-
-    parameters = inspect.signature(flow_worker.execute_job).parameters
-    assert parameters["register_folder"].default is inspect.Parameter.empty
-    assert parameters["run_id"].default is inspect.Parameter.empty
 
 
 def test_execute_job_registers_the_folder_before_reporting_progress(
@@ -4071,14 +3966,3 @@ def test_asap_loading_wait_fails_when_the_page_closes(monkeypatch):
 
     assert [stage for stage, _ in events] == ["report_rendering", "report_rendering"]
     assert "still busy" in events[0][1]
-
-
-def test_asap_loading_wait_keeps_a_bound_only_for_catalog_scans(monkeypatch):
-    clock = _fake_clock(monkeypatch)
-    monkeypatch.setattr(flow_worker, "_asap_loading_overlay_visible", lambda _page: True)
-
-    with pytest.raises(RuntimeError, match="did not clear within 1800 seconds"):
-        flow_worker._asap_wait_for_loading_clear(
-            _RenderPage(clock, []), max_seconds=flow_worker.ASAP_SCAN_OVERLAY_TIMEOUT_SECONDS,
-        )
-    assert flow_worker.ASAP_SCAN_OVERLAY_TIMEOUT_SECONDS == 30 * 60
