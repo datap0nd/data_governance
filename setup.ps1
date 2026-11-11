@@ -253,6 +253,13 @@ $InstalledLocation = if ($env:DG_SETUP_TEST_SERVICE_ROOT) {
 }
 $InstallCheck = Get-MetronomeInstallCheck -CodeDir $CodeDir -DbPath $DbPath -Installed $InstalledLocation `
     -AllowNewDatabase:($env:DG_SETUP_NEW_DATABASE -eq '1')
+# True only in the copy another copy of this script started a moment ago to
+# finish the same run. The marker alone is not proof: run from a PowerShell
+# window, an earlier setup left it behind in that window, and the next run
+# there believed it was the second half and skipped stopping Metronome, the
+# download and the extraction.
+$IsRelaunchedCopy = [bool](Test-MetronomeRelaunchedCopy)
+$InstallSwitchConfirmed = $false
 $InstallRefused = $false
 if ($InstallCheck.Action -eq 'stop') {
     Write-Host ""
@@ -262,16 +269,17 @@ if ($InstallCheck.Action -eq 'stop') {
     Write-Host ""
     foreach ($InstallCheckLine in $InstallCheck.Lines) { Write-Host $InstallCheckLine -ForegroundColor Yellow }
     Write-Host ""
-    if ($env:DG_SETUP_SWITCH_CONFIRMED -eq '1') {
+    if ($IsRelaunchedCopy -and $env:DG_SETUP_SWITCH_CONFIRMED -eq '1') {
         # Answered earlier in this run, before setup.ps1 relaunched itself.
         Write-Host "Switching to this folder's database, as confirmed." -ForegroundColor Yellow
+        $InstallSwitchConfirmed = $true
     } elseif ($Unattended) {
         Write-Host "SETUP STOPPED: an unattended update never switches Metronome to another database." -ForegroundColor Red
         $InstallRefused = $true
     } else {
         $InstallAnswer = Read-Host "Type SWITCH to use this folder's database, or press Enter to stop"
         if ("$InstallAnswer".Trim() -eq 'SWITCH') {
-            $env:DG_SETUP_SWITCH_CONFIRMED = '1'
+            $InstallSwitchConfirmed = $true
         } else {
             Write-Host "SETUP STOPPED: Metronome keeps the database it uses now." -ForegroundColor Red
             $InstallRefused = $true
@@ -281,15 +289,15 @@ if ($InstallCheck.Action -eq 'stop') {
     foreach ($InstallCheckLine in $InstallCheck.Lines) { Write-Host "  $InstallCheckLine" -ForegroundColor Yellow }
 }
 if ($InstallRefused) {
+    $RestartedServices = @()
     if ($env:DG_SETUP_RELAUNCHED -eq '1') {
-        # This copy was started by an older setup.ps1 in the same folder,
-        # which had already stopped Metronome before the check existed.
+        # Another copy of setup.ps1 may have started this one after stopping
+        # Metronome, and an older copy does that before this check runs.
+        # Where nothing was stopped, this starts nothing.
         $RestartedServices = @(Start-MetronomeInstalledServices)
-        if ($RestartedServices.Count) {
-            Write-Host "The first part of this run stopped Metronome. Started again: $($RestartedServices -join ', ')." -ForegroundColor Yellow
-        } else {
-            Write-Host "The first part of this run stopped Metronome. Run setup.ps1 from the installed folder to start it." -ForegroundColor Yellow
-        }
+    }
+    if ($RestartedServices.Count) {
+        Write-Host "The first part of this run had stopped Metronome. Started again: $($RestartedServices -join ', ')." -ForegroundColor Yellow
     } else {
         Write-Host "Nothing was changed." -ForegroundColor Red
     }
@@ -371,7 +379,7 @@ $HadExistingService = [bool]$existing
 $existingFlowService = Get-Service -Name $FlowServiceName -ErrorAction SilentlyContinue
 $ExistingAuditorService = Get-Service -Name $AuditorServiceName -ErrorAction SilentlyContinue
 $Inner = $null
-$ResumeAfterExtraction = ($env:DG_SETUP_RELAUNCHED -eq "1") -and (Test-Path $ZipPath -PathType Leaf)
+$ResumeAfterExtraction = $IsRelaunchedCopy -and (Test-Path $ZipPath -PathType Leaf)
 if ($ResumeAfterExtraction) {
     Write-Host "[2-4/5] The previous setup copy already downloaded and extracted this version." -ForegroundColor DarkGray
 } else {
@@ -563,20 +571,34 @@ Write-Host "  Files updated in: $CodeDir" -ForegroundColor Green
 # Without this, fixes to setup itself (sign-in bootstrap, service handling)
 # only take effect on the NEXT update - the run that downloaded them still
 # executes the old logic to the end.
-if (-not $env:DG_SETUP_RELAUNCHED) {
+if (-not $IsRelaunchedCopy) {
     $SetupHashAfter = ""
     try { $SetupHashAfter = (Get-FileHash $SetupScriptPath -Algorithm SHA256).Hash } catch {}
     if ($SetupHashAfter -and $SetupHashAfter -ne $SetupHashBefore) {
         Write-Host ""
         Write-Host "setup.ps1 itself was updated. Relaunching the new version..." -ForegroundColor Yellow
-        $env:DG_SETUP_RELAUNCHED = "1"
         $RelaunchArguments = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $SetupScriptPath)
         if ($Unattended) { $RelaunchArguments += "-Unattended" }
         if ($FlowHeadlessSlots) { $RelaunchArguments += @('-FlowHeadlessSlots', "$FlowHeadlessSlots") }
         if ($FlowHeadedSlots) { $RelaunchArguments += @('-FlowHeadedSlots', "$FlowHeadedSlots") }
         if ($FlowTotalWorkers) { $RelaunchArguments += @('-FlowTotalWorkers', "$FlowTotalWorkers") }
-        & powershell.exe @RelaunchArguments
-        exit $LASTEXITCODE
+        # The marker, this process's id and an answer already given are for
+        # the copy started here and nobody else. When setup.ps1 is run from a
+        # PowerShell window they would otherwise stay in that window after the
+        # run, so they are removed again whatever happens.
+        $env:DG_SETUP_RELAUNCHED = "1"
+        $env:DG_SETUP_RELAUNCH_PARENT = "$PID"
+        if ($InstallSwitchConfirmed) { $env:DG_SETUP_SWITCH_CONFIRMED = '1' }
+        $RelaunchExitCode = 1
+        try {
+            & powershell.exe @RelaunchArguments
+            $RelaunchExitCode = $LASTEXITCODE
+        } finally {
+            foreach ($RelaunchVariable in @('DG_SETUP_RELAUNCHED', 'DG_SETUP_RELAUNCH_PARENT', 'DG_SETUP_SWITCH_CONFIRMED')) {
+                Remove-Item "Env:$RelaunchVariable" -ErrorAction SilentlyContinue
+            }
+        }
+        exit $RelaunchExitCode
     }
 }
 } # end of the download, stop and extract stages a relaunched copy skips
