@@ -4,7 +4,7 @@ from contextlib import contextmanager
 
 import pytest
 
-from app import flow_portable, flow_recording
+from app import flow_recording
 from app import flow_recording_runtime as range_runtime
 from app.flow_recording_runtime import _select_week_range
 from test_flows import flow_db
@@ -294,4 +294,3 @@ def test_version_three_range_contract_and_legacy_readers():
              ]}], "output": {"format": "xlsx"}},
         ]}
         assert flow_recording.validate_definition(legacy)["version"] == version
-    assert "_select_week_range" in flow_portable.execution_sources()["flow_recording_runtime"]

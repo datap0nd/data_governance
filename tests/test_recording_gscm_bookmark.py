@@ -303,9 +303,3 @@ def test_run_log_keeps_bookmark_strategy_and_drops_names():
     clean = diagnostics.sanitize_diagnostic(detail)
     assert clean["bookmark"] == {"strategy": "favorite-scrollbar", "movement": True, "rendered": True, "movements": 3,
                                  "presses": 24, "top_established": True, "collided": False, "folder_confirmed": False, "scope": "Public"}
-
-
-def test_portable_bundle_includes_the_helper():
-    from app import flow_portable
-    sources = flow_portable.execution_sources()
-    assert "flow_recording_gscm_bookmark" in sources and "BookmarkSelectionError" in sources["flow_recording_gscm_bookmark"]

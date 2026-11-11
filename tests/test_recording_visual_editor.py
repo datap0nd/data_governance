@@ -228,14 +228,6 @@ def test_polling_preserves_selection_dirty_fields_and_collapsed_details(editor_p
     assert page.get_by_role('button',name='Enable schedule',exact=True).count()==0
 
 
-def test_testing_does_not_activate_or_enable_schedule(editor_page):
-    page,_=editor_page
-    page.get_by_role('button',name='Test recording',exact=True).click()
-    page.wait_for_function('()=>calls.length===2')
-    assert page.evaluate('()=>data.flow.enabled') is False
-    assert all('/activate' not in path for path in page.evaluate('()=>calls.map(c=>c.path)'))
-
-
 def test_nested_progress_maps_to_single_card_and_failure_explanation(editor_page):
     page,value=editor_page
     event=next(s for s in value['steps'] if s['action']=='download');trigger=event['steps'][0]

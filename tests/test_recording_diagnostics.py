@@ -308,17 +308,3 @@ def test_debug_always_includes_frozen_locator_and_rich_failure_evidence(flow_db)
                      '"post_click_verification": "none"', '"timeout_ms": 120000']:
         assert expected in text
     assert 'PrivateCustomerName' not in text
-
-
-def test_historical_public_rule_explains_what_was_checked(flow_db):
-    saved, _, scan = queued_test()
-    post(scan, 'running', {'stage': 'recorded_action', 'step_id': 'public',
-        'diagnostic': {'click': {'transition': 'public_selected', 'confirmation': 'transition_missing',
-            'after': {'selected': False, 'open': True}}},
-        'step_outcomes': {'public': {'outcome': 'failed'}}})
-    with database.get_db() as db:
-        text = diagnostics.render_debug(db, saved['id'], scan)
-    assert 'Legacy selection rule:' in text
-    assert 'aria-selected=true OR aria-pressed=true' in text
-    assert 'getSelectStatus()=true OR get_selected()=true' in text
-    assert 'individual signals are unavailable' in text

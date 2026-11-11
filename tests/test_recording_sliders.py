@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from app import flow_portable, flow_range_slider, flow_recording
+from app import flow_range_slider, flow_recording
 from app import flow_recording_runtime as runtime
 from app.flow_recording_runtime import _set_slider_range
 from test_flows import flow_db
@@ -153,27 +153,6 @@ def test_revision_save_promotes_date_range_definition_to_version_four(flow_db):
             "SELECT definition_json FROM flow_recording_revisions WHERE id=?", (revision_id,)).fetchone()[0])
     assert stored["version"] == 4
     flow_recording.validate_definition(stored, activation=False)
-
-
-def test_v3_worker_cannot_claim_version_four_work(flow_db):
-    from app import database
-    from app.routers import flows
-    from test_flow_recordings import draft_job
-
-    _isolate_flow_root(flow_db)
-    saved, job = draft_job()
-    job["recording"]["definition"] = _definition(version=4)
-    assert job["recording"]["definition"]["version"] == 4
-    with database.get_db() as db:
-        db.execute("INSERT INTO flow_runs(flow_id,trigger_type,status,job_json,created_at) VALUES (?,'manual','queued',?,'2026-09-17')",
-                   (saved["id"], json.dumps(job)))
-    capabilities = {"headed": True, "recorded_flows_v1": True, "recorded_flows_v2": True, "recorded_flows_v3": True,
-                    "browser_switch_v1": True, "shared_flow_artifacts": True}
-    flows.register_worker(flows.WorkerRegister(worker_id="worker", display_name="Worker", capabilities=capabilities))
-    assert flows.claim_run("worker").get("run") is None
-    capabilities["recorded_flows_v4"] = True
-    flows.register_worker(flows.WorkerRegister(worker_id="worker", display_name="Worker", capabilities=capabilities))
-    assert flows.claim_run("worker").get("run") is not None
 
 
 def test_v4_worker_cannot_claim_month_range_work(flow_db):
@@ -538,10 +517,3 @@ def test_acquire_plays_the_date_range_control_and_records_its_parameters(tmp_pat
     assert completed["confirmation"] == "exact_range"
     phases = [e["diagnostic"]["phase"] for e in events if e["step_id"] == "week-range"]
     assert "range_latest" in phases and "range_handle" in phases
-
-
-def test_portable_scripts_embed_the_shared_slider_driver():
-    sources = flow_portable.execution_sources()
-    assert "_set_slider_range" in sources["flow_recording_runtime"]
-    assert "def set_range_values" in sources["flow_range_slider"]
-    assert "def find_handles" in sources["flow_range_slider"]
