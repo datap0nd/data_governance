@@ -355,6 +355,8 @@ def _select_week_range(container, step, update) -> dict:
             break
         movements += 1
         update('Scanning the next weeks inside the range box.', {'range_movement': movements})
+    else:
+        raise RuntimeError('The range box did not reach its last weeks within 200 screens; the range was not verified.')
 
     enabled = sorted(week for week, item in seen.items() if week >= start and item['enabled'])
     if not enabled:

@@ -1648,7 +1648,9 @@ def bookmark_dataset_entries(page) -> list[dict] | None:
     for row in rows:
         identity_name = _exact_bookmark_name(row.get("userreportname"))
         name = _clean_name(identity_name)
-        if not name or _normalize_label(name) in TREE_NOISE:
+        # Dataset rows are saved bookmarks, whatever they are called. The
+        # chrome-label list only filters text scraped from the rendered tree.
+        if not name:
             continue
         scope = _clean_name(row.get("scope"))
         folder_path: list[str] = []
@@ -2309,7 +2311,7 @@ def _not_signed_in_error() -> NotSignedInError:
         "so an ASAP scan can succeed while this one cannot. Sign the profile in "
         "to GSCM once, in a visible window, with:  python app\\flow_worker.py "
         "--profile-dir <profile> --authenticate-url "
-        "https://mdscm.sec.samsung.net/nexa/index.html --authenticate-adapter "
+        "<the GSCM site's sign-in address> --authenticate-adapter "
         "gscm_portal   - or re-run setup.ps1, which now bootstraps every portal. "
         "Storing the encrypted BI-desktop credential in Flows > Catalog lets "
         "the worker sign back in automatically when the session expires."

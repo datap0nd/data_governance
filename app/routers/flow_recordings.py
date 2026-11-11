@@ -253,7 +253,9 @@ def copy_template_revision(db, flow_id: int, body: TemplateCopy, *, now: str | N
     module = _destination_module(db, destination, body.site_id)
     source, row, _revisions = _template_source(db, destination, module, body.source_flow_id, body.source_revision_id)
     definition = copy.deepcopy(json.loads(row['definition_json']))
-    definition.update(version=2, timezone='Asia/Dubai')
+    # The copy keeps the source's own recording version: range steps and week
+    # or month parameters are only valid at the version that introduced them.
+    definition.update(timezone='Asia/Dubai')
     if definition.get('adapter') and definition['adapter'] != module:
         definition['adapter'] = module
     try:

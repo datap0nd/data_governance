@@ -604,12 +604,64 @@ def _apply_live_visual_title(recurrence: dict, exported: dict) -> None:
         recurrence["visual_title"] = None
 
 
+def _export_limit_warning(
+    exported_rows: int,
+    limit: int,
+    *,
+    send_cut_off: bool = True,
+) -> str | None:
+    """Say plainly that the visual export stopped at the row limit, or ``None``.
+
+    Power BI returns at most ``limit`` rows and never says that more existed,
+    so an export that fills the limit is reported as cut off. The cut-off table
+    is still delivered: this text goes at the top of every email and onto the
+    stored run. ``send_cut_off=False`` is the future operator choice to refuse
+    delivery instead; it raises into the existing failure path and nothing
+    passes it yet.
+    """
+    if exported_rows < limit:
+        return None
+    warning = (
+        f"The table was cut off at the Power BI export limit of {limit:,} rows. "
+        f"Only the first {exported_rows:,} rows were exported, so any rows "
+        "beyond them are missing."
+    )
+    if not send_cut_off:
+        raise RuntimeError(f"{warning} No email was sent.")
+    return warning
+
+
 def build_html_email(
     recurrence: dict,
     group: dict,
     columns: list[str],
     rows: list[dict[str, str]],
+    export_warning: str | None = None,
 ) -> str:
+    export_warning_block = ""
+    if export_warning:
+        export_warning_html = html.escape(
+            f"{export_warning} Open the report in Power BI for the complete data."
+        )
+        export_warning_block = f"""
+            <tr>
+              <td style="padding:24px 32px 0">
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0"
+                       bgcolor="#fff6e0"
+                       style="width:100%;border-collapse:separate;background:#fff6e0;
+                              border:1px solid #e0b252;border-radius:8px">
+                  <tr>
+                    <td style="padding:15px 17px;color:#5c4308;font-size:13px;
+                               line-height:1.55">
+                      <div style="margin:0 0 4px;color:#3d2c05;font-size:13px;
+                                  font-weight:700">Incomplete data</div>
+                      <div>{export_warning_html}</div>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+        """
     heading_cells = "".join(
         f'<th style="padding:13px 14px;border-right:1px solid #292c82;'
         f'background:#10136f;color:#ffffff;text-align:left;font-size:12px;'
@@ -729,6 +781,7 @@ def build_html_email(
                 </table>
               </td>
             </tr>
+            {export_warning_block}
             <tr>
               <td style="padding:30px 32px 28px;border-bottom:1px solid #e4e6ef">
                 <table role="presentation" width="100%" cellspacing="0" cellpadding="0"
@@ -922,7 +975,7 @@ def _failure_notification_message(
                          border-top:1px solid #eadada;border-radius:0 0 12px 12px;
                          font-size:11px;line-height:1.4">
                 Alert owner: {html.escape(owner["name"])}. Detected by Metronome at
-                {html.escape(_now().isoformat(timespec="minutes"))} local time.
+                {html.escape(dubai_now().strftime("%d %b %Y, %H:%M"))} (Dubai time).
               </td>
             </tr>
           </table>
@@ -1142,6 +1195,13 @@ def run_recurrence(recurrence_id: int, *, mode: str = "send", trigger_type: str 
         )
         _apply_live_visual_title(recurrence, exported)
         columns, rows = parse_visual_csv(exported["data"])
+        export_warning = _export_limit_warning(len(rows), PBI_VISUAL_EXPORT_MAX_ROWS)
+        if export_warning:
+            logger.warning(
+                "Power BI recurrence %s reached the %s row export limit; the table is cut off",
+                recurrence_id,
+                PBI_VISUAL_EXPORT_MAX_ROWS,
+            )
         delivery_mode = recurrence.get("delivery_mode") or "subgroups"
         required_columns = {rule["column_name"] for rule in recurrence["rules"]}
         if delivery_mode == "subgroups":
@@ -1190,7 +1250,9 @@ def run_recurrence(recurrence_id: int, *, mode: str = "send", trigger_type: str 
                     "subject": _format_subject(
                         recurrence["subject_template"], recurrence, group, len(group_rows)
                     ),
-                    "html_body": build_html_email(recurrence, group, columns, group_rows),
+                    "html_body": build_html_email(
+                        recurrence, group, columns, group_rows, export_warning
+                    ),
                     "inline_images": (
                         [{"path": str(ALERT_BELL_ICON), "cid": ALERT_BELL_CID}]
                         if ALERT_BELL_ICON.is_file()
@@ -1211,7 +1273,9 @@ def run_recurrence(recurrence_id: int, *, mode: str = "send", trigger_type: str 
             "visual": exported.get("visual"),
             "owner": {"name": owner["name"], "email": owner["email"]},
             "refresh": refresh,
-            "export_limit_reached": len(rows) >= PBI_VISUAL_EXPORT_MAX_ROWS,
+            "export_limit_reached": export_warning is not None,
+            "export_row_limit": PBI_VISUAL_EXPORT_MAX_ROWS,
+            "warning": export_warning,
         }
         _finish_run(
             recurrence_id,
@@ -1382,6 +1446,7 @@ def preview_report_visual(body: VisualPreview):
         "values": values,
         "values_limited": {column: len({str(row.get(column, "")) for row in rows}) > 500 for column in columns},
         "export_limit_reached": len(rows) >= PBI_VISUAL_EXPORT_MAX_ROWS,
+        "export_row_limit": PBI_VISUAL_EXPORT_MAX_ROWS,
         "visual": exported.get("visual"),
     }
 

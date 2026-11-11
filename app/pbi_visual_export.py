@@ -255,12 +255,23 @@ _RUNTIME_HTML = f"""<!doctype html>
           }}
 
           const filters = [];
+          const unreadableFilters = [];
           const addFilters = (source, values) => {{
             for (const filter of values || []) filters.push({{source, filter}});
           }};
-          addFilters("report", await safeCall(() => report.getFilters(), []));
-          addFilters("page", await safeCall(() => page.getFilters(), []));
-          addFilters("visual", await safeCall(() => selectedVisual.getFilters(), []));
+          // A filter level that cannot be read is never "no filter": the
+          // semantic-model fallback would return broader data than the visual
+          // shows. Name the level so that fallback refuses to run.
+          const readFilters = async (source, target) => {{
+            try {{
+              addFilters(source, await target.getFilters());
+            }} catch (_) {{
+              unreadableFilters.push(source);
+            }}
+          }};
+          await readFilters("report", report);
+          await readFilters("page", page);
+          await readFilters("visual", selectedVisual);
           for (const visual of visuals) {{
             if (visual.name === selectedVisual.name || visual.type.toLowerCase() !== "slicer") continue;
             const state = await safeCall(() => visual.getSlicerState(), null);
@@ -269,6 +280,7 @@ _RUNTIME_HTML = f"""<!doctype html>
           return {{
             fields,
             filters,
+            unreadableFilters,
             visualFormatting: await collectVisualFormatting(selectedVisual)
           }};
         }};
@@ -711,6 +723,8 @@ def _apply_dynamic_visual_title(
             }
         ],
         "filters": query_spec.get("filters") or [],
+        # A title measure is not evaluated under fewer filters than the visual.
+        "unreadableFilters": query_spec.get("unreadableFilters") or [],
     }
     try:
         title_result = execute_visual_query(
