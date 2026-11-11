@@ -75,7 +75,11 @@ Everyone on the network can use Metronome, and each browser chooses its person f
 
 ### Settings
 
-**System > Settings** holds the app-wide limits, schedules and options in one place. Each setting shows where its value comes from (set here, the `.env` file, or the default), when a change takes effect (immediately, at the next scan, or for new runs) and its allowed range. A value saved on the page wins over the `.env` or Windows environment variable it replaces, and **Reset to default** hands control back to that variable. Nothing needs a restart. Every change is recorded in the Event Log with who made it.
+**System > Settings** holds the app-wide connections, folders, limits, schedules and options in one place. Each setting shows where its value comes from (set here, the settings file, a Windows variable, or the default), when a change takes effect (immediately, at the next scan, or for new runs) and its allowed range. A value saved on the page wins over the Windows environment variable it replaces, and **Reset to default** hands control back to that variable. Nothing needs a restart. Every change is recorded in the Event Log with who made it.
+
+**Connections and passwords.** The probe database, the Flow upload database and its shared account, the Power BI workspace and service principal, the proxy and the GitHub token are edited under **Connections**. They are written to the protected settings file (`.env`, one level above the code folder), because the worker processes read them too; the web service applies a change at once and each worker picks it up on its next loop. A password or token can be replaced or cleared but is never sent to a browser, and a change is logged without its value. **Test connection** signs in with the saved values and reports what happened; the probe test also fails if that account is able to write. The ASAP and GSCM login is saved under **Portal sign-in** and kept encrypted for the Windows account the services run as. Each person's SQL user and password stay on **Users**, the AI assistant's endpoint and key on **System > AI**, and the Microsoft account for Power BI on **System > Scanner**; the Settings page links to each.
+
+Worker limits (download waits, SQL time limits, attempts) are copied into each run when it is queued, so a change applies to new runs and never alters one in progress.
 
 ### Automatic main updates
 
