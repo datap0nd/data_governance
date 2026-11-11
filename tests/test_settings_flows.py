@@ -1,9 +1,9 @@
 """Flow, SQL step, catalog and email limits on the Settings page.
 
-For each setting: its default is the value the code used before, and a changed
-value reaches the code that uses it. Limits a worker obeys are frozen into the
-job when the server builds it; this file covers the server side of that, and
-``test_settings_flows_worker.py`` the worker side.
+For each setting: a changed value reaches the code that uses it. Limits a
+worker obeys are frozen into the job when the server builds it; this file
+covers the server side of that, and ``test_settings_flows_worker.py`` the
+worker side.
 
 Everything here is synthetic: a temporary SQLite database, fictional portals
 and people, and stand-ins for workers, Outlook and Power BI.

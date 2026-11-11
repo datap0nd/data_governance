@@ -99,7 +99,6 @@ _DRAINED_WORK_START_PATHS = (
         r"pg-deps|pg-cron|pbi-usage-sync)$"
     ),
     re.compile(r"^/api/flows/\d+/run$"),
-    re.compile(r"^/api/flows/groups/\d+/run$"),
     re.compile(r"^/api/flows/runs/\d+/(?:retry-sql|retry-views|resume)$"),
     re.compile(r"^/api/flows/(?:sites|reports)/\d+/scan$"),
     re.compile(r"^/api/flows/sql/catalog/refresh$"),
@@ -1386,14 +1385,6 @@ def _tests_gate_record(
         "message": message,
         "error": _safe_update_error(error) if error else None,
     }
-
-
-def _tests_gate_auto_status(gate: dict) -> str:
-    return {
-        "pending": "waiting_for_tests",
-        "failed": "tests_failed",
-        "unavailable": "tests_check_failed",
-    }.get(str(gate.get("state") or ""), "tests_check_failed")
 
 
 def _set_auto_update_state(**changes) -> None:
