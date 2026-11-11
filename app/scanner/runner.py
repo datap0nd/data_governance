@@ -175,15 +175,31 @@ def _prune_backups(backup_dir: Path, keep: int) -> None:
         logger.info("Removed old database backup %s", old_backup)
 
 
+# How many timestamped backups to keep. 0 keeps every one, which is the
+# built-in behaviour: deleting backups is the owner's choice on the Settings page.
+KEEP_ALL_BACKUPS = 0
+
+
+def _backups_to_keep() -> int | None:
+    """How many backups to keep (Settings); None keeps them all."""
+    from app.scanner import limits
+
+    keep = int(limits.value("backups.keep", KEEP_ALL_BACKUPS))
+    return keep if keep > 0 else None
+
+
 def _backup_db(keep: int | None = None) -> None:
     """Backup governance.db before scanning.
 
-    Every backup is kept by default. Pass ``keep`` to retain only the newest
-    ``keep`` timestamped backups once the new one has been written.
+    Every backup is kept unless the Settings page says how many to keep. Pass
+    ``keep`` to retain only the newest ``keep`` timestamped backups once the
+    new one has been written.
     """
     db_file = Path(DB_PATH)
     if not db_file.exists():
         return
+    if keep is None:
+        keep = _backups_to_keep()
 
     backup_dir = db_file.parent / "backups"
     backup_dir.mkdir(parents=True, exist_ok=True)

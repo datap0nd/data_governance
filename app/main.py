@@ -45,6 +45,7 @@ from app.source_identity import postgres_server_identity, reconcile_all_flow_tar
 from app.scanner.lifecycle import (
     recover_interrupted_scan_runs,
 )
+from app.scanner import limits as operator_limits
 from app.scanner.pbi_auth import resolve_proxy
 from app.ai.router import router as ai_router
 from app.auditor.router import router as auditor_router
@@ -158,6 +159,36 @@ _OVERALL_REFRESH_RETRY_MINUTES = 5
 _OVERALL_REFRESH_MISFIRE_GRACE_SECONDS = 6 * 60 * 60
 #: Start-up settles (worker launch, update receipt) before a missed run starts.
 _OVERALL_REFRESH_CATCH_UP_DELAY_SECONDS = 120
+#: When the daily database backup runs: Dubai time, like every schedule here.
+_DAILY_BACKUP_TIME = "06:00"
+_SETTINGS_LISTENERS_REGISTERED = False
+
+
+def _overall_refresh_grace_seconds() -> int:
+    """How late the daily refresh may still start (Settings), in seconds."""
+    hours = operator_limits.value(
+        "scan.late_start_hours", _OVERALL_REFRESH_MISFIRE_GRACE_SECONDS / 3600
+    )
+    return max(60, int(float(hours) * 3600))
+
+
+def _overall_refresh_retry_minutes() -> float:
+    """How long after a refused start the daily refresh tries again (Settings)."""
+    return max(
+        1.0, float(operator_limits.value("scan.retry_minutes", _OVERALL_REFRESH_RETRY_MINUTES))
+    )
+
+
+def _daily_backup_time() -> tuple[int, int]:
+    """The hour and minute of the daily database backup (Settings), Dubai time."""
+    value = str(operator_limits.value("backups.daily_time", _DAILY_BACKUP_TIME))
+    try:
+        hour, minute = (int(part) for part in value.split(":"))
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise ValueError(value)
+    except ValueError:
+        hour, minute = (int(part) for part in _DAILY_BACKUP_TIME.split(":"))
+    return hour, minute
 
 
 def _scheduled_work_is_draining() -> bool:
@@ -312,8 +343,12 @@ def _full_scan_started_since(moment: datetime) -> bool:
     return created >= moment
 
 
-def _schedule_overall_refresh_attempt(run_at: datetime, retry_until: datetime) -> None:
+def _schedule_overall_refresh_attempt(
+    run_at: datetime, retry_until: datetime, grace_seconds: int | None = None,
+) -> None:
     """Queue the one pending late attempt (start-up catch-up or retry)."""
+    if grace_seconds is None:
+        grace_seconds = _overall_refresh_grace_seconds()
     _scheduler.add_job(
         _scheduled_overall_refresh,
         "date",
@@ -325,7 +360,7 @@ def _schedule_overall_refresh_attempt(run_at: datetime, retry_until: datetime) -
         coalesce=True,
         # The attempt enforces ``retry_until`` itself, so a late wake-up must
         # reach it instead of being dropped by the one-second default.
-        misfire_grace_time=_OVERALL_REFRESH_MISFIRE_GRACE_SECONDS,
+        misfire_grace_time=grace_seconds,
     )
 
 
@@ -338,11 +373,12 @@ def _schedule_missed_overall_refresh(now: datetime | None = None) -> datetime | 
     """
     now = now or datetime.now(timezone.utc)
     due = _latest_overall_refresh_due(now)
-    retry_until = due + timedelta(seconds=_OVERALL_REFRESH_MISFIRE_GRACE_SECONDS)
+    grace_seconds = _overall_refresh_grace_seconds()
+    retry_until = due + timedelta(seconds=grace_seconds)
     run_at = now + timedelta(seconds=_OVERALL_REFRESH_CATCH_UP_DELAY_SECONDS)
     if run_at > retry_until or _full_scan_started_since(due):
         return None
-    _schedule_overall_refresh_attempt(run_at, retry_until)
+    _schedule_overall_refresh_attempt(run_at, retry_until, grace_seconds)
     logging.getLogger("scheduler").info(
         "Overall refresh due at %s was missed; starting it at %s",
         due.isoformat(timespec="seconds"),
@@ -369,7 +405,8 @@ def _scheduled_overall_refresh(*, daily: bool = False, retry_until: str | None =
     """
     log = logging.getLogger("scheduler")
     now = datetime.now(timezone.utc)
-    grace = timedelta(seconds=_OVERALL_REFRESH_MISFIRE_GRACE_SECONDS)
+    grace_seconds = _overall_refresh_grace_seconds()
+    grace = timedelta(seconds=grace_seconds)
     if retry_until is not None:
         try:
             deadline = datetime.fromisoformat(retry_until)
@@ -405,11 +442,11 @@ def _scheduled_overall_refresh(*, daily: bool = False, retry_until: str | None =
         )
         if not already_running_this_schedule:
             retry_at = datetime.now(timezone.utc) + timedelta(
-                minutes=_OVERALL_REFRESH_RETRY_MINUTES
+                minutes=_overall_refresh_retry_minutes()
             )
             result = dict(result)
             if retry_at <= deadline:
-                _schedule_overall_refresh_attempt(retry_at, deadline)
+                _schedule_overall_refresh_attempt(retry_at, deadline, grace_seconds)
                 result["retry_scheduled_for"] = retry_at.isoformat(timespec="seconds")
                 log.info(
                     "Overall refresh not started (%s); it will retry at %s",
@@ -557,9 +594,74 @@ def _configure_overall_refresh_job() -> dict:
         replace_existing=True,
         max_instances=1,
         coalesce=True,
-        misfire_grace_time=_OVERALL_REFRESH_MISFIRE_GRACE_SECONDS,
+        misfire_grace_time=_overall_refresh_grace_seconds(),
     )
     return refresh_time
+
+
+def _configure_backup_job() -> str:
+    """Schedule the daily database backup at its saved time; returns ``HH:MM``."""
+    hour, minute = _daily_backup_time()
+    _scheduler.add_job(
+        _scheduled_backup, "cron", hour=hour, minute=minute, id="daily_backup",
+        replace_existing=True,
+    )
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _configure_auto_update_job(*, first_run_at: datetime | None = None) -> int:
+    """Schedule the update check at its saved interval; returns the seconds."""
+    seconds = _update_check_seconds()
+    first_run = {"next_run_time": first_run_at} if first_run_at is not None else {}
+    _scheduler.add_job(
+        _scheduled_auto_update,
+        "interval",
+        seconds=seconds,
+        id="automatic_main_update",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        **first_run,
+    )
+    return seconds
+
+
+def _reschedule_after_save(what: str, reschedule):
+    """A settings listener that reschedules one job and never raises into the save."""
+    def apply() -> None:
+        try:
+            reschedule()
+        except Exception:
+            logging.getLogger("scheduler").exception(
+                "The %s setting was saved but its job could not be rescheduled", what
+            )
+
+    return apply
+
+
+def _register_settings_listeners() -> None:
+    """Reschedule jobs the moment their setting is saved on the Settings page.
+
+    The older per-page routes reschedule after they save; a save through the
+    settings registry reaches the same functions through these listeners.
+    """
+    global _SETTINGS_LISTENERS_REGISTERED
+    from app import freshness, settings_registry
+
+    # Start-up may have read the grace before the database was ready.
+    freshness.refresh_grace_period()
+    if _SETTINGS_LISTENERS_REGISTERED:
+        return
+    for keys, what, reschedule in (
+        (("scan.daily_time", "scan.late_start_hours"), "daily refresh",
+         lambda: _configure_overall_refresh_job()),
+        (("insights.weekday", "insights.time", "insights.samples", "insights.explanations"),
+         "weekly pipeline insights", lambda: configure_pipeline_insights_job()),
+        (("updates.check_seconds",), "update check", lambda: _configure_auto_update_job()),
+        (("backups.daily_time",), "daily backup", lambda: _configure_backup_job()),
+    ):
+        settings_registry.subscribe(keys, _reschedule_after_save(what, reschedule))
+    _SETTINGS_LISTENERS_REGISTERED = True
 
 
 def configure_pipeline_insights_job() -> dict:
@@ -611,7 +713,7 @@ def _scheduled_log_housekeeping():
 
 
 def _configure_scheduler_jobs() -> dict:
-    _scheduler.add_job(_scheduled_backup, "cron", hour=6, minute=0, id="daily_backup", replace_existing=True)
+    _configure_backup_job()
     # The first run is two minutes after start-up: an update restarts every
     # service, which is when nssm rotates an oversized log, and that file
     # should go now rather than at the next six-hourly pass.
@@ -675,16 +777,7 @@ def _configure_scheduler_jobs() -> dict:
         max_instances=1,
         coalesce=True,
     )
-    _scheduler.add_job(
-        _scheduled_auto_update,
-        "interval",
-        seconds=_AUTO_UPDATE_INTERVAL_SECONDS,
-        id="automatic_main_update",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-        next_run_time=datetime.now(timezone.utc) + timedelta(seconds=60),
-    )
+    _configure_auto_update_job(first_run_at=datetime.now(timezone.utc) + timedelta(seconds=60))
     _scheduler.add_job(
         _scheduled_remote_flow_control,
         "interval",
@@ -876,6 +969,7 @@ def _start_runtime():
         reconciliation["unresolved"],
     )
 
+    _run_optional_startup_step("settings listeners", _register_settings_listeners)
     # Daily backup plus a user-configurable overall refresh.
     refresh_time = _run_optional_startup_step(
         "background-job configuration", _configure_scheduler_jobs
@@ -908,11 +1002,12 @@ def _start_runtime():
     )
     if scheduler_started:
         logging.getLogger(__name__).info(
-            "Scheduler started: backup at 06:00, overall refresh at %02d:%02d, "
-            "email dispatch every minute, main update check every %d minutes (enabled=%s)",
+            "Scheduler started: backup at %02d:%02d, overall refresh at %02d:%02d, "
+            "email dispatch every minute, main update check every %d seconds (enabled=%s)",
+            *_daily_backup_time(),
             refresh_time["hour"],
             refresh_time["minute"],
-            _AUTO_UPDATE_INTERVAL_SECONDS // 60,
+            _update_check_seconds(),
             _auto_update_enabled(),
         )
     else:
@@ -1068,6 +1163,23 @@ _AUTO_UPDATE_STATE: dict = {
 }
 
 
+def _update_check_seconds(built_in: int | None = None) -> int:
+    """How often Metronome looks for a new version (Settings), in seconds.
+
+    One setting drives the watcher's interval and how long a looked-up commit
+    is reused; ``built_in`` is the constant of whichever is asking.
+    """
+    if built_in is None:
+        built_in = _AUTO_UPDATE_INTERVAL_SECONDS
+    return max(1, int(operator_limits.value("updates.check_seconds", built_in)))
+
+
+def _auto_update_retry_seconds() -> int:
+    """How long a failed install holds back another try of the same version (Settings)."""
+    minutes = operator_limits.value("updates.retry_minutes", _AUTO_UPDATE_RETRY_SECONDS / 60)
+    return max(0, int(float(minutes) * 60))
+
+
 def _github_api_headers() -> dict[str, str]:
     headers = {
         "Accept": "application/vnd.github+json",
@@ -1190,10 +1302,11 @@ def _fetch_latest_commit() -> str:
 
 def _latest_commit(*, force: bool = False) -> tuple[str | None, str | None]:
     """Return ``(latest main commit, error)`` using the shared short cache."""
+    reuse_seconds = 0 if force else _update_check_seconds(_UPDATE_CHECK_TTL_SECONDS)
     with _UPDATE_CHECK_LOCK:
         if (
             not force
-            and time.time() - _UPDATE_CHECK["checked_at"] < _UPDATE_CHECK_TTL_SECONDS
+            and time.time() - _UPDATE_CHECK["checked_at"] < reuse_seconds
         ):
             return _UPDATE_CHECK["latest_commit"], _UPDATE_CHECK["error"]
         try:
@@ -1462,11 +1575,12 @@ def _auto_update_payload(
     latest = latest_commit or _UPDATE_CHECK.get("latest_commit")
     error = check_error if check_error is not None else _UPDATE_CHECK.get("error")
     enabled = _auto_update_enabled()
+    interval_seconds = _update_check_seconds()
     return {
         "enabled": enabled,
         "branch": "main",
-        "interval_minutes": _AUTO_UPDATE_INTERVAL_SECONDS / 60,
-        "interval_seconds": _AUTO_UPDATE_INTERVAL_SECONDS,
+        "interval_minutes": interval_seconds / 60,
+        "interval_seconds": interval_seconds,
         "task_name": _AUTO_UPDATE_TASK_NAME,
         "draining": _AUTO_UPDATE_DRAIN_EVENT.is_set(),
         "deployed_commit": deployed,
@@ -1865,7 +1979,8 @@ def _automatic_retry_wait(target_commit: str) -> tuple[dict, datetime] | None:
 
     A commit whose install failed, rolled back, could not launch or went
     stale would otherwise be relaunched on every watcher tick, stopping the
-    services each time. The watcher waits ``_AUTO_UPDATE_RETRY_SECONDS`` after
+    services each time. The watcher waits the retry time from the Settings
+    page (``_AUTO_UPDATE_RETRY_SECONDS`` unless changed) after
     the most recent attempt for the same commit ended; the result is that
     attempt and when the next automatic one is allowed. Manual updates and a
     different target commit are never held back.
@@ -1888,7 +2003,7 @@ def _automatic_retry_wait(target_commit: str) -> tuple[dict, datetime] | None:
         return None
     if ended.tzinfo is None:
         ended = ended.replace(tzinfo=timezone.utc)
-    retry_at = ended + timedelta(seconds=_AUTO_UPDATE_RETRY_SECONDS)
+    retry_at = ended + timedelta(seconds=_auto_update_retry_seconds())
     if retry_at <= datetime.now(timezone.utc):
         return None
     return attempt, retry_at
@@ -2176,7 +2291,7 @@ def get_refresh_schedule(request: Request):
 @app.put("/api/system/refresh-schedule")
 def update_refresh_schedule(body: RefreshScheduleRequest, request: Request):
     """Persist and reschedule the daily overall refresh time."""
-    require_app_access(request)
+    require_host(request, "Only the host PC can change the daily refresh time.")
     hour, minute = _parse_refresh_time(body.refresh_time)
     try:
         saved = set_overall_refresh_time(hour, minute)

@@ -29,6 +29,7 @@ from app.flow_diagnostics import (
 )
 from app.flow_local_runner import HEADED_WORKER_ID, WORKER_ID, launch_local_worker
 from app.flow_sql import _engine, _quote_identifier, configuration_status
+from app.local_access import require_host
 from app.routers.eventlog import get_actor, log_event
 from app.scanner.findings import sync_managed_actions
 from app.scanner.pbi_fetch import (
@@ -1918,6 +1919,7 @@ def pipeline_settings():
 
 @router.put("/settings")
 def update_pipeline_settings(body: PipelineSettingsWrite, request: Request):
+    require_host(request, "Only the host PC can change the full pipeline refresh settings.")
     set_setting("pipeline_full_refresh_enabled", "1" if body.enabled else "0")
     set_setting("pipeline_full_refresh_report_allowlist", _json(body.report_allowlist))
     with get_db() as db:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.local_access import require_app_access
+from app.local_access import require_app_access, require_host
 from app.pipeline_insights import cached_sample_for_source
 from app.pipeline_insights_settings import (
     get_pipeline_insights_settings,
@@ -39,7 +39,7 @@ def get_settings(request: Request):
 
 @router.put("/settings")
 def put_settings(body: PipelineInsightsSettingsRequest, request: Request):
-    require_app_access(request)
+    require_host(request, "Only the host PC can change the pipeline insights settings.")
     try:
         saved = save_pipeline_insights_settings(body.model_dump())
     except ValueError as exc:
