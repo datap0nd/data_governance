@@ -5,8 +5,81 @@ the code that reads it through ``settings_registry.get``.
 """
 from __future__ import annotations
 
-from app import flow_browser, flow_limits, flow_recording_timing, pipeline_insights_settings, settings as store
-from app.settings_registry import Setting, register, subscribe
+from app import config, flow_browser, flow_limits, flow_recording_timing, pipeline_insights_settings, settings as store
+from app.settings_registry import GROUP_TESTS, Setting, file_value_writer, register, subscribe
+
+# --- Connections -----------------------------------------------------------------
+#
+# These live in the protected settings file (.env), because worker processes
+# read them too. Saving one applies it to the web service at once and to each
+# worker on its next loop; no restart. Passwords are write-only.
+
+PROBE = "Read-only probe database"
+UPLOAD = "Flow upload database"
+POWER_BI = "Power BI"
+GROUP_TESTS[("connections", PROBE)] = "probe"
+GROUP_TESTS[("connections", UPLOAD)] = "upload"
+
+
+def _file(key, group, label, name, *, kind="text", default="", help="", placeholder="", **extra):
+    return register(Setting(
+        key=key, section="connections", group=group, label=label, kind=kind, default=default, help=help,
+        placeholder=placeholder, optional=True, store="file", storage_key=name, **extra,
+    ))
+
+
+_file("conn.probe_host", PROBE, "Host", "PGHOST",
+      help="Scanners use this account for SELECT queries only. It must not be able to write.")
+_file("conn.probe_port", PROBE, "Port", "PGPORT", kind="int", default=5432, minimum=1, maximum=65535)
+_file("conn.probe_database", PROBE, "Database", "PGDATABASE", default="postgres")
+_file("conn.probe_user", PROBE, "User", "PGUSER")
+_file("conn.probe_password", PROBE, "Password", "PGPASSWORD", kind="secret", default=None)
+
+_file("conn.upload_host", UPLOAD, "Host", "DG_UPLOAD_PGHOST", placeholder="Same as the probe host",
+      help="Where Flows write. A Flow with an owner signs in as that person's SQL user from Users; "
+           "the shared account below is used only for Flows without an owner.")
+_file("conn.upload_port", UPLOAD, "Port", "DG_UPLOAD_PGPORT", kind="int", default="", minimum=1, maximum=65535,
+      placeholder="Same as probe")
+_file("conn.upload_database", UPLOAD, "Default database", "DG_UPLOAD_PGDATABASE",
+      placeholder="Same as the probe database")
+_file("conn.upload_user", UPLOAD, "Shared user", "DG_UPLOAD_PGUSER")
+_file("conn.upload_password", UPLOAD, "Shared password", "DG_UPLOAD_PGPASSWORD", kind="secret", default=None)
+
+_file("conn.pbi_workspace", POWER_BI, "Workspace", "DG_PBI_WORKSPACE",
+      help="The workspace whose refresh schedules and usage are synced.")
+_file("conn.pbi_tenant", POWER_BI, "Tenant ID", "DG_PBI_TENANT_ID",
+      help="Only for a service principal. Leave the next three empty to use the signed-in account.")
+_file("conn.pbi_client_id", POWER_BI, "Service principal client ID", "DG_PBI_CLIENT_ID")
+_file("conn.pbi_client_secret", POWER_BI, "Service principal secret", "DG_PBI_CLIENT_SECRET",
+      kind="secret", default=None)
+_file("conn.pbi_proxy", POWER_BI, "Proxy", "DG_PBI_PROXY", placeholder="Automatic (Windows proxy settings)",
+      help="For example http://proxyhost:8080. A PAC script address is not valid here.")
+_file("conn.github_token", "GitHub", "Access token for update checks", "DG_GITHUB_TOKEN", kind="secret",
+      default=None, help="Optional. Avoids GitHub's request limit for anonymous checks.")
+
+# --- Folders ---------------------------------------------------------------------
+
+register(Setting(
+    key="folders.reports", section="folders", group="Folders on the host PC", label="Reports folder",
+    kind="path", default="", optional=True, store="file", applies="next_scan",
+    help="The folder of .pbix files and TMDL exports the scanner reads.",
+    # bio_path has the highest precedence of the names the scanner accepts, so
+    # writing it makes this page's value the one in force.
+    reader=lambda: config.REPORTS_PATH if config.REPORTS_PATH != "reports" else "",
+    writer=file_value_writer("bio_path"),
+))
+register(Setting(
+    key="folders.usage", section="folders", group="Folders on the host PC", label="Usage exports folder",
+    kind="path", default="", optional=True, store="file", applies="next_scan",
+    help="Optional. Power BI usage CSV exports.",
+    reader=lambda: config.USAGE_FILES_PATH, writer=file_value_writer("usage_files_path"),
+))
+register(Setting(
+    key="folders.python", section="folders", group="Folders on the host PC",
+    label="Default Python for script Flows", kind="path", default="", optional=True, store="file",
+    storage_key="DG_PYTHON_EXE", applies="new_runs", placeholder="The py launcher or python on PATH",
+    help="A Flow can still choose its own interpreter.",
+))
 
 # --- Scanner -------------------------------------------------------------------
 

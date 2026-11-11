@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from app import settings_registry, user_identity
+from app import connection_tests, settings_registry, user_identity
 from app.database import get_db
 from app.local_access import require_host
 from app.routers.eventlog import get_actor, log_event
@@ -53,3 +53,52 @@ def save_settings(body: SettingsWrite, request: Request):
                     get_actor(request),
                 )
     return {**_state(request), "changed": [record["key"] for record in changed]}
+
+
+class SecretWrite(BaseModel):
+    value: str = Field(min_length=1, max_length=2000)
+
+
+def _rejected(exc: settings_registry.SettingsRejected) -> JSONResponse:
+    return JSONResponse(status_code=422, content={
+        "detail": "Nothing was saved. " + " ".join(exc.errors.values()), "errors": exc.errors,
+    })
+
+
+@router.put("/secret/{key}")
+def replace_secret(key: str, body: SecretWrite, request: Request):
+    """Replace a password or token. The value is written, never returned or logged."""
+    require_host(request, "Only the host PC can change passwords.")
+    try:
+        saved = settings_registry.save_secret(key, body.value)
+    except KeyError:
+        raise HTTPException(404, "This setting does not exist.") from None
+    except settings_registry.SettingsRejected as exc:
+        return _rejected(exc)
+    with get_db() as db:
+        log_event(db, "system", None, "Settings", "secret_replaced", f"{saved['label']} replaced", get_actor(request))
+    return _state(request)
+
+
+@router.delete("/secret/{key}")
+def clear_secret(key: str, request: Request):
+    require_host(request, "Only the host PC can change passwords.")
+    try:
+        saved = settings_registry.save_secret(key, None)
+    except KeyError:
+        raise HTTPException(404, "This setting does not exist.") from None
+    except settings_registry.SettingsRejected as exc:
+        return _rejected(exc)
+    with get_db() as db:
+        log_event(db, "system", None, "Settings", "secret_cleared", f"{saved['label']} cleared", get_actor(request))
+    return _state(request)
+
+
+@router.post("/test/{name}")
+def test_connection(name: str, request: Request):
+    """Sign in with the saved values and say what happened."""
+    require_host(request, "Only the host PC can test connections.")
+    test = connection_tests.TESTS.get(name)
+    if test is None:
+        raise HTTPException(404, "There is no such connection test.")
+    return test()

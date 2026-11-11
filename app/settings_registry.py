@@ -28,11 +28,15 @@ import threading
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from app import settings as store
+from app import config, env_file, settings as store
 
 logger = logging.getLogger("settings")
 
-KINDS = ("int", "float", "bool", "choice", "time", "text", "path", "list")
+KINDS = ("int", "float", "bool", "choice", "time", "text", "path", "list", "secret")
+NO_SETTINGS_FILE = (
+    "Metronome has no settings file (.env) on this computer, so it cannot keep connection "
+    "details. Run setup.ps1 on the host PC once."
+)
 APPLIES = {
     "now": "Applies immediately",
     "next_scan": "Applies at the next scan",
@@ -53,6 +57,8 @@ SECTIONS = (
     ("updates", "Updates, backups and logs", "How Metronome updates itself, backs up its own database and keeps its logs in check."),
 )
 SECTION_IDS = tuple(section[0] for section in SECTIONS)
+# Groups that offer a "Test connection" button: (section, group) -> test name.
+GROUP_TESTS: dict[tuple[str, str], str] = {}
 # Settings that keep their own page for now, listed in the section they belong
 # to: (label, page, note).
 SECTION_LINKS = {
@@ -100,7 +106,12 @@ class Setting:
     placeholder: str = ""
     item: str = ""            # for lists: "email" validates each entry
     max_items: int = 100
-    optional: bool = False    # text and path: empty is allowed
+    optional: bool = False    # text, path and numbers: empty is allowed
+    # "db": Metronome's own database. "file": the protected .env settings file,
+    # for connection values a worker process reads too; storage_key is then
+    # the variable's name. Secrets always live in the file and are never read
+    # back to a browser.
+    store: str = "db"
     reader: Callable[[], Any] | None = None    # composite legacy settings
     writer: Callable[[Any], None] | None = None
     check: Callable[[Any], Any] | None = None  # extra validation; returns the value to save
@@ -139,6 +150,12 @@ def register(setting: Setting) -> Setting:
         raise ValueError(f"Choice setting without choices: {setting.key}")
     if bool(setting.reader) != bool(setting.writer):
         raise ValueError(f"A composite setting needs both a reader and a writer: {setting.key}")
+    if setting.store not in ("db", "file"):
+        raise ValueError(f"Unknown store for {setting.key}")
+    if setting.kind == "secret" and setting.store != "file":
+        raise ValueError(f"A secret belongs in the settings file: {setting.key}")
+    if setting.store == "file" and not setting.storage_key and setting.writer is None:
+        raise ValueError(f"A settings-file value needs its variable name: {setting.key}")
     _registry[setting.key] = setting
     return setting
 
@@ -239,6 +256,12 @@ def _list(setting: Setting, value: Any) -> list[str]:
 def validate(setting: Setting, value: Any) -> Any:
     """A submitted value, normalised to the setting's type, or ``SettingError``."""
     kind = setting.kind
+    if kind == "secret":
+        if not isinstance(value, str) or not env_file.is_single_line(value):
+            raise SettingError("Enter the value on one line, without line breaks.")
+        return value
+    if kind in ("int", "float") and setting.optional and (value is None or (isinstance(value, str) and not value.strip())):
+        return ""
     if kind in ("int", "float"):
         result: Any = _number(setting, value)
     elif kind == "bool":
@@ -309,6 +332,8 @@ def _decode(setting: Setting, raw: str) -> Any:
     # A hand-edited number outside the range is brought back inside it rather
     # than ignored, which is how the environment variables always behaved.
     if setting.kind in ("int", "float"):
+        if setting.optional and not str(raw).strip():
+            return ""
         try:
             number = float(str(raw).strip())
         except (TypeError, ValueError):
@@ -344,6 +369,8 @@ def _resolve(setting: Setting, saved: dict[str, str] | None = None) -> tuple[Any
             logger.exception("Could not read setting %s", setting.key)
             return setting.default, "default"
         return value, ("default" if value == setting.default else "app")
+    if setting.store == "file":
+        return _resolve_file(setting)
     raw = saved.get(setting.stored_as) if saved is not None else _read_one(setting.stored_as)
     if raw is not None:
         try:
@@ -354,6 +381,44 @@ def _resolve(setting: Setting, saved: dict[str, str] | None = None) -> tuple[Any
     if found:
         return value, "env"
     return setting.default, "default"
+
+
+def _resolve_file(setting: Setting) -> tuple[Any, str]:
+    """A settings-file value: the file wins, then the Windows environment."""
+    name = setting.stored_as
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return setting.default, "default"
+    source = "app" if name in config.ENV_FILE_STATUS.get("loaded_names", ()) else "env"
+    if setting.kind == "secret":
+        return raw, source
+    try:
+        return _decode(setting, raw), source
+    except SettingError:
+        return setting.default, "default"
+
+
+def _write_file(setting: Setting, value: Any) -> None:
+    """Keep or remove one line of the settings file, then apply it everywhere."""
+    if config.ENV_FILE is None:
+        raise SettingError(NO_SETTINGS_FILE)
+    text = None if value in (None, "") else _encode(setting, value)
+    try:
+        env_file.write_value(config.ENV_FILE, setting.stored_as, text)
+    except FileNotFoundError:
+        raise SettingError(NO_SETTINGS_FILE) from None
+    except ValueError as exc:
+        raise SettingError(str(exc)) from None
+    config.refresh()
+
+
+def file_value_writer(name: str):
+    """A writer for composite settings that keep one variable in the settings file."""
+    def write(value) -> None:
+        _write_file(Setting(key=name, section=SECTION_IDS[0], group="", label=name, kind="text",
+                            default="", optional=True, store="file", storage_key=name), value)
+
+    return write
 
 
 def _read_one(key: str) -> str | None:
@@ -390,6 +455,7 @@ def _read_all() -> dict[str, str] | None:
 def describe() -> list[dict]:
     """Sections, groups and settings with their current values, for the page."""
     _ensure_catalog()
+    config.refresh_if_changed()  # a hand edit to the settings file shows at once
     saved = _read_all()
     sections = []
     for section_id, name, blurb in SECTIONS:
@@ -398,6 +464,9 @@ def describe() -> list[dict]:
             if setting.section != section_id:
                 continue
             value, source = _resolve(setting, saved)
+            if setting.kind == "secret":
+                # Never the value: only whether one is saved, and where.
+                value = None
             groups.setdefault(setting.group, []).append({
                 "key": setting.key, "label": setting.label, "help": setting.help, "kind": setting.kind,
                 "unit": setting.unit, "minimum": setting.minimum, "maximum": setting.maximum,
@@ -406,10 +475,12 @@ def describe() -> list[dict]:
                 "placeholder": setting.placeholder, "optional": setting.optional,
                 "default": setting.default, "value": value, "source": source,
                 "applies": setting.applies, "applies_text": APPLIES[setting.applies],
+                "saved": source != "default" if setting.kind == "secret" else None,
             })
         sections.append({
             "id": section_id, "name": name, "blurb": blurb,
-            "groups": [{"title": title, "settings": items} for title, items in groups.items()],
+            "groups": [{"title": title, "settings": items, "test": GROUP_TESTS.get((section_id, title))}
+                       for title, items in groups.items()],
             "links": [{"label": label, "page": page, "note": note}
                       for label, page, note in SECTION_LINKS.get(section_id, ())],
         })
@@ -430,12 +501,19 @@ def save(changes: dict[str, Any]) -> list[dict]:
         if setting is None:
             errors[key] = "This setting does not exist."
             continue
+        if setting.kind == "secret":
+            errors[key] = "A password is replaced or cleared with its own buttons."
+            continue
         try:
             planned.append((setting, None if value is None else validate(setting, value)))
         except SettingError as exc:
             errors[key] = str(exc)
     if errors:
         raise SettingsRejected(errors)
+    if any(setting.store == "file" and setting.writer is None for setting, _ in planned) and config.ENV_FILE is None:
+        raise SettingsRejected({
+            setting.key: NO_SETTINGS_FILE for setting, _ in planned if setting.store == "file" and setting.writer is None
+        })
 
     changed: list[dict] = []
     with _lock:
@@ -451,6 +529,14 @@ def save(changes: dict[str, Any]) -> list[dict]:
                     setting.writer(new)
                 except ValueError as exc:
                     raise SettingsRejected({setting.key: str(exc)}) from None
+            elif setting.store == "file":
+                if value is not None and value == old and _resolve_file(setting)[1] == "app":
+                    continue
+                try:
+                    _write_file(setting, value)
+                except SettingError as exc:
+                    raise SettingsRejected({setting.key: str(exc)}) from None
+                new = _resolve_file(setting)[0]
             else:
                 # Saving the default explicitly still pins it against an
                 # environment value; resetting removes the saved row.
@@ -468,6 +554,33 @@ def save(changes: dict[str, Any]) -> list[dict]:
             except Exception:
                 logger.exception("A setting was saved but could not be applied at once: %s", record["key"])
     return changed
+
+
+def secret(key: str) -> str | None:
+    """A secret's value, for the code that signs in with it. Never for a response."""
+    setting = definition(key)
+    if setting.kind != "secret":
+        raise KeyError(f"Not a secret: {key}")
+    value, source = _resolve_file(setting)
+    return value if source != "default" else None
+
+
+def save_secret(key: str, value: str | None) -> dict:
+    """Replace a secret, or clear it with ``None``. Returns ``{key, label, saved}``."""
+    setting = definition(key)
+    if setting.kind != "secret":
+        raise SettingsRejected({key: "This setting is not a password."})
+    with _lock:
+        try:
+            _write_file(setting, None if value is None else validate(setting, value))
+        except SettingError as exc:
+            raise SettingsRejected({key: str(exc)}) from None
+    for callback in _listeners.get(key, ()):
+        try:
+            callback()
+        except Exception:
+            logger.exception("A password was saved but could not be applied at once: %s", key)
+    return {"key": key, "label": setting.label, "saved": _resolve_file(setting)[1] != "default"}
 
 
 def display(value: Any) -> str:
