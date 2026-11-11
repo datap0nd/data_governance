@@ -533,6 +533,7 @@ def test_parallel_settings_validate_persist_and_headed_is_parallel(bundle,monkey
     assert not flow_tasks.enabled(job)
 
 
+@pytest.mark.real_flow_files  # reads the generated script
 def test_inline_browser_switch_keeps_parallelism_and_refreshes_standalone(bundle):
     saved = flows.create_flow(_flow(bundle['site']['id'], bundle['saved']['report_id'],
         name='Inline visible', target_folder=None, download_parallelism=3), _request())
