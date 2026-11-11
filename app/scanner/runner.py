@@ -10,8 +10,11 @@ Scan runner — orchestrates a full scan.
 
 import hashlib
 import logging
+import os
 import re
-import shutil
+import sqlite3
+import tempfile
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -40,7 +43,7 @@ from app.scanner.tmdl_parser import (
     path_has_file_extension,
 )
 from app.scanner.walker import walk_reports_root, diagnose_reports_root
-from app.scanner.source_matcher import deduplicate_sources
+from app.scanner.source_matcher import _SKIP_SOURCE_TYPES, deduplicate_sources
 from app.scanner.findings import sync_managed_actions
 from app.scanner import jobs as scanner_jobs
 from app.asset_visibility import get_active_source_ids
@@ -116,8 +119,68 @@ def _postgres_work_is_required(db) -> bool:
     return bool(active_postgres_sources or sql_flow_targets)
 
 
-def _backup_db() -> None:
-    """Backup governance.db before scanning."""
+_BACKUP_NAME = re.compile(r"^governance_\d{8}_\d{6}\.db$")
+
+
+def _copy_sqlite_database(source: Path, destination: Path) -> None:
+    """Write a consistent copy of a live, WAL-mode SQLite database.
+
+    A plain file copy misses committed pages that still live in the ``-wal``
+    file and can tear under a concurrent writer. SQLite's online backup API
+    reads one transactionally consistent snapshot instead (the technique
+    ``tools/backup_sqlite.py`` uses for the updater). The destination only
+    appears once the copy is complete and passes ``PRAGMA quick_check``.
+
+    Unlike the updater, the app is running: the whole database is copied in
+    one step, because a paged backup restarts from the first page whenever
+    another connection writes between steps and might never finish. In WAL
+    mode the single read transaction does not block those writers.
+    """
+    temp_fd, temp_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
+    )
+    os.close(temp_fd)
+    temp_path = Path(temp_name)
+    try:
+        with closing(sqlite3.connect(str(source), timeout=30)) as source_db:
+            source_db.execute("PRAGMA busy_timeout = 30000")
+            with closing(sqlite3.connect(str(temp_path), timeout=30)) as backup_db:
+                source_db.backup(backup_db)
+                backup_db.commit()
+                quick_check = backup_db.execute("PRAGMA quick_check").fetchone()
+                if not quick_check or str(quick_check[0]).casefold() != "ok":
+                    detail = quick_check[0] if quick_check else "no result"
+                    raise sqlite3.DatabaseError(
+                        f"SQLite backup integrity check failed: {detail}"
+                    )
+        # Windows needs a writable descriptor to flush before the rename.
+        with temp_path.open("rb+") as backup_file:
+            os.fsync(backup_file.fileno())
+        os.replace(temp_path, destination)
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _prune_backups(backup_dir: Path, keep: int) -> None:
+    """Delete all but the newest *keep* timestamped backups (at least one)."""
+    backups = sorted(
+        item for item in backup_dir.iterdir()
+        if item.is_file() and _BACKUP_NAME.match(item.name)
+    )
+    for old_backup in backups[: -max(1, int(keep))]:
+        old_backup.unlink()
+        logger.info("Removed old database backup %s", old_backup)
+
+
+def _backup_db(keep: int | None = None) -> None:
+    """Backup governance.db before scanning.
+
+    Every backup is kept by default. Pass ``keep`` to retain only the newest
+    ``keep`` timestamped backups once the new one has been written.
+    """
     db_file = Path(DB_PATH)
     if not db_file.exists():
         return
@@ -129,8 +192,10 @@ def _backup_db() -> None:
     backup_path = backup_dir / f"governance_{timestamp}.db"
 
     try:
-        shutil.copy2(str(db_file), str(backup_path))
+        _copy_sqlite_database(db_file, backup_path)
         logger.info("Database backed up to %s", backup_path)
+        if keep is not None:
+            _prune_backups(backup_dir, keep)
     except Exception as e:
         logger.warning("Failed to backup database: %s", e)
 
@@ -338,11 +403,24 @@ def run_scan(
             current_step="Discovering Power BI reports",
             message="Reading PBIX/TMDL report definitions and source expressions.",
         )
-        reports = walk_reports_root(root)
-        # Filesystem validation belongs to the built-in discovery provider.
-        # Tests and embedding callers may replace it with an in-memory source.
+        def _before_report(position: int, total: int) -> None:
+            # Parsing many large files can take longer than the stale
+            # threshold: stay visibly alive and honour Stop between reports.
+            assert_not_cancelled(generation, "Report scan")
+            scanner_jobs.heartbeat(
+                operation_id,
+                current_step="Discovering Power BI reports",
+                message=f"Reading report definition {position} of {total}.",
+            )
+
+        # Filesystem validation and per-report progress belong to the built-in
+        # discovery provider. Tests and embedding callers may replace it with
+        # an in-memory source.
         if walk_reports_root is _DEFAULT_WALK_REPORTS_ROOT:
+            reports = walk_reports_root(root, on_report=_before_report)
             _validate_report_discovery(root, reports)
+        else:
+            reports = walk_reports_root(root)
         assert_not_cancelled(generation, "Report scan")
         reports_discovered = sum(
             int((getattr(report, "discovery", {}) or {}).get("candidate_count") or 1)
@@ -606,26 +684,44 @@ def run_scan(
                 )
                 existing = None
                 if pg_parts and source_info.database:
-                    identity_matches = exact_identity_rows(
+                    identity_rows = exact_identity_rows(
                         db,
                         server=source_info.server,
                         database=source_info.database,
                         schema=pg_parts[0],
                         relation=pg_parts[1],
+                        include_archived=True,
                     )
+                    identity_matches = [
+                        row for row in identity_rows if not row["archived"]
+                    ]
                     if len(identity_matches) > 1:
+                        # Older installs can already hold two active rows for
+                        # one relation. They are the same physical table, so
+                        # use the lowest id deterministically instead of
+                        # failing every scan; the operator can archive the
+                        # extra row.
                         match_ids = ", ".join(
                             str(int(row["source_id"])) for row in identity_matches
                         )
-                        raise RuntimeError(
+                        ambiguity = (
                             "Ambiguous PostgreSQL identity for "
                             f"{source_info.database}.{pg_parts[0]}.{pg_parts[1]}: "
-                            f"sources {match_ids}"
+                            f"sources {match_ids}; using source "
+                            f"{int(identity_matches[0]['source_id'])}"
                         )
-                    if len(identity_matches) == 1:
+                        logger.warning(ambiguity)
+                        log_lines.append(f"WARNING: {ambiguity}")
+                    # With no active row, reuse an archived row that holds
+                    # this identity and leave it archived, exactly as a
+                    # name-matched archived source of any other type is
+                    # reused below. Inserting a twin would make the identity
+                    # ambiguous the moment the original is restored.
+                    identity_match = (identity_matches or identity_rows or [None])[0]
+                    if identity_match is not None:
                         existing = db.execute(
                             "SELECT id, source_query, owner FROM sources WHERE id=?",
-                            (identity_matches[0]["source_id"],),
+                            (identity_match["source_id"],),
                         ).fetchone()
                 if not existing and not (pg_parts and source_info.database):
                     candidate = db.execute(
@@ -806,7 +902,10 @@ def run_scan(
                         mapped_source_id = source_ids_by_key.get(source.connection_key)
                         if mapped_source_id:
                             source_id = mapped_source_id
-                        elif source.source_type != "unknown":
+                        elif source.source_type not in _SKIP_SOURCE_TYPES:
+                            # Calculated/"Enter data" tables are never
+                            # registered as sources, so a missing mapping
+                            # is expected for them, not a broken reference.
                             broken_refs += 1
                             bucket = broken_by_report.setdefault(
                                 report_id,
@@ -1022,15 +1121,26 @@ def run_scan(
                         ).fetchone()
                         page_id = page_row["id"]
 
+                        seen_visual_ids: set[str] = set()
                         for visual in page.visuals:
+                            # Deduplicate visual ids per page (a layout may
+                            # carry unnamed or repeated visual names). A
+                            # normally named visual keeps its id.
+                            base_visual_id = str(visual.visual_id or "") or "unnamed"
+                            visual_id = base_visual_id
+                            suffix = 2
+                            while visual_id in seen_visual_ids:
+                                visual_id = f"{base_visual_id} ({suffix})"
+                                suffix += 1
+                            seen_visual_ids.add(visual_id)
                             db.execute(
                                 """INSERT INTO report_visuals (page_id, visual_id, visual_type, title, last_scanned)
                                    VALUES (?, ?, ?, ?, ?)""",
-                                (page_id, visual.visual_id, visual.visual_type, visual.title, now),
+                                (page_id, visual_id, visual.visual_type, visual.title, now),
                             )
                             vis_row = db.execute(
                                 "SELECT id FROM report_visuals WHERE page_id = ? AND visual_id = ?",
-                                (page_id, visual.visual_id),
+                                (page_id, visual_id),
                             ).fetchone()
                             vis_id = vis_row["id"]
 
@@ -1042,9 +1152,13 @@ def run_scan(
                                     (vis_id, ref.table_name, ref.field_name),
                                 )
 
-                # Store measures
+                # Store measures. Only complete snapshots reach this loop, so
+                # an empty list is authoritative and removes the report's last
+                # measure, unless the provider could not read its measures.
                 measures = getattr(report, "measures", [])
-                if measures:
+                if measures or (getattr(report, "discovery", {}) or {}).get(
+                    "measures_complete", True
+                ):
                     db.execute("DELETE FROM report_measures WHERE report_id = ?", (report_id,))
                     for m in measures:
                         db.execute(

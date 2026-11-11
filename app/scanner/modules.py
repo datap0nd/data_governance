@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from app.database import get_db
+# One threshold drives the Scanner "stale" badge and the stalled-module email.
+from app.scanner.jobs import STALE_AFTER_SECONDS
 from app.scanner.lifecycle import normalize_scan_status, redact_component_payload
 from app.scanner.diagnostics import with_diagnostic
 
@@ -123,7 +125,6 @@ ACTIVE_STATUSES = frozenset({"queued", "running"})
 TERMINAL_STATUSES = frozenset(
     {"completed", "completed_with_warnings", "failed", "stopped", "skipped", "not_requested"}
 )
-STALE_AFTER_SECONDS = 600
 MAX_DETAILS_CHARS = 24000
 MAX_LOG_CHARS = 24000
 
@@ -408,16 +409,21 @@ def mark_notification(
     if not module_run_ids:
         return
     placeholders = ",".join("?" for _ in module_run_ids)
-    values = [dispatch_id, status, redact_component_payload(error) if error else None]
-    stalled_sql = ", stalled_notified_at=?" if stalled else ""
-    if stalled:
-        values.append(_iso())
+    # ``stalled_notified_at`` is set while the row's notification is a stall
+    # notice. A later failure notice replaces that notice on the row and
+    # clears the marker, which is what lets it be sent exactly once.
+    values = [
+        dispatch_id,
+        status,
+        redact_component_payload(error) if error else None,
+        _iso() if stalled else None,
+    ]
     values.extend(int(item) for item in module_run_ids)
     with get_db() as db:
         db.execute(
             f"""UPDATE scanner_module_runs
                    SET notification_dispatch_id=?, notification_status=?,
-                       notification_error=?{stalled_sql}
+                       notification_error=?, stalled_notified_at=?
                  WHERE id IN ({placeholders})""",
             tuple(values),
         )
