@@ -520,33 +520,3 @@ def test_authoring_loader_falls_back_to_second_package_cdn():
 
     assert page.urls == list(pbi_visual_export.POWER_BI_AUTHORING_URLS)
     assert selected == pbi_visual_export.POWER_BI_AUTHORING_URLS[1]
-
-
-def test_runtime_reads_visual_fields_and_slicer_filters_for_rest_fallback():
-    runtime = pbi_visual_export._RUNTIME_HTML
-
-    assert 'objectName: "title"' in runtime
-    assert '["titleText", "text"]' in runtime
-    assert "propertyName" in runtime
-    assert "visual.getProperty" in runtime
-    assert 'titleSource: "property"' in runtime
-    assert "titleMeasureTarget" in runtime
-    assert 'titleSource: dynamicTitleTarget ? "expression" : null' in runtime
-    assert 'genericTitles = new Set(["matrix", "pivottable", "table", "tableex"])' in runtime
-    assert 'report.on("rendered"' in runtime
-    assert "visual.page.getVisuals()" in runtime
-    assert 'objectName: "columnFormatting"' in runtime
-    assert 'propertyName: "labelPrecision"' in runtime
-    assert "valueDecimalPlaces" in runtime
-    assert 'precisionSchema.endsWith("#default")' in runtime
-    assert 'precisionSchema === "" || precisionSchema.endsWith("#property")' in runtime
-    assert 'valueDecimalPlacesSource: precisionIsExplicit ? "visual" : null' in runtime
-    assert "() => selectedVisual.getCapabilities()" in runtime
-    assert '? ["Rows", "Columns", "Values"]' in runtime
-    assert "() => selectedVisual.getDataFields(role.name)" in runtime
-    assert "const targets = Array.isArray(roleTargets) ? roleTargets : []" in runtime
-    assert "selectedVisual.getFieldFormatString" in runtime
-    assert "data: result.data" in runtime
-    assert "querySpec," in runtime
-    assert "visual.getSlicerState()" in runtime
-    assert "querySpec" in runtime

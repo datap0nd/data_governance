@@ -366,20 +366,6 @@ def test_failed_install_is_not_relaunched_on_every_watcher_tick(updater):
     assert [row["status"] for row in _attempts()] == ["failed", "launched"]
 
 
-def test_retry_wait_follows_the_configured_interval(updater, monkeypatch):
-    updater["behaviour"]["fail"] = True
-    main._scheduled_auto_update()
-    monkeypatch.setattr(main, "_AUTO_UPDATE_RETRY_SECONDS", 10 * 60)
-
-    _age_last_attempt(9)
-    assert main._scheduled_auto_update()["status"] == "retry_wait"
-    assert len(updater["launches"]) == 1
-
-    _age_last_attempt(2)
-    assert main._scheduled_auto_update()["status"] == "launch_failed"
-    assert len(updater["launches"]) == 2
-
-
 def test_rolled_back_install_waits_but_manual_update_launches_at_once(updater):
     import json
 

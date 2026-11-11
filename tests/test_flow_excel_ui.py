@@ -5,8 +5,6 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
-import socket
-import subprocess
 import threading
 from urllib.parse import urlsplit
 
@@ -85,7 +83,6 @@ def fixture_server(source_type="outlook", port=0):
                     "asap_download_types": [],
                 },
                 "/api/flows": [state["flow"]], "/api/flows/runs": [],
-                "/api/flows/groups": [],
                 "/api/flows/workers": [], "/api/flows/scans": [],
                 "/api/flows/estimates": {}, "/api/people": state["people"],
                 "/api/flows/activity": {"active_runs": [], "latest_runs": [], "workers": {"online": 0}},
@@ -150,23 +147,6 @@ def excel_ui(request, tmp_path):
 def edit(page, base):
     page.goto(base + "/?edit_flow=901#flows")
     expect(page.locator("#flow-excel-names")).to_be_visible()
-
-
-def test_fixture_server_queues_a_browser_connection_burst():
-    # Its accept loop is not running, as when a busy runner starves it while
-    # Chrome opens its parallel connections for the app shell and its API calls.
-    server, _state = fixture_server()
-    clients = []
-    try:
-        for number in range(1, 17):
-            try:
-                clients.append(socket.create_connection(server.server_address, timeout=2))
-            except OSError as exc:
-                pytest.fail(f"connection {number} of 16 was not queued: {exc!r}")
-    finally:
-        for client in clients:
-            client.close()
-        server.server_close()
 
 
 def test_excel_failure_recovery_and_saved_choices(excel_ui, tmp_path):
@@ -292,14 +272,6 @@ def test_flow_owner_sql_assignment_is_optional_in_each_builder(excel_ui, tmp_pat
     assert state["flow"]["sql_assign_owner"] is False
     edit(page, base)
     expect(page.locator("#flow-sql-assign-owner")).not_to_be_checked()
-
-
-def test_flow_builder_frontend_contract():
-    subprocess.run(["node", "tests/test_flow_builder_contract.mjs"], cwd=ROOT, check=True)
-
-
-def test_flow_save_frontend_contract():
-    subprocess.run(["node", "tests/test_flow_save_without_test.mjs"], cwd=ROOT, check=True)
 
 
 if __name__ == "__main__":

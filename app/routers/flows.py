@@ -65,8 +65,6 @@ def _flow_server_identity() -> str:
     return postgres_server_identity(UPLOAD_PGHOST, UPLOAD_PGPORT)
 
 router = APIRouter(prefix="/api/flows", tags=["flows"])
-from app.routers import flow_groups
-router.include_router(flow_groups.router)
 
 CONTROL_TYPES = {"select", "multi_select", "text", "week"}
 DOWNLOAD_MODES = {"single", "one_per_period", "one_per_week"}
@@ -2637,9 +2635,6 @@ def update_site(site_id: int, body: SiteWrite, request: Request):
             raise HTTPException(409, "A website with that name already exists.") from exc
         if not cursor.rowcount:
             raise HTTPException(404, "Website not found.")
-        if existing and existing['adapter'] != body.adapter:
-            for flow in db.execute('SELECT id FROM flows WHERE site_id=?', (site_id,)).fetchall():
-                flow_groups.detach_if_scope_changed(db, flow['id'])
         log_event(db, "flow_site", site_id, body.name, "updated", actor=get_actor(request))
         row = db.execute("SELECT * FROM flow_sites WHERE id = ?", (site_id,)).fetchone()
     result = dict(row)
@@ -4371,7 +4366,6 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
         reconcile_file_binding(db, flow_id)
         for source_id in {existing["sql_target_source_id"], sql_target_source_id} - {None}:
             reconcile_source(db, int(source_id))
-        flow_groups.detach_if_scope_changed(db, flow_id)
         log_event(db, "flow", flow_id, body.name, "updated", actor=get_actor(request))
         saved = _flow_out(db, flow_id)
     notify_owner_of_host_change(request, before, saved)
@@ -4420,7 +4414,6 @@ def patch_flow(flow_id: int, body: FlowInlineWrite, request: Request):
             (*changes.values(), _iso(_now()), flow_id),
         )
         after = _flow_out(db, flow_id)
-        flow_groups.detach_if_scope_changed(db, flow_id)
         log_event(db, "flow", flow_id, flow["name"], "updated",
                   detail=json.dumps({key: {"before": flow[key], "after": value}
                                      for key, value in changes.items()}), actor=get_actor(request))

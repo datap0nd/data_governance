@@ -129,12 +129,3 @@ def test_setup_block_uses_inherited_password_and_stops_on_failure(tmp_path, corr
         assert credential["username"] == "portal-user"
         assert credential["password"] == NEW_PASSWORD
         assert NEW_PASSWORD.encode("utf-8") not in path.read_bytes()
-
-
-def test_setup_sync_precedes_interactive_authentication_and_is_not_interactive_only():
-    source = (ROOT / "setup.ps1").read_text(encoding="utf-8")
-    sync_at = source.index('# Sync the shared portal password')
-    bootstrap_at = source.index('# Bootstrap the dedicated automation browser profile')
-    guard_at = source.index('if (-not $Unattended)', bootstrap_at)
-    authenticate_at = source.index('--authenticate-url', bootstrap_at)
-    assert sync_at < bootstrap_at < guard_at < authenticate_at

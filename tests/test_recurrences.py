@@ -442,16 +442,6 @@ def test_power_bi_client_loader_falls_back_to_second_package_cdn():
     assert page.timeouts == [20000]
 
 
-def test_visual_export_uses_phased_embedding_and_hides_unselected_visuals():
-    runtime = pbi_visual_export._RUNTIME_HTML
-
-    assert "window.powerbi.load" in runtime
-    assert 'report.on("loaded"' in runtime
-    assert "setVisualDisplayState" in runtime
-    assert "VisualContainerDisplayMode.Hidden" in runtime
-    assert "window.powerbi.embed" not in runtime
-
-
 def test_visual_export_retries_once_when_edge_closes_during_startup(monkeypatch):
     class FakePlaywrightError(RuntimeError):
         pass

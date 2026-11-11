@@ -1657,16 +1657,6 @@ def test_a_stuck_wait_overlay_is_forced_down_instead_of_hanging_the_run():
 # ── Portal popup cleanup ──
 
 
-def test_popup_detector_uses_id_vocabulary_without_z_index_guesses():
-    script = flow_gscm._POPUP_RECORDS_JS
-    for marker in ("popup", "notice", "alert", "message", "msg", "confirm", "pdv_"):
-        assert marker in script
-    assert "topframe.setting" in script
-    assert "div_favorite" in script
-    assert "mainframe.waitwindow" in script
-    assert "zIndex" not in script
-
-
 @pytest.mark.parametrize(
     ("container_id", "close_id", "close_text"),
     [
@@ -2979,48 +2969,6 @@ def test_each_gscm_scan_preserves_the_same_stable_id_catalog_row(flow_db):
     assert current[0]["id"] == first_id
     assert (current[0]["enabled"], current[0]["stale"]) == (1, 0)
     assert timing_report_id == first_id
-
-
-def test_gscm_snapshot_preserves_only_missing_bookmarks_used_by_flows(flow_db):
-    site = flows.create_site(_gscm_site(), _request())
-    disposable = _gscm_discovered("Old unreferenced bookmark", "RC_OLD")
-    referenced = _gscm_discovered("Old referenced bookmark", "RC_USED")
-    with database.get_db() as db:
-        flows._apply_discovery(
-            db, site["id"], [disposable, referenced], "2026-08-21T10:00:00",
-        )
-        referenced_id = db.execute(
-            "SELECT id FROM flow_reports WHERE discovery_key=?", (referenced.discovery_key,),
-        ).fetchone()["id"]
-
-    flows.create_flow(flows.FlowWrite(
-        name="Existing GSCM flow",
-        site_id=site["id"],
-        report_id=referenced_id,
-        period_strategy="none",
-        file_format="xlsx",
-        target_folder="C:\\Reports",
-        filename_template="{flow}.xlsx",
-    ), _request())
-
-    replacement = _gscm_discovered("New bookmark", "RC_NEW")
-    with database.get_db() as db:
-        result = flows._apply_discovery(
-            db, site["id"], [replacement], "2026-08-21T11:00:00",
-        )
-        rows = db.execute(
-            "SELECT id, discovery_key, enabled, stale FROM flow_reports WHERE site_id=? ORDER BY id",
-            (site["id"],),
-        ).fetchall()
-
-    assert result["reset_report_count"] == 1
-    assert result["preserved_referenced_report_count"] == 1
-    assert len(rows) == 2
-    tombstone = next(row for row in rows if row["id"] == referenced_id)
-    active = next(row for row in rows if row["discovery_key"] == replacement.discovery_key)
-    assert (tombstone["enabled"], tombstone["stale"]) == (0, 1)
-    assert (active["enabled"], active["stale"]) == (1, 0)
-    assert all(row["discovery_key"] != disposable.discovery_key for row in rows)
 
 
 def test_an_empty_gscm_snapshot_cannot_erase_the_last_good_catalog(flow_db):

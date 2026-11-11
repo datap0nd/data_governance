@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 from app import database, flow_activity, flow_browser, flow_paths, flow_python, flow_sql, flow_worker
 from app import flow_view_refresh
 from app.flow_clock import dubai_today
-from app.routers import flow_groups, flows, pipelines, system_paths
+from app.routers import flows, pipelines, system_paths
 from test_flows import flow_db, _request
 
 # Saving a Flow here is set-up, not the subject: see skip_flow_files in conftest.py.
@@ -718,9 +718,6 @@ def test_python_surfaces_activity_groups_resume_and_paths(flow_db, tmp_path):
         message = flows._flow_failure_message(context)
         assert "Python scripts: fetch_orders.py \u2192 enrich_orders.py" in message["html_body"]
         assert message["to"] == "owner@example.test"
-
-    assert flow_groups.module_of({"source_type": "python", "source_adapter": "python_script"}) == "Python"
-    assert flow_groups.GroupWrite(name="Nightly", module="Python", flow_ids=[saved["id"]]).module == "Python"
 
     root = tmp_path / "root"
     inside = root / "Python" / "shared" / "fetch.py"

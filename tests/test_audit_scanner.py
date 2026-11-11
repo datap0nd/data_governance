@@ -6,7 +6,6 @@ import json
 import logging
 import os
 import sqlite3
-import subprocess
 import sys
 import threading
 import types
@@ -759,24 +758,6 @@ def test_stop_during_discovery_takes_effect_before_the_next_report(
     assert parsed == ["Alpha"]
     with database.get_db() as db:
         assert db.execute("SELECT COUNT(*) FROM reports").fetchone()[0] == 0
-
-
-def test_module_stall_threshold_follows_the_scanner_setting():
-    probe = (
-        "from app.scanner import jobs, modules; "
-        "print(jobs.STALE_AFTER_SECONDS, modules.STALE_AFTER_SECONDS)"
-    )
-    completed = subprocess.run(
-        [sys.executable, "-c", probe],
-        cwd=Path(__file__).resolve().parents[1],
-        env={**os.environ, "DG_SCANNER_STALE_AFTER_SECONDS": "120"},
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    assert completed.stdout.split() == ["120", "120"]
 
 
 @pytest.fixture

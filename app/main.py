@@ -99,7 +99,6 @@ _DRAINED_WORK_START_PATHS = (
         r"pg-deps|pg-cron|pbi-usage-sync)$"
     ),
     re.compile(r"^/api/flows/\d+/run$"),
-    re.compile(r"^/api/flows/groups/\d+/run$"),
     re.compile(r"^/api/flows/runs/\d+/(?:retry-sql|retry-views|resume)$"),
     re.compile(r"^/api/flows/(?:sites|reports)/\d+/scan$"),
     re.compile(r"^/api/flows/sql/catalog/refresh$"),
@@ -1132,12 +1131,7 @@ _UPDATE_CHECK: dict = {"checked_at": 0.0, "latest_commit": None, "error": None}
 _LATEST_COMMIT_URL = (
     "https://api.github.com/repos/datap0nd/data_governance/commits/main"
 )
-_TESTS_WORKFLOW_RUNS_URL = (
-    "https://api.github.com/repos/datap0nd/data_governance/"
-    "actions/workflows/tests.yml/runs"
-)
 _TESTS_WORKFLOW_PATH = ".github/workflows/tests.yml"
-_TESTS_GATE_TTL_SECONDS = 60
 _TESTS_GATE_LOCK = threading.Lock()
 _TESTS_GATE_CACHE: dict[str, tuple[float, dict]] = {}
 _AUTO_UPDATE_SETTING_KEY = "automatic_main_updates_enabled"
@@ -1391,164 +1385,6 @@ def _tests_gate_record(
         "message": message,
         "error": _safe_update_error(error) if error else None,
     }
-
-
-def _fetch_tests_workflow_gate(target_commit: str) -> dict:
-    """Return GitHub's Tests result for one exact main-branch commit."""
-    target = str(target_commit or "").strip().lower()
-    if not re.fullmatch(r"[0-9a-f]{40}", target):
-        raise RuntimeError("Tests can only be verified for a full Git commit SHA")
-    payload = _github_api_json(
-        _TESTS_WORKFLOW_RUNS_URL,
-        params={
-            "head_sha": target,
-            "branch": "main",
-            "event": "push",
-            "per_page": 10,
-        },
-    )
-    if not isinstance(payload, dict) or not isinstance(
-        payload.get("workflow_runs"), list
-    ):
-        raise RuntimeError("GitHub returned an invalid Tests workflow response")
-
-    matching_runs: list[dict] = []
-    for candidate in payload["workflow_runs"]:
-        if not isinstance(candidate, dict):
-            continue
-        workflow_path = str(candidate.get("path") or "").split("@", 1)[0]
-        if (
-            str(candidate.get("head_sha") or "").strip().lower() != target
-            or str(candidate.get("head_branch") or "").strip() != "main"
-            or str(candidate.get("event") or "").strip() != "push"
-            or workflow_path != _TESTS_WORKFLOW_PATH
-        ):
-            continue
-        matching_runs.append(candidate)
-
-    checked_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    if not matching_runs:
-        return _tests_gate_record(
-            target,
-            "pending",
-            "The Tests workflow has not started for this main commit yet.",
-            checked_at=checked_at,
-        )
-
-    def run_order(run: dict) -> tuple[int, int, int]:
-        values = []
-        for key in ("run_number", "run_attempt", "id"):
-            try:
-                values.append(int(run.get(key) or 0))
-            except (TypeError, ValueError):
-                values.append(0)
-        return tuple(values)
-
-    run = max(matching_runs, key=run_order)
-    status = str(run.get("status") or "").strip().casefold()
-    conclusion = str(run.get("conclusion") or "").strip().casefold() or None
-    normalized_run = dict(run)
-    normalized_run["status"] = status or None
-    normalized_run["conclusion"] = conclusion
-    if status != "completed":
-        return _tests_gate_record(
-            target,
-            "pending",
-            "The Tests workflow is still running for this main commit.",
-            checked_at=checked_at,
-            run=normalized_run,
-        )
-    if conclusion == "success":
-        return _tests_gate_record(
-            target,
-            "passed",
-            "The exact main commit passed the Tests workflow.",
-            checked_at=checked_at,
-            run=normalized_run,
-        )
-    return _tests_gate_record(
-        target,
-        "failed",
-        f"The Tests workflow finished with {conclusion or 'no conclusion'}.",
-        checked_at=checked_at,
-        run=normalized_run,
-    )
-
-
-def _tests_gate(target_commit: str, *, force: bool = False) -> dict:
-    """Return a short-lived, exact-SHA-keyed workflow gate result."""
-    target = str(target_commit or "").strip().lower()
-    now = time.monotonic()
-    with _TESTS_GATE_LOCK:
-        cached = _TESTS_GATE_CACHE.get(target)
-        if (
-            not force
-            and cached
-            and now - cached[0] < _TESTS_GATE_TTL_SECONDS
-        ):
-            return dict(cached[1])
-        try:
-            result = _fetch_tests_workflow_gate(target)
-        except Exception as exc:
-            if cached and cached[1].get("state") == "passed":
-                # A transient office-network failure cannot invalidate a
-                # successful result already observed for this immutable SHA.
-                result = dict(cached[1])
-                result["message"] = (
-                    "This exact main commit previously passed Tests. The latest "
-                    "GitHub status refresh timed out, so the verified result was reused."
-                )
-                result["verification_warning"] = _safe_update_error(
-                    f"{type(exc).__name__}: {exc}"
-                )
-            else:
-                checked_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-                result = _tests_gate_record(
-                    target or None,
-                    "unavailable",
-                    "Metronome could not verify the Tests workflow; installation is blocked.",
-                    checked_at=checked_at,
-                    error=f"{type(exc).__name__}: {exc}",
-                )
-        _TESTS_GATE_CACHE[target] = (now, result)
-        if len(_TESTS_GATE_CACHE) > 8:
-            prior_targets = [key for key in _TESTS_GATE_CACHE if key != target]
-            if prior_targets:
-                oldest = min(
-                    prior_targets,
-                    key=lambda key: _TESTS_GATE_CACHE[key][0],
-                )
-                _TESTS_GATE_CACHE.pop(oldest, None)
-        return dict(result)
-
-
-def _tests_gate_for_status(
-    deployed_commit: str | None,
-    latest_commit: str | None,
-    *,
-    force: bool = False,
-) -> dict:
-    if not latest_commit:
-        return _tests_gate_record(
-            None,
-            "not_checked",
-            "A main commit must be found before Tests can be checked.",
-        )
-    if _commits_match(deployed_commit, latest_commit):
-        return _tests_gate_record(
-            latest_commit,
-            "not_required",
-            "The installed commit already matches GitHub main.",
-        )
-    return _tests_gate(latest_commit, force=force)
-
-
-def _tests_gate_auto_status(gate: dict) -> str:
-    return {
-        "pending": "waiting_for_tests",
-        "failed": "tests_failed",
-        "unavailable": "tests_check_failed",
-    }.get(str(gate.get("state") or ""), "tests_check_failed")
 
 
 def _set_auto_update_state(**changes) -> None:

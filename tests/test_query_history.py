@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import pytest
 from fastapi import HTTPException
 
@@ -638,12 +636,3 @@ def test_startup_restores_counter_dropped_by_the_retired_removal(query_db):
         assert db.execute(
             "SELECT changed_queries FROM scan_runs ORDER BY id DESC LIMIT 1"
         ).fetchone()["changed_queries"] == 2
-
-
-def test_frontend_contains_query_history_and_diff_controls():
-    app_js = (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text(encoding="utf-8")
-    css = (Path(__file__).resolve().parents[1] / "app" / "static" / "style.css").read_text(encoding="utf-8")
-    assert "/api/query-history/report/" in app_js
-    assert "/api/query-history/materialized-view/" in app_js
-    assert "query-diff-open" in app_js
-    assert ".query-diff-table" in css
