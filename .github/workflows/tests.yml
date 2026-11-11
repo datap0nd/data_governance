@@ -83,8 +83,12 @@ jobs:
           cache-dependency-path: requirements-ci.lock
       - name: Install locked test dependencies
         run: pip install -r requirements-ci.lock
+      # Not `playwright install --with-deps` directly: that needs apt, and a
+      # runner that cannot reach the Ubuntu mirrors then fails here before any
+      # test runs. The script falls back to the browsers alone and proves
+      # that each one starts, so no browser test can be skipped for lack of one.
       - name: Install browsers for synthetic UI fixtures
-        run: python -m playwright install --with-deps chromium chrome
+        run: python tools/ci/install_browsers.py chromium chrome
       - name: Run Python test suite
         env:
           DG_DB_PATH: ${{ runner.temp }}/metronome-${{ matrix.os }}/governance.db
@@ -149,9 +153,19 @@ jobs:
           cache-dependency-path: integrations/metronome-gemini/package-lock.json
       - name: Install isolated Gemini extension dependencies
         run: npm ci --ignore-scripts --prefix integrations/metronome-gemini
+      # The same outage as in the Python jobs: with the Ubuntu mirrors
+      # unreachable, or the install with system packages failing, install the
+      # browser alone.
       - name: Install browser for synthetic Gemini download fixture
         working-directory: integrations/metronome-gemini
-        run: npx playwright install --with-deps chromium
+        shell: bash
+        run: |
+          if getent hosts azure.archive.ubuntu.com >/dev/null || getent hosts archive.ubuntu.com >/dev/null; then
+            npx playwright install --with-deps chromium || npx playwright install chromium
+          else
+            echo "::warning::The Ubuntu package mirrors do not resolve; installing the browser alone."
+            npx playwright install chromium
+          fi
       - name: Run frontend contracts
         shell: bash
         run: |
