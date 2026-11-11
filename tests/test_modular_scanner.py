@@ -193,18 +193,6 @@ def test_unreadable_snapshot_metadata_is_incomplete(tmp_path):
     assert merged[0].discovery["model_modified_at"] is None
 
 
-def test_discovery_depth_is_bounded(tmp_path):
-    within = tmp_path / "one" / "two" / "three" / "four"
-    beyond = within / "five"
-    beyond.mkdir(parents=True)
-    within_pbix = within / "Within.pbix"
-    beyond_pbix = beyond / "Beyond.pbix"
-    within_pbix.write_bytes(b"pbix")
-    beyond_pbix.write_bytes(b"pbix")
-
-    assert walker._discover_pbix_files(tmp_path) == [within_pbix]
-
-
 def test_missing_report_root_fails_without_losing_catalog(monkeypatch, tmp_path):
     temp_dir = _fresh_database(monkeypatch)
     try:

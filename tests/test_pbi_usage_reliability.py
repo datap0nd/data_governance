@@ -296,15 +296,3 @@ def test_usage_module_surfaces_the_power_bi_failure_explanation(usage_db, monkey
     assert run["details"]["diagnostic"] == diagnostic
     assert run["details"]["csv_import"]["status"] == "completed"
     assert run["details"]["power_bi_usage"]["status"] == "failed"
-
-
-def test_powershell_usage_path_tracks_the_same_outcomes():
-    script = pbi_sync.PS1_USAGE_SCRIPT.read_text(encoding="utf-8")
-    assert "New-UsageDiagnostic" in script
-    assert 'power_bi_usage_authorization_denied' in script
-    assert 'power_bi_usage_all_days_failed' in script
-    assert 'power_bi_usage_partial_failure' in script
-    assert 'power_bi_usage_already_current' in script
-    assert 'if ($syncedDaysList.Count -eq 0 -and $failedDays -gt 0)' in script
-    assert 'successful_days' in script
-    assert 'zero_activity_days' in script

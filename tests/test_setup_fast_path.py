@@ -18,7 +18,6 @@ ROOT = Path(__file__).resolve().parents[1]
 SETUP = ROOT / "setup.ps1"
 FAST_PATH = ROOT / "tools" / "setup_fast_path.ps1"
 APPLY_UPDATE = ROOT / "tools" / "apply_update.ps1"
-RUN_WORKER = ROOT / "tools" / "run_flow_worker.ps1"
 GIT_ATTRIBUTES = ROOT / ".gitattributes"
 WORKFLOW = ROOT / ".github" / "workflows" / "tests.yml"
 POWERSHELL_SCRIPTS = sorted([*ROOT.glob("*.ps1"), *(ROOT / "tools").glob("*.ps1")])
@@ -43,19 +42,6 @@ def _helpers(body: str) -> str:
 
 # --- Text contracts (every platform) -------------------------------------
 
-def test_every_block_setup_opens_is_closed():
-    # No PowerShell parser exists off Windows; an unbalanced brace is the
-    # commonest way to break a script that cannot be run here.
-    for script in POWERSHELL_SCRIPTS:
-        source = script.read_text(encoding="utf-8")
-        assert source.count("{") == source.count("}"), script.name
-    # Parentheses also appear in prose ("1) the folder"), so only the scripts
-    # that are free of that are counted.
-    for script in (SETUP, FAST_PATH, APPLY_UPDATE, RUN_WORKER):
-        source = script.read_text(encoding="utf-8")
-        assert source.count("(") == source.count(")"), script.name
-
-
 def test_logs_rotate_while_a_service_runs_not_only_after_a_quiet_day():
     source = SETUP.read_text(encoding="utf-8")
     # 86400 meant "never rotate a file written to in the last day", which a
@@ -68,83 +54,6 @@ def test_logs_rotate_while_a_service_runs_not_only_after_a_quiet_day():
         assert f"& $NssmExe set {service} AppRotateOnline 1" in source
         assert f"& $NssmExe set {service} AppRotateSeconds 0" in source
         assert f"& $NssmExe set {service} AppRotateBytes $LogRotateBytes" in source
-
-
-def test_worker_transcript_is_moved_aside_under_a_name_the_cleanup_recognises():
-    from app.log_housekeeping import ROTATED
-
-    source = RUN_WORKER.read_text(encoding="utf-8")
-    rotate = source.index("Move-Item -LiteralPath $WorkerLog")
-    assert rotate < source.index("Start-Transcript -Path $WorkerLog -Append")
-    assert '"flow_worker_{0}-{1}.log" -f $WorkerId, (Get-Date -Format "yyyyMMddTHHmmss.fff")' in source
-    assert ROTATED.match("flow_worker_bi-desktop-headed-20261111T072500.123.log")
-
-
-def test_a_relaunched_setup_resumes_after_extraction():
-    source = SETUP.read_text(encoding="utf-8")
-    guard = source.index('$ResumeAfterExtraction = ($env:DG_SETUP_RELAUNCHED -eq "1") -and (Test-Path $ZipPath -PathType Leaf)')
-    download = source.index("# --- Download latest code ---")
-    relaunch = source.index('$env:DG_SETUP_RELAUNCHED = "1"')
-    resume = source.index("} # end of the download, stop and extract stages a relaunched copy skips")
-    stamp = source.index('Set-Content "$CodeDir\\VERSION" $ver')
-    assert guard < download < relaunch < resume < stamp
-    # What the skipped stages used to define is defined for both paths.
-    for name in ("$HadExistingService = [bool]$existing", "$existingFlowService = Get-Service",
-                 "$ExistingAuditorService = Get-Service", "$Inner = $null"):
-        assert source.index(name) < download
-    # A resumed copy has no extracted folder name; the requested commit stamps VERSION.
-    assert "if (-not $CommitSha -and $LatestSha)" in source
-
-
-def test_fast_path_only_applies_to_unattended_updates_and_fails_towards_full_work():
-    source = SETUP.read_text(encoding="utf-8")
-    helper_load = source.index(". $SetupFastPath; $SetupFastPathLoaded = $true")
-    assert source.index("if (Test-Path $SetupFastPath -PathType Leaf)") < helper_load
-    for condition in (
-        "$DependenciesCurrent = $Unattended -and (Test-SetupStepCurrent -Step 'dependencies'",
-        "if ($Unattended -and (Test-SetupStepCurrent -Step 'flows_acl'",
-        "if ($Unattended -and -not $env:DG_SVC_PASSWORD -and $HadExistingService -and $existingFlowService -and $ExistingAuditorService -and",
-        "$HeadedTasksReusable = $Unattended -and (Test-SetupStepCurrent -Step 'headed_tasks'",
-        "if ($Unattended -and (Test-SetupStepCurrent -Step 'rdp_guard'",
-    ):
-        assert condition in source, condition
-    # The wrappers answer "not current" without the helper file or a fingerprint.
-    assert "if (-not $script:SetupFastPathLoaded -or -not $Fingerprint) { return $false }" in source
-    assert "$ApplyServiceConfig = $true" in source
-    # A changed installer re-applies services and tasks without a version bump.
-    assert source.count("(Get-SetupScriptsFingerprint)") >= 2
-    # Extraction keeps the original command as its fallback.
-    assert "if (Get-Command Expand-MetronomeArchive -ErrorAction SilentlyContinue)" in source
-    assert "Expand-Archive -Path $ZipPath -DestinationPath $TempExtract -Force" in source
-
-
-def test_services_are_asked_to_stop_together_before_the_per_service_waits():
-    source = SETUP.read_text(encoding="utf-8")
-    relaxed = source.index('$ErrorActionPreference = "Continue"')
-    request = source.index("& sc.exe stop $RunningService.Name 2>&1 | Out-Null")
-    first_wait = source.index("& $NssmExe stop $ServiceName 2>&1 | Out-Null")
-    strict = source.index('$ErrorActionPreference = "Stop"', relaxed)
-    # Native stderr under "Stop" would end the script, so the request sits in
-    # the relaxed region, before the stops whose waits it shortens.
-    assert relaxed < request < first_wait < strict
-    assert 'throw "Metronome did not stop within 30 seconds. Update aborted before replacing code."' in source
-
-
-def test_unattended_update_does_not_wait_two_minutes_for_worker_registration():
-    source = SETUP.read_text(encoding="utf-8")
-    assert "$WorkerPollAttempts = if ($Unattended) { 10 } else { 60 }" in source
-    assert "for ($attempt = 0; $attempt -lt $WorkerPollAttempts; $attempt++)" in source
-    assert 'throw "Metronome failed its localhost health check after unattended setup' in source
-
-
-def test_bridge_accepts_the_commit_prefix_setup_stamps():
-    # VERSION is "<timestamp>-<first 9 characters of the commit>". Comparing
-    # it with EndsWith(<40 characters>) reported every good update as failed.
-    source = APPLY_UPDATE.read_text(encoding="utf-8")
-    assert "$deployed.EndsWith($TargetSha" not in source
-    assert "$TargetSha.StartsWith($deployedCommit)" in source
-    stamp = re.search(r"comment\.decode\(\)\[:(\d+)\]", SETUP.read_text(encoding="utf-8"))
-    assert stamp and 7 <= int(stamp.group(1)) <= 40
 
 
 def test_update_archive_leaves_out_release_test_packages(tmp_path):
@@ -241,16 +150,6 @@ def test_file_fingerprint_follows_content_and_presence(tmp_path):
     two.unlink()
     removed = fingerprint()
     assert len({before, edited, removed}) == 3
-
-
-@windows_only
-def test_file_hashing_does_not_depend_on_a_module_that_may_fail_to_load():
-    # Windows PowerShell started from PowerShell 7 (as CI and some terminals
-    # do) cannot load the module that defines Get-FileHash. The fast path must
-    # not go quiet there, so it hashes with the framework itself.
-    source = FAST_PATH.read_text(encoding="utf-8")
-    assert "Get-FileHash -" not in source
-    assert "[System.Security.Cryptography.SHA256]::Create()" in source
 
 
 @windows_only

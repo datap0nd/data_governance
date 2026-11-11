@@ -608,17 +608,3 @@ def test_wait_heartbeat_does_not_revive_terminal_scanner_job(pbi_db):
     job = scanner_jobs.get_job(job_id)
     assert job["status"] == "completed"
     assert job["current_step"] == "Finished"
-
-
-def test_powershell_refresh_callbacks_include_attempt_id():
-    script = pbi_sync.PS1_SCRIPT.read_text(encoding="utf-8")
-    assert "[string]$AttemptId" in script
-    assert "$payload.attempt_id = $AttemptId" in script
-    assert "$correlatedDetails.attempt_id = $AttemptId" in script
-    assert "$output.attempt_id = $AttemptId" in script
-    assert "Start-CorrelatedPbiConnectWatchdog" in script
-    assert "trap {" in script
-    assert "Unhandled Power BI refresh sync failure" in script
-    trap_block = script[script.index("trap {"):script.index("Import-Module")]
-    assert 'Report-SyncStatus -Status "failed"' in trap_block
-    assert script.index("trap {") < script.index("Import-Module")

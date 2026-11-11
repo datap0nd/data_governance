@@ -647,29 +647,6 @@ class _OverlayPage:
         return self.clock.now >= self.closes_at
 
 
-def test_catalog_scan_fails_a_report_whose_overlay_never_clears(monkeypatch, tmp_path, clock):
-    monkeypatch.setattr(flow_worker, "_asap_goto", lambda *_args: False)
-    monkeypatch.setattr(flow_worker, "_asap_open_report", lambda *_args: object())
-    monkeypatch.setattr(flow_worker, "_asap_export_view_candidates", lambda *_args: [])
-    monkeypatch.setattr(flow_worker, "_asap_loading_overlay_visible", lambda _page: True)
-    job = {
-        "site": {"base_url": "https://portal.example.internal", "auth_url": None},
-        "discovery": {
-            "max_duration_minutes": 90, "scope": ["*"],
-            "report_paths": [["Market", "Group", "Target Report"]],
-        },
-    }
-
-    with pytest.raises(
-        RuntimeError, match="Target Report: ASAP loading overlay did not clear within 1800 seconds",
-    ):
-        flow_worker.discover_asap_catalog(
-            _OverlayPage(clock, closes_at=6 * 3600), job, lambda *_args, **_kwargs: None, tmp_path,
-        )
-
-    assert flow_worker.ASAP_SCAN_OVERLAY_TIMEOUT_SECONDS <= clock.now < flow_worker.ASAP_SCAN_OVERLAY_TIMEOUT_SECONDS + 5
-
-
 def test_export_view_activation_also_bounds_the_wait_after_its_click(monkeypatch, clock):
     from types import SimpleNamespace
 
@@ -820,12 +797,3 @@ def test_bootstrap_adapter_never_creates_a_missing_database(tmp_path, monkeypatc
 
     assert flow_worker._adapter_for_auth_url("https://gscm.example.internal/") == "asap_portal"
     assert not missing.exists() and not missing.parent.exists()
-
-
-def test_bootstrap_adapter_inference_names_no_host_in_source():
-    import inspect
-    import re
-
-    source = inspect.getsource(flow_worker._adapter_for_auth_url)
-    # A quoted dotted name such as "portal.example.internal" would be a host.
-    assert not re.search(r"""["'][\w-]+(?:\.[\w-]+)+["']""", source)

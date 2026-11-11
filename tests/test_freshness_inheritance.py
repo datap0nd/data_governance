@@ -1,4 +1,3 @@
-import inspect
 import shutil
 import tempfile
 from datetime import datetime, timezone
@@ -203,12 +202,6 @@ def test_exact_direct_file_binding_rejects_dynamic_and_ambiguous_targets(freshne
         db.execute("UPDATE flows SET filename_template='result.csv' WHERE id=1")
         _source(db, 2, "Duplicate", source_type="csv", connection_info=r"c:/OUTPUT/result.csv")
         assert reconcile_file_binding(db, 1)["status"] == "unresolved"
-
-
-def test_freshness_file_bindings_are_not_pipeline_execution_inputs():
-    from app.routers import pipelines
-    source = inspect.getsource(pipelines)
-    assert "flow_file_source_bindings" not in source
 
 
 def test_data_migration_preserves_manual_reset_and_auto_set_intent(freshness_db):

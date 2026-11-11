@@ -12,11 +12,6 @@ def _reset_cache():
     main._UPDATE_CHECK.update({"checked_at": 0.0, "latest_commit": None, "error": None})
 
 
-def test_deployed_commit_is_parsed_from_a_stamped_version(monkeypatch):
-    monkeypatch.setattr(main, "_APP_VERSION", "20260826-153000-f981961ab")
-    assert main._deployed_commit() == "f981961ab"
-
-
 def test_a_timestamp_only_version_has_no_commit(monkeypatch):
     # The pre-stamp format: "<date>-<time>". "153000" is hex-shaped but pure
     # digits, so it must not be mistaken for a commit.

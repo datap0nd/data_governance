@@ -164,13 +164,3 @@ def test_partial_portal_failure_keeps_files_and_logs_without_api(flow_db, tmp_pa
     assert failed['status'] == 'failed' and 'second export failed' in failed['progress']['message']
     assert failed['artifacts'] == [{'file_path': str(partial), 'status': 'saved'}]
     assert failed['timings'][-1]['status'] == 'failed'
-
-
-def test_worker_uses_same_resource_lock_for_entire_run():
-    source = Path('app/flow_worker.py').read_text(encoding='utf-8')
-    acquire = source.index('execution_locks.acquire()')
-    release = source.index('execution_locks.release()', acquire)
-    assert acquire < source.index('execute_flow(page, run["job"]', acquire) < release
-    shared = source[source.index('def execute_flow('):source.index('def run_worker(')]
-    assert 'sql_result = load_artifacts(' in shared
-    assert 'artifacts = _publish_direct_artifacts(' in shared

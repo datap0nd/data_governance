@@ -40,9 +40,7 @@ def status(request: Request):
 @router.get("/catalog", dependencies=[Depends(local_operator)])
 async def catalog():
     with get_db() as db:
-        flows = [dict(row) for row in db.execute("""SELECT f.id,f.name,g.name AS group_name
-            FROM flows f LEFT JOIN flow_group_members m ON m.flow_id=f.id
-            LEFT JOIN flow_groups g ON g.id=m.group_id ORDER BY g.name,f.name""")]
+        flows = [dict(row) for row in db.execute("SELECT id,name FROM flows ORDER BY name")]
     return {"flows": flows}
 
 

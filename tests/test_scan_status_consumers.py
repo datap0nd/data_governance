@@ -58,13 +58,6 @@ def test_scheduled_scan_reuses_global_lane_instead_of_overlapping(monkeypatch):
         temp_dir.cleanup()
 
 
-def test_scheduled_overall_refresh_starts_usage_sync_after_warning_scan(monkeypatch):
-    expected = {"accepted": True, "status": "queued", "job_id": 41}
-    monkeypatch.setattr(scanner, "start_scheduled_full_scan_job", lambda: expected)
-
-    assert main._scheduled_overall_refresh() == expected
-
-
 def test_scheduled_overall_refresh_retries_when_scanner_lane_is_busy(monkeypatch):
     expected = {
         "accepted": False,

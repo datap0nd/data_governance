@@ -18,13 +18,6 @@ from app.source_identity import upsert_postgres_identity
 OLD_VERIFIED_AT = "2025-01-02T03:04:05+00:00"
 
 
-def test_dependency_sql_rejects_cross_catalog_oid_collisions():
-    """A pg_proc/pg_type OID must never masquerade as a pg_class relation."""
-    normalized = " ".join(pg_deps._DEPENDENCY_SQL.split())
-    assert "d.classid = 'pg_rewrite'::regclass" in normalized
-    assert "d.refclassid = 'pg_class'::regclass" in normalized
-
-
 @pytest.fixture()
 def scan_db(monkeypatch):
     with tempfile.TemporaryDirectory() as temp_dir:

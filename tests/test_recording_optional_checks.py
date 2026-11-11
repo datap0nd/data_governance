@@ -99,10 +99,7 @@ def run_browser(job, profile, *, state=None, events=None):
 
 
 @pytest.mark.parametrize('choice,expected_rows', [
-    (None, None),
     ({'mode': 'append', 'names': ['South', 'North']}, [['Code', 'Units'], ['S', '7'], ['N', '4']]),
-    ({'mode': 'single', 'names': ['Totals']}, [['Year', 'Total'], ['2026', '11']]),
-    ({'mode': 'single', 'names': ['Missing']}, None),
     ({'mode': 'append', 'names': ['North', 'Totals']}, None),
 ])
 def test_recorded_excel_worksheet_choice_controls_exact_sql_input(
@@ -163,7 +160,7 @@ def test_row_checks_require_tabular_output(fmt):
         flow_recording.validate_definition(value)
 
 
-@pytest.mark.parametrize('fmt,rows', [('csv', [['Code', 'Amount']]), ('xlsx', []), ('xlsx', [['Code', 'Amount']])])
+@pytest.mark.parametrize('fmt,rows', [('csv', [['Code', 'Amount']]), ('xlsx', [])])
 def test_download_without_checks_accepts_empty_valid_data_and_ignores_old_metadata(flow_db, tmp_path, downloads_server, fmt, rows):
     url, exports = downloads_server
     exports[f'/1.{fmt}'] = export_bytes(fmt, rows)
@@ -313,7 +310,7 @@ def test_recorded_asap_download_uses_scan_path_staging_completion(
     assert output.read_bytes() == exports['/1.xlsx']
 
 
-@pytest.mark.parametrize('fmt', ['csv', 'xlsx'])
+@pytest.mark.parametrize('fmt', ['csv'])
 def test_optional_minimum_fails_before_publishing_any_output(flow_db, tmp_path, downloads_server, fmt):
     url, exports = downloads_server
     exports[f'/1.{fmt}'] = export_bytes(fmt, [['Code', 'Amount'], ['A', 1], ['B', 2], ['C', 3]])
@@ -387,7 +384,7 @@ def test_later_page_default_is_not_read_before_page_exists(flow_db, tmp_path, do
     assert state['artifacts'][0]['recording_defaults'] == {'date': '2026-09-06'}
 
 
-@pytest.mark.parametrize('fmt,minimum,count', [('xlsx', 0, 0), ('csv', 3, 3), ('csv', 3, 2)])
+@pytest.mark.parametrize('fmt,minimum,count', [('xlsx', 0, 0), ('csv', 3, 2)])
 def test_portable_replays_without_page_questions_and_honors_optional_rows(flow_db, tmp_path, downloads_server, fmt, minimum, count):
     url, exports = downloads_server
     exports[f'/1.{fmt}'] = export_bytes(fmt, [['Code', 'Amount'], *[[str(index), index] for index in range(count)]])

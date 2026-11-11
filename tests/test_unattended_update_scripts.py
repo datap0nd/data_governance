@@ -19,8 +19,6 @@ import pytest
 ROOT = Path(__file__).parents[1]
 APPLY_UPDATE = ROOT / "tools" / "apply_update.ps1"
 BACKUP_SQLITE = ROOT / "tools" / "backup_sqlite.py"
-SETUP = ROOT / "setup.ps1"
-UPDATE_APP = ROOT / "update_app.ps1"
 GIT_ATTRIBUTES = ROOT / ".gitattributes"
 
 
@@ -85,44 +83,6 @@ def test_failed_sqlite_backup_does_not_replace_existing_destination():
             assert existing.execute("SELECT value FROM marker").fetchone() == (7,)
 
 
-def test_unattended_task_is_only_a_validating_bridge_to_setup():
-    source = APPLY_UPDATE.read_text(encoding="utf-8")
-
-    assert "^[0-9a-fA-F]{40}$" in source
-    assert "request.target_commit" in source
-    assert '"Global\\Metronome_Auto_Update"' in source
-    assert '"pending_update.json"' in source
-    assert "request.code_dir" in source
-    assert "request.receipt_path" in source
-    assert '$SetupScript = Join-Path $CodeDir "setup.ps1"' in source
-    assert "$env:DG_UPDATE_COMMIT_SHA = $TargetSha" in source
-    assert "-File $SetupScript -Unattended" in source
-    assert "setup.ps1 installed the detected GitHub main commit" in source
-
-    # This file must remain a bridge. setup.ps1 owns download, backup,
-    # installation, dependency handling, service registration, and restart.
-    assert "Start-Process" not in source
-    assert "Get-Credential" not in source
-    assert "-Verb RunAs" not in source
-    assert "nssm.exe install" not in source
-    assert "nssm.exe set" not in source
-    assert "pip wheel" not in source
-    assert "pip download" not in source
-    assert "robocopy.exe" not in source
-    assert "Expand-Archive" not in source
-    assert "Stop-Service" not in source
-
-
-def test_setup_has_a_noninteractive_mode_for_the_update_task():
-    source = SETUP.read_text(encoding="utf-8")
-
-    assert "[switch]$Unattended" in source
-    assert '$RelaunchArguments += "-Unattended"' in source
-    assert 'throw "Unattended setup cannot request a Windows password' in source
-    assert 'throw "Metronome failed its localhost health check after unattended setup' in source
-    assert "if (-not $Unattended)" in source
-
-
 @pytest.mark.skipif(os.name != "nt", reason="Windows scheduled updater")
 def test_bridge_records_a_missing_setup_failure_and_removes_its_request():
     with tempfile.TemporaryDirectory(prefix=".updater-bridge-", dir=ROOT) as temp:
@@ -185,38 +145,6 @@ def test_bridge_records_a_missing_setup_failure_and_removes_its_request():
         assert not request.exists()
 
 
-def test_setup_registers_fixed_elevated_on_demand_update_task():
-    source = SETUP.read_text(encoding="utf-8")
-
-    assert '$AutoUpdateTaskName = "Metronome_Auto_Update"' in source
-    assert '"tools\\apply_update.ps1"' in source
-    assert '"pending_update.json"' in source
-    assert "-NonInteractive" in source
-    assert "-MultipleInstances IgnoreNew" in source
-    assert "-ExecutionTimeLimit (New-TimeSpan -Seconds 0)" in source
-    assert "-Password $ServicePassword -RunLevel Highest" in source
-    assert "Register-ScheduledTask -TaskName $AutoUpdateTaskName" in source
-
-
-def test_manual_update_uses_only_the_authoritative_setup_script():
-    source = UPDATE_APP.read_text(encoding="utf-8")
-
-    assert 'Join-Path $CodeDir "setup.ps1"' in source
-    assert "DG_UPDATE_COMMIT_SHA" in source
-    assert "setup_ps1_clean.txt" not in source
-    assert "Copy-Item $Template" not in source
-
-
-def test_manual_update_requires_a_fresh_sha_and_propagates_setup_failure():
-    source = UPDATE_APP.read_text(encoding="utf-8")
-    assert "_metronome_check=" in source
-    assert '"Cache-Control" = "no-cache"' in source
-    assert "^[0-9a-fA-F]{40}$" in source
-    assert "Continuing with a normal update" not in source
-    assert 'throw "Could not confirm the newest version.' in source
-    assert "exit $LASTEXITCODE" in source
-
-
 def test_update_archive_never_contains_anything_under_media(tmp_path):
     # The update downloads GitHub's archive of main, which git archive builds
     # and which honours export-ignore. Archive a fixture commit carrying the
@@ -243,13 +171,3 @@ def test_update_archive_never_contains_anything_under_media(tmp_path):
         names = set(bundle.namelist())
     assert not [name for name in names if name == "media/" or name.startswith("media/")]
     assert {"app/main.py", "app/media.py", "docs/media/guide.md"} <= names
-
-
-def test_setup_hides_progress_bars_before_downloading_and_extracting():
-    # Windows PowerShell 5.1 crawls through Invoke-WebRequest and
-    # Expand-Archive while it draws their progress bars.
-    source = SETUP.read_text(encoding="utf-8")
-    quiet = source.index("$ProgressPreference = 'SilentlyContinue'")
-    assert quiet < source.index("Invoke-WebRequest -Uri")
-    assert quiet < source.index("Expand-Archive -Path")
-    assert source.count("$ProgressPreference") == 1

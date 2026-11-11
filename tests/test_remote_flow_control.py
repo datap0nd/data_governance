@@ -8,7 +8,6 @@ import json
 import threading
 import uuid
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -301,19 +300,3 @@ def test_control_endpoints_use_socket_locality_not_permissive_access(control_db,
     with pytest.raises(HTTPException) as rejected:
         main.get_remote_flow_control(remote)
     assert rejected.value.status_code == 403
-
-
-def test_frontend_only_navigates_to_integer_run_and_shows_local_controls():
-    root = Path(__file__).parents[1]
-    listener = (root / "app" / "static" / "remote_flow_control.js").read_text()
-    app_source = (root / "app" / "static" / "app.js").read_text()
-    index = (root / "app" / "static" / "index.html").read_text()
-    log_page = (root / "app" / "static" / "flow_run_log.html").read_text()
-
-    assert "Number.isSafeInteger(runId)" in listener
-    assert "location.assign(destination)" in listener
-    assert "intent.path" not in listener
-    assert "Emergency off" in app_source
-    assert "Remote target:" in app_source
-    assert "remote_flow_control.js?v=1" in index
-    assert "remote_flow_control.js?v=1" in log_page

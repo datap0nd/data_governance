@@ -8,6 +8,7 @@ templates and the result vocabulary.
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-11-11: Tests that prove nothing removed, with the leftover code they kept alive | [Test plan](releases/2026-11-11-test-suite-pruning/test-plan.md) | [Test report](releases/2026-11-11-test-suite-pruning/test-report.md) |
 | 2026-11-11: Setup refuses to start a second, empty installation | [Test plan](releases/2026-11-11-installer-one-installation/test-plan.md) | [Test report](releases/2026-11-11-installer-one-installation/test-report.md) |
 | 2026-11-11: Recorded-Flow saves no longer rebuild their source; tests stop paying fixed costs | [Test plan](releases/2026-11-11-test-time-waste/test-plan.md) | [Test report](releases/2026-11-11-test-time-waste/test-report.md) |
 | 2026-11-11: Faster merge gate and no Vercel deployment | [Test plan](releases/2026-11-11-faster-merge-gate-no-vercel/test-plan.md) | [Test report](releases/2026-11-11-faster-merge-gate-no-vercel/test-report.md) |

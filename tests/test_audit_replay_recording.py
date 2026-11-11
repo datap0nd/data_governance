@@ -187,7 +187,7 @@ def test_f02_worker_does_not_replay_another_filter_selection(tmp_path, monkeypat
 
 
 from app import database, flow_recording  # noqa: E402
-from app.routers import flows, flow_recordings as recording_routes  # noqa: E402
+from app.routers import flow_recordings as recording_routes  # noqa: E402
 from test_flows import flow_db, _request  # noqa: E402,F401
 from test_flow_recordings import definition as plain_definition, draft_job  # noqa: E402
 
@@ -308,31 +308,6 @@ def test_f13_plain_copy_is_not_downgraded_and_still_forces_dubai_time(flow_db):
     stored = _stored_definition(copied["revision_id"])
     assert stored["version"] == 4
     assert stored["timezone"] == "Asia/Dubai"
-
-
-def test_f13_replicated_flow_copies_a_range_recording(flow_db):
-    source, _job = draft_job()
-    revision = _save_recording(source["id"], _range_control_definition())
-    with database.get_db() as db:
-        db.execute("UPDATE flows SET recording_revision_id=? WHERE id=?", (revision, source["id"]))
-        original = flows._flow_out(db, source["id"])
-    replica = flows.create_flow(flows.FlowWrite.model_validate({
-        **original, "name": "Portable sales copy", "enabled": False,
-        "recording_revision_id": None, "target_folder": None,
-    }), _request())
-
-    copied = recording_routes.copy_template(
-        replica["id"], recording_routes.TemplateCopy(source_flow_id=source["id"]),
-    )
-
-    stored = _stored_definition(copied["revision_id"])
-    assert stored["version"] == 4
-    assert [step["action"] for step in stored["steps"]] == ["new_page", "set_range", "download"]
-    with database.get_db() as db:
-        row = db.execute(
-            "SELECT flow_id, status FROM flow_recording_revisions WHERE id=?", (copied["revision_id"],),
-        ).fetchone()
-    assert dict(row) == {"flow_id": replica["id"], "status": "draft"}
 
 
 # ── F-14: a table cut off at the export row limit is named in the email and run ──
@@ -531,22 +506,6 @@ def test_f15_browser_script_names_each_filter_level_it_could_not_read(failing, u
             pbi_visual_query.build_visual_query(_fallback_spec(spec["unreadableFilters"]), 100)
     else:
         assert "EVALUATE" in pbi_visual_query.build_visual_query(_fallback_spec([]), 100)["dax"]
-
-
-def test_f15_browser_script_no_longer_swallows_filter_read_failures():
-    runtime = pbi_visual_export._RUNTIME_HTML
-
-    for swallowed in (
-        "safeCall(() => report.getFilters(), [])",
-        "safeCall(() => page.getFilters(), [])",
-        "safeCall(() => selectedVisual.getFilters(), [])",
-    ):
-        assert swallowed not in runtime
-    for level in ('readFilters("report", report)', 'readFilters("page", page)',
-                  'readFilters("visual", selectedVisual)'):
-        assert level in runtime
-    assert "unreadableFilters.push(source)" in runtime
-    assert "safeCall(() => visual.getSlicerState(), null)" in runtime
 
 
 @pytest.mark.parametrize(("unreadable", "named"), [

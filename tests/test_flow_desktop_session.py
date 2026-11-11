@@ -430,34 +430,6 @@ def test_output_lines_are_bounded_like_the_pipe_reader(tmp_path):
     assert lines[2:] == ["tail"]
 
 
-def test_setup_registers_the_standard_rights_desktop_launcher_task():
-    source = (ROOT / "setup.ps1").read_text(encoding="utf-8")
-    assert "$PythonDesktopTaskName = 'Metronome_Python_Desktop'" in source
-    assert "-LogonType Interactive -RunLevel Limited" in source
-    assert "-MultipleInstances Parallel" in source
-    assert "-Priority 4" in source
-    assert "Join-Path $PyDir 'pythonw.exe'" in source
-    assert "app\\flow_desktop_host.py" in source
-    assert "'.metronome-python-desktop'" in source
-    assert "Register-ScheduledTask -TaskName $PythonDesktopTaskName" in source
-    stop = "Stop-ScheduledTask -TaskName $PythonDesktopTaskName"
-    assert stop in source
-    assert source.index(stop) < source.index("Expand-Archive -Path $ZipPath")
-
-
-def test_worker_advertises_desktop_runs_and_uses_the_session_only_on_windows():
-    source = (ROOT / "app" / "flow_worker.py").read_text(encoding="utf-8")
-    assert "registration['capabilities'][flow_python.DESKTOP_CAPABILITY] = True" in source
-    loop = source[source.index("def run_worker("):]
-    assert 'if os.name == "nt":' in loop
-    assert "DesktopSession(env_file=config.ENV_FILE)" in loop
-    # The portable run_flow.py copies execute_flow and what it references;
-    # it must never pull in the Task Scheduler launcher.
-    shared = source[source.index("def execute_flow("):source.index("def run_worker(")]
-    assert "flow_desktop_session" not in shared
-    assert flow_desktop_session.TASK_NAME == "Metronome_Python_Desktop"
-
-
 def test_spool_is_private_to_the_account_profile_unless_overridden(tmp_path, monkeypatch):
     monkeypatch.delenv(flow_desktop_session.SPOOL_ENVIRONMENT, raising=False)
     assert flow_desktop_session.spool_root() == Path.home() / ".metronome-python-desktop"

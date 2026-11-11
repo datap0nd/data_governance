@@ -66,17 +66,3 @@ def test_authenticate_helper_reads_the_browser_channel_from_the_database_when_th
     with pytest.raises(RuntimeError, match="no database exists at .*governance.db. Start the MXAnalytics service or set DG_DB_PATH"):
         flow_worker.main()
     assert calls == [] and not missing.exists() and not missing.parent.exists()
-
-
-def test_setup_elevation_window_is_visible_when_interactive_and_the_helper_sees_the_database():
-    # No PowerShell on Linux runners: check the exact lines setup.ps1 must carry.
-    source = (ROOT / "setup.ps1").read_text(encoding="utf-8")
-    elevation = source[source.index("# --- Self-elevate to Admin if needed ---"):source.index('$ErrorActionPreference = "Stop"')]
-    assert "$ElevationWindowStyle = if ($Unattended) { 'Hidden' } else { 'Normal' }" in elevation
-    assert "Start-Process powershell.exe $ElevationArguments -Verb RunAs -WindowStyle $ElevationWindowStyle" in elevation
-    assert "-WindowStyle Hidden" not in elevation
-    # The SSO helper runs while the service is stopped and falls back to the
-    # database; setup keeps governance.db beside the code folder, not inside
-    # it, so the helper needs the same DG_DB_PATH the service gets.
-    assert '$DbPath      = "$ProjectDir\\governance.db"' in source
-    assert source.index("$env:DG_DB_PATH = $DbPath") < source.index("--authenticate-url $FlowAuthUrl")
