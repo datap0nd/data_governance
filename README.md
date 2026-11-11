@@ -81,6 +81,8 @@ Everyone on the network can use Metronome, and each browser chooses its person f
 
 Worker limits (download waits, SQL time limits, attempts) are copied into each run when it is queued, so a change applies to new runs and never alters one in progress.
 
+[docs/settings.md](docs/settings.md) explains how a setting is declared and read.
+
 ### Automatic main updates
 
 Production installs watch the GitHub `main` branch every 90 seconds by
