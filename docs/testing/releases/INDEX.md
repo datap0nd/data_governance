@@ -5,6 +5,7 @@ in [the testing workflow](../README.md); this file is the complete history.
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-11-11: Installer no longer needs pandas before it installs pandas | [Test plan](2026-11-11-installer-bundled-wheels/test-plan.md) | [Test report](2026-11-11-installer-bundled-wheels/test-report.md) |
 | 2026-11-11: Settings page, connections and passwords in the app | [Test plan](2026-11-11-settings-page/test-plan.md) | [Test report](2026-11-11-settings-page/test-report.md) |
 | 2026-11-11: Audit fixes for Flows, scanners and access | [Test plan](2026-11-11-audit-fixes/test-plan.md) | [Test report](2026-11-11-audit-fixes/test-report.md) |
 | 2026-11-11: Faster updates and bounded service logs | [Test plan](2026-11-11-faster-updates-bounded-logs/test-plan.md) | [Test report](2026-11-11-faster-updates-bounded-logs/test-report.md) |

@@ -338,3 +338,69 @@ def test_bridge_version_rule_accepts_a_prefix_and_rejects_another_commit():
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "True|True|True|False|False|False"
+
+
+# --- Bundled wheels: the step must work on a Python that has nothing else -------
+
+def _bundled_install_arguments() -> list[str]:
+    """The arguments setup.ps1 gives pip for the wheels kept in vendor/."""
+    lines = [line.strip() for line in SETUP.read_text(encoding="utf-8").splitlines()
+             if "--find-links vendor" in line and not line.strip().startswith("#")]
+    assert len(lines) == 1, lines
+    assert lines[0].startswith("& $PipExe install ")
+    return lines[0][len("& $PipExe install "):].split()
+
+
+def _wheel_requirements(wheel: Path) -> set[str]:
+    with zipfile.ZipFile(wheel) as archive:
+        metadata = next(name for name in archive.namelist() if name.endswith(".dist-info/METADATA"))
+        text = archive.read(metadata).decode("utf-8")
+    needed = set()
+    for line in text.splitlines():
+        if line.startswith("Requires-Dist:") and ";" not in line:
+            needed.add(re.split(r"[\s<>=!~(\[]", line.split(":", 1)[1].strip(), maxsplit=1)[0].lower())
+    return needed
+
+
+def test_bundled_wheels_are_installed_without_looking_for_what_is_not_bundled():
+    arguments = _bundled_install_arguments()
+    bundled = {wheel.name.split("-", 1)[0].lower() for wheel in (ROOT / "vendor").glob("*.whl")}
+    not_bundled = set().union(*(_wheel_requirements(wheel) for wheel in (ROOT / "vendor").glob("*.whl"))) - bundled
+    # pbixray needs pandas and apsw; neither wheel is kept in vendor/.
+    assert {"pandas", "apsw"} <= not_bundled
+    assert "--no-index" in arguments
+    assert "--no-deps" in arguments, (
+        f"vendor/ has no wheel for {sorted(not_bundled)}; resolving them offline fails on a new Python"
+    )
+    # The online step names the package again, so its needs come from the index.
+    requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+    assert re.search(r"(?m)^pbixray\b", requirements)
+    setup = SETUP.read_text(encoding="utf-8")
+    assert setup.index("--find-links vendor") < setup.index("-r requirements.txt")
+
+
+def test_the_bundled_step_succeeds_on_a_python_with_nothing_installed(tmp_path):
+    import sys
+    import venv
+
+    fresh = tmp_path / "fresh-python"
+    venv.create(fresh, with_pip=True)
+    pip = fresh / ("Scripts/pip.exe" if os.name == "nt" else "bin/pip")
+    arguments = _bundled_install_arguments()
+    if os.name != "nt" or sys.version_info[:2] > (3, 13):
+        # Only Windows wheels of xpress9 are bundled, for Python 3.10 to 3.13.
+        arguments = [item for item in arguments if item != "xpress9"]
+
+    def install(extra: list[str]) -> subprocess.CompletedProcess:
+        return subprocess.run([str(pip), "install", *extra], cwd=ROOT, capture_output=True, text=True, timeout=600)
+
+    # What the installer did before: pip is asked to find pandas offline.
+    before = install([item for item in arguments if item != "--no-deps"])
+    assert before.returncode != 0
+    assert "No matching distribution found" in before.stderr
+
+    now = install(arguments)
+    assert now.returncode == 0, now.stderr
+    listed = subprocess.run([str(pip), "list", "--format=freeze"], capture_output=True, text=True, timeout=120).stdout.lower()
+    assert "pbixray==" in listed and "kaitaistruct==" in listed
+    assert "pandas==" not in listed  # left for the requirements step, which has the index

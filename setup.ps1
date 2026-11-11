@@ -572,8 +572,13 @@ $DependenciesCurrent = $Unattended -and (Test-SetupStepCurrent -Step 'dependenci
 if ($DependenciesCurrent) {
     Write-Host "  Dependencies unchanged since the last install; nothing to install." -ForegroundColor DarkGray
 } else {
-# Install bundled wheels first (pbixray + xpress9 + kaitaistruct, no network)
-& $PipExe install --no-index --find-links vendor pbixray xpress9 kaitaistruct -q
+# Install bundled wheels first (pbixray + xpress9 + kaitaistruct, no network).
+# --no-deps: pbixray also needs pandas and apsw, which are not bundled. Asking
+# pip to resolve them here, offline, only worked when an earlier install had
+# already put them in this Python, and stopped a new or rebuilt Python with
+# "No matching distribution found for pandas". The requirements step below
+# names pbixray again and installs what it needs from the package index.
+& $PipExe install --no-index --no-deps --find-links vendor pbixray xpress9 kaitaistruct -q
 if ($LASTEXITCODE -ne 0) {
     throw "Bundled Python dependency installation failed with exit code $LASTEXITCODE"
 }
