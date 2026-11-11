@@ -8,6 +8,7 @@ templates and the result vocabulary.
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-11-11: Faster merge gate and no Vercel deployment | [Test plan](releases/2026-11-11-faster-merge-gate-no-vercel/test-plan.md) | [Test report](releases/2026-11-11-faster-merge-gate-no-vercel/test-report.md) |
 | 2026-11-11: Installer no longer needs pandas before it installs pandas | [Test plan](releases/2026-11-11-installer-bundled-wheels/test-plan.md) | [Test report](releases/2026-11-11-installer-bundled-wheels/test-report.md) |
 | 2026-11-11: Settings page, connections and passwords in the app | [Test plan](releases/2026-11-11-settings-page/test-plan.md) | [Test report](releases/2026-11-11-settings-page/test-report.md) |
 | 2026-11-11: Audit fixes for Flows, scanners and access | [Test plan](releases/2026-11-11-audit-fixes/test-plan.md) | [Test report](releases/2026-11-11-audit-fixes/test-report.md) |
@@ -135,11 +136,17 @@ rejects failed, cancelled, missing or unexpectedly skipped selected work. The PR
 must contain current `main`, and its testing section must record the final run
 URL and tested head SHA before a head-pinned merge.
 
-Application PRs run the full Ubuntu Python collection in two isolated runner
+Application PRs run the full Ubuntu Python collection in six isolated runner
 jobs, plus a small Windows verifier contract job. Pushes to main retain the
-full Windows regression, also in two runners; scheduled/manual runs retain both
+full Windows regression, also in six runners; scheduled/manual runs retain both
 platforms. Within each runner tests remain sequential, and all tests in a file
-stay together. Assignment balances collected test counts, not measured duration.
+stay together. Assignment gives every runner about the same minutes of tests,
+using the seconds each file took in a recorded run
+(`tools/ci/test_durations.json`); a file never timed counts each of its tests
+at the average. The slowest runner sets how long a pull request waits, so when
+one runner has drifted well above the others, download the `python-*-results`
+artifacts of a passing run and refresh the record with
+`python tools/ci/record_durations.py --run <label> <each test-results.xml>`.
 Every shard publishes its collection, selection, completed tests, exit status
 and workflow revision. `Merge ready` audits their union for exact coverage per
 platform and rejects missing, overlapping, unfinished or stale evidence.
