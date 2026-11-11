@@ -349,3 +349,42 @@ def test_clearing_the_real_credential_file_removes_it(tmp_path):
     assert flow_credentials.clear_asap_credentials(tmp_path) == {"configured": False, "updated_at": None}
     assert not path.exists()
     assert flow_credentials.clear_asap_credentials(tmp_path)["configured"] is False
+
+
+def test_a_save_that_stops_half_way_never_leaves_an_empty_settings_file(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from app import env_file
+
+    path = tmp_path / ".env"
+    path.write_text('PGHOST="db"\nPGPASSWORD="a-much-longer-old-password"\n', encoding="utf-8")
+    real_open = Path.open
+
+    class StopsAfterCuttingTheFile:
+        """The process dies right after the file is cut to length."""
+
+        def __init__(self, handle):
+            self._handle = handle
+
+        def truncate(self, *args):
+            self._handle.truncate(*args)
+            self._handle.flush()
+            raise OSError("stopped")
+
+        def __getattr__(self, name):
+            return getattr(self._handle, name)
+
+        def __enter__(self):
+            self._handle.__enter__()
+            return self
+
+        def __exit__(self, *exc):
+            return self._handle.__exit__(*exc)
+
+    monkeypatch.setattr(Path, "open", lambda self, *a, **k: StopsAfterCuttingTheFile(real_open(self, *a, **k)))
+    with pytest.raises(OSError):
+        env_file.write_value(path, "PGPASSWORD", "new")
+    monkeypatch.undo()
+
+    values, _status = env_file.read(path)
+    assert values == {"PGHOST": "db", "PGPASSWORD": "new"}

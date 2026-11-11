@@ -110,8 +110,13 @@ def write_value(path: Path, name: str, value: str | None) -> None:
         if value is not None:
             kept.append(f'{name}="{value}"')
         content = (newline.join(kept) + newline) if kept else ""
+        data = (codecs.BOM_UTF8 if bom else b"") + content.encode("utf-8")
+        # Write over the old content first and cut the file to length after.
+        # Emptying it first would leave no settings at all if the process
+        # stopped between the two steps.
         handle.seek(0)
-        handle.truncate()
-        handle.write((codecs.BOM_UTF8 if bom else b"") + content.encode("utf-8"))
+        handle.write(data)
+        handle.flush()
+        handle.truncate(len(data))
         handle.flush()
         os.fsync(handle.fileno())
