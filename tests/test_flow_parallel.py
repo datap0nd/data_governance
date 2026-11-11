@@ -13,6 +13,9 @@ from app.flow_parallel_worker import task_output_folder, assemble_bundle
 from app.routers import flows, flow_tasks as routes
 from test_flows import flow_db, _request, _seed_catalog, _mark_discovered, _flow
 
+# Saving a Flow here is set-up, not the subject: see skip_flow_files in conftest.py.
+pytestmark = pytest.mark.usefixtures("skip_flow_files")
+
 
 @pytest.fixture
 def bundle(flow_db, tmp_path, monkeypatch, request):
@@ -530,6 +533,7 @@ def test_parallel_settings_validate_persist_and_headed_is_parallel(bundle,monkey
     assert not flow_tasks.enabled(job)
 
 
+@pytest.mark.real_flow_files  # reads the generated script
 def test_inline_browser_switch_keeps_parallelism_and_refreshes_standalone(bundle):
     saved = flows.create_flow(_flow(bundle['site']['id'], bundle['saved']['report_id'],
         name='Inline visible', target_folder=None, download_parallelism=3), _request())

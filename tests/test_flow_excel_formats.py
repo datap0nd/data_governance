@@ -7,6 +7,9 @@ import pytest
 
 from app import flow_worker
 
+# The files read here are written by the test first: see no_settle_pause in conftest.py.
+pytestmark = pytest.mark.usefixtures("no_settle_pause")
+
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 

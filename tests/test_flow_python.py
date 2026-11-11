@@ -22,6 +22,9 @@ from app.flow_clock import dubai_today
 from app.routers import flow_groups, flows, pipelines, system_paths
 from test_flows import flow_db, _request
 
+# Saving a Flow here is set-up, not the subject: see skip_flow_files in conftest.py.
+pytestmark = pytest.mark.usefixtures("skip_flow_files")
+
 
 FETCH_SCRIPT = textwrap.dedent('''
     import argparse, os, sys
@@ -808,6 +811,7 @@ def test_enforced_paths_accept_python_scripts_kept_in_any_folder(flow_db, tmp_pa
         assert system_paths.paths_state(db)["flows_outside_root"] == []
 
 
+@pytest.mark.real_flow_files  # reads the generated script
 def test_standalone_dry_run_reports_python_source_and_creates_nothing(flow_db, tmp_path):
     scripts = _write_scripts(tmp_path / "scripts")
     saved = flows.create_flow(_python_flow(scripts), _request())

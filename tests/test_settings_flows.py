@@ -30,6 +30,9 @@ from test_flows import (  # noqa: F401
     _asap_site, _flow, _legacy_destination, _mark_discovered, _request, _seed_catalog, flow_db,
 )
 
+# Saving a Flow here is set-up, not the subject: see skip_flow_files in conftest.py.
+pytestmark = pytest.mark.usefixtures("skip_flow_files")
+
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG = ROOT / "app" / "settings_catalog_flows.py"
 GROUPS = {"Run limits", "Downloads", "SQL step", "Scripts and catalogs",

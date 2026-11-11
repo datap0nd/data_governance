@@ -15,6 +15,9 @@ from app.source_identity import upsert_postgres_identity
 from test_flows import flow_db, _flow, _request, _seed_catalog, _mark_discovered
 from test_flow_standalone import local_job
 
+# Saving a Flow here is set-up, not the subject: see skip_flow_files in conftest.py.
+pytestmark = pytest.mark.usefixtures("skip_flow_files")
+
 SERVER = "warehouse.example.test"
 NOW = datetime.now(timezone.utc).isoformat()
 

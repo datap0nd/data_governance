@@ -17,6 +17,9 @@ from test_flow_standalone import local_job
 from test_flow_recordings import draft_job
 from test_view_refresh import FakeEngines, view
 
+# The files read here are written by the test first: see no_settle_pause in conftest.py.
+pytestmark = pytest.mark.usefixtures("no_settle_pause")
+
 
 class SqlRefreshDatabase:
     """Runs the real loader/executor with a synthetic DBAPI transaction boundary."""

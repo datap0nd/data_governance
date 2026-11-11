@@ -17,6 +17,9 @@ from fastapi import HTTPException
 from app import database, flow_gscm
 from app.routers import flows
 
+# Saving a Flow here is set-up, not the subject: see skip_flow_files in conftest.py.
+pytestmark = pytest.mark.usefixtures("skip_flow_files")
+
 
 @pytest.fixture()
 def flow_db(tmp_path, monkeypatch):

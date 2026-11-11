@@ -10,6 +10,9 @@ from app.routers import flows
 from test_flows import flow_db, _flow, _seed_catalog, _mark_discovered, _person, _request
 from test_flow_parallel import bundle, claim, complete
 
+# Saving a Flow here is set-up, not the subject: see skip_flow_files in conftest.py.
+pytestmark = pytest.mark.usefixtures("skip_flow_files")
+
 
 @pytest.fixture
 def activity_client(flow_db, monkeypatch):
