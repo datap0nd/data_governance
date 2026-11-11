@@ -94,7 +94,7 @@ def test_reset_and_empty_remove_the_line_and_fall_back(installed, monkeypatch):
     assert "PGHOST" not in installed.read_text(encoding="utf-8")
     with pytest.raises(registry.SettingsRejected) as refused:
         registry.save({"conn.probe_port": 70000})
-    assert refused.value.errors == {"conn.probe_port": "Enter a whole number from 1 to 65,535."}
+    assert refused.value.errors == {"conn.probe_port": "Enter a whole number from 1 to 65535."}
 
 
 def test_where_a_value_comes_from_is_named(installed, monkeypatch):

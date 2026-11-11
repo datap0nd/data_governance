@@ -54,7 +54,8 @@ function settingsShow(row, value) {
     if (row.kind === 'choice') return row.choice_labels[row.choices.indexOf(value)] || String(value);
     if (row.kind === 'list') return settingsListText(value) || 'none';
     if (value === '' || value === null || value === undefined) return 'empty';
-    return typeof value === 'number' ? value.toLocaleString('en') : String(value);
+    // A quantity reads better grouped (10,485 MB); a port number does not.
+    return typeof value === 'number' && row.unit ? value.toLocaleString('en') : String(value);
 }
 
 function settingsFieldId(key) {
@@ -105,7 +106,7 @@ function settingsControlHtml(row) {
     const error = settingsState.errors[row.key];
     const invalid = error ? ` aria-invalid="true" aria-describedby="${id}-error"` : '';
     const range = row.minimum !== null && row.maximum !== null
-        ? `${Number(row.minimum).toLocaleString('en')} to ${Number(row.maximum).toLocaleString('en')}` : '';
+        ? `${settingsShow(row, Number(row.minimum))} to ${settingsShow(row, Number(row.maximum))}` : '';
     let html;
     if (row.kind === 'int' || row.kind === 'float') {
         html = `<div class="st-field"><input type="number" id="${id}" data-st-key="${esc(row.key)}" value="${esc(value)}" min="${row.minimum ?? ''}" max="${row.maximum ?? ''}" step="${row.kind === 'int' ? 1 : 'any'}" placeholder="${esc(row.placeholder || '')}"${off}${invalid}>

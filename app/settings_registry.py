@@ -215,16 +215,19 @@ def _number(setting: Setting, value: Any) -> Any:
 def _range_message(setting: Setting) -> str:
     noun = "whole number" if setting.kind == "int" else "number"
     if setting.minimum is not None and setting.maximum is not None:
-        return f"Enter a {noun} from {_plain(setting.minimum)} to {_plain(setting.maximum)}."
+        return f"Enter a {noun} from {_plain(setting.minimum, setting)} to {_plain(setting.maximum, setting)}."
     if setting.minimum is not None:
-        return f"Enter a {noun} of at least {_plain(setting.minimum)}."
+        return f"Enter a {noun} of at least {_plain(setting.minimum, setting)}."
     if setting.maximum is not None:
-        return f"Enter a {noun} of at most {_plain(setting.maximum)}."
+        return f"Enter a {noun} of at most {_plain(setting.maximum, setting)}."
     return f"Enter a {noun}."
 
 
-def _plain(number: float) -> str:
-    return f"{int(number):,}" if float(number).is_integer() else f"{number:g}"
+def _plain(number: float, setting: Setting | None = None) -> str:
+    if not float(number).is_integer():
+        return f"{number:g}"
+    # A quantity reads better grouped (10,485 MB); a port number does not.
+    return f"{int(number):,}" if setting is None or setting.unit else str(int(number))
 
 
 def _list(setting: Setting, value: Any) -> list[str]:
