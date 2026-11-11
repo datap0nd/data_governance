@@ -305,3 +305,21 @@ def test_a_rejected_save_answers_with_a_message_per_field_and_saves_nothing(app_
     assert registry.get("logs.keep_days") == 14
     with database.get_db() as db:
         assert db.execute("SELECT COUNT(*) FROM event_log").fetchone()[0] == 0
+
+
+def test_only_the_host_pc_changes_where_flows_keep_their_files(app_db, tmp_path):
+    from app.routers import system_paths
+
+    before = system_paths.get_paths()["flows_root"]
+    body = system_paths.PathsWrite(flows_root=str(tmp_path / "flows"), create=True)
+    with pytest.raises(HTTPException) as refused:
+        system_paths.put_paths(body, colleague())
+    assert refused.value.status_code == 403
+    assert refused.value.detail.startswith("Only the host PC can change where Flows keep their files.")
+    assert not (tmp_path / "flows").exists()
+    # Anyone may still read the paths, and they are unchanged.
+    assert system_paths.get_paths()["flows_root"] == before
+
+    state = system_paths.put_paths(body, host())
+    assert state["flows_root"] == str(tmp_path / "flows")
+    assert (tmp_path / "flows").is_dir()
