@@ -155,6 +155,31 @@ class _CompletedDownloadProcessingError(RuntimeError):
     """A native browser download finished, so report navigation must not retry."""
 
 
+# Portal passwords this process has typed into a sign-in form. Playwright
+# repeats a typed value in the call log of its exception text, so they are
+# removed from everything the worker reports to the server.
+_REDACTED_SECRETS: set[str] = set()
+_REPORTED_TEXT_FIELDS = ("progress", "error", "traceback", "message")
+
+
+def _redact_secrets(value):
+    """Remove the remembered portal passwords from text, however it is nested."""
+    if not _REDACTED_SECRETS:
+        return value
+    if isinstance(value, str):
+        for secret in sorted(_REDACTED_SECRETS, key=len, reverse=True):
+            if secret:
+                # Never lengthen the text: the server caps these fields.
+                marker = "[redacted]" if len(secret) >= 10 else "*" * len(secret)
+                value = value.replace(secret, marker)
+        return value
+    if isinstance(value, dict):
+        return {key: _redact_secrets(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_redact_secrets(item) for item in value]
+    return value
+
+
 WORKER_LOCK_FILENAME = ".worker.lock"
 # How long a starting worker waits for a stopping predecessor to release the
 # profile lock before treating the holder as an orphan and exiting nonzero.
@@ -238,6 +263,13 @@ def _api(client: httpx.Client, method: str, path: str, body: dict | None = None,
     # write collision or local service restart must not kill the browser run.
     # Terminal updates are idempotent on the server and are therefore safe to
     # retry when the local API returns a transient 5xx response.
+    if _REDACTED_SECRETS and isinstance(body, dict):
+        # Last line of defence for every caller: an error path nobody
+        # anticipated still cannot report a portal password.
+        body = {
+            key: _redact_secrets(value) if key in _REPORTED_TEXT_FIELDS else value
+            for key, value in body.items()
+        }
     last_error: Exception | None = None
     attempts = max(1, int(attempts))
     for attempt in range(1, attempts + 1):
@@ -262,6 +294,86 @@ def _api(client: httpx.Client, method: str, path: str, body: dict | None = None,
                 raise
             time.sleep(attempt)
     raise RuntimeError("Local API request failed after retries.") from last_error
+
+
+# Run progress, heartbeat and terminal reports ride out a service restart of
+# about this long, with the pause between tries capped.
+RUN_REPORT_RETRY_SECONDS = 120
+RUN_REPORT_BACKOFF_CAP_SECONDS = 10
+# After a SQL commit the terminal report keeps trying this much longer. The
+# server gives up on a silent run after ten minutes, so more cannot help.
+COMMITTED_REPORT_RETRY_SECONDS = 10 * 60
+
+
+def _report_lost_in_transit(exc: BaseException) -> bool:
+    """Whether a report failed to reach the server, as opposed to being rejected.
+
+    ``_api`` raises the transport error itself, or wraps an HTTP status error
+    to add the server's detail. Only a connection failure or a 5xx answer is
+    worth retrying; a 4xx rejection is final.
+    """
+    error = exc if isinstance(exc, httpx.HTTPError) else exc.__cause__
+    if isinstance(error, httpx.HTTPStatusError):
+        return error.response is not None and error.response.status_code >= 500
+    return isinstance(error, httpx.TransportError)
+
+
+def _api_report(client: httpx.Client, method: str, path: str, body: dict | None = None) -> dict:
+    """``_api`` for run progress, heartbeat and terminal reports.
+
+    ``_api`` gives up after about ten seconds, which a service restart easily
+    exceeds, and the step being reported would then count as failed. These
+    reports are retried for about two minutes instead; a 4xx rejection is
+    still raised at once.
+    """
+    deadline: float | None = None
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            return _api(client, method, path, body, attempts=1)
+        except Exception as exc:
+            if not _report_lost_in_transit(exc):
+                raise
+            now = time.monotonic()
+            if deadline is None:
+                deadline = now + RUN_REPORT_RETRY_SECONDS
+            if now >= deadline:
+                raise
+            time.sleep(min(attempt, RUN_REPORT_BACKOFF_CAP_SECONDS, deadline - now))
+
+
+def _progress_after_commit(progress):
+    """Wrap a run's progress callback for everything that follows a SQL commit.
+
+    The rows are durable from here on. Reporting the run as failed because the
+    server could not be reached would describe a load that succeeded, and a
+    retry would load the same files again. An intermediate report that cannot
+    be delivered is therefore dropped, and the terminal one is retried for a
+    bounded time and then given up without a ``failed`` report. A report the
+    server rejects, or any other error, is raised as before.
+    """
+    def report(status, *args, **kwargs):
+        deadline: float | None = None
+        while True:
+            try:
+                return progress(status, *args, **kwargs)
+            except Exception as exc:
+                if not _report_lost_in_transit(exc):
+                    raise
+                now = time.monotonic()
+                if deadline is None:
+                    deadline = now + (0 if status == "running" else COMMITTED_REPORT_RETRY_SECONDS)
+                if now >= deadline:
+                    print(
+                        f"SQL is committed, but the {status!r} report could not be delivered: "
+                        f"{type(exc).__name__}: {_redact_secrets(str(exc))}",
+                        file=sys.stderr, flush=True,
+                    )
+                    return None
+                time.sleep(RUN_REPORT_BACKOFF_CAP_SECONDS)
+
+    return report
 
 
 def _safe_output_path(folder: Path, filename: str) -> Path:
@@ -599,6 +711,45 @@ def _page_is_closed(page) -> bool:
         return True
 
 
+# How long the liveness probe waits on a busy page before leaving it alone.
+BROWSER_PROBE_TIMEOUT_MS = 5_000
+# Playwright's wording for a closed page, context or browser and a crashed tab.
+BROWSER_LOST_MARKERS = ("has been closed", "target crashed", "page crashed")
+
+
+def _browser_session_lost(context, page) -> bool:
+    """Whether the worker's long-lived browser can no longer run portal work.
+
+    Chrome exiting, its window or first tab being closed, or the tab crashing
+    leaves ``page`` unusable for good, so every later run would fail on it
+    within seconds. Only positive evidence counts: relaunching a healthy
+    browser drops its portal session, so a page that is merely slow, busy or
+    refuses the probe for another reason is kept.
+    """
+    if context is None or page is None or _page_is_closed(page):
+        return True
+    probe = getattr(page, "wait_for_function", None)
+    if not callable(probe):
+        return False
+    try:
+        probe("true", timeout=BROWSER_PROBE_TIMEOUT_MS)
+    except Exception as exc:
+        message = str(exc).casefold()
+        return any(marker in message for marker in BROWSER_LOST_MARKERS)
+    return False
+
+
+def _discard_lost_browser(context, page):
+    """Close a browser that died so the next portal work launches a fresh one."""
+    if context is None or not _browser_session_lost(context, page):
+        return context, page
+    try:
+        context.close()
+    except Exception:
+        pass
+    return None, None
+
+
 def _asap_wait_for_loading_clear(
     page: Page,
     *,
@@ -907,19 +1058,31 @@ def _sso_fill_and_submit(page: Page, credentials: dict, portal_label: str) -> No
     ASAP and GSCM redirect to the same SSO host, so one fill serves both; the
     caller waits for its own portal's readiness proof afterwards.
     """
+    _REDACTED_SECRETS.add(credentials["password"])
     visible_inputs = page.locator('input:visible')
     username = page.locator('input[type="text"]:visible, input:not([type]):visible').first
     password = page.locator('input[type="password"]:visible').first
     if not username.count() and visible_inputs.count() >= 2:
         username = visible_inputs.nth(0)
-    username.fill(credentials["username"])
-    password.fill(credentials["password"])
-    submit = page.get_by_role("button", name=re.compile(r"^login$", re.I)).first
-    if not submit.count():
-        submit = page.locator('button[type="submit"]:visible, input[type="submit"]:visible').first
-    if not submit.count():
+    try:
+        username.fill(credentials["username"])
+        password.fill(credentials["password"])
+        submit = page.get_by_role("button", name=re.compile(r"^login$", re.I)).first
+        if not submit.count():
+            submit = page.locator('button[type="submit"]:visible, input[type="submit"]:visible').first
+        recognized = bool(submit.count())
+        if recognized:
+            submit.click()
+    except Exception as exc:
+        # The browser's error text repeats the typed value (``fill("...")`` in
+        # its call log), so it is neither embedded nor chained.
+        raise RuntimeError(
+            f"{portal_label} sign-in form could not be filled and submitted with the stored "
+            f"credential ({type(exc).__name__}). The browser's own error text is withheld "
+            "because it can repeat the typed password."
+        ) from None
+    if not recognized:
         raise RuntimeError(f"{portal_label} sign-in form was found, but its Login action was not recognized.")
-    submit.click()
 
 
 def _asap_authenticate_if_needed(page: Page, profile_dir: Path) -> bool:
@@ -3859,12 +4022,17 @@ def _asap_export_view_candidates(page: Page, frame: Frame) -> list[tuple[str, An
 
 def _asap_activate_export_view(
     page: Page, frame: Frame, requested_label: str | None = None,
+    *, max_seconds: float | None = None,
 ) -> tuple[Frame, str | None]:
-    """Open one exact export-oriented view using visible ASAP semantics."""
+    """Open one exact export-oriented view using visible ASAP semantics.
+
+    ``max_seconds`` bounds each overlay wait for a catalog scan; a Flow run
+    passes nothing and waits as long as the page stays open.
+    """
     # The report shell exposes its tabs before the default report has finished
     # loading. Wait until the overlay is stably gone, then resolve the tab
     # again so the click cannot target a control from a replaced frame.
-    _asap_wait_for_loading_clear(page)
+    _asap_wait_for_loading_clear(page, max_seconds=max_seconds)
     visible = _asap_export_view_candidates(page, _asap_frame(page))
     if not visible:
         if requested_label:
@@ -3886,7 +4054,7 @@ def _asap_activate_export_view(
         )
     control.click(timeout=30_000)
     page.wait_for_timeout(500)
-    _asap_wait_for_loading_clear(page)
+    _asap_wait_for_loading_clear(page, max_seconds=max_seconds)
     active_frame = _asap_frame(page)
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
@@ -3980,8 +4148,11 @@ def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: P
                 for view_index, export_view_label in enumerate(labels_to_scan):
                     if view_index:
                         frame = _asap_open_report(page, lightweight_job, profile_dir)
+                    # A scan keeps a bound: a stuck overlay fails this report
+                    # instead of holding the worker and its slots forever.
                     active_frame, selected_label = _asap_activate_export_view(
                         page, frame, export_view_label,
+                        max_seconds=ASAP_SCAN_OVERLAY_TIMEOUT_SECONDS,
                     )
                     diagnostics: dict = {}
                     discovered = _asap_discover_filters(active_frame, diagnostics)
@@ -4220,6 +4391,77 @@ def _parse_strict_delimited_rows(decoded: str) -> tuple[list[list[str]], str] | 
     return rows, delimiter
 
 
+def _strict_delimited_records(lines: list[str], start: int, delimiter: str, limit: int) -> dict:
+    """Parse ``lines[start:]`` once and summarize the rows under each early record.
+
+    The CSV reader carries no state from one record to the next, so a record
+    that begins on a line reads the same whether the text starts at ``start``
+    or at that line. One pass therefore answers, for every record beginning
+    before ``limit``, what ``_parse_strict_delimited_rows`` asks about the
+    rows beneath a header, without parsing the same suffix again per line.
+    """
+    reader = csv.reader(io.StringIO("\n".join(lines[start:])), delimiter=delimiter)
+    positions: dict[int, int] = {}
+    rows: list[list[str]] = []
+    extents: list[int] = []
+    populated = extent_below = 0
+    widths: dict[int, int] = {}
+    failed = False
+    while True:
+        line = start + reader.line_num
+        try:
+            row = next(reader)
+        except StopIteration:
+            break
+        except csv.Error:
+            # Every earlier record leads into this one, so none of them parses.
+            failed = True
+            positions[line] = len(rows)
+            break
+        extent = len(row)
+        while extent and not str(row[extent - 1]).strip():
+            extent -= 1
+        if line < limit:
+            positions[line] = len(rows)
+            rows.append(row)
+            extents.append(extent)
+        elif extent:
+            populated += 1
+            extent_below = max(extent_below, extent)
+            widths[len(row)] = widths.get(len(row), 0) + 1
+    # Walk the kept records upwards: (populated rows below, their widest
+    # populated extent, how many of them are exactly as wide as this record).
+    below: list[tuple[int, int, int]] = [(0, 0, 0)] * len(rows)
+    for position in range(len(rows) - 1, -1, -1):
+        width = len(rows[position])
+        below[position] = (populated, extent_below, widths.get(width, 0))
+        if extents[position]:
+            populated += 1
+            extent_below = max(extent_below, extents[position])
+            widths[width] = widths.get(width, 0) + 1
+    return {"start": start, "failed": failed, "positions": positions, "rows": rows, "below": below}
+
+
+def _strict_delimited_header_at(records: dict, line: int) -> bool:
+    """Whether ``_parse_strict_delimited_rows`` accepts the table starting at ``line``."""
+    position = records["positions"].get(line)
+    if records["failed"] or position is None:
+        return False
+    if len(records["rows"][position]) < 2:
+        return False
+    header = [str(value).strip() for value in records["rows"][position]]
+    try:
+        _validate_strict_headers(header, source_label="Downloaded CSV")
+    except RuntimeError:
+        return False
+    populated, extent, exact_width = records["below"][position]
+    if not populated or extent > len(header):
+        return False
+    # A delimiter seen only in the header is probably punctuation inside a
+    # real CSV header, not the file separator.
+    return exact_width * 2 >= populated
+
+
 def _strict_delimited_prefix(decoded: str) -> tuple[int, str] | None:
     """Return the first structurally valid table start and its delimiter.
 
@@ -4228,21 +4470,34 @@ def _strict_delimited_prefix(decoded: str) -> tuple[int, str] | None:
     extension cannot override strong content evidence. Try each plausible
     header position because report-title and filter preambles can precede the
     table. The structural parser still rejects prose and opaque responses.
+
+    The answer is the one ``_parse_strict_delimited_rows`` gives for the text
+    from each candidate line onwards, but each delimiter is parsed once and
+    reused for every later line that begins a record of that parse.
     """
     lines = decoded.lstrip("\ufeff").splitlines()
     # A large report can serialize hundreds of selected filters before the
-    # first data header. The caller supplies a bounded prefix, so search a
-    # correspondingly bounded number of lines rather than assuming the table
-    # begins within the first 200.
-    for start in range(min(len(lines), 2_000)):
-        # A real multi-column header must contain a supported delimiter. Skip
-        # plain preamble lines so a long filter block does not turn this into
-        # repeated parsing of the same 128 KiB suffix.
+    # first data header, so search a bounded number of lines rather than
+    # assuming the table begins within the first 200.
+    limit = min(len(lines), 2_000)
+    preference = {",": 0, ";": 1, "|": 2, "\t": 3}
+    parsed: dict[str, dict] = {}
+    for start in range(limit):
+        # A real multi-column header must contain a supported delimiter.
         if not any(delimiter in lines[start] for delimiter in (",", ";", "\t", "|")):
             continue
-        parsed = _parse_strict_delimited_rows("\n".join(lines[start:]))
-        if parsed is not None:
-            return start, parsed[1]
+        accepted = []
+        for delimiter in (",", ";", "\t", "|"):
+            records = parsed.get(delimiter)
+            if records is None or (start not in records["positions"] and start != records["start"]):
+                # This line sits inside a multi-line quoted field of the
+                # earlier parse (or past its error), so it reads differently
+                # as a first line: parse from here.
+                records = parsed[delimiter] = _strict_delimited_records(lines, start, delimiter, limit)
+            if _strict_delimited_header_at(records, start):
+                accepted.append(delimiter)
+        if accepted:
+            return start, max(accepted, key=preference.__getitem__)
     return None
 
 
@@ -4272,36 +4527,42 @@ def _asap_csv_header_index(rows: list[list[str]]) -> int:
     if start is not None:
         sections.append((start, len(rows)))
 
-    section_candidates = []
-    for section_number, (section_start, section_end) in enumerate(sections):
-        candidates = []
-        # Keep the scan bounded, but do not discard a valid data section only
-        # because hundreds of ASAP filter rows precede it.
-        for index in range(section_start, min(section_end, 2_000)):
-            header = [str(value).strip() for value in rows[index]]
-            populated = [value for value in header if value]
-            if (
-                len(populated) < 2
-                or len({value.casefold() for value in populated}) != len(populated)
-            ):
-                continue
-            width = len(header)
-            data_rows = rows[index + 1:section_end]
-            if not data_rows or any(
-                any(str(value).strip() for value in row[width:]) for row in data_rows
-            ):
-                continue
-            exact = sum(len(row) == width for row in data_rows)
-            if exact * 2 < len(data_rows):
-                continue
-            nonempty = sum(
-                sum(bool(str(value).strip()) for value in row[:width])
-                for row in data_rows
-            )
-            candidates.append((len(data_rows), exact, nonempty, -index, index))
-        if candidates:
-            section_candidates.append((section_number, max(candidates)[-1]))
-    return max(section_candidates)[-1] if section_candidates else 0
+    # A candidate is a header-shaped row whose data rows never spill past its
+    # width and mostly match it. Candidates rank by data-row count first, and
+    # an earlier row always has more rows beneath it, so the strongest one in
+    # a section is its first valid row; across sections the last section with
+    # a candidate wins. Each section is walked once from its end, carrying
+    # what a header needs to know about the rows below it, instead of
+    # rescanning those rows for every candidate.
+    for section_start, section_end in reversed(sections):
+        if section_start >= 2_000:
+            continue
+        best = None
+        widths: dict[int, int] = {}
+        extent = 0
+        for index in range(section_end - 1, section_start - 1, -1):
+            row = rows[index]
+            # Keep the scan bounded, but do not discard a valid data section only
+            # because hundreds of ASAP filter rows precede it.
+            if index < 2_000 and index + 1 < section_end:
+                header = [str(value).strip() for value in row]
+                populated = [value for value in header if value]
+                width = len(header)
+                if (
+                    len(populated) >= 2
+                    and len({value.casefold() for value in populated}) == len(populated)
+                    and extent <= width
+                    and widths.get(width, 0) * 2 >= section_end - index - 1
+                ):
+                    best = index
+            widths[len(row)] = widths.get(len(row), 0) + 1
+            for position in range(len(row), extent, -1):
+                if str(row[position - 1]).strip():
+                    extent = position
+                    break
+        if best is not None:
+            return best
+    return 0
 
 
 def _normalize_csv(
@@ -8314,6 +8575,9 @@ def execute_flow(page, job: dict, progress, profile_dir: Path, download_staging_
             sql_result = load_artifacts(
                 sql_artifacts, job["sql_handoff"], progress=sql_progress,
             )
+            # The load is committed: a report the server cannot receive from
+            # here on is retried or dropped, never turned into a failed run.
+            progress = _progress_after_commit(progress)
             timings.insert(max(0, len(timings) - 1), {
                 "phase": "sql_insertion",
                 "duration_ms": round((time.perf_counter() - sql_started) * 1000),
@@ -8488,6 +8752,10 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                     portal_work = (browser_job.get('flow', {}).get('source_type') not in {'file', 'outlook', 'python'}
                                    and browser_job.get('job_type') not in {'sql_retry', 'view_retry'} and not browser_job.get('recording_operation'))
                     requested_channel = flow_browser.channel_for(browser_job)
+                    if portal_work:
+                        # A browser that crashed or was closed since the last
+                        # run is replaced by the launch branch below.
+                        context, page = _discard_lost_browser(context, page)
                     if portal_work and (context is None or requested_channel != current_channel):
                         try:
                             if context is not None:
@@ -8615,7 +8883,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                             reports, timings, complete=complete,
                         )
                     except Exception as exc:
-                        failure_message = str(exc)
+                        failure_message = _redact_secrets(str(exc))
                         screenshot_path = _failure_screenshot(
                             page, profile_dir, f"scan-{scan_id}",
                         )
@@ -8646,7 +8914,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                              timings: list | None = None, error: str | None = None,
                              traceback_text: str | None = None,
                              source_receipt: dict | None = None):
-                    _api(client, "POST", f"/api/flows/worker/{worker_id}/runs/{run_id}/progress", {
+                    _api_report(client, "POST", f"/api/flows/worker/{worker_id}/runs/{run_id}/progress", {
                         "status": status, "progress": _bounded_detail(detail), "artifacts": artifacts or [],
                         "timings": timings or [],
                         "retention": (detail or {}).get("retention_results") or [],
@@ -8672,7 +8940,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                     ) as heartbeat_client:
                         while not heartbeat_stop.wait(30):
                             try:
-                                _api(
+                                _api_report(
                                     heartbeat_client, "POST",
                                     f"/api/flows/worker/{worker_id}/runs/{run_id}/heartbeat",
                                 )
@@ -8738,8 +9006,10 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                     timings = execution_state.get("timings", timings)
                     transformation_started = execution_state.get("transformation_started")
                     sql_started = execution_state.get("sql_started")
-                    failure_message = str(exc)
-                    failure_traceback = traceback.format_exc()
+                    # Redact before the fields are truncated, so a cut can never
+                    # leave part of a password behind.
+                    failure_message = _redact_secrets(str(exc))
+                    failure_traceback = _redact_secrets(traceback.format_exc())
                     screenshot_path = _failure_screenshot(
                         page, profile_dir, f"run-{run_id}",
                     )
@@ -8765,7 +9035,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                             f"{type(report_exc).__name__}: {report_exc}"
                         )[:10000]
                         print(fallback_message, file=sys.stderr, flush=True)
-                        _api(
+                        _api_report(
                             client, "POST",
                             f"/api/flows/worker/{worker_id}/runs/{run_id}/progress",
                             {
@@ -8782,6 +9052,9 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                                 "traceback": None,
                             },
                         )
+                    if portal_work:
+                        # Do not leave a dead browser open until the next claim.
+                        context, page = _discard_lost_browser(context, page)
                 finally:
                     execution_locks.release()
                     heartbeat_stop.set()
@@ -8794,9 +9067,35 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
 
 
 def _adapter_for_auth_url(auth_url: str) -> str:
-    """Pick the portal adapter from the bootstrap URL when none was given."""
-    host = re.sub(r"^https?://([^/]+).*$", r"\1", str(auth_url or "")).casefold()
-    if "mdscm.sec.samsung.net" in host:
+    """Pick the portal adapter for a bootstrap URL when none was given.
+
+    An explicit ``--authenticate-adapter`` always wins. Without one, the
+    adapter is the one saved for the website with the same host in the local
+    database (where the browser channel is read too), so no portal hostname
+    is written in this file. A URL that matches no saved website keeps the
+    ASAP bootstrap.
+    """
+    from app import database
+
+    def host_of(url) -> str:
+        try:
+            return (urlsplit(str(url or "")).hostname or "").casefold()
+        except ValueError:
+            return ""
+
+    host = host_of(auth_url)
+    # Never create an empty database here; the helper may run before setup.
+    if not host or not Path(database.DB_PATH).is_file():
+        return ASAP_PORTAL_ADAPTER
+    try:
+        with database.get_db() as db:
+            sites = db.execute("SELECT adapter, auth_url, base_url FROM flow_sites").fetchall()
+    except Exception:
+        return ASAP_PORTAL_ADAPTER
+    if any(
+        site["adapter"] == GSCM_PORTAL_ADAPTER and host in (host_of(site["auth_url"]), host_of(site["base_url"]))
+        for site in sites
+    ):
         return GSCM_PORTAL_ADAPTER
     return ASAP_PORTAL_ADAPTER
 
@@ -8899,7 +9198,8 @@ def main():
     parser.add_argument("--headed", action="store_true", help="Show the browser. Recommended for initial SSO setup.")
     parser.add_argument("--authenticate-url", help="Open a one-time visible portal SSO bootstrap and exit.")
     parser.add_argument("--authenticate-adapter", default=None,
-                        help="Portal adapter for the bootstrap. Inferred from the URL when omitted.")
+                        help="Portal adapter for the bootstrap. Taken from the saved website "
+                             "with the same host when omitted.")
     parser.add_argument("--authentication-timeout-minutes", type=int, default=10)
     parser.add_argument("--once", action="store_true", help="Claim at most one run, then exit.")
     parser.add_argument("--idle-exit-seconds", type=int, default=0, help="Exit after this many idle seconds.")

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import csv
 import re
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -706,10 +707,19 @@ def load_artifacts(
         transaction.commit()
         transaction = None
         rollback_status = "PostgreSQL confirmed commit."
-        _emit(
-            progress, "sql_commit", f"Committed {rows_written} row(s) to {target_name}." + (f' Table owner: {owner}.' if owner else ''),
-            started, status="completed", target=target_name, rows=rows_written, **ownership,
-        )
+        try:
+            _emit(
+                progress, "sql_commit", f"Committed {rows_written} row(s) to {target_name}." + (f' Table owner: {owner}.' if owner else ''),
+                started, status="completed", target=target_name, rows=rows_written, **ownership,
+            )
+        except Exception as report_exc:
+            # The rows are durable. A progress callback that fails now (the
+            # server is unreachable, say) must not report this load as failed.
+            print(
+                f"SQL commit to {target_name} succeeded, but reporting it failed: "
+                f"{type(report_exc).__name__}: {_database_error(report_exc)}",
+                file=sys.stderr, flush=True,
+            )
     except Exception as exc:
         if transaction is not None:
             try:
