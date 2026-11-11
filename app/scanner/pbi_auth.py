@@ -60,6 +60,18 @@ def _normalize_proxy(value: str) -> str:
     return value
 
 
+def _proxy_for_display(value: str | None) -> str:
+    """Return a proxy address without any user:password@ part, for logs and UI."""
+    if not value or "@" not in value:
+        return value or ""
+    scheme, separator, rest = value.partition("://")
+    if not separator or not scheme.isalnum():
+        scheme, separator, rest = "", "", value
+    # Everything up to the last "@" is the user:password part, even when the
+    # password itself contains "@" or "/".
+    return f"{scheme}{separator}{rest.rsplit('@', 1)[-1]}"
+
+
 def resolve_proxy(target_url: str) -> str | None:
     """Find the outbound proxy for a URL.
 
@@ -98,7 +110,7 @@ def resolve_proxy(target_url: str) -> str | None:
     except Exception:
         logger.exception("Could not resolve the Windows system proxy for %s", target_url)
     _PROXY_CACHE[host] = proxy
-    logger.info("Outbound proxy for %s: %s", host, proxy or "none (direct)")
+    logger.info("Outbound proxy for %s: %s", host, _proxy_for_display(proxy) or "none (direct)")
     return proxy
 
 LOGIN_BASE = "https://login.microsoftonline.com"
@@ -258,7 +270,7 @@ def probe_connectivity(target_host: str = "login.microsoftonline.com", target_po
     except Exception:
         proxy = None
     if proxy:
-        findings.append(f"via proxy {proxy}")
+        findings.append(f"via proxy {_proxy_for_display(proxy)}")
         parts = urlsplit(proxy)
         if parts.scheme == "https":
             findings.append(

@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 from app import flow_sql
 from app.config import UPLOAD_PGHOST, UPLOAD_PGPORT
 from app.database import get_db
+from app.flow_view_refresh import LOCK_TIMEOUT_MS, STATEMENT_TIMEOUT_MS
 from app.routers.eventlog import get_actor, log_event
 from app.source_identity import normalize_server, postgres_server_identity
 
@@ -77,8 +78,33 @@ def _refresh_materialized_view(engine, identity: dict) -> str:
         f"{flow_sql._quote_identifier(identity['relation_name'])}"
     )
     with engine.begin() as connection:
+        # Same backstops as the full-pipeline stage and the post-SQL Flow
+        # refresh: never wait for a lock, or run, without a limit.
+        connection.execute(text(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT_MS}ms'"))
+        connection.execute(text(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT_MS}ms'"))
         connection.execute(text(f"REFRESH MATERIALIZED VIEW {qualified_name}"))
     return f"{identity['database_name']}.{identity['schema_name']}.{identity['relation_name']}"
+
+
+def _timeout_error(exc: Exception) -> HTTPException | None:
+    """Explain a lock or statement timeout; None for any other failure."""
+    original = getattr(exc, "orig", None) or exc
+    lower = str(original).lower()
+    if getattr(original, "pgcode", None) == "55P03" or "lock timeout" in lower:
+        return HTTPException(
+            409,
+            "Materialized view refresh did not start: another refresh or query kept the "
+            f"view locked for more than {LOCK_TIMEOUT_MS // 60_000} minutes (for example a "
+            "pg_cron or pipeline refresh). Wait for it to finish, then retry.",
+        )
+    if "statement timeout" in lower:
+        return HTTPException(
+            504,
+            "Materialized view refresh was stopped after running for "
+            f"{STATEMENT_TIMEOUT_MS // 60_000} minutes (statement timeout). "
+            "The view keeps its previous contents.",
+        )
+    return None
 
 
 def _postgres_error(action: str, exc: Exception) -> str:
@@ -122,6 +148,9 @@ def refresh_materialized_view(source_id: int, request: Request):
         raise
     except Exception as exc:
         logger.warning("Materialized-view refresh failed for source %s: %s", source_id, exc)
+        timeout_error = _timeout_error(exc)
+        if timeout_error is not None:
+            raise timeout_error
         raise HTTPException(
             502, _postgres_error("Materialized view refresh failed", exc)
         )

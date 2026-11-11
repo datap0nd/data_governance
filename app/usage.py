@@ -207,9 +207,23 @@ def sync_usage_from_csv(db: Connection, force: bool = False) -> dict:
         per_user[key] += 1
 
     now = datetime.now(timezone.utc).isoformat()
+    # Replace only what an earlier CSV import stored. pbi_report_user_views is
+    # written by this import alone, so its (report, day) pairs and its days
+    # identify the CSV-sourced rows. Rows the Power BI API sync stored for
+    # other days stay, so a CSV import no longer forces those days to be
+    # fetched again; with CSV as the only source every row is replaced as before.
+    db.execute(
+        """DELETE FROM pbi_report_views
+           WHERE EXISTS (
+               SELECT 1 FROM pbi_report_user_views u
+                WHERE u.report_name = pbi_report_views.report_name
+                  AND u.view_date = pbi_report_views.view_date
+           )"""
+    )
+    db.execute(
+        "DELETE FROM pbi_usage_days WHERE date IN (SELECT view_date FROM pbi_report_user_views)"
+    )
     db.execute("DELETE FROM pbi_report_user_views")
-    db.execute("DELETE FROM pbi_report_views")
-    db.execute("DELETE FROM pbi_usage_days")
 
     for (report_guid, report_name, report_id, view_date, viewer), count in per_user.items():
         db.execute(
@@ -229,10 +243,15 @@ def sync_usage_from_csv(db: Connection, force: bool = False) -> dict:
         aggregate["users"].add(viewer)
 
     for (report_name, report_id, view_date), aggregate in per_report_day.items():
+        # The CSV still wins for a report and day the API sync also stored.
         db.execute(
             """INSERT INTO pbi_report_views
                (report_name, report_id, view_date, view_count, unique_users)
-               VALUES (?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(report_name, view_date) DO UPDATE SET
+                   report_id = excluded.report_id,
+                   view_count = excluded.view_count,
+                   unique_users = excluded.unique_users""",
             (report_name, report_id, view_date, aggregate["views"], len(aggregate["users"])),
         )
 

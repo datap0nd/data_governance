@@ -301,7 +301,9 @@ def scan_pg_cron() -> dict:
                 reconciliation=reconciliation,
             )
 
-        # READ-ONLY: SELECT from cron.job_run_details (last run per job)
+        # READ-ONLY: SELECT from cron.job_run_details (last run per job).
+        # Bounded to the last 7 days: the result only feeds a log line, and
+        # the table keeps every run of every job unless someone prunes it.
         run_details = {}
         run_history_available = True
         try:
@@ -309,6 +311,7 @@ def scan_pg_cron() -> dict:
                 SELECT DISTINCT ON (jobid) jobid, status, return_message,
                        start_time, end_time
                 FROM cron.job_run_details
+                WHERE start_time >= now() - interval '7 days'
                 ORDER BY jobid, start_time DESC
             """)
             for row in pg_cur.fetchall():
@@ -400,7 +403,7 @@ def scan_pg_cron() -> dict:
                 else:
                     log_lines.append(
                         f"CRON: {server}/{database_name}/{full_name} -> "
-                        f"schedule={schedule}, no run history"
+                        f"schedule={schedule}, no run in the last 7 days"
                     )
 
             # Expire only after the complete remote result has been processed;
