@@ -1,8 +1,9 @@
 import ipaddress
+import os
 import socket
 from functools import lru_cache
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 
 
 def _clean_host(value: str | None) -> str:
@@ -76,17 +77,31 @@ def is_server_machine(host: str | None) -> bool:
         return False
 
 
-def is_local_request(request: Request) -> bool:
-    """Require a direct same-origin request to a loopback-bound browser URL."""
-    if request.client.host == "testclient" and request.url.hostname == "testserver":
+def is_own_host_name(host: str | None) -> bool:
+    """True when ``host``, as a browser sent it in the Host header, names this PC.
+
+    Decided without a DNS lookup. A page on another site can point its own
+    domain at this PC's address (DNS rebinding); the browser then treats that
+    page and Metronome as one origin, and resolving the name would make the
+    request look as if it came from the host PC's own Metronome tab. Only
+    addresses and names this machine knows as its own are accepted:
+    loopback, its IP addresses, ``localhost``, its computer name, and any
+    extra names listed in ``DG_HOST_NAMES`` (comma separated).
+    """
+    clean = _clean_host(host)
+    if not clean:
+        return False
+    ip = _ip_key(clean)
+    if ip:
+        return ipaddress.ip_address(ip).is_loopback or ip in _server_ip_keys()
+    if clean in _server_host_keys():
         return True
-    try:
-        peer = ipaddress.ip_address(request.client.host)
-        host = ipaddress.ip_address(request.url.hostname)
-    except (ValueError, AttributeError, TypeError):
-        return False
-    if not peer.is_loopback or not host.is_loopback:
-        return False
+    extra = {_clean_host(name) for name in os.environ.get("DG_HOST_NAMES", "").split(",")}
+    return clean in extra
+
+
+def _same_site_and_direct(request: Request) -> bool:
+    """No proxy in between, and not a request another site made the browser send."""
     if any(request.headers.get(name) for name in
            ("forwarded", "x-forwarded-for", "x-forwarded-host", "x-real-ip")):
         return False
@@ -96,6 +111,26 @@ def is_local_request(request: Request) -> bool:
         return False
     fetch_site = request.headers.get("sec-fetch-site", "")
     return not fetch_site or fetch_site in {"same-origin", "none"}
+
+
+def is_local_request(request: Request) -> bool:
+    """Require a direct same-origin request to a loopback browser URL.
+
+    ``http://localhost:8000`` and ``http://127.0.0.1:8000`` both qualify; the
+    name used to be refused because only a literal address was accepted.
+    """
+    if request.client.host == "testclient" and request.url.hostname == "testserver":
+        return True
+    try:
+        peer = ipaddress.ip_address(request.client.host)
+    except (ValueError, AttributeError, TypeError):
+        return False
+    host = _clean_host(getattr(request.url, "hostname", None))
+    host_ip = _ip_key(host)
+    host_is_loopback = host == "localhost" or bool(host_ip and ipaddress.ip_address(host_ip).is_loopback)
+    if not peer.is_loopback or not host_is_loopback:
+        return False
+    return _same_site_and_direct(request)
 
 
 def is_host_request(request: Request) -> bool:
@@ -113,15 +148,11 @@ def is_host_request(request: Request) -> bool:
         return True
     if not is_server_machine(peer):
         return False
-    if any(request.headers.get(name) for name in
-           ("forwarded", "x-forwarded-for", "x-forwarded-host", "x-real-ip")):
+    # The address the browser asked for must be this PC's own; see
+    # is_own_host_name for why a resolvable name is not enough.
+    if not is_own_host_name(request.url.hostname):
         return False
-    origin = request.headers.get("origin")
-    own_origin = f"{request.url.scheme}://{request.url.netloc}"
-    if origin and origin.rstrip("/") != own_origin:
-        return False
-    fetch_site = request.headers.get("sec-fetch-site", "")
-    return not fetch_site or fetch_site in {"same-origin", "none"}
+    return _same_site_and_direct(request)
 
 
 def has_app_access(request: Request) -> bool:
@@ -130,5 +161,26 @@ def has_app_access(request: Request) -> bool:
 
 
 def require_app_access(request: Request, detail: str = "Access required"):
-    """Compatibility hook for routes that used to have elevated access checks."""
+    """Compatibility hook for routes that used to have elevated access checks.
+
+    It checks nothing. A route that must be limited to the host PC calls
+    ``require_host`` instead.
+    """
     return None
+
+
+HOST_ONLY_HINT = "On the host PC, open Metronome as http://localhost:8000."
+
+
+def require_host(request: Request, detail: str = "Only the host PC can change this.") -> None:
+    """Refuse a change that only the machine running Metronome may make.
+
+    Uses what the identity middleware decided for this request (see
+    ``is_host_request``). A call without that state comes from Metronome's own
+    code, which acts as the host application.
+    """
+    from app import user_identity
+
+    _person_id, is_host = user_identity.request_identity(request)
+    if not is_host:
+        raise HTTPException(status_code=403, detail=f"{detail} {HOST_ONLY_HINT}")

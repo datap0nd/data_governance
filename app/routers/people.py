@@ -10,7 +10,7 @@ import logging
 
 from fastapi import APIRouter, HTTPException, Request
 
-from app import sql_passwords, user_identity
+from app import env_file, local_access, sql_passwords, user_identity
 from app.database import get_db
 from app.routers.eventlog import log_event, get_actor
 from app.models import PersonOut, PersonCreate, PersonUpdate, SqlPasswordWrite
@@ -36,16 +36,14 @@ def _sql_username(value: str | None) -> str | None:
 
 def require_host(request: Request, detail: str = "Only the host PC can change Users.") -> None:
     """Refuse a change that only the machine running Metronome may make."""
-    _person_id, is_host = user_identity.request_identity(request)
-    if not is_host:
-        raise HTTPException(status_code=403, detail=detail)
+    local_access.require_host(request, detail)
 
 
 def require_host_or_self(request: Request, person_id: int, detail: str) -> None:
     """Refuse a change unless it comes from the host PC or that person's own computer."""
     signed_in_as, is_host = user_identity.request_identity(request)
     if not is_host and signed_in_as != person_id:
-        raise HTTPException(status_code=403, detail=detail)
+        raise HTTPException(status_code=403, detail=f"{detail} {local_access.HOST_ONLY_HINT}")
 
 
 def _out(row, saved_passwords: set[int], signed_in: dict[int, int]) -> PersonOut:
@@ -171,7 +169,7 @@ def set_sql_password(person_id: int, body: SqlPasswordWrite, request: Request):
     The host PC sets anyone's; a signed-in person sets their own.
     """
     require_host_or_self(request, person_id, "Only the host PC or that person can set their SQL password.")
-    if any(ord(char) < 32 or ord(char) == 127 for char in body.password):
+    if not env_file.is_single_line(body.password):
         raise HTTPException(status_code=422, detail="SQL password cannot contain line breaks or control characters.")
     with get_db() as db:
         row = db.execute("SELECT id, name, sql_username FROM people WHERE id = ?", (person_id,)).fetchone()

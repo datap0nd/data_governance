@@ -22,6 +22,7 @@ from app.config import BASE_DIR
 from app.database import get_db
 from app.routers.actions import list_actions as list_action_alerts
 from app.routers.eventlog import get_actor, log_event
+from app.routers.people import require_host_or_self
 from app.routers.tasks import _get_links
 
 router = APIRouter(prefix="/api/email", tags=["email"])
@@ -1283,6 +1284,9 @@ def list_people_email_status():
 @router.patch("/people/{person_id}")
 def update_person_email(person_id: int, body: PersonEmailUpdate, request: Request):
     """Update the Outlook email settings linked to a person."""
+    # Whoever holds this address receives that person's alerts and digests.
+    require_host_or_self(
+        request, person_id, "Only the host PC or that person can change their email settings.")
     data = body.model_dump(exclude_unset=True)
     if not data:
         raise HTTPException(status_code=400, detail="No changes provided")

@@ -31,7 +31,7 @@ from app.routers.system_flows import router as system_flows_router
 from app.routers.system_logs import router as system_logs_router
 from app import log_housekeeping, logging_setup
 from app.routers.flow_tasks import router as flow_tasks_router
-from app.local_access import is_host_request, is_server_machine, require_app_access
+from app.local_access import is_host_request, is_server_machine, require_app_access, require_host
 from app import user_identity
 from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, data_quality, tasks, eventlog, people, archive, documentation, email, email_schedules, usage, materialized_views, recurrences, flows, query_history, pipelines, pipeline_insights
 from app.settings import (
@@ -2293,9 +2293,12 @@ def get_system_updates(request: Request):
 
 
 def _require_local_remote_control(request: Request) -> None:
-    """Keep the enable switch and browser hand-off on the server machine."""
-    ip = request.client.host if request.client else ""
-    if not _is_localhost(ip):
+    """Keep the enable switch and browser hand-off on the server machine.
+
+    The address alone is not enough: a page from another site, open in a
+    browser on the host PC, also arrives from this machine.
+    """
+    if not is_host_request(request):
         raise HTTPException(status_code=403, detail="Remote Flow control is local-only.")
 
 
@@ -2330,7 +2333,7 @@ def acknowledge_remote_flow_navigation(command_id: str, request: Request):
 @app.put("/api/system/updates")
 def set_system_updates(payload: AutoUpdateSettingsRequest, request: Request):
     """Enable or disable unattended installation of new main commits."""
-    require_app_access(request)
+    require_host(request, "Only the host PC can turn automatic updates on or off.")
     set_setting(_AUTO_UPDATE_SETTING_KEY, "1" if payload.enabled else "0")
     active_attempt, _ = _latest_update_attempts()
     _release_update_drain()
@@ -2436,14 +2439,14 @@ def _apply_latest_update() -> dict:
 @app.post("/api/system/updates/apply", status_code=202)
 def apply_system_update(request: Request):
     """Launch setup.ps1 for the latest exact main commit."""
-    require_app_access(request)
+    require_host(request, "Only the host PC can install an update.")
     return _apply_latest_update()
 
 
 @app.post("/api/update", status_code=202)
 def trigger_update(request: Request):
     """Backward-compatible alias for the safe System Updates action."""
-    require_app_access(request)
+    require_host(request, "Only the host PC can install an update.")
     return _apply_latest_update()
 
 

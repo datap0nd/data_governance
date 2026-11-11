@@ -1046,7 +1046,7 @@ def update_scanner_notification_settings(
     body: ScannerNotificationSettingsRequest,
     request: Request,
 ):
-    _require_scan_access(request)
+    require_host(request, "Only the host PC can change who is told about failed scans.")
     try:
         result = scanner_notifications.save_notification_settings(body.recipients)
     except ValueError as exc:
@@ -1395,7 +1395,7 @@ def get_pbi_auth_status():
 @router.post("/pbi-auth/connect")
 def start_pbi_auth(request: Request):
     """Start a device-code sign-in; the code can be entered from any device."""
-    _require_scan_access(request)
+    require_host(request, "Only the host PC can connect the Power BI account.")
     try:
         return pbi_auth.start_device_flow()
     except Exception as exc:
@@ -1406,7 +1406,7 @@ def start_pbi_auth(request: Request):
 @router.post("/pbi-auth/disconnect")
 def disconnect_pbi_auth(request: Request):
     """Forget the saved Microsoft account sign-in."""
-    _require_scan_access(request)
+    require_host(request, "Only the host PC can disconnect the Power BI account.")
     return pbi_auth.disconnect()
 
 

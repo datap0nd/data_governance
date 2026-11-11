@@ -522,7 +522,8 @@ def test_only_the_host_pc_can_open_a_folder(audit_db, monkeypatch, tmp_path):
     colleague = TestClient(main.app, client=COLLEAGUE).post("/api/scanner/open-path", json=body)
 
     assert colleague.status_code == 403
-    assert colleague.json() == {"detail": "Only the host PC can open folders."}
+    assert colleague.json() == {
+        "detail": "Only the host PC can open folders. On the host PC, open Metronome as http://localhost:8000."}
     assert launched == []
     assert str(tmp_path) not in probed
 

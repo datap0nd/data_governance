@@ -13,6 +13,23 @@ import re
 from pathlib import Path
 
 NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# Everything ``str.splitlines`` treats as a line boundary. A value holding any
+# of them is refused when written, and the file is split on real newlines only
+# when read: a password containing U+2028 used to be written as one line and
+# read back as several, the extra "lines" overwriting other people's settings.
+LINE_BREAKS = frozenset("\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029")
+
+
+def is_single_line(value: str) -> bool:
+    """True when ``value`` is non-empty and safe to keep on one settings line."""
+    return bool(value) and not any(
+        char in LINE_BREAKS or ord(char) < 32 or ord(char) == 127 for char in value
+    )
+
+
+def _lines(text: str) -> list[str]:
+    """Split on newlines only; never on the Unicode separators inside a value."""
+    return text.replace("\r\n", "\n").split("\n")
 
 
 def read(path: Path | None) -> tuple[dict[str, str], dict]:
@@ -26,7 +43,7 @@ def read(path: Path | None) -> tuple[dict[str, str], dict]:
         status["exists"] = path.exists()
         if not status["exists"]:
             return values, status
-        for line_number, line in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), 1):
+        for line_number, line in enumerate(_lines(path.read_text(encoding="utf-8-sig")), 1):
             stripped = line.strip()
             if not stripped or stripped.startswith("#"):
                 continue
@@ -65,7 +82,7 @@ def write_value(path: Path, name: str, value: str | None) -> None:
     """
     if not NAME_RE.fullmatch(name):
         raise ValueError("Invalid setting name.")
-    if value is not None and (not value or any(ord(char) < 32 or ord(char) == 127 for char in value)):
+    if value is not None and not is_single_line(value):
         raise ValueError("A setting value must be non-empty and on one line.")
     with path.open("r+b") as handle:
         raw = handle.read()
