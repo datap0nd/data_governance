@@ -11,6 +11,9 @@ from app import database, flow_publish, flow_worker
 from app.ai.operations_tools import _safe_text
 from app.routers import flows, pipelines
 
+# Saving a Flow here is set-up, not the subject: see skip_flow_files in conftest.py.
+pytestmark = pytest.mark.usefixtures("skip_flow_files")
+
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 

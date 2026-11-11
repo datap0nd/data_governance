@@ -13,6 +13,9 @@ from app import database, flow_paths
 from app.routers import flow_groups as groups, flows
 from test_flows import flow_db, _seed_catalog, _mark_discovered, _flow, _request
 
+# Saving a Flow here is set-up, not the subject: see skip_flow_files in conftest.py.
+pytestmark = pytest.mark.usefixtures("skip_flow_files")
+
 
 @pytest.fixture
 def grouped_flows(flow_db, monkeypatch):

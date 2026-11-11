@@ -22,6 +22,9 @@ from app.flow_clock import dubai_today
 from app.routers import flow_groups, flows, pipelines, system_paths
 from test_flows import flow_db, _request
 
+# Saving a Flow here is set-up, not the subject: see skip_flow_files in conftest.py.
+pytestmark = pytest.mark.usefixtures("skip_flow_files")
+
 
 FETCH_SCRIPT = textwrap.dedent('''
     import argparse, os, sys

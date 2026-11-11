@@ -12,6 +12,9 @@ from app.routers import flows
 from test_flows import _flow, _mark_discovered, _seed_catalog, flow_db  # noqa: F401
 from test_view_refresh import SERVER
 
+# Saving a Flow here is set-up, not the subject: see skip_flow_files in conftest.py.
+pytestmark = pytest.mark.usefixtures("skip_flow_files")
+
 
 def as_person(person_id, name="Someone"):
     """A colleague's browser, as the identity middleware describes it."""
