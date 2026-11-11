@@ -334,8 +334,21 @@ def split_sections(text: str) -> dict[str, tuple[int, str]]:
     return sections
 
 
-@lru_cache(maxsize=2)
 def execution_sources(entry='recorded'):
+    """The application source a generated script needs, for one kind of Flow.
+
+    Building it parses and reassembles the Flow engine, about a second of
+    work, so the result is kept. The lookup goes through one function with
+    the kind always named: ``execution_sources()`` and
+    ``execution_sources('recorded')`` used to be two cache entries beside
+    ``'catalog'`` in a cache of two, so saving a recorded Flow rebuilt all
+    three every time.
+    """
+    return _execution_sources(entry)
+
+
+@lru_cache(maxsize=None)  # one entry per kind of Flow; there are two
+def _execution_sources(entry):
     texts, trees, declarations, imports, selected, aliases = {}, {}, {}, {}, {}, {}
 
     def index(module):
