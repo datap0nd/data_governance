@@ -19,7 +19,9 @@ PATTERNS = {
     'date': r'20\d{6}',
     'month': r'20\d{2}(?:0[1-9]|1[0-2])',
 }
-MAX_KEY_PRESSES = 1_000
+# One key press moves a handle one step. A date slider needs one press per day,
+# so the cap allows ranges of several years and still stops a runaway target.
+MAX_KEY_PRESSES = 5_000
 # A control may publish its value some time after a key press; a value counts
 # as settled only after it has held still for this many consecutive reads.
 SETTLE_READS = 4

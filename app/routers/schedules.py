@@ -3,7 +3,7 @@
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Query
-from app.flow_clock import dubai_today
+from app.flow_clock import dubai_now, dubai_today
 from app.freshness import host_timezone
 from app.database import get_db
 from app.scanner.findings import sync_managed_actions
@@ -14,6 +14,15 @@ DAY_ORDER = {
     "Monday": 0, "Tuesday": 1, "Wednesday": 2, "Thursday": 3,
     "Friday": 4, "Saturday": 5, "Sunday": 6,
 }
+
+
+def _dubai_day_shift() -> str:
+    """SQLite date modifier that puts a stored UTC instant on the Dubai calendar.
+
+    Dubai has no daylight saving, so one offset is right for the whole trend.
+    """
+    minutes = int(dubai_now().utcoffset().total_seconds() // 60)
+    return f"{minutes:+d} minutes"
 
 
 def _next_weekday_date(day_name: str, with_iso: bool = False) -> str | dict:
@@ -191,14 +200,16 @@ def get_schedule_discrepancies():
 @router.get("/alert-trend")
 def get_alert_trend():
     """Return daily alert counts for the past 30 days."""
+    # Bucket by the Dubai calendar date, the same calendar the labels use.
+    shift = _dubai_day_shift()
     with get_db() as db:
         rows = db.execute("""
-            SELECT DATE(created_at) AS day, COUNT(*) AS count
+            SELECT DATE(created_at, ?) AS day, COUNT(*) AS count
             FROM alerts
             WHERE created_at >= date('now', '-30 days')
-            GROUP BY DATE(created_at)
+            GROUP BY DATE(created_at, ?)
             ORDER BY day
-        """).fetchall()
+        """, (shift, shift)).fetchall()
 
     counts = {r["day"]: r["count"] for r in rows}
 
@@ -221,13 +232,13 @@ def get_health_trend():
     """
     with get_db() as db:
         rows = db.execute("""
-            SELECT DATE(started_at) AS day, sources_probed, fresh, stale, outdated,
+            SELECT DATE(started_at, ?) AS day, sources_probed, fresh, stale, outdated,
                    unknown, COALESCE(no_rule, 0) AS no_rule
             FROM probe_runs
             WHERE started_at >= date('now', '-30 days')
               AND status IN ('completed', 'completed_with_warnings')
             ORDER BY started_at
-        """).fetchall()
+        """, (_dubai_day_shift(),)).fetchall()
 
     # Group by day, take latest per day
     daily = {}

@@ -34,11 +34,19 @@ captures that request once and replays it directly on later runs.
 
 ## Safety model
 
-- **Recipes never cross configurations.** Recipe version 2 is keyed by site,
-  report, export view, requested period, ASAP semantic download type, Export
-  Report Title, and Export filter details. A request recorded for one week,
-  view, type, or checkbox combination is never replayed for another; it simply
-  is not found, and the browser flow runs as before.
+- **Recipes never cross configurations.** Recipe version 3 is keyed by the
+  Flow, site, report, the Flow's saved report filters, export view, requested
+  period, ASAP semantic download type, Export Report Title, and Export filter
+  details. The filters are compared in a canonical form, so the same
+  selections saved in a different order still match. A request recorded for
+  one Flow, filter selection, week, view, type, or checkbox combination is
+  never replayed for another; it simply is not found, and the browser flow
+  runs as before. Editing a Flow's report filters therefore makes its next run
+  use the browser and record a fresh recipe.
+- **Older recipes are re-recorded, not migrated.** Recipes saved before
+  version 3 did not carry the Flow or its filters, so they are never found
+  again. The first run of each export after the update drives the portal UI
+  once and records a version 3 recipe as it succeeds.
 - **Replayed files are validated like downloads.** The response is checked by
   content, not filename: a sign-in or error response, an empty or truncated
   body, or the wrong file family rejects the replay. Intentional HTML and Plain

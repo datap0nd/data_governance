@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from app.config import TMDL_ROOT, DB_PATH, PGHOST, PGDATABASE, PGUSER
 from app.database import get_db
 from app.local_access import require_app_access
+from app.routers.people import require_host
 from app.scanner.control import ScannerWorkCancelled, assert_not_cancelled
 from app.scanner.control import current_cancel_generation
 from app.scanner import jobs as scanner_jobs
@@ -1045,7 +1046,7 @@ def update_scanner_notification_settings(
     body: ScannerNotificationSettingsRequest,
     request: Request,
 ):
-    _require_scan_access(request)
+    require_host(request, "Only the host PC can change who is told about failed scans.")
     try:
         result = scanner_notifications.save_notification_settings(body.recipients)
     except ValueError as exc:
@@ -1394,7 +1395,7 @@ def get_pbi_auth_status():
 @router.post("/pbi-auth/connect")
 def start_pbi_auth(request: Request):
     """Start a device-code sign-in; the code can be entered from any device."""
-    _require_scan_access(request)
+    require_host(request, "Only the host PC can connect the Power BI account.")
     try:
         return pbi_auth.start_device_flow()
     except Exception as exc:
@@ -1405,7 +1406,7 @@ def start_pbi_auth(request: Request):
 @router.post("/pbi-auth/disconnect")
 def disconnect_pbi_auth(request: Request):
     """Forget the saved Microsoft account sign-in."""
-    _require_scan_access(request)
+    require_host(request, "Only the host PC can disconnect the Power BI account.")
     return pbi_auth.disconnect()
 
 
@@ -1443,7 +1444,7 @@ def get_scan_run(run_id: int):
     with get_db() as db:
         r = db.execute("SELECT * FROM scan_runs WHERE id = ?", (run_id,)).fetchone()
     if not r:
-        return {"error": "Scan run not found"}
+        raise HTTPException(status_code=404, detail="Scan run not found")
     return _scan_run_out(r)
 
 
@@ -1490,6 +1491,9 @@ def record_pbi_sync_run_status(body: PbiSyncRunStatus, request: Request):
 def open_path(body: OpenPathRequest, request: Request):
     """Open the containing folder of a file path in the OS file explorer."""
     _require_scan_access(request)
+    # Explorer opens on the host PC's own desktop, so only the host may ask:
+    # another computer must not make this machine probe an arbitrary path.
+    require_host(request, "Only the host PC can open folders.")
     target = Path(body.path)
 
     # If it's a file, open its parent folder; if directory, open it directly

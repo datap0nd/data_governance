@@ -26,7 +26,13 @@ def _postgres_server_parts(value: str | None) -> tuple[str, int | None]:
     if "://" not in raw and not raw.startswith("[") and raw.count(":") >= 2:
         return raw.rstrip(".").casefold(), None
     candidate = raw if "://" in raw else f"postgresql://{raw}"
-    parsed = urlsplit(candidate)
+    try:
+        parsed = urlsplit(candidate)
+    except ValueError:
+        # ``urlsplit`` rejects a bracketed host that is not an IP literal
+        # (for example ``[pg-prod]``). An unparseable server has no exact
+        # identity; it must not abort the caller's whole scan.
+        return "", None
     host = parsed.hostname or raw.split("/", 1)[0].split(":", 1)[0]
     try:
         port = parsed.port
@@ -402,15 +408,27 @@ def upsert_postgres_identity(
 
 
 def exact_identity_rows(
-    db, *, server: str, database: str, schema: str, relation: str
+    db,
+    *,
+    server: str,
+    database: str,
+    schema: str,
+    relation: str,
+    include_archived: bool = False,
 ) -> list:
+    """Return the sources holding one exact identity, lowest source id first.
+
+    Only active sources are returned unless ``include_archived`` is set; each
+    row carries its ``archived`` flag.
+    """
+    active_only = "" if include_archived else "AND COALESCE(s.archived, 0) = 0"
     return db.execute(
-        """SELECT spi.*, s.name AS source_name, COALESCE(s.archived, 0) AS archived
+        f"""SELECT spi.*, s.name AS source_name, COALESCE(s.archived, 0) AS archived
            FROM source_postgres_identities spi
            JOIN sources s ON s.id = spi.source_id
            WHERE spi.server_name = ? AND spi.database_name = ?
              AND spi.schema_name = ? AND spi.relation_name = ?
-             AND COALESCE(s.archived, 0) = 0
+             {active_only}
            ORDER BY spi.source_id""",
         postgres_identity_tuple(
             server=server,
@@ -418,6 +436,28 @@ def exact_identity_rows(
             schema=schema,
             relation=relation,
         ),
+    ).fetchall()
+
+
+def active_identity_holders(db, source_id: int) -> list:
+    """Return the *other* active sources that hold this source's exact identity.
+
+    One physical PostgreSQL relation must map to at most one active source,
+    so callers use this before making ``source_id`` active again.
+    """
+    return db.execute(
+        """SELECT other.source_id, s.name AS source_name
+           FROM source_postgres_identities mine
+           JOIN source_postgres_identities other
+             ON other.server_name = mine.server_name
+            AND other.database_name = mine.database_name
+            AND other.schema_name = mine.schema_name
+            AND other.relation_name = mine.relation_name
+            AND other.source_id != mine.source_id
+           JOIN sources s ON s.id = other.source_id
+           WHERE mine.source_id = ? AND COALESCE(s.archived, 0) = 0
+           ORDER BY other.source_id""",
+        (int(source_id),),
     ).fetchall()
 
 

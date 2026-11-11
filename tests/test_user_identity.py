@@ -103,6 +103,9 @@ def _request(peer="127.0.0.1", host="localhost", headers=None):
 
 def test_host_pc_check_refuses_other_computers_cross_site_and_proxied_requests(monkeypatch):
     monkeypatch.setattr(local_access, "is_server_machine", lambda peer: peer in {"127.0.0.1", "10.0.0.5"})
+    # "bi-desktop" is this PC's own name in the scenario; the check now also
+    # requires the address the browser asked for to be one of the PC's own.
+    monkeypatch.setattr(local_access, "_server_host_keys", lambda: frozenset({"localhost", "bi-desktop"}))
     assert local_access.is_host_request(_request())
     assert local_access.is_host_request(_request("10.0.0.5", "bi-desktop", {"origin": "http://bi-desktop:8000",
                                                                            "sec-fetch-site": "same-origin"}))

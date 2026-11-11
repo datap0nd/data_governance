@@ -18,9 +18,11 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app import flow_python
 from app.database import get_db
+from app.flow_clock import TIMEZONE
 
 EMAIL_PATTERN = re.compile(r"^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$")
 MAX_RECIPIENTS = 20
@@ -110,6 +112,24 @@ def default_subject(flow_name: str, run_id: int) -> str:
 
 def _now() -> str:
     return datetime.now(timezone.utc).replace(tzinfo=None, microsecond=0).isoformat(timespec="seconds")
+
+
+def dubai_time_text(value) -> str | None:
+    """A stored run instant as Dubai wall time with the zone named, for emails.
+
+    Run timestamps are stored as UTC without an offset; a stamp that carries
+    its own offset is honoured. Text that is not a timestamp is shown as it
+    is rather than guessed at.
+    """
+    if not value:
+        return None
+    try:
+        instant = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+    except ValueError:
+        return str(value)
+    if instant.tzinfo is None:
+        instant = instant.replace(tzinfo=timezone.utc)
+    return instant.astimezone(ZoneInfo(TIMEZONE)).strftime("%d %b %Y, %H:%M") + " (Dubai time)"
 
 
 def _loads(value, default):
@@ -339,7 +359,7 @@ def build_message(context: dict, *, attach: bool, warning: str | None = None,
         _row_html("Flow", html.escape(flow_name)),
         _row_html("Source", html.escape(_source_label(context))),
         _row_html("Run", html.escape(f"#{run_id} - {trigger}" + (f" by {requested_by}" if requested_by else ""))),
-        _row_html("Finished at", html.escape(str(finished or "Unknown"))),
+        _row_html("Finished at", html.escape(dubai_time_text(finished) or "Unknown")),
     ]
     if sql.get("enabled"):
         target = f"{sql.get('database')}.{sql.get('schema')}.{sql.get('table')}"

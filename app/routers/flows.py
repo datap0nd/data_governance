@@ -51,6 +51,7 @@ from app.flow_local_runner import (
 )
 from app.flow_sql import configuration_status as sql_configuration_status, discover_catalog as discover_sql_catalog, ownership_supported, person_credentials_supported, connection_credentials as sql_connection_credentials
 from app.routers.eventlog import get_actor, log_event
+from app.routers.people import require_host
 from app.scanner.findings import sync_managed_actions
 from app.source_identity import (
     exact_identity_rows,
@@ -232,7 +233,7 @@ def _flow_failure_message(context: dict) -> dict:
         detail_row("Source", source_label),
         detail_row("Run", f"#{run_id} - {trigger}" + (f" by {requested_by}" if requested_by else "")),
         detail_row("Worker", str(context.get("worker_id") or "Never claimed by a worker")),
-        detail_row("Failed at", str(failed_at or "Unknown")),
+        detail_row("Failed at", flow_email_delivery.dubai_time_text(failed_at) or "Unknown"),
     ]
     if stage:
         rows.append(detail_row("Last stage", stage.capitalize()))
@@ -309,7 +310,7 @@ def _flow_failure_message(context: dict) -> dict:
                          font-size:11px;line-height:1.4">
                 Flow owner: {html.escape(context["owner_name"])}. You receive this
                 email for every failed run of this flow. Detected by Metronome at
-                {html.escape(_now().isoformat(timespec="minutes"))} local time.
+                {html.escape(dubai_now().strftime("%d %b %Y, %H:%M"))} (Dubai time).
               </td>
             </tr>
           </table>
@@ -609,6 +610,9 @@ class SiteWrite(BaseModel):
     def validate_urls(self):
         self.name = self.name.strip()
         self.adapter = self.adapter.strip()
+        if self.adapter not in flow_paths.SOURCE_FOLDERS:
+            # A Flow on an unknown adapter has no source folder and cannot be built.
+            raise ValueError("Choose a website type Metronome supports.")
         if self.base_url:
             self.base_url = _validate_http_url(self.base_url, "Base URL")
         if self.auth_url:
@@ -1051,9 +1055,12 @@ class FlowWrite(BaseModel):
             elif self.period_strategy == "rolling":
                 if not self.window_weeks:
                     raise ValueError("Choose how many weeks each file should contain.")
+                # YYYY-W53 passes the format check in years that have no week 53.
+                _week_window(self.start_week, 1)
                 self.download_mode = "one_per_period"
                 self.end_week = None
             else:
+                _week_window(self.start_week, 1)
                 self.end_week = None
                 if self.download_mode == "one_per_period" and not self.window_weeks:
                     raise ValueError("Choose how many weeks each download should contain.")
@@ -2208,17 +2215,7 @@ def _build_job(db, flow_id: int, *, force_reprocess: bool = False, recording_dra
     }
     # Resolve after pending settings have been applied: the selected owner may
     # differ from the person joined by _flow_out. Freeze it with the run.
-    if job['sql_handoff']['enabled'] and flow.get('owner_person_id'):
-        owner = db.execute('SELECT name, sql_username FROM people WHERE id=?', (flow['owner_person_id'],)).fetchone()
-        if owner:
-            # An assigned Flow writes as its owner's SQL user; the worker reads
-            # the password from the settings file (flow_sql.connection_credentials).
-            job['sql_handoff']['connect_as'] = {
-                'person_id': int(flow['owner_person_id']), 'name': owner['name'],
-                'username': owner['sql_username'],
-            }
-        if flow.get('sql_assign_owner', True) and owner and owner['sql_username']:
-            job['sql_handoff']['owner_username'] = owner['sql_username']
+    _apply_sql_identity(db, job['sql_handoff'], flow.get('owner_person_id'), flow.get('sql_assign_owner', True))
     from app.flow_view_refresh_discovery import build_plan
     job["post_sql_refresh"] = build_plan(db, flow.get("post_sql_refresh"), job["sql_handoff"], _flow_server_identity())
     # Frozen with the run like every other step; excluded from recording,
@@ -2230,13 +2227,56 @@ def _build_job(db, flow_id: int, *, force_reprocess: bool = False, recording_dra
     return job
 
 
+def _apply_sql_identity(db, target: dict, owner_person_id, assign_owner) -> None:
+    """Set who a job's SQL step signs in as: the Flow's owner, or nobody.
+
+    Without ``connect_as`` the worker uses the shared DG_UPLOAD_* account,
+    which is right only for an unassigned Flow.
+    """
+    target.pop('connect_as', None)
+    target.pop('owner_username', None)
+    if target.get('enabled') and owner_person_id:
+        owner = db.execute('SELECT name, sql_username FROM people WHERE id=?', (owner_person_id,)).fetchone()
+        if owner:
+            # An assigned Flow writes as its owner's SQL user; the worker reads
+            # the password from the settings file (flow_sql.connection_credentials).
+            target['connect_as'] = {
+                'person_id': int(owner_person_id), 'name': owner['name'],
+                'username': owner['sql_username'],
+            }
+        if assign_owner and owner and owner['sql_username']:
+            target['owner_username'] = owner['sql_username']
+
+
+def _apply_current_sql_identity(db, job: dict, flow_id: int) -> None:
+    """Make a retry sign in as the Flow's owner now, not as the source run did.
+
+    A retry reuses the source run's frozen job. The Flow may have been
+    assigned or reassigned since, and the old identity would then write with
+    the shared account or as the previous owner.
+    """
+    flow = db.execute("SELECT owner_person_id, sql_assign_owner FROM flows WHERE id=?", (flow_id,)).fetchone()
+    if flow and isinstance(job.get("sql_handoff"), dict):
+        _apply_sql_identity(db, job["sql_handoff"], flow["owner_person_id"], flow["sql_assign_owner"])
+
+
+def _assert_refresh_plan_unblocked(job: dict) -> None:
+    """Reject a plan whose discovery could not decide which views to refresh.
+
+    Such a plan lists no views, so a run would insert into SQL and then
+    silently skip the refresh the Flow is configured to do.
+    """
+    plan = job.get("post_sql_refresh") or {}
+    if plan.get("blocked"):
+        raise HTTPException(409, "Refresh materialized views cannot run: " + str(plan["blocked"]))
+
+
 def _assert_refresh_plan_runnable(db, job: dict, *, exclude_run_id: int | None = None) -> None:
     """Reject a blocked discovery and views reserved by a full-pipeline run."""
     from app import flow_view_refresh
     from app.routers.pipelines import assert_resource_unlocked
+    _assert_refresh_plan_unblocked(job)
     plan = job.get("post_sql_refresh") or {}
-    if plan.get("blocked"):
-        raise HTTPException(409, "Refresh materialized views cannot run: " + str(plan["blocked"]))
     server = plan.get("server") or _flow_server_identity()
     for view in flow_view_refresh.plan_views(job):
         assert_resource_unlocked(db, "mv", flow_view_refresh.resource_key(server, view))
@@ -2330,6 +2370,29 @@ def queue_flow_run_service(
     return int(cursor.lastrowid), job
 
 
+def _skip_due_flow(db, row, exc: Exception, now_text: str) -> None:
+    """Skip one due Flow the scheduler could not queue, and say why on the Flow.
+
+    The caller has already rolled back that Flow's own writes. The occurrence
+    is skipped exactly as a 409 skips it: the schedule moves on to its next
+    run. A saved schedule that cannot be read has no next run until the Flow
+    is saved again, instead of failing the same way every minute.
+    """
+    logging.getLogger(__name__).error(
+        "Scheduled Flow %s could not be queued", row["id"], exc_info=exc,
+    )
+    reason = str(exc.detail) if isinstance(exc, HTTPException) else str(exc).strip() or exc.__class__.__name__
+    try:
+        next_run = _iso(_rules_next(flow_trigger_rules(row)))
+    except Exception:
+        next_run = None
+        reason += " Save the Flow again to restore its schedule."
+    db.execute(
+        "UPDATE flows SET next_run_at=?, last_error=?, updated_at=? WHERE id=?",
+        (next_run, f"The scheduled run was skipped: {reason}"[:2000], now_text, row["id"]),
+    )
+
+
 def queue_due_flows() -> dict:
     """Queue due scheduled flows without executing browser work in the API process."""
     from app.routers.pipelines import (
@@ -2355,50 +2418,65 @@ def queue_due_flows() -> dict:
             (now_text,),
         ).fetchall()
         for row in rows:
+            # One Flow that cannot be built or queued must neither roll back
+            # nor block the others: only its own writes are undone, the reason
+            # is recorded on it and the tick carries on with the next Flow.
+            db.execute("SAVEPOINT due_flow")
             try:
-                # Covers both the Flow itself and another Flow writing the
-                # same exact SQL target during a governed pipeline run.
-                assert_resource_unlocked(db, "flow", str(row["id"]))
-            except HTTPException as exc:
-                if exc.status_code != 409:
-                    raise
-                continue
-            active = db.execute(
-                "SELECT id FROM flow_runs WHERE flow_id=? AND status IN ('queued','claimed','running') LIMIT 1",
-                (row["id"],),
-            ).fetchone()
-            next_run = _rules_next(flow_trigger_rules(row))
-            db.execute(
-                "UPDATE flows SET next_run_at=?, updated_at=? WHERE id=?",
-                (_iso(next_run), now_text, row["id"]),
-            )
-            if active:
-                continue
-            try:
-                job = _build_job(db, row["id"])
-                _assert_sql_credentials(job)
-            except HTTPException as exc:
-                if exc.status_code != 409:
-                    raise
-                db.execute("UPDATE flows SET last_error=? WHERE id=?", (str(exc.detail), row["id"]))
-                continue
-            try:
-                assert_flow_target_available(
-                    db, flow_target_resource_key_from_job(job)
+                try:
+                    # Covers both the Flow itself and another Flow writing the
+                    # same exact SQL target during a governed pipeline run.
+                    assert_resource_unlocked(db, "flow", str(row["id"]))
+                except HTTPException as exc:
+                    if exc.status_code != 409:
+                        raise
+                    continue
+                active = db.execute(
+                    "SELECT id FROM flow_runs WHERE flow_id=? AND status IN ('queued','claimed','running') LIMIT 1",
+                    (row["id"],),
+                ).fetchone()
+                next_run = _rules_next(flow_trigger_rules(row))
+                db.execute(
+                    "UPDATE flows SET next_run_at=?, updated_at=? WHERE id=?",
+                    (_iso(next_run), now_text, row["id"]),
                 )
-                assert_no_active_flow_publish_run(db, job)
-            except HTTPException as exc:
-                if exc.status_code != 409:
-                    raise
-                continue
-            cursor = db.execute(
-                """INSERT INTO flow_runs
-                   (flow_id, trigger_type, status, requested_by, job_json, created_at)
-                   VALUES (?, 'scheduled', 'queued', 'scheduler', ?, ?)""",
-                (row["id"], _json(job), now_text),
-            )
-            queued.append(cursor.lastrowid)
-            modes.add(job["execution"]["browser_mode"])
+                if active:
+                    continue
+                try:
+                    job = _build_job(db, row["id"])
+                    _assert_sql_credentials(job)
+                    # Fail closed like a manual Run. Whether another run is
+                    # refreshing the same view is deliberately not checked
+                    # here: nobody is there to retry a skipped occurrence.
+                    _assert_refresh_plan_unblocked(job)
+                except HTTPException as exc:
+                    if exc.status_code != 409:
+                        raise
+                    db.execute("UPDATE flows SET last_error=? WHERE id=?", (str(exc.detail), row["id"]))
+                    continue
+                try:
+                    assert_flow_target_available(
+                        db, flow_target_resource_key_from_job(job)
+                    )
+                    assert_no_active_flow_publish_run(db, job)
+                except HTTPException as exc:
+                    if exc.status_code != 409:
+                        raise
+                    continue
+                mode = job["execution"]["browser_mode"]
+                cursor = db.execute(
+                    """INSERT INTO flow_runs
+                       (flow_id, trigger_type, status, requested_by, job_json, created_at)
+                       VALUES (?, 'scheduled', 'queued', 'scheduler', ?, ?)""",
+                    (row["id"], _json(job), now_text),
+                )
+                queued.append(cursor.lastrowid)
+                modes.add(mode)
+            except Exception as exc:
+                db.execute("ROLLBACK TO due_flow")
+                _skip_due_flow(db, row, exc, now_text)
+            finally:
+                db.execute("RELEASE due_flow")
     workers = [launch_local_worker(mode) for mode in sorted(modes)]
     if not workers:
         worker = {"status": "not_needed", "mode": "local"}
@@ -2457,6 +2535,7 @@ def catalog():
 
 @router.post("/sites/{site_id}/credentials")
 def configure_site_credentials(site_id: int, body: CredentialWrite, request: Request):
+    require_host(request, "Only the host PC can save a portal sign-in.")
     with get_db() as db:
         site = db.execute("SELECT id, name, adapter FROM flow_sites WHERE id=?", (site_id,)).fetchone()
         if not site:
@@ -2472,10 +2551,23 @@ def configure_site_credentials(site_id: int, body: CredentialWrite, request: Req
     return result
 
 
+def _require_host_for_sign_in_site(request, *adapters) -> None:
+    """Only the host PC adds or changes a website the worker signs in to.
+
+    The worker opens an ASAP or GSCM website's saved address and enters the
+    stored portal login there, so whoever can change that website can send
+    the login somewhere else. Other websites stay open to everyone.
+    """
+    if {ASAP_PORTAL_ADAPTER, GSCM_PORTAL_ADAPTER}.intersection(adapters):
+        require_host(request, "Only the host PC can add or change an ASAP or GSCM website, "
+                              "because Metronome signs in to it with the stored portal login.")
+
+
 @router.post("/sites")
 def create_site(body: SiteWrite, request: Request):
     if body.adapter in INTERNAL_FLOW_ADAPTERS:
         raise HTTPException(400, "That adapter is an internal flow source, not a configurable website.")
+    _require_host_for_sign_in_site(request, body.adapter)
     now = _iso(_now())
     try:
         with get_db() as db:
@@ -2509,19 +2601,23 @@ def update_site(site_id: int, body: SiteWrite, request: Request):
             raise HTTPException(400, "Internal flow sources cannot be edited.")
         if body.adapter in INTERNAL_FLOW_ADAPTERS:
             raise HTTPException(400, "That adapter is an internal flow source, not a configurable website.")
-        cursor = db.execute(
-            """UPDATE flow_sites SET name=?, adapter=?, base_url=?, auth_url=?, discovery_enabled=?,
-               discovery_interval_hours=?, discovery_scope_json=?,
-               discovery_weekday=?, discovery_time=?,
-               next_scan_at=CASE WHEN ? THEN ? ELSE NULL END,
-               enabled=?, updated_at=?
-               WHERE id=?""",
-            (body.name, body.adapter, body.base_url, body.auth_url, body.discovery_enabled,
-             body.discovery_interval_hours, _json(body.discovery_scope), body.discovery_weekday,
-             body.discovery_time, body.discovery_enabled,
-             _iso(_next_weekly_scan(body.discovery_weekday, body.discovery_time)),
-             body.enabled, _iso(_now()), site_id),
-        )
+        _require_host_for_sign_in_site(request, existing["adapter"] if existing else None, body.adapter)
+        try:
+            cursor = db.execute(
+                """UPDATE flow_sites SET name=?, adapter=?, base_url=?, auth_url=?, discovery_enabled=?,
+                   discovery_interval_hours=?, discovery_scope_json=?,
+                   discovery_weekday=?, discovery_time=?,
+                   next_scan_at=CASE WHEN ? THEN ? ELSE NULL END,
+                   enabled=?, updated_at=?
+                   WHERE id=?""",
+                (body.name, body.adapter, body.base_url, body.auth_url, body.discovery_enabled,
+                 body.discovery_interval_hours, _json(body.discovery_scope), body.discovery_weekday,
+                 body.discovery_time, body.discovery_enabled,
+                 _iso(_next_weekly_scan(body.discovery_weekday, body.discovery_time)),
+                 body.enabled, _iso(_now()), site_id),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(409, "A website with that name already exists.") from exc
         if not cursor.rowcount:
             raise HTTPException(404, "Website not found.")
         if existing and existing['adapter'] != body.adapter:
@@ -2610,12 +2706,17 @@ def update_report(report_id: int, body: ReportWrite, request: Request):
             raise HTTPException(400, "Internal flow reports cannot be edited.")
         if target_site and target_site["adapter"] in INTERNAL_FLOW_ADAPTERS:
             raise HTTPException(400, "Internal flow sources cannot contain user reports.")
-        cursor = db.execute(
-            """UPDATE flow_reports SET site_id=?, name=?, report_url=?, ready_text=?, open_export_text=?,
-               download_text=?, automation_json=?, notes=?, enabled=?, updated_at=? WHERE id=?""",
-            (body.site_id, body.name, body.report_url, body.ready_text, body.open_export_text,
-             body.download_text, _json(body.automation), body.notes, body.enabled, now, report_id),
-        )
+        if existing and not target_site:
+            raise HTTPException(400, "Website not found.")
+        try:
+            cursor = db.execute(
+                """UPDATE flow_reports SET site_id=?, name=?, report_url=?, ready_text=?, open_export_text=?,
+                   download_text=?, automation_json=?, notes=?, enabled=?, updated_at=? WHERE id=?""",
+                (body.site_id, body.name, body.report_url, body.ready_text, body.open_export_text,
+                 body.download_text, _json(body.automation), body.notes, body.enabled, now, report_id),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(409, "That report already exists for this website.") from exc
         if not cursor.rowcount:
             raise HTTPException(404, "Report not found.")
         _replace_filters(db, report_id, body.filters, now)
@@ -2895,6 +2996,9 @@ def inspect_view_retry_eligibility(db, run_id: int) -> dict:
         return _recovery_result("blocked", "flow_active", "This flow already has an active run.",
                                 _source=source, active_run_id=int(active["id"]))
     job = copy.deepcopy(source_job)
+    # The refresh signs in through sql_handoff too; retry_run_views then
+    # refuses an owner whose SQL credentials are missing.
+    _apply_current_sql_identity(db, job, int(source["flow_id"]))
     job["job_type"] = flow_view_refresh.RETRY_JOB_TYPE
     job.pop("resume", None)
     job.pop("sql_retry", None)
@@ -2985,6 +3089,30 @@ def inspect_sql_retry_eligibility(
         return _recovery_result(
             "not_applicable", "sql_disabled", "The source run did not have SQL handoff enabled.",
             http_status=400, _source=source,
+        )
+    # Loading these files again is only safe while nothing has committed since:
+    # this run's own commit would be repeated, and a later commit would be
+    # followed (append) or replaced (replace) by this run's older data.
+    outcome = _loads(source["sql_outcome_json"], None)
+    if isinstance(outcome, dict) and outcome.get("committed"):
+        return _recovery_result(
+            "blocked", "sql_already_committed",
+            "SQL insertion already committed in this run, so Retry SQL would load the same file a second time. "
+            "Use Retry view refresh if its views did not finish, or Run to load new data.",
+            _source=source,
+        )
+    newer = db.execute(
+        """SELECT id FROM flow_runs WHERE flow_id=? AND id>? AND sql_outcome_json IS NOT NULL
+             AND json_extract(sql_outcome_json,'$.committed')=1
+             AND json_extract(job_json,'$.job_type') IS NOT 'view_retry' LIMIT 1""",
+        (source["flow_id"], run_id),
+    ).fetchone()
+    if newer:
+        return _recovery_result(
+            "blocked", "sql_superseded",
+            f"A newer run (#{newer['id']}) already committed SQL for this Flow, so loading this run's older file "
+            "now could duplicate or overwrite newer data. Use Run to load the current data instead.",
+            _source=source,
         )
     source_artifacts = _loads(source["artifact_json"], [])
     transformed = bool(source_job.get("transformation", {}).get("enabled"))
@@ -3101,6 +3229,9 @@ def inspect_sql_retry_eligibility(
         )
 
     job = copy.deepcopy(source_job)
+    # Everything else stays as the source run froze it; retry_run_sql then
+    # refuses an owner whose SQL credentials are missing.
+    _apply_current_sql_identity(db, job, int(source["flow_id"]))
     job["job_type"] = "sql_retry"
     job["execution"] = {
         "mode": "local", "host": "bi_desktop", "browser_mode": "headless",
@@ -3553,6 +3684,8 @@ def resume_run(run_id: int, request: Request):
         source = eligibility["_source"]
         job = eligibility["_job"]
         completed = eligibility["_completed"]
+        # The job is rebuilt from the current configuration, like a manual Run.
+        _assert_refresh_plan_runnable(db, job)
         cursor = db.execute(
             """INSERT INTO flow_runs (flow_id, trigger_type, status, requested_by, job_json, created_at)
                VALUES (?, 'resume', 'queued', ?, ?, ?)""",
@@ -3634,7 +3767,16 @@ def refresh_sql_catalog() -> dict:
     try:
         result = discover_sql_catalog()
         with get_db() as db:
-            db.execute("UPDATE flow_sql_catalog SET stale=1")
+            unread = [item["database"] for item in result["errors"]]
+            if unread:
+                # A database that could not be read this time says nothing
+                # about its tables: keep what the last good scan found there.
+                db.execute(
+                    f"UPDATE flow_sql_catalog SET stale=1 WHERE database_name NOT IN ({','.join('?' for _ in unread)})",
+                    unread,
+                )
+            else:
+                db.execute("UPDATE flow_sql_catalog SET stale=1")
             for item in result["targets"]:
                 db.execute(
                     """INSERT INTO flow_sql_catalog
@@ -4041,7 +4183,14 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
             if not body.sql_handoff_enabled:
                 body.post_sql_refresh = {"mode": "off", "views": []}
         if body.email_delivery is None:
-            body.email_delivery = flow_email_delivery.saved_config(existing["email_delivery_json"])
+            # None normally means the field was not sent, so the saved step is
+            # kept. A Flow that just runs its scripts has no final file and no
+            # Email step (the validator drops it), so the saved step goes too.
+            body.email_delivery = (
+                flow_email_delivery.default_config()
+                if body.source_type == "python" and body.python_run_mode == "run"
+                else flow_email_delivery.saved_config(existing["email_delivery_json"])
+            )
         from app.routers.pipelines import assert_resource_unlocked
         assert_resource_unlocked(db, "flow", str(flow_id))
         if (existing["source_type"] or "portal") != body.source_type:
@@ -4448,7 +4597,11 @@ def _queue_new_manual_run(db, flow_id: int, *, actor, trigger_type, now):
     flow = db.execute("SELECT name,source_type FROM flows WHERE id=?", (flow_id,)).fetchone()
     if not flow:
         raise HTTPException(404, "Flow not found.")
-    job = _build_job(db, flow_id, force_reprocess=(flow["source_type"] or "portal") in {"outlook", "file"})
+    try:
+        job = _build_job(db, flow_id, force_reprocess=(flow["source_type"] or "portal") in {"outlook", "file"})
+    except (KeyError, TypeError, ValueError) as exc:
+        # The same wording the read-only run preview uses for this case.
+        raise HTTPException(409, f"The current Flow configuration cannot be queued: {exc}") from exc
     _assert_sql_credentials(job)
     assert_flow_target_available(db, flow_target_resource_key_from_job(job))
     assert_no_active_flow_publish_run(db, job)

@@ -108,8 +108,9 @@ def _identity(page, target: dict, log: dict) -> tuple:
 
 
 def _rendered_rows(page, name: str) -> list:
+    # A folder can carry the same label as a bookmark; it is never the target.
     return [(root, row) for root, row in flow_gscm.favorite_tree_rows(page)
-            if str(row.get("text") or "").strip() == name]
+            if str(row.get("text") or "").strip() == name and row.get("is_folder") is not True]
 
 
 def _folder_confirms(visible: tuple, wanted: tuple) -> bool:
@@ -251,7 +252,16 @@ def select(page, step: dict, progress=None) -> dict:
                 detail = " (the grid scrollbar did not move)" if not log["movements"] else ""
                 raise BookmarkSelectionError(f"GSCM Favorite bookmark {name!r} was not rendered between the top and the end of the current Favorite list{detail}. Its ancestor folder may be collapsed; restore the recorded folder state and retry.", log)
     log["rendered"] = True
-    _click_rendered(root, row)
+    # The grid recycles its row slots while it repaints, and a movement returns
+    # on the first observed change. Read the target again immediately before
+    # the click and stop if that slot no longer shows this bookmark.
+    page.wait_for_timeout(RENDER_POLL_MS)
+    fresh_root, fresh = _rendered_target(page, identity, competitors, log)
+    if (fresh is None or str(fresh.get("id") or "") != str(row.get("id") or "")
+            or str(fresh.get("text") or "").strip() != name):
+        log["reason"] = "rendered_changed"
+        raise BookmarkSelectionError(f"GSCM Favorite bookmark {name!r} moved while its row was being selected, so it was not clicked. Retest after the grid settles.", log)
+    _click_rendered(fresh_root, fresh)
     result = {**log, "bookmark_id": identity["bookmark_id"], "bookmark_name": name}
     if progress:
         progress({"phase": "gscm_bookmark_selected", "bookmark": dict(log)})

@@ -31,7 +31,7 @@ from app.routers.system_flows import router as system_flows_router
 from app.routers.system_logs import router as system_logs_router
 from app import log_housekeeping, logging_setup
 from app.routers.flow_tasks import router as flow_tasks_router
-from app.local_access import is_host_request, is_server_machine, require_app_access
+from app.local_access import is_host_request, is_server_machine, require_app_access, require_host
 from app import user_identity
 from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, data_quality, tasks, eventlog, people, archive, documentation, email, email_schedules, usage, materialized_views, recurrences, flows, query_history, pipelines, pipeline_insights
 from app.settings import (
@@ -98,7 +98,7 @@ _DRAINED_WORK_START_PATHS = (
     ),
     re.compile(r"^/api/flows/\d+/run$"),
     re.compile(r"^/api/flows/groups/\d+/run$"),
-    re.compile(r"^/api/flows/runs/\d+/(?:retry-sql|resume)$"),
+    re.compile(r"^/api/flows/runs/\d+/(?:retry-sql|retry-views|resume)$"),
     re.compile(r"^/api/flows/(?:sites|reports)/\d+/scan$"),
     re.compile(r"^/api/flows/sql/catalog/refresh$"),
     re.compile(r"^/api/pipelines/reports/\d+/runs$"),
@@ -151,6 +151,12 @@ _scheduler = BackgroundScheduler(timezone=host_timezone())
 _OVERALL_REFRESH_RETRY_JOB_ID = "daily_overall_refresh_retry"
 _PIPELINE_INSIGHTS_RETRY_JOB_ID = "weekly_pipeline_insights_retry"
 _OVERALL_REFRESH_RETRY_MINUTES = 5
+#: How late the daily overall refresh may still start: after a restart, PC
+#: sleep, a busy scanner or an update drain. One constant, so it can become an
+#: operator setting. APScheduler's own default drops a run that is 1s late.
+_OVERALL_REFRESH_MISFIRE_GRACE_SECONDS = 6 * 60 * 60
+#: Start-up settles (worker launch, update receipt) before a missed run starts.
+_OVERALL_REFRESH_CATCH_UP_DELAY_SECONDS = 120
 
 
 def _scheduled_work_is_draining() -> bool:
@@ -268,14 +274,126 @@ def _scheduled_pending_pbi_sync_retry():
         log.exception("Pending PBI sync retry failed: %s", e)
 
 
+def _latest_overall_refresh_due(now: datetime) -> datetime:
+    """Return the most recent daily refresh time at or before *now*.
+
+    The refresh time is a wall-clock value in the schedule (Dubai) timezone,
+    the same one the scheduler's cron trigger uses.
+    """
+    refresh_time = get_overall_refresh_time()
+    local_now = now.astimezone(host_timezone())
+    due = local_now.replace(
+        hour=refresh_time["hour"],
+        minute=refresh_time["minute"],
+        second=0,
+        microsecond=0,
+    )
+    if due > local_now:
+        due -= timedelta(days=1)
+    return due
+
+
+def _full_scan_started_since(moment: datetime) -> bool:
+    """Return whether any full scan was queued at or after *moment*."""
+    with get_db() as db:
+        row = db.execute(
+            """SELECT created_at FROM scanner_jobs
+                WHERE job_type='full_scan' ORDER BY id DESC LIMIT 1"""
+        ).fetchone()
+    if row is None or not row["created_at"]:
+        return False
+    try:
+        created = datetime.fromisoformat(str(row["created_at"]).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    return created >= moment
+
+
+def _schedule_overall_refresh_attempt(run_at: datetime, retry_until: datetime) -> None:
+    """Queue the one pending late attempt (start-up catch-up or retry)."""
+    _scheduler.add_job(
+        _scheduled_overall_refresh,
+        "date",
+        run_date=run_at,
+        kwargs={"retry_until": retry_until.isoformat(timespec="seconds")},
+        id=_OVERALL_REFRESH_RETRY_JOB_ID,
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        # The attempt enforces ``retry_until`` itself, so a late wake-up must
+        # reach it instead of being dropped by the one-second default.
+        misfire_grace_time=_OVERALL_REFRESH_MISFIRE_GRACE_SECONDS,
+    )
+
+
+def _schedule_missed_overall_refresh(now: datetime | None = None) -> datetime | None:
+    """Start today's refresh shortly after start-up if its time was missed.
+
+    The in-memory scheduler forgets a run that fell due while the service was
+    down. Catch it up once when the scheduled time passed within the misfire
+    grace and no full scan has been started since.
+    """
+    now = now or datetime.now(timezone.utc)
+    due = _latest_overall_refresh_due(now)
+    retry_until = due + timedelta(seconds=_OVERALL_REFRESH_MISFIRE_GRACE_SECONDS)
+    run_at = now + timedelta(seconds=_OVERALL_REFRESH_CATCH_UP_DELAY_SECONDS)
+    if run_at > retry_until or _full_scan_started_since(due):
+        return None
+    _schedule_overall_refresh_attempt(run_at, retry_until)
+    logging.getLogger("scheduler").info(
+        "Overall refresh due at %s was missed; starting it at %s",
+        due.isoformat(timespec="seconds"),
+        run_at.astimezone(host_timezone()).isoformat(timespec="seconds"),
+    )
+    return run_at
+
+
 @_tracked_scheduled_start("overall refresh")
-def _scheduled_overall_refresh():
-    """Submit the daily overall refresh through the durable scanner lane."""
+def _start_overall_refresh():
     from app.routers.scanner import start_scheduled_full_scan_job
 
+    return start_scheduled_full_scan_job()
+
+
+def _scheduled_overall_refresh(*, daily: bool = False, retry_until: str | None = None):
+    """Submit the daily overall refresh through the durable scanner lane.
+
+    A start that is refused (update drain, busy scanner lane) or raises is
+    retried every few minutes until its window closes. The daily cron run
+    (``daily``) may be late by the misfire grace counted from its scheduled
+    time, a retry carries that deadline in ``retry_until``, and a run
+    requested at any other time gets a window of the same length from now.
+    """
     log = logging.getLogger("scheduler")
+    now = datetime.now(timezone.utc)
+    grace = timedelta(seconds=_OVERALL_REFRESH_MISFIRE_GRACE_SECONDS)
+    if retry_until is not None:
+        try:
+            deadline = datetime.fromisoformat(retry_until)
+        except ValueError:
+            deadline = now
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=timezone.utc)
+        if now > deadline:
+            log.warning(
+                "Overall refresh was not started before %s; waiting for the next scheduled run",
+                retry_until,
+            )
+            return {"accepted": False, "status": "expired"}
+    elif daily:
+        # A cron fire can land a moment before its nominal time.
+        deadline = _latest_overall_refresh_due(now + timedelta(minutes=1)) + grace
+    else:
+        deadline = now + grace
+
     log.info("Running scheduled overall refresh")
-    result = start_scheduled_full_scan_job()
+    try:
+        result = _start_overall_refresh()
+    except Exception as exc:
+        log.exception("Scheduled overall refresh could not be submitted")
+        result = {"accepted": False, "status": "failed", "error_type": type(exc).__name__}
     if not result.get("accepted"):
         active = result.get("job") if isinstance(result.get("job"), dict) else {}
         context = active.get("context") if isinstance(active.get("context"), dict) else {}
@@ -288,21 +406,22 @@ def _scheduled_overall_refresh():
             retry_at = datetime.now(timezone.utc) + timedelta(
                 minutes=_OVERALL_REFRESH_RETRY_MINUTES
             )
-            _scheduler.add_job(
-                _scheduled_overall_refresh,
-                "date",
-                run_date=retry_at,
-                id=_OVERALL_REFRESH_RETRY_JOB_ID,
-                replace_existing=True,
-                max_instances=1,
-                coalesce=True,
-            )
             result = dict(result)
-            result["retry_scheduled_for"] = retry_at.isoformat(timespec="seconds")
-            log.info(
-                "Scanner lane busy; scheduled overall refresh will retry at %s",
-                result["retry_scheduled_for"],
-            )
+            if retry_at <= deadline:
+                _schedule_overall_refresh_attempt(retry_at, deadline)
+                result["retry_scheduled_for"] = retry_at.isoformat(timespec="seconds")
+                log.info(
+                    "Overall refresh not started (%s); it will retry at %s",
+                    result.get("status"),
+                    result["retry_scheduled_for"],
+                )
+            else:
+                log.warning(
+                    "Overall refresh not started (%s) and its window closes at %s; "
+                    "waiting for the next scheduled run",
+                    result.get("status"),
+                    deadline.isoformat(timespec="seconds"),
+                )
     else:
         # A prior collision may have left a date retry pending. Once the full
         # scheduled run is accepted, that extra retry would be duplicate work.
@@ -432,10 +551,12 @@ def _configure_overall_refresh_job() -> dict:
         "cron",
         hour=refresh_time["hour"],
         minute=refresh_time["minute"],
+        kwargs={"daily": True},
         id="daily_overall_refresh",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
+        misfire_grace_time=_OVERALL_REFRESH_MISFIRE_GRACE_SECONDS,
     )
     return refresh_time
 
@@ -500,6 +621,10 @@ def _configure_scheduler_jobs() -> dict:
         next_run_time=datetime.now(timezone.utc) + timedelta(minutes=2),
     )
     refresh_time = _configure_overall_refresh_job()
+    # A failed catch-up check must never keep the scheduler from starting.
+    _run_optional_startup_step(
+        "missed overall refresh catch-up", _schedule_missed_overall_refresh
+    )
     _scheduler.add_job(auditor_engine.tick, "interval", seconds=30,
                        id="data_auditor_tick", replace_existing=True,
                        max_instances=1, coalesce=True)
@@ -937,6 +1062,7 @@ _AUTO_UPDATE_STATE: dict = {
     "last_attempt_commit": None,
     "last_attempt_monotonic": 0.0,
     "last_error": None,
+    "next_attempt_at": None,
 }
 
 
@@ -1312,6 +1438,8 @@ def _tests_gate_auto_status(gate: dict) -> str:
 
 
 def _set_auto_update_state(**changes) -> None:
+    # ``next_attempt_at`` only describes the ``retry_wait`` status.
+    changes.setdefault("next_attempt_at", None)
     with _AUTO_UPDATE_STATE_LOCK:
         _AUTO_UPDATE_STATE.update(changes)
 
@@ -1730,6 +1858,40 @@ def _reserve_and_launch_update(target_commit: str, trigger_source: str) -> dict:
     return _update_attempt_dict(row)
 
 
+def _automatic_retry_wait(target_commit: str) -> tuple[dict, datetime] | None:
+    """Return the failed attempt that still holds back an automatic relaunch.
+
+    A commit whose install failed, rolled back, could not launch or went
+    stale would otherwise be relaunched on every watcher tick, stopping the
+    services each time. The watcher waits ``_AUTO_UPDATE_RETRY_SECONDS`` after
+    the most recent attempt for the same commit ended; the result is that
+    attempt and when the next automatic one is allowed. Manual updates and a
+    different target commit are never held back.
+    """
+    with get_db() as db:
+        row = db.execute(
+            """SELECT * FROM app_update_attempts
+                WHERE target_commit=? ORDER BY id DESC LIMIT 1""",
+            (str(target_commit or "").strip().lower(),),
+        ).fetchone()
+    if row is None or row["status"] != "failed":
+        return None
+    attempt = dict(row)
+    ended_raw = (
+        attempt.get("finished_at") or attempt.get("updated_at") or attempt.get("created_at")
+    )
+    try:
+        ended = datetime.fromisoformat(str(ended_raw).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if ended.tzinfo is None:
+        ended = ended.replace(tzinfo=timezone.utc)
+    retry_at = ended + timedelta(seconds=_AUTO_UPDATE_RETRY_SECONDS)
+    if retry_at <= datetime.now(timezone.utc):
+        return None
+    return attempt, retry_at
+
+
 def _scheduled_auto_update(*, force: bool = False) -> dict:
     """Check GitHub main and launch the exact-SHA updater when it changes."""
     if not _AUTO_UPDATE_RUN_LOCK.acquire(blocking=False):
@@ -1800,6 +1962,26 @@ def _scheduled_auto_update(*, force: bool = False) -> dict:
                 status="up_to_date",
                 last_checked_at=now,
                 last_error=None,
+            )
+            return _auto_update_payload(latest_commit=latest)
+
+        retry_wait = _automatic_retry_wait(latest)
+        if retry_wait is not None:
+            failed_attempt, retry_at = retry_wait
+            _release_update_drain()
+            _set_auto_update_state(
+                status="retry_wait",
+                last_checked_at=now,
+                last_attempt_at=failed_attempt.get("finished_at")
+                or failed_attempt.get("launched_at")
+                or failed_attempt.get("created_at"),
+                last_attempt_commit=failed_attempt.get("target_commit"),
+                last_error=_safe_update_error(
+                    failed_attempt.get("error")
+                    or failed_attempt.get("message")
+                    or "The last install of this commit did not succeed."
+                ),
+                next_attempt_at=retry_at.isoformat(timespec="seconds"),
             )
             return _auto_update_payload(latest_commit=latest)
 
@@ -2111,9 +2293,12 @@ def get_system_updates(request: Request):
 
 
 def _require_local_remote_control(request: Request) -> None:
-    """Keep the enable switch and browser hand-off on the server machine."""
-    ip = request.client.host if request.client else ""
-    if not _is_localhost(ip):
+    """Keep the enable switch and browser hand-off on the server machine.
+
+    The address alone is not enough: a page from another site, open in a
+    browser on the host PC, also arrives from this machine.
+    """
+    if not is_host_request(request):
         raise HTTPException(status_code=403, detail="Remote Flow control is local-only.")
 
 
@@ -2148,7 +2333,7 @@ def acknowledge_remote_flow_navigation(command_id: str, request: Request):
 @app.put("/api/system/updates")
 def set_system_updates(payload: AutoUpdateSettingsRequest, request: Request):
     """Enable or disable unattended installation of new main commits."""
-    require_app_access(request)
+    require_host(request, "Only the host PC can turn automatic updates on or off.")
     set_setting(_AUTO_UPDATE_SETTING_KEY, "1" if payload.enabled else "0")
     active_attempt, _ = _latest_update_attempts()
     _release_update_drain()
@@ -2254,14 +2439,14 @@ def _apply_latest_update() -> dict:
 @app.post("/api/system/updates/apply", status_code=202)
 def apply_system_update(request: Request):
     """Launch setup.ps1 for the latest exact main commit."""
-    require_app_access(request)
+    require_host(request, "Only the host PC can install an update.")
     return _apply_latest_update()
 
 
 @app.post("/api/update", status_code=202)
 def trigger_update(request: Request):
     """Backward-compatible alias for the safe System Updates action."""
-    require_app_access(request)
+    require_host(request, "Only the host PC can install an update.")
     return _apply_latest_update()
 
 

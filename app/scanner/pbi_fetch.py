@@ -389,6 +389,10 @@ def fetch_refresh_payload(
         reports = (_get_json(client, token, f"{PBI_API_BASE}/groups/{ws_id}/reports").get("value")) or []
         datasets = (_get_json(client, token, f"{PBI_API_BASE}/groups/{ws_id}/datasets").get("value")) or []
 
+        # Every report the workspace itself lists, including those whose
+        # dataset lives in another workspace and therefore has no entry below.
+        workspace_report_names = [report["name"] for report in reports if report.get("name")]
+
         dataset_reports: dict[str, list[str]] = {}
         report_urls: dict[str, str] = {}
         for report in reports:
@@ -406,6 +410,14 @@ def fetch_refresh_payload(
             if not report_names:
                 continue
 
+            # Power BI marks a dataset isRefreshable=false when it was never
+            # refreshed and has no valid schedule: a rejected read then means
+            # "there is none". For every other dataset a rejected read only
+            # means this sync could not see the value, which must not be
+            # mistaken for "no schedule" or "no history" by the import.
+            may_have_refresh_data = dataset.get("isRefreshable") is not False
+
+            schedule_unreadable = False
             try:
                 raw_schedule = _get_json(
                     client, token, f"{PBI_API_BASE}/groups/{ws_id}/datasets/{dataset['id']}/refreshSchedule"
@@ -416,10 +428,18 @@ def fetch_refresh_payload(
                     "times": list(raw_schedule.get("times") or []),
                     "timezone": raw_schedule.get("localTimeZoneId"),
                 }
-            except PbiFetchError:
+            except PbiFetchError as exc:
                 schedule = {"enabled": False, "days": [], "times": [], "timezone": ""}
+                schedule_unreadable = may_have_refresh_data
+                if schedule_unreadable:
+                    logger.warning(
+                        "Refresh schedule could not be read for dataset %s: %s",
+                        dataset.get("name") or dataset.get("id"),
+                        exc,
+                    )
 
             last_refresh = None
+            last_refresh_unreadable = False
             try:
                 history = _get_json(
                     client,
@@ -436,8 +456,15 @@ def fetch_refresh_payload(
                         "status": entry.get("status"),
                         "error": _refresh_entry_error(entry),
                     }
-            except PbiFetchError:
+            except PbiFetchError as exc:
                 last_refresh = None
+                last_refresh_unreadable = may_have_refresh_data
+                if last_refresh_unreadable:
+                    logger.warning(
+                        "Refresh history could not be read for dataset %s: %s",
+                        dataset.get("name") or dataset.get("id"),
+                        exc,
+                    )
 
             for report_name in report_names:
                 results.append(
@@ -448,6 +475,8 @@ def fetch_refresh_payload(
                         "web_url": report_urls.get(report_name),
                         "schedule": schedule,
                         "last_refresh": last_refresh,
+                        "schedule_unreadable": schedule_unreadable,
+                        "last_refresh_unreadable": last_refresh_unreadable,
                     }
                 )
 
@@ -455,6 +484,7 @@ def fetch_refresh_payload(
         "workspace": workspace_name,
         "synced_at": datetime.now(timezone.utc).isoformat(),
         "reports": results,
+        "workspace_report_names": workspace_report_names,
         "attempt_id": attempt_id,
     }
 
@@ -508,6 +538,7 @@ def fetch_usage_payload(days_back: int = 30, cancel_generation: int | None = Non
             }
             view_counts: dict[str, int] = {}
             user_sets: dict[str, set] = {}
+            truncated = False
             try:
                 pages = 0
                 while url and pages < MAX_ACTIVITY_PAGES_PER_DAY:
@@ -524,6 +555,8 @@ def fetch_usage_payload(days_back: int = 30, cancel_generation: int | None = Non
                     if body.get("lastResultSet") or not body.get("continuationToken"):
                         break
                     url = body.get("continuationUri")
+                    # More activity is pending but the per-day page cap is reached.
+                    truncated = bool(url) and pages >= MAX_ACTIVITY_PAGES_PER_DAY
             except PbiFetchError as exc:
                 if exc.permission:
                     authorization_denied = True
@@ -552,6 +585,17 @@ def fetch_usage_payload(days_back: int = 30, cancel_generation: int | None = Non
                         "unique_users": len(user_sets.get(name) or ()),
                     }
                 )
+            if truncated:
+                # Keep what was read, but never record the day as synced: it is
+                # fetched again instead of staying incomplete for good.
+                failed_days += 1
+                logger.warning(
+                    "Usage fetch for %s stopped at the %s-page limit with more activity "
+                    "pending; the day is incomplete and will be fetched again",
+                    day,
+                    MAX_ACTIVITY_PAGES_PER_DAY,
+                )
+                continue
             days_synced.append(day)
             if not view_counts:
                 zero_activity_days += 1

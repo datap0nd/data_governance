@@ -140,9 +140,18 @@ def update_ai_settings(body: AISettingsUpdate, request: Request):
     return updated.public_dict()
 
 
+def _require_local_operator(request: Request) -> None:
+    # These two routes make the server call whatever address the body names.
+    # Left open, any computer on the network could aim that at Metronome's own
+    # loopback-only routes, or at other machines the host PC can reach.
+    if not is_local_request(request):
+        raise HTTPException(403, "AI connections can be tested only on this Metronome computer.")
+
+
 @router.post("/settings/models")
-def get_available_ai_models(body: AIModelCatalogRequest):
+def get_available_ai_models(body: AIModelCatalogRequest, request: Request):
     """List model IDs from an unsaved or saved OpenAI-compatible endpoint."""
+    _require_local_operator(request)
     try:
         candidate = candidate_model_catalog_settings(body)
         models = list_available_models(candidate)
@@ -164,8 +173,9 @@ def get_available_ai_models(body: AIModelCatalogRequest):
 
 
 @router.post("/settings/test")
-def test_ai_settings(body: AISettingsUpdate):
+def test_ai_settings(body: AISettingsUpdate, request: Request):
     """Test native model tool-call compatibility without sending app data."""
+    _require_local_operator(request)
     try:
         candidate = candidate_runtime_settings(body)
     except ValueError as exc:

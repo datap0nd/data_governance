@@ -421,6 +421,11 @@ def run_quality_checks(check_ids: list[int] | None = None) -> dict:
                 elif status == "pass":
                     resolved += _resolve_check_incident(db, check["id"], now, "data-quality check passed")
                 results.append({"check_id": check["id"], "status": status, "value": value, "message": message})
+                # Publish this check's result, incident and updated_at as one
+                # small transaction. Leaving it open would hold SQLite's write
+                # lock through the next check's PostgreSQL query (up to the
+                # scan statement timeout) and lock out every other writer.
+                db.commit()
     finally:
         closed = set()
         for pg_conn in pg_connections.values():

@@ -142,20 +142,28 @@ def queue_notification(
         return {"status": "failed", "dispatch_id": None, "error": str(exc)}
 
 
+def _failure_notice_due(row: dict) -> bool:
+    """A failed run is notified once; an earlier stall notice does not count.
+
+    A stall email sets ``notification_status`` too, but it only said the run
+    had gone quiet. ``stalled_notified_at`` marks that case and is cleared
+    when the failure notice is recorded, so the failure is not sent twice.
+    """
+    return row["status"] == "failed" and (
+        not row.get("notification_status") or bool(row.get("stalled_notified_at"))
+    )
+
+
 def notify_standalone_failure(module_run_id: int) -> dict:
     row = modules.get_module_run(module_run_id)
-    if row is None or row["status"] != "failed" or row.get("notification_status"):
+    if row is None or not _failure_notice_due(row):
         return {"status": "not_applicable", "dispatch_id": None}
     return queue_notification([module_run_id])
 
 
 def notify_full_refresh_failures(scanner_job_id: int) -> dict:
     rows = modules.runs_for_job(scanner_job_id)
-    failures = [
-        int(row["id"])
-        for row in rows
-        if row["status"] == "failed" and not row.get("notification_status")
-    ]
+    failures = [int(row["id"]) for row in rows if _failure_notice_due(row)]
     context_skips = [
         int(row["id"])
         for row in rows
