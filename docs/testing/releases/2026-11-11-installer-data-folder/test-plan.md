@@ -28,13 +28,16 @@ on the disposable GitHub Windows runner (`GITHUB_ACTIONS=true`).
 | D-03 | The real `setup.ps1`, its helpers and a stand-in `app\main.py` copied beside the database; no installed service; run `powershell.exe -File setup.ps1 -Unattended` | Exit code 1; `SETUP STOPPED: this folder holds Metronome's data`; the code folder's `setup.ps1` is named; `Nothing was changed.`; the folder above holds nothing new; the data folder and the database are exactly as before | `...::test_setup_itself_stops_in_the_data_folder_and_creates_nothing_above_it` |
 | D-04 | Every `.ps1` in the repository through the PowerShell parser | No parse errors | `tests/test_setup_fast_path.py::test_powershell_parses_every_script` |
 | D-05 | The earlier installer cases | Unchanged results | The rest of `tests/test_setup_install_guard.py` |
+| C-01 | The browser-install script with stand-ins for name resolution, the install command and the browser start: mirrors answer; mirrors do not resolve; the install with system packages fails; a browser does not start; nothing can be installed; a system other than Linux | With packages when the mirrors answer; the browsers alone when they do not or when the first attempt fails; exit code 1 when a browser does not start or nothing installs; unchanged behaviour off Linux | `tests/test_ci_browser_install.py` (7 cases) |
+| C-02 | The pull request's own CI run, which uses the changed workflow | Every job gets past the browser-install step and runs its tests | The final CI run |
 
 ## Automated checks
 
 ```bash
 python tools/check.py verify \
   --test tests/test_setup_install_guard.py --test tests/test_setup_fast_path.py \
-  --test tests/test_unattended_update_scripts.py
+  --test tests/test_unattended_update_scripts.py --test tests/test_ci_browser_install.py \
+  --test tests/test_ci_sharding.py --test tests/test_ci_merge_gate.py
 ```
 
 On Linux D-01 to D-05 are skipped: there is no PowerShell. The pull request's
@@ -43,8 +46,8 @@ regression.
 
 ## Acceptance and cleanup
 
-Accepted when D-01 to D-05 pass on the pull request's Windows job and
-`Merge ready` passes on the final head. The tests remove their temporary
+Accepted when D-01 to D-05 pass on the pull request's Windows job, C-01 and
+C-02 pass, and `Merge ready` passes on the final head. The tests remove their temporary
 folders.
 
 Not covered by any test: the recovery on the affected PC, where setup is run
