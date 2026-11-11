@@ -19,6 +19,21 @@ function Get-MetronomeFingerprint {
     }
 }
 
+function Get-MetronomeFileSha256 {
+    # Hashed with the framework directly. Get-FileHash is a script function
+    # that Windows PowerShell loads from a module on first use, and that load
+    # fails when the process inherits PowerShell 7's module path.
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        return ([System.BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $stream.Dispose()
+        $sha.Dispose()
+    }
+}
+
 function Get-MetronomeFileFingerprint {
     # Names and contents of the given files. A missing file is part of the
     # fingerprint, so adding or removing one changes it.
@@ -27,7 +42,7 @@ function Get-MetronomeFileFingerprint {
     foreach ($path in @($Paths | Sort-Object)) {
         $name = [System.IO.Path]::GetFileName($path)
         if (Test-Path -LiteralPath $path -PathType Leaf) {
-            $parts += "$name=$((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash)"
+            $parts += "$name=$(Get-MetronomeFileSha256 -Path $path)"
         } else {
             $parts += "$name=missing"
         }

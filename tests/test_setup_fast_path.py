@@ -225,14 +225,31 @@ def test_file_fingerprint_follows_content_and_presence(tmp_path):
     one.write_text("fastapi==1\n", encoding="utf-8")
     two.write_bytes(b"wheel")
     command = _helpers(f"Get-MetronomeFileFingerprint -Paths @('{one}','{two}')")
-    before = _powershell(command).stdout.strip()
-    assert _powershell(command).stdout.strip() == before
+
+    def fingerprint():
+        result = _powershell(command)
+        assert result.returncode == 0, result.stdout + result.stderr
+        value = result.stdout.strip()
+        assert re.fullmatch(r"[0-9a-f]{64}", value), value
+        return value
+
+    before = fingerprint()
+    assert fingerprint() == before
     one.write_text("fastapi==2\n", encoding="utf-8")
-    edited = _powershell(command).stdout.strip()
+    edited = fingerprint()
     two.unlink()
-    removed = _powershell(command).stdout.strip()
-    assert len({before, edited, removed}) == 3 and all(re.fullmatch(r"[0-9a-f]{64}", item)
-                                                      for item in (before, edited, removed))
+    removed = fingerprint()
+    assert len({before, edited, removed}) == 3
+
+
+@windows_only
+def test_file_hashing_does_not_depend_on_a_module_that_may_fail_to_load():
+    # Windows PowerShell started from PowerShell 7 (as CI and some terminals
+    # do) cannot load the module that defines Get-FileHash. The fast path must
+    # not go quiet there, so it hashes with the framework itself.
+    source = FAST_PATH.read_text(encoding="utf-8")
+    assert "Get-FileHash -" not in source
+    assert "[System.Security.Cryptography.SHA256]::Create()" in source
 
 
 @windows_only
