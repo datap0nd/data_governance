@@ -255,3 +255,7 @@ def _apply_request_log_mode() -> None:
 
 
 subscribe(("logs.request_log",), _apply_request_log_mode)
+
+
+# The remaining declarations live beside the code that reads them.
+from app import settings_catalog_flows, settings_catalog_scanner  # noqa: E402,F401
