@@ -13950,7 +13950,9 @@ const pages = {
     changelog: renderChangelog,
     create: renderCreate,
     users: renderUsers,
-    settings: renderSettings,
+    // settings.js is a separate file. Looked up when the page is opened, so
+    // app.js still loads where that file is not included (the preview pages).
+    settings: () => renderSettings(),
     dataquality: renderDataQuality,
     dataauditor: () => window.DataAuditor.render(),
     email: renderEmail,

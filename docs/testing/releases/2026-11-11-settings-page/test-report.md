@@ -2,7 +2,7 @@
 
 - Plan: [test-plan.md](test-plan.md)
 - Change/PR: link in the PR's testing section
-- Evidence cutoff (UTC): 2026-11-11 11:05
+- Evidence cutoff (UTC): 2026-11-11 11:20
 - Tested code revisions: the main run is `fd2e04b`, whose files are those of
   `37c0ec6` on `main` at `9400191`. The page walk is `63e2aff`. The commits
   after `37c0ec6` change one sentence on the page, its cache version and
@@ -13,9 +13,11 @@
   container's Playwright for the page walk. The project's own Playwright has
   no browser it can start in this container
 - Overall finding: every case in the plan passes (automated, synthetic
-  fixtures), and the page walk on a temporary instance found no problem. Tests
-  that launch a browser, the PostgreSQL suites and the full regression are
-  left to the pull request's CI. Nothing was checked against a real
+  fixtures), and the page walk on a temporary instance found no problem. The
+  pull request's CI found one real defect that the local run could not see,
+  in the browser tests of the preview pages; it is fixed and retested below.
+  Tests that launch a browser, the PostgreSQL suites and the full regression
+  are left to the pull request's CI. Nothing was checked against a real
   PostgreSQL server, Power BI, a portal, Windows data protection or the work
   PC.
 
@@ -26,6 +28,8 @@
 | Every case in the plan, plus every existing test that does not launch a browser | `python tools/check.py verify` with 119 `tests/test_*.py` files and a `--syntax` check of each of the 50 changed Python files under `app/` | `fd2e04b`, Linux | PASS: 2,583 passed, 0 failed, 67 skipped, 14 third-party deprecation warnings, 715.5 s; 50 syntax checks passed | `.test-runs/20261111T103905684Z-3936-f6d11ac5/result.json` |
 | Frontend contracts and script syntax | `for f in tests/test_*.mjs; do node "$f"; done` without `tests/test_gemini_extension.mjs`; `node --check` on every `app/static/*.js` | `fd2e04b`; `node --check app/static/settings.js` again at `63e2aff` | PASS: 27 contract files, every script parses. The left-out file needs npm packages that are not installed here; nothing it covers changed | Console output |
 | K-10, review finding | Four new tests written first and seen to fail (4 failed), then `python tools/check.py verify` with `tests/test_settings_connections.py`, `tests/test_settings_registry.py`, `tests/test_settings_scanner_schedules.py`, `tests/test_settings_flows.py`, `tests/test_env_file.py` and three `--syntax` paths | The commit this report is updated in, Linux | PASS: 96 passed, 0 failed | `.test-runs/20261111T105800344Z-6355-b2c4e753/result.json`; console output for the failing first run |
+| Full regression, CI run on `318f91d` | Pull request jobs | `318f91d`, GitHub runners | FAIL: `Python (shard 0)` 1 failed, 8 errors, 1,508 passed, 28 skipped. Every one is the page error `renderSettings is not defined` in the browser tests of the preview pages: `test_managed_flow_editor` (1), `test_flow_owners_preview` (4), `test_flow_topic_groups_preview` (3), `test_python_scripts_preview` (1) | [run 43008113407](https://github.com/datap0nd/data_governance/actions/runs/43008113407) |
+| Retest of that failure | A Playwright script that opens each of the ten preview pages which load `app.js` and collects page errors; the new `tests/test_settings_page_loading.mjs` | Before the fix, then the commit this report is updated in | Before: all ten pages reported `renderSettings is not defined`, and the new contract test stopped with the same error. After: no page reports it and the test passes; `node --check app/static/app.js` passes | Console output |
 | Whitespace check the scope job runs | `git diff --check origin/main HEAD` | Head of the branch | PASS: no output | Console output |
 | Page walk, steps 1, 2, 4 and 5 | Playwright script against a temporary instance on `127.0.0.1:8767` with an empty database | `63e2aff`, Chromium, 1360 px | PASS, details below | Console output; screenshots kept outside the repository |
 | Page walk, step 3 | The same instance: add, replace-with-nothing, save, test and clear the probe password | `63e2aff` | PASS, details below | Console output |
@@ -87,6 +91,15 @@ request's Windows and PostgreSQL jobs cover the ones in their selections.
   Their assertions are unchanged.
 - Port numbers were shown with thousands separators ("5,432"). Numbers
   without a unit are now shown plain.
+- CI finding: `app.js` named the Settings page's renderer while it loaded.
+  The app's own page includes `settings.js` first, so the app worked, but
+  the ten preview pages under `app/static/recording-preview` load `app.js`
+  on its own and stopped with `renderSettings is not defined`. The renderer
+  is now looked up when the Settings page is opened.
+  `tests/test_settings_page_loading.mjs` builds the router's page table
+  without `settings.js` and fails if a name from that file is needed at load.
+  The local run could not have caught this: those tests need a browser the
+  project's Playwright cannot start here.
 - Review finding on the pull request: a save that changed several settings
   could stop part-way and still answer "Nothing was saved". A batch with a
   schedule and a folder, on a computer without a settings file, saved the
