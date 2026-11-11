@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from playwright.sync_api import expect, sync_playwright
 
 from app import database, freshness
-from app.routers import flow_groups, flows
+from app.routers import flows
 from test_flows import _asap_report, _asap_site, _flow, _mark_discovered, _request, _seed_catalog, flow_db  # noqa: F401
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,8 +55,11 @@ def ui(flow_db, tmp_path, monkeypatch):
                           sql_schema='reporting', sql_table=? WHERE id=?""",
                        (database_name, f"synthetic_{flow['id']}", flow["id"]))
     # Saved before sub-groups were removed: both Flows must still be listed.
-    flow_groups.create_group(flow_groups.GroupWrite(name="ASAP tracker", module="ASAP",
-                                                    flow_ids=[daily["id"], stock["id"]]), _request())
+    with database.get_db() as db:
+        group_id = db.execute("""INSERT INTO flow_groups(name, name_key, module, classification)
+                                 VALUES ('ASAP tracker', 'asap tracker', 'ASAP', 'production')""").lastrowid
+        db.executemany("INSERT INTO flow_group_members(flow_id, group_id) VALUES (?, ?)",
+                       [(daily["id"], group_id), (stock["id"], group_id)])
     app = FastAPI(); app.include_router(flows.router)
     app.mount('/static', StaticFiles(directory=ROOT / 'app' / 'static'))
     app.mount('/fixture', StaticFiles(directory=ROOT / 'tests' / 'fixtures' / 'flow-list', html=True))

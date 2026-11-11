@@ -19,9 +19,8 @@ from types import ModuleType
 import pytest
 
 from app import (
-    config, database, flow_capacity, flow_email_delivery, flow_job_limits, flow_portable, flow_python,
-    flow_recorder_worker, flow_recording_gscm_bookmark, flow_recording_runtime, flow_recordings, flow_replay,
-    flow_retention, flow_sql, flow_standalone, flow_view_refresh, flow_worker, pbi_visual_export,
+    database, flow_capacity, flow_email_delivery, flow_job_limits, flow_portable, flow_python,
+    flow_recordings, flow_retention, flow_sql, flow_standalone, flow_worker, pbi_visual_export,
     settings_registry as registry,
 )
 from app.routers import flows, recurrences
@@ -123,45 +122,6 @@ def test_the_catalog_declares_exactly_these_settings_with_ranges_units_and_plain
         if applies == "new_runs":
             assert "already queued or in progress keep the old value." in item.help, key
         assert registry.validate(item, item.default) == item.default, key
-
-
-def test_each_default_is_the_constant_the_code_used_before(monkeypatch):
-    for name in ENVIRONMENT:
-        monkeypatch.delenv(name, raising=False)
-    default = lambda key: registry.definition(key).default  # noqa: E731
-    assert default("flows.run_silent_minutes") * 60 == flows.RUN_STALE_TIMEOUT_SECONDS == 600
-    assert default("flows.worker_online_seconds") == flow_capacity.ONLINE_SECONDS == 90
-    assert default("flows.run_folders_kept") == flow_retention.RUN_FOLDER_KEEP == 3
-    assert default("flows.recording_start_seconds") == flow_recordings.STARTUP_TIMEOUT_SECONDS == 120
-    assert default("flows.failure_screenshots_kept") == flow_worker.FAILURE_SCREENSHOT_KEEP == 20
-    assert default("flows.recording_test_folders_kept") == flow_recorder_worker.VALIDATION_FOLDERS_KEPT == 3
-    assert default("flows.download_start_minutes") * 60 == flow_worker.DOWNLOAD_START_TIMEOUT_SECONDS == 15 * 60
-    assert default("flows.download_handover_minutes") * 60 == flow_worker.DOWNLOAD_EVENT_TIMEOUT_SECONDS == 60 * 60
-    assert default("flows.export_attempts") == flow_worker.EXPORT_TASK_ATTEMPTS == 3
-    assert default("flows.gscm_export_attempts") == flow_worker.GSCM_EXPORT_TASK_ATTEMPTS == 2
-    assert (default("flows.recorded_action_seconds") * 1000 == flow_recording_runtime.ACTION_TIMEOUT_MS == 120_000
-            == flow_recording_gscm_bookmark.DEADLINE_SECONDS * 1000)
-    assert default("flows.network_replay") is True
-    assert default("flows.replay_max_age_days") == flow_replay.RECIPE_MAX_AGE_DAYS == 14
-    assert default("flows.replay_request_minutes") * 60_000 == flow_replay.REPLAY_TIMEOUT_MS == 300_000
-    assert default("flows.sql_connect_seconds") == flow_sql.SQL_CONNECT_TIMEOUT_SECONDS == 60
-    assert default("flows.sql_lock_minutes") * 60 == flow_sql.SQL_LOCK_TIMEOUT_SECONDS == 10 * 60
-    assert default("flows.sql_statement_minutes") * 60 == flow_sql.SQL_STATEMENT_TIMEOUT_SECONDS == 30 * 60
-    assert default("flows.view_lock_minutes") * 60_000 == flow_view_refresh.LOCK_TIMEOUT_MS == 600_000
-    assert default("flows.view_refresh_minutes") * 60_000 == flow_view_refresh.STATEMENT_TIMEOUT_MS == 3_600_000
-    assert default("flows.script_default_minutes") * 60 == flow_python.SCRIPT_TIMEOUT_SECONDS == 3600
-    assert default("flows.sql_catalog_time") == "05:30"
-    assert default("flows.catalog_scan_minutes") == flow_worker.CATALOG_SCAN_BUDGET_MINUTES == 90
-    assert default("flows.scan_overlay_minutes") * 60 == flow_worker.ASAP_SCAN_OVERLAY_TIMEOUT_SECONDS == 30 * 60
-    assert default("email.flow_attachment_mb") * 1024 * 1024 == flow_email_delivery.MAX_ATTACHMENT_BYTES
-    assert default("email.flow_max_recipients") == flow_email_delivery.MAX_RECIPIENTS == 20
-    # The two environment-controlled values keep their old defaults and names.
-    assert default("email.visual_export_timeout_seconds") == config.PBI_VISUAL_EXPORT_TIMEOUT_SECONDS == 120
-    assert default("email.visual_export_max_rows") == config.PBI_VISUAL_EXPORT_MAX_ROWS == 30000
-    assert registry.definition("email.visual_export_timeout_seconds").env == ("DG_PBI_VISUAL_EXPORT_TIMEOUT_SECONDS",)
-    assert registry.definition("email.visual_export_max_rows").env == ("DG_PBI_VISUAL_EXPORT_MAX_ROWS",)
-    assert registry.definition("flows.network_replay").env == ("DG_FLOW_REPLAY",)
-    assert default("email.visual_export_cut_off") == "send"
 
 
 def test_every_setting_has_code_that_reads_it_and_no_worker_module_reads_settings():

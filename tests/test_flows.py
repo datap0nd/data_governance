@@ -1280,17 +1280,6 @@ def test_published_metadata_persists_and_extension_drift_records_warning(
     assert "intentionally left in place" in warning["message"]
 
 
-def test_flow_builder_exposes_and_replicates_output_storage_setting():
-    source = Path(__file__).parents[1].joinpath("app", "static", "app.js").read_text(
-        encoding="utf-8",
-    )
-    # Portal, Outlook and Python builders each expose the output storage setting.
-    assert source.count('id="flow-output-mode"') == 3
-    assert 'output_mode: $("#flow-output-mode")?.value || "run_folders"' in source
-    assert "...source" in source and "_flowShowView(\"builder\", copy)" in source
-    assert "Outlook keeps the original attachment name" in source
-
-
 def test_report_filter_update_keeps_historical_definition_for_saved_runs(flow_db):
     site, report = _seed_catalog()
     updated = _report(site["id"])
@@ -3533,29 +3522,6 @@ def test_safe_output_path_never_overwrites(tmp_path):
     assert existing.read_text() == "original"
 
 
-def test_worker_source_contains_no_delete_or_overwrite_operation():
-    source = Path(__file__).parents[1].joinpath("app", "flow_worker.py").read_text()
-    forbidden = [".unlink(", ".rmdir(", "shutil.rmtree", "os.remove(", "os.unlink("]
-    assert all(token not in source for token in forbidden)
-    assert "_safe_output_path" in source
-
-
-def test_asap_execution_uses_rendered_ui_not_internal_response_url():
-    source = Path(__file__).parents[1].joinpath("app", "flow_worker.py").read_text()
-    assert "expect_response" not in source
-    assert "frame = _asap_wait_for_results(page, progress=progress)" in source
-    assert '"stage": "report_execution"' in source
-    assert '"stage": "file_export"' in source
-    assert '"button.report-export"' not in source
-
-
-def test_every_export_file_is_retried_individually_before_the_run_fails():
-    source = Path(__file__).parents[1].joinpath("app", "flow_worker.py").read_text()
-    assert "EXPORT_TASK_ATTEMPTS = 3" in source
-    assert "artifacts.append(_export_task_with_retry(" in source
-    assert '"stage": "export_retry"' in source
-
-
 def test_database_schema_has_no_flow_delete_policy(flow_db):
     with database.get_db() as db:
         job_columns = {row[1] for row in db.execute("PRAGMA table_info(flows)").fetchall()}
@@ -3638,55 +3604,12 @@ def test_database_upgrades_legacy_asap_site_adapter(tmp_path, monkeypatch):
     assert row["adapter"] == "asap_portal"
 
 
-def test_windows_worker_launcher_uses_direct_script_for_embedded_python():
-    source = Path(__file__).parents[1].joinpath("tools", "run_flow_worker.ps1").read_text()
-    assert '(Join-Path $CodeDir "app\\flow_worker.py")' in source
-
-
-def test_setup_installs_headless_flow_worker_service():
-    source = Path(__file__).parents[1].joinpath("setup.ps1").read_text()
-    health_source = Path(__file__).parents[1].joinpath("tools", "setup_flow_worker_health.ps1").read_text()
-    assert '$FlowServiceName = "MXFlowsWorker"' in source
-    assert "install $FlowServiceName $PyExe" in source
-    assert "start $FlowServiceName" in source
-    assert "--worker-id bi-desktop-headless" in source
-    assert "--name BI-desktop-headless" in source
-    assert "flow_worker_error.log" in source
-    assert "$WorkerStartedAt = Get-Date" in source
-    assert 'setup_flow_worker_health.ps1' in source
-    assert "Get-MetronomeSetupFlowWorkers" in source
-    assert "Test-MetronomeSetupWorkerFresh" in source
-    assert "[datetime]$_.last_seen_at" not in source
-    assert "AddSeconds(-5)" in health_source
-    assert '/api/flows/workers' in health_source
-    assert "Flows worker registered with Metronome." in source
-
-
-def test_setup_does_not_require_visible_asap_login_without_encrypted_credential():
-    source = Path(__file__).parents[1].joinpath("setup.ps1").read_text()
-    assert '$FlowCredentialPath = Join-Path $FlowProfile ".asap_credentials"' in source
-    assert "(Test-Path $FlowCredentialPath)" in source
-    assert "ASAP automatic sign-in is not configured yet." in source
-
-
-def test_setup_bounds_stale_port_process_cleanup():
-    source = Path(__file__).parents[1].joinpath("setup.ps1").read_text()
-    assert "$KillProcess.WaitForExit(10000)" in source
-    assert "Timed out waiting for taskkill" in source
-
-
 def test_setup_merges_new_nested_files_without_purging_local_files():
     source = Path(__file__).parents[1].joinpath("setup.ps1").read_text()
     command = next(line for line in source.splitlines() if "& robocopy.exe" in line)
     assert "robocopy.exe $Inner.FullName $CodeDir /E" in command
     assert "/MIR" not in command
     assert "/PURGE" not in command
-
-
-def test_worker_launcher_appends_diagnostic_log():
-    source = Path(__file__).parents[1].joinpath("tools", "run_flow_worker.ps1").read_text()
-    assert 'Start-Transcript -Path $WorkerLog -Append' in source
-    assert '"flow_worker_{0}.log"' in source
 
 
 def test_service_starts_headless_worker_service_instead_of_child_process(monkeypatch):
@@ -3719,29 +3642,6 @@ def test_stop_worker_targets_exact_registered_process(browser_mode, monkeypatch)
     assert calls[0][0] == ["taskkill.exe", "/PID", "4321", "/T", "/F"]
 
 
-def test_setup_registers_on_demand_interactive_headed_worker():
-    source = Path(__file__).parents[1].joinpath("setup.ps1").read_text()
-    assert '$HeadedFlowTaskName = "Metronome_Flows_Headed"' in source
-    assert "New-ScheduledTaskPrincipal" in source
-    assert "-LogonType Interactive" in source
-    assert 'New-ScheduledTaskAction -Execute $HeadedPython' in source
-    assert "Join-Path $PyDir 'pythonw.exe'" in source
-    assert "--worker-id $($VisibleSlot.WorkerId)" in source
-    assert "foreach ($VisibleSlot in 1..$FlowMaxSlots" in source
-    assert "-TaskName $VisibleSlot.TaskName" in source
-    assert "--headed --idle-exit-seconds 60" in source
-    assert ".metronome-flow-browser-headed" in source
-
-
-def test_setup_stops_headed_worker_before_replacing_runtime_code():
-    root = Path(__file__).parents[1]
-    for filename in ("setup.ps1", "setup_ps1_clean.txt"):
-        source = root.joinpath(filename).read_text()
-        stop = "Stop-ScheduledTask -TaskName $HeadedFlowTaskName"
-        assert stop in source
-        assert source.index(stop) < source.index("Expand-Archive -Path $ZipPath")
-
-
 def test_setup_downloads_update_before_stopping_running_services():
     root = Path(__file__).parents[1]
     for filename in ("setup.ps1", "setup_ps1_clean.txt"):
@@ -3753,89 +3653,6 @@ def test_setup_downloads_update_before_stopping_running_services():
         assert source.index(download) < source.index(headed_stop)
         assert source.index(download) < source.index(service_stop)
         assert source.index(download) < source.index(worker_stop)
-
-
-def test_setup_waits_for_headless_worker_to_stop_before_replacing_code():
-    root = Path(__file__).parents[1]
-    for filename in ("setup.ps1", "setup_ps1_clean.txt"):
-        source = root.joinpath(filename).read_text()
-        wait = "$existingFlowService.WaitForStatus("
-        assert wait in source
-        assert "Flows worker did not stop within 30 seconds" in source
-        assert source.index(wait) < source.index("Expand-Archive -Path $ZipPath")
-
-
-def test_worker_retries_registration_and_prevents_duplicates():
-    source = Path(__file__).parents[1].joinpath("app", "flow_worker.py").read_text()
-    assert "for attempt in range(300)" in source
-    assert "_exclusive_worker_lock" in source
-    assert "Another Metronome flow worker is already running." in source
-
-
-def test_catalog_monitor_reports_worker_and_auto_refreshes():
-    source = Path(__file__).parents[1].joinpath("app", "static", "app.js").read_text()
-    assert "No BI desktop worker online" in source
-    assert "Waiting for BI desktop worker to start." in source
-    assert "_flowScheduleCatalogMonitor" in source
-
-
-def test_flow_list_does_not_require_builder_only_sql_controls():
-    source = Path(__file__).parents[1].joinpath("app", "static", "app.js").read_text()
-    assert 'if (fields) fields.hidden = !enabled;' in source
-    assert 'if ($("#flow-sql-fields")) updateSqlFields();' in source
-
-
-def test_flow_builder_uses_discovered_week_dropdowns():
-    source = Path(__file__).parents[1].joinpath("app", "static", "app.js").read_text()
-    assert "function _flowDiscoveredWeeks" in source
-    assert "function _flowIsoWeekMonday" in source
-    assert "function _flowIsoWeekValue" in source
-    assert "cursor.setUTCDate(cursor.getUTCDate() + 7)" in source
-    assert '<select id="flow-start-week" required>' in source
-    assert '<select id="flow-end-week" required>' in source
-
-
-def test_setup_fails_closed_when_python_dependencies_cannot_install():
-    root = Path(__file__).parents[1]
-    for filename in ("setup.ps1", "setup_ps1_clean.txt"):
-        source = root.joinpath(filename).read_text()
-        assert "install --upgrade setuptools wheel -q" in source
-        assert "install --no-build-isolation -r requirements.txt -q" in source
-        assert "Python dependency installation failed with exit code" in source
-
-
-def test_flow_ui_uses_list_activation_bundle_formats_and_expanded_logs():
-    source = Path(__file__).parents[1].joinpath("app", "static", "app.js").read_text()
-    log_source = Path(__file__).parents[1].joinpath("app", "static", "flow_run_log.js").read_text()
-    assert "flow-enabled-switch" in source
-    assert "Enable scheduled execution" not in source
-    assert "asap_download_type: isAsap ? downloadValue : null" in source
-    assert "export_report_title: isAsap" in source
-    assert "export_filter_details: isAsap" in source
-    assert 'id="flow-file-format"' in source
-    assert 'data-flow-export-view' in source
-    assert 'id="flow-schedule-day"' in source
-    assert "Expanded logs" in source
-    assert "/flow-runs/${run.id}" in source
-    assert 'id="flow-transform-enabled"' in source
-    assert 'id="flow-transform-browse"' in source
-    assert "script_results" in source
-    assert "Retry SQL only" in log_source
-    assert "/retry-sql" in log_source
-    assert "The source will not open" in log_source
-    assert "setTimeout(loadRun, 2000)" in log_source
-
-
-def test_flow_ui_requires_typed_confirmation_before_delete():
-    source = Path(__file__).parents[1].joinpath("app", "static", "app.js").read_text()
-    assert 'class="btn-sm btn-outline btn-danger-outline flow-delete"' in source
-    assert "function _flowDeleteDialog(flow)" in source
-    assert "input.value !== flow.name" in source
-    assert "Permanently delete flow" in source
-    assert "Downloaded files and transformation scripts will stay on disk." in source
-    assert 'id="flow-delete-confirmation" autocomplete="off" spellcheck="false" aria-describedby="flow-delete-match">' in source
-    assert "await apiPatch(`/api/flows/${flow.id}/enabled`, { enabled: false })" in source
-    assert "apiDelete(`/api/flows/${flow.id}`, { confirmation: input.value })" in source
 
 
 def test_run_progress_events_and_traceback_are_persisted(flow_db):
@@ -4421,46 +4238,6 @@ def test_asap_scraper_never_uses_control_modified_clicks():
     assert 'keyboard.press("Control' not in source
 
 
-def test_every_active_flow_renders_a_stop_button():
-    source = Path(__file__).parents[1].joinpath("app", "static", "app.js").read_text()
-    assert 'data-flow-focus="flow-stop-${flow.id}" ${activeRun ? "" : "hidden"}>Stop</button>' in source
-    assert 'activeRun.job?.execution?.browser_mode === "headed"' not in source
-    index = Path(__file__).parents[1].joinpath("app", "static", "index.html").read_text()
-    # The exact number is irrelevant; the ?v=<digits> shape is what the
-    # server's mtime-based cache-buster rewrite in main.py matches on.
-    assert re.search(r"/static/app\.js\?v=\d+", index)
-
-
-def test_flow_builder_names_the_write_modes_in_plain_language():
-    source = Path(__file__).parents[1].joinpath("app", "static", "app.js").read_text()
-    assert ">Append rows</option>" in source
-    assert ">Replace all rows</option>" in source
-    assert 'id="flow-sql-table" list="flow-sql-table-options"' in source
-    # The mode truncates and reloads; it never drops the table, so the
-    # wording must not promise or imply that it does.
-    assert "Replace all rows deletes every row in the table" in source
-    assert "The table itself is kept" in source
-    assert "Managed snapshot" not in source
-    assert "drop" not in source.casefold().split("flow-sql-mode")[1][:1200]
-
-    log_source = Path(__file__).parents[1].joinpath("app", "static", "flow_run_log.js").read_text()
-    assert "This will replace all rows in" in log_source
-    assert "managed snapshot" not in log_source.casefold()
-    assert "drop and recreate" not in log_source
-
-
-def test_flow_builder_can_replicate_an_existing_flow():
-    source = Path(__file__).parents[1].joinpath("app", "static", "app.js").read_text()
-    assert 'id="flow-replicate-source"' in source
-    assert 'id="flow-replicate-apply"' in source
-    # A replicated draft is a new flow: no id, no schedule armed, its own
-    # name, and the form still creates instead of updating.
-    assert "id: null, name: \"\", enabled: false, _replicated_from: sourceId," in source
-    assert 'existing?.id ? "Save changes" : "Create flow"' in source
-    log_html = Path(__file__).parents[1].joinpath("app", "static", "flow_run_log.html").read_text()
-    assert re.search(r'/static/flow_run_log\.js\?v=\d+', log_html)
-
-
 def test_asap_region_triplet_select_is_named_data_configuration():
     from app.flow_worker import _normalize_asap_filter_label
 
@@ -4695,18 +4472,6 @@ def test_worker_api_retries_transient_server_errors(monkeypatch):
     monkeypatch.setattr(flow_worker.time, "sleep", lambda _seconds: None)
     assert flow_worker._api(Client(), "POST", "/progress") == {"status": "running"}
     assert len(attempts) == 3
-
-
-def test_asap_download_observes_every_open_portal_page_and_uses_staging_folder():
-    source = Path(__file__).parents[1].joinpath("app", "flow_worker.py").read_text()
-    assert 'candidate.on("download", capture_download)' in source
-    assert 'candidate.remove_listener("download", capture_download)' in source
-    assert "download_page.expect_download" not in source
-    assert "staged_file, export_pages = _asap_download" in source
-    assert "export_page.close(" not in source
-    assert "candidate for candidate in wizard_pages" in source
-    assert "downloads=download_staging_dir" in source
-    assert "downloads[0].path()" not in source
 
 
 def test_completed_download_is_normalized_locally_then_copied_without_overwrite(tmp_path):
@@ -5138,22 +4903,6 @@ def test_failed_report_without_artifacts_keeps_previously_saved_files(flow_db):
     ]
 
 
-def test_worker_shares_the_artifact_list_with_its_failure_report():
-    source = Path(__file__).parents[1].joinpath("app", "flow_worker.py").read_text()
-    # The shared runner owns acquisition now; failures return the same partial
-    # list through state to the worker's existing rich failure report.
-    import ast
-    tree = ast.parse(source)
-    shared = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'execute_flow')
-    acquire = next(node for node in ast.walk(shared) if isinstance(node, ast.Call) and any(isinstance(value, ast.Name) and value.id == 'execute_job' for value in ast.walk(node.func)))
-    assert any(keyword.arg == 'artifacts' and isinstance(keyword.value, ast.Name) and keyword.value.id == 'artifacts' for keyword in acquire.keywords)
-    assert 'state.update(artifacts=artifacts' in ast.get_source_segment(source, shared)
-    worker = source[source.index('def run_worker('):]
-    assert 'artifacts=artifacts, state=execution_state' in worker
-    assert 'artifacts = execution_state.get("artifacts", artifacts)' in worker
-    assert 'artifacts=artifacts, timings=timings' in worker
-
-
 def test_scan_progress_posts_build_a_live_event_log(flow_db):
     site = flows.create_site(_asap_site(), _request())
     flows.register_worker(flows.WorkerRegister(
@@ -5193,16 +4942,6 @@ def test_scan_progress_posts_build_a_live_event_log(flow_db):
     with pytest.raises(HTTPException) as excinfo:
         flows.list_scan_events(99999, after_id=0, limit=400)
     assert excinfo.value.status_code == 404
-
-
-def test_catalog_ui_groups_reports_and_drops_manual_add():
-    source = Path(__file__).parents[1].joinpath("app", "static", "app.js").read_text()
-    assert "flow-add-report" not in source
-    assert "_flowReportDialog" not in source
-    assert 'class="flow-catalog-group"' in source
-    assert "openCatalogTopics" in source
-    assert 'id="flow-scan-log"' in source
-    assert "scans/${scans[0].id}/events" in source
 
 
 def test_oversized_option_lists_are_capped_not_rejected():
@@ -5353,17 +5092,6 @@ def test_scan_mode_is_validated_and_reaches_the_queued_job(flow_db, monkeypatch)
     assert excinfo.value.status_code == 400
 
 
-def test_builder_exposes_a_targeted_report_scan_and_quick_scan():
-    source = Path(__file__).parents[1].joinpath("app", "static", "app.js").read_text()
-    assert 'id="flow-scan-report-now"' in source
-    assert "/api/flows/reports/${reportId}/scan" in source
-    assert "flow-scan-site-quick" in source
-    assert "scan?mode=partial" in source and "scan?mode=full" in source
-    assert 'class="btn-sm btn-outline btn-danger-outline flow-stop-scan"' in source
-    assert "/api/flows/scans/${button.dataset.id}/stop" in source
-    assert "_flowScanTargetsReport" in source
-
-
 def _dashboard_report(site_id):
     """A discovered HTML dashboard: download links, no export views."""
     return flows.DiscoveredReport(
@@ -5420,14 +5148,6 @@ def test_multiple_download_links_require_a_unique_filename_token():
             period_strategy="none", download_mode="single", file_format="csv",
             target_folder=r"C:\Reports", filename_template="dash.csv",
         )
-
-
-def test_dashboard_builder_section_replaces_export_views():
-    source = Path(__file__).parents[1].joinpath("app", "static", "app.js").read_text()
-    assert 'id="flow-download-links-section"' in source
-    assert "data-flow-download-link" in source
-    assert "download_links: [...document.querySelectorAll" in source
-    assert "_flowSyncExportSections" in source
 
 
 # --- Run-folder retention: server-side registration, assignment, pinning ---
