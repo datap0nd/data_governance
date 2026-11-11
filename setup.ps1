@@ -46,6 +46,19 @@ trap {
 }
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
+# One "[timing]" line per stage in the console and the update log, so a slow
+# update shows where the time went.
+$SetupStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+$SetupStageStartedAt = 0.0
+function Write-SetupTiming {
+    param([string]$Stage)
+    try {
+        $Now = $script:SetupStopwatch.Elapsed.TotalSeconds
+        Write-Host ("  [timing] {0}: {1:N1}s (total {2:N1}s)" -f $Stage, ($Now - $script:SetupStageStartedAt), $Now) -ForegroundColor DarkGray
+        $script:SetupStageStartedAt = $Now
+    } catch {}
+}
+
 function Invoke-WebRequestWithRetry {
     param(
         [Parameter(Mandatory = $true)][string]$Uri,
@@ -159,6 +172,47 @@ try { $InstalledVersion = (Get-Content "$CodeDir\VERSION" -ErrorAction Stop | Se
 Write-Host "Currently installed version: $InstalledVersion" -ForegroundColor Cyan
 $FlowProfile = "$env:USERPROFILE\.metronome-flow-browser"
 $HeadedFlowProfile = "$env:USERPROFILE\.metronome-flow-browser-headed"
+
+# Fast path: an unattended update skips a slow step whose inputs match the
+# fingerprint recorded when the step last completed. A manual run never skips,
+# so running setup.ps1 by hand stays the repair path. The helper file is
+# optional on purpose: without it, or on any doubt, the step runs in full.
+$SetupFastPath = Join-Path $CodeDir 'tools\setup_fast_path.ps1'
+$SetupFastPathLoaded = $false
+if (Test-Path $SetupFastPath -PathType Leaf) {
+    try { . $SetupFastPath; $SetupFastPathLoaded = $true } catch { $SetupFastPathLoaded = $false }
+}
+$SetupStatePath = Join-Path $ProjectDir 'updates\setup_state.json'
+$SetupState = @{}
+if ($SetupFastPathLoaded) {
+    try { $SetupState = Get-MetronomeSetupState -Path $SetupStatePath } catch { $SetupState = @{} }
+}
+function Get-SetupScriptsFingerprint {
+    # setup.ps1 and the slot helper as they are on disk now. Fingerprints for
+    # work this script defines include it, so any change to the installer
+    # re-applies that work on the next update without anyone bumping a version.
+    try {
+        return (Get-MetronomeFileFingerprint -Paths @(
+            (Join-Path $script:CodeDir 'setup.ps1'),
+            (Join-Path $script:CodeDir 'tools\flow_pool.ps1')
+        ))
+    } catch { return '' }
+}
+function Get-SetupFingerprint {
+    param([string[]]$Parts)
+    if (-not $script:SetupFastPathLoaded) { return '' }
+    try { return (Get-MetronomeFingerprint -Parts $Parts) } catch { return '' }
+}
+function Test-SetupStepCurrent {
+    param([string]$Step, [string]$Fingerprint)
+    if (-not $script:SetupFastPathLoaded -or -not $Fingerprint) { return $false }
+    try { return [bool](Test-MetronomeStepCurrent -State $script:SetupState -Step $Step -Fingerprint $Fingerprint) } catch { return $false }
+}
+function Set-SetupStepCurrent {
+    param([string]$Step, [string]$Fingerprint)
+    if (-not $script:SetupFastPathLoaded -or -not $Fingerprint) { return }
+    try { [void](Set-MetronomeStepCurrent -Path $script:SetupStatePath -Step $Step -Fingerprint $Fingerprint) } catch {}
+}
 $PyZipUrl    = "https://www.python.org/ftp/python/3.13.2/python-3.13.2-embed-amd64.zip"
 
 # --- Safety check ---
@@ -241,6 +295,19 @@ if (-not (Test-Path $PyExe)) {
 }
 Write-Host "  Python:   $PyExe" -ForegroundColor DarkGray
 
+# A relaunched copy (see "Relaunch the freshly downloaded setup.ps1" below)
+# starts after the previous copy already downloaded the archive, stopped every
+# runtime and extracted the new code. Doing all three again doubled the time
+# of every update that changed setup.ps1, so it resumes after extraction.
+$existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+$HadExistingService = [bool]$existing
+$existingFlowService = Get-Service -Name $FlowServiceName -ErrorAction SilentlyContinue
+$ExistingAuditorService = Get-Service -Name $AuditorServiceName -ErrorAction SilentlyContinue
+$Inner = $null
+$ResumeAfterExtraction = ($env:DG_SETUP_RELAUNCHED -eq "1") -and (Test-Path $ZipPath -PathType Leaf)
+if ($ResumeAfterExtraction) {
+    Write-Host "[2-4/5] The previous setup copy already downloaded and extracted this version." -ForegroundColor DarkGray
+} else {
 # --- Download latest code ---
 Write-Host "[3/5] Downloading latest version..." -ForegroundColor Yellow
 
@@ -284,17 +351,42 @@ try {
     Move-Item $BrowserZip $ZipPath -Force
     Write-Host "  Downloaded via Edge." -ForegroundColor Green
 }
+Write-SetupTiming "download"
 
 # Stop runtimes only after the complete update archive is available. A proxy,
 # authentication, or download failure must leave the currently installed app
 # and workers running.
-Stop-ScheduledTask -TaskName $HeadedFlowTaskName -ErrorAction SilentlyContinue
-foreach ($HeadedSlot in 2..$FlowMaxSlots) {
-    Stop-ScheduledTask -TaskName "$HeadedFlowTaskName$HeadedSlot" -ErrorAction SilentlyContinue
+# One query finds the running visible-worker tasks; stopping all 32 by name
+# cost a call each whether or not they were running.
+$HeadedTasksStopped = $false
+try {
+    foreach ($RunningHeadedTask in @(Get-ScheduledTask -TaskName "$HeadedFlowTaskName*" -ErrorAction Stop | Where-Object { "$($_.State)" -eq 'Running' })) {
+        Stop-ScheduledTask -TaskName $RunningHeadedTask.TaskName -ErrorAction SilentlyContinue
+    }
+    $HeadedTasksStopped = $true
+} catch {
+    $HeadedTasksStopped = $false
+}
+if (-not $HeadedTasksStopped) {
+    Stop-ScheduledTask -TaskName $HeadedFlowTaskName -ErrorAction SilentlyContinue
+    foreach ($HeadedSlot in 2..$FlowMaxSlots) {
+        Stop-ScheduledTask -TaskName "$HeadedFlowTaskName$HeadedSlot" -ErrorAction SilentlyContinue
+    }
 }
 Stop-ScheduledTask -TaskName $PythonDesktopTaskName -ErrorAction SilentlyContinue
 $NssmExe = "$CodeDir\tools\nssm.exe"
 $ErrorActionPreference = "Continue"
+# Ask every installed service to stop at once. The per-service stops and waits
+# below then overlap instead of adding up, which matters with a dozen worker
+# services. sc.exe only sends the request and returns.
+try {
+    $StopRequestNames = @($ServiceName, $FlowServiceName, $AuditorServiceName) + @(2..$FlowMaxSlots | ForEach-Object { "MXFlowsWorker$_" })
+    foreach ($RunningService in @(Get-Service -Name $StopRequestNames -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Running' })) {
+        & sc.exe stop $RunningService.Name 2>&1 | Out-Null
+    }
+} catch {
+    Write-Host "  Could not request a parallel stop; stopping one by one: $_" -ForegroundColor DarkGray
+}
 $existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 $HadExistingService = [bool]$existing
 if ($existing) {
@@ -372,13 +464,19 @@ foreach ($p in $portPid) {
     }
 }
 $ErrorActionPreference = "Stop"
+Write-SetupTiming "stop services"
 
 # --- Extract new code over existing folder (no deletion) ---
 Write-Host "[4/5] Extracting update over existing code..." -ForegroundColor Yellow
 
 # Extract to a temp folder first, then copy contents over
 $TempExtract = "$ProjectDir\_extract_temp"
-Expand-Archive -Path $ZipPath -DestinationPath $TempExtract -Force
+if (Get-Command Expand-MetronomeArchive -ErrorAction SilentlyContinue) {
+    $ExtractMethod = Expand-MetronomeArchive -ZipPath $ZipPath -Destination $TempExtract
+    Write-Host "  Extracted with: $ExtractMethod" -ForegroundColor DarkGray
+} else {
+    Expand-Archive -Path $ZipPath -DestinationPath $TempExtract -Force
+}
 
 # GitHub ZIP has a top-level folder (data_governance-main/) - copy its contents into $CodeDir
 $Inner = Get-ChildItem $TempExtract -Directory | Select-Object -First 1
@@ -414,6 +512,8 @@ if (-not $env:DG_SETUP_RELAUNCHED) {
         exit $LASTEXITCODE
     }
 }
+} # end of the download, stop and extract stages a relaunched copy skips
+Write-SetupTiming "download, stop and extract"
 
 # Publish versioned external flow transformations to the shared location used
 # by BI desktop workers. A temporarily unavailable share must not prevent the
@@ -442,6 +542,11 @@ try {
 if (-not $CommitSha -and $Inner -and $Inner.Name -match '-([0-9a-f]{7,40})$') {
     $CommitSha = $Matches[1].Substring(0, [Math]::Min(9, $Matches[1].Length))
 }
+if (-not $CommitSha -and $LatestSha) {
+    # A relaunched copy has no extracted folder name to read; the exact commit
+    # it was asked to install is still known.
+    $CommitSha = $LatestSha.Substring(0, [Math]::Min(9, $LatestSha.Length))
+}
 if ($CommitSha) { $ver = "$ver-$CommitSha" }
 Set-Content "$CodeDir\VERSION" $ver
 Write-Host "  Deployed version: $ver" -ForegroundColor Cyan
@@ -450,6 +555,23 @@ Write-Host "  Deployed version: $ver" -ForegroundColor Cyan
 Write-Host "[5/5] Installing dependencies..." -ForegroundColor Yellow
 Set-Location $CodeDir
 $PipExe = "$PyDir\Scripts\pip.exe"
+# An unattended update whose requirements.txt and bundled wheels match the
+# last successful install has nothing to install, and three pip runs through
+# the office proxy were a large part of every update. A manual run always
+# reinstalls.
+$DependencyFingerprint = ''
+try {
+    if ($SetupFastPathLoaded) {
+        $DependencyFiles = @((Join-Path $CodeDir 'requirements.txt')) + @(Get-ChildItem (Join-Path $CodeDir 'vendor') -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+        $DependencyFingerprint = Get-SetupFingerprint -Parts @('dependencies-v1', $PyExe, (Get-MetronomeFileFingerprint -Paths $DependencyFiles))
+    }
+} catch { $DependencyFingerprint = '' }
+$DependenciesCurrent = $Unattended -and (Test-SetupStepCurrent -Step 'dependencies' -Fingerprint $DependencyFingerprint) -and
+    (Test-Path "$PyDir\Lib\site-packages\fastapi") -and (Test-Path "$PyDir\Lib\site-packages\uvicorn") -and
+    (Test-Path "$PyDir\Lib\site-packages\playwright")
+if ($DependenciesCurrent) {
+    Write-Host "  Dependencies unchanged since the last install; nothing to install." -ForegroundColor DarkGray
+} else {
 # Install bundled wheels first (pbixray + xpress9 + kaitaistruct, no network)
 & $PipExe install --no-index --find-links vendor pbixray xpress9 kaitaistruct -q
 if ($LASTEXITCODE -ne 0) {
@@ -467,6 +589,9 @@ if ($LASTEXITCODE -ne 0) {
 if ($LASTEXITCODE -ne 0) {
     throw "Python dependency installation failed with exit code $LASTEXITCODE"
 }
+Set-SetupStepCurrent -Step 'dependencies' -Fingerprint $DependencyFingerprint
+}
+Write-SetupTiming "dependencies"
 
 # Read the persisted capacity after the new code and Python are available.
 . (Join-Path $CodeDir 'tools\flow_pool.ps1')
@@ -594,9 +719,19 @@ if ($LASTEXITCODE -ne 0) { throw 'Could not protect the auditor exchange.' }
 & icacls.exe $CodeDir /grant "${AuditorIdentity}:(OI)(CI)RX" /Q | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Could not grant the auditor reader access to its runtime.' }
 if (Test-Path $FlowsRoot -PathType Container) {
-    & icacls.exe $FlowsRoot /grant "${AuditorIdentity}:(OI)(CI)RX" /T /Q | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host '  Auditor could not read the Flow output root; file outputs will remain visibly unverified.' -ForegroundColor Yellow
+    # The grant is inheritable, so files and folders created after the first
+    # pass receive it from the root. Walking every run folder again on each
+    # unattended update only cost time; a manual run still repairs the tree.
+    $FlowsAclFingerprint = Get-SetupFingerprint -Parts @('flows-acl-v1', $FlowsRoot, $AuditorIdentity)
+    if ($Unattended -and (Test-SetupStepCurrent -Step 'flows_acl' -Fingerprint $FlowsAclFingerprint)) {
+        Write-Host '  Flow output root permissions were granted by an earlier setup; not walked again.' -ForegroundColor DarkGray
+    } else {
+        & icacls.exe $FlowsRoot /grant "${AuditorIdentity}:(OI)(CI)RX" /T /Q | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host '  Auditor could not read the Flow output root; file outputs will remain visibly unverified.' -ForegroundColor Yellow
+        } else {
+            Set-SetupStepCurrent -Step 'flows_acl' -Fingerprint $FlowsAclFingerprint
+        }
     }
 }
 foreach ($AuditorDeniedDatabaseFile in @($DbPath, "$DbPath-shm", "$DbPath-wal")) {
@@ -606,6 +741,33 @@ if (Test-Path $AuditorDeniedDatabaseFile -PathType Leaf) {
 }
 }
 
+Write-SetupTiming "permissions and auditor provisioning"
+
+# Service configuration is about 200 separate nssm.exe launches. An unattended
+# update whose services all exist and whose intended configuration matches the
+# recorded fingerprint skips them; anything new, missing or changed, a supplied
+# password, or a manual run applies every setting again.
+$ApplyServiceConfig = $true
+$ServiceConfigFingerprint = ''
+try {
+    $InstalledSlotServices = @(Get-Service -Name 'MXFlowsWorker*' -ErrorAction SilentlyContinue | ForEach-Object { $_.Name } | Sort-Object)
+    $ServiceConfigFingerprint = Get-SetupFingerprint -Parts (@(
+        'services', (Get-SetupScriptsFingerprint), $PyExe, $CodeDir, "$Port", "$AuditorPort", $DbPath, $FlowsRoot, $ReportsPath, $ScriptsPath,
+        $FlowProfile, $AuditorHostConfig, $AuditorReaderConfig, $AuditorIdentity, "$env:USERNAME",
+        "$ConfiguredFlowSlots"
+    ) + $InstalledSlotServices)
+    if ($Unattended -and -not $env:DG_SVC_PASSWORD -and $HadExistingService -and $existingFlowService -and $ExistingAuditorService -and
+        (Test-SetupStepCurrent -Step 'services' -Fingerprint $ServiceConfigFingerprint)) {
+        $ApplyServiceConfig = $false
+    }
+} catch {
+    $ApplyServiceConfig = $true
+}
+if (-not $ApplyServiceConfig) {
+    Write-Host "  Service configuration unchanged since the last setup; not re-applied." -ForegroundColor DarkGray
+}
+
+if ($ApplyServiceConfig) {
 & $NssmExe set $AuditorServiceName Application $PyExe
 & $NssmExe set $AuditorServiceName AppParameters "-m uvicorn auditor_reader.service:app --host 127.0.0.1 --port $AuditorPort --no-access-log"
 & $NssmExe set $AuditorServiceName AppDirectory $CodeDir
@@ -638,6 +800,7 @@ if (-not $HadExistingService) {
     "METRONOME_FLOW_PROFILE=$FlowProfile" `
     "DG_AUDITOR_HOST_CONFIG=$AuditorHostConfig" `
     "DG_AI_MOCK=true"
+} # end of auditor and main service configuration
 
 # Run services as the current user (needed for network share access). Normal
 # updates preserve the installed credentials so unattended setup never prompts.
@@ -659,6 +822,18 @@ if ($env:DG_SVC_PASSWORD) {
 } else {
     Write-Host "  Existing Windows service credentials preserved." -ForegroundColor DarkGray
 }
+$LogDir = "$ProjectDir\logs"
+New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+
+# Log rotation. AppRotateSeconds was 86400, which means "never rotate a file
+# written to in the last day": a running service writes all the time, so its
+# logs were never rotated and grew without limit. With 0 a log is rotated as
+# soon as it reaches AppRotateBytes, both while the service runs
+# (AppRotateOnline) and when it starts. Metronome deletes old rotated files
+# itself (Settings > Logs); nssm never does.
+$LogRotateBytes = 10485760
+
+if ($ApplyServiceConfig) {
 if ($SetServiceCredentials) {
     & $NssmExe set $ServiceName ObjectName "$env:USERDOMAIN\$env:USERNAME" $ServicePassword
 }
@@ -666,20 +841,20 @@ if ($SetServiceCredentials) {
 & $NssmExe set $ServiceName AppExit Default Restart
 & $NssmExe set $ServiceName AppRestartDelay 5000
 
-$LogDir = "$ProjectDir\logs"
-New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 & $NssmExe set $AuditorServiceName AppStdout "$LogDir\auditor_reader.log"
 & $NssmExe set $AuditorServiceName AppStderr "$LogDir\auditor_reader_error.log"
 & $NssmExe set $AuditorServiceName AppRotateFiles 1
-& $NssmExe set $AuditorServiceName AppRotateSeconds 86400
-& $NssmExe set $AuditorServiceName AppRotateBytes 10485760
+& $NssmExe set $AuditorServiceName AppRotateOnline 1
+& $NssmExe set $AuditorServiceName AppRotateSeconds 0
+& $NssmExe set $AuditorServiceName AppRotateBytes $LogRotateBytes
 & $NssmExe set $ServiceName AppStdout "$LogDir\mx_analytics.log"
 & $NssmExe set $ServiceName AppStderr "$LogDir\mx_analytics_error.log"
 & $NssmExe set $ServiceName AppStdoutCreationDisposition 4
 & $NssmExe set $ServiceName AppStderrCreationDisposition 4
 & $NssmExe set $ServiceName AppRotateFiles 1
-& $NssmExe set $ServiceName AppRotateSeconds 86400
-& $NssmExe set $ServiceName AppRotateBytes 10485760
+& $NssmExe set $ServiceName AppRotateOnline 1
+& $NssmExe set $ServiceName AppRotateSeconds 0
+& $NssmExe set $ServiceName AppRotateBytes $LogRotateBytes
 
 # Headless flows use a background service. Headed flows use a separate,
 # on-demand interactive task so the selected browser appears in the signed-in BI desktop.
@@ -704,8 +879,9 @@ if ($SetServiceCredentials) {
 & $NssmExe set $FlowServiceName AppStdoutCreationDisposition 4
 & $NssmExe set $FlowServiceName AppStderrCreationDisposition 4
 & $NssmExe set $FlowServiceName AppRotateFiles 1
-& $NssmExe set $FlowServiceName AppRotateSeconds 86400
-& $NssmExe set $FlowServiceName AppRotateBytes 10485760
+& $NssmExe set $FlowServiceName AppRotateOnline 1
+& $NssmExe set $FlowServiceName AppRotateSeconds 0
+& $NssmExe set $FlowServiceName AppRotateBytes $LogRotateBytes
 
 # Slot 1 keeps its service, worker ID, profile and logs for historic recovery.
 # New slots require explicit account credentials from interactive setup. An
@@ -730,15 +906,21 @@ foreach ($FlowSlot in $FlowSlots | Where-Object { $_.Slot -gt 1 }) {
     & $NssmExe set $SlotService AppRestartDelay 10000
     & $NssmExe set $SlotService AppStdout "$LogDir\$($FlowSlot.LogName).log"
     & $NssmExe set $SlotService AppStderr "$LogDir\$($FlowSlot.LogName)_error.log"
+    & $NssmExe set $SlotService AppStdoutCreationDisposition 4
+    & $NssmExe set $SlotService AppStderrCreationDisposition 4
     & $NssmExe set $SlotService AppRotateFiles 1
-    & $NssmExe set $SlotService AppRotateSeconds 86400
-    & $NssmExe set $SlotService AppRotateBytes 10485760
+    & $NssmExe set $SlotService AppRotateOnline 1
+    & $NssmExe set $SlotService AppRotateSeconds 0
+    & $NssmExe set $SlotService AppRotateBytes $LogRotateBytes
 }
 # Preserve unused services and profiles; don't auto-start them after an update.
 foreach ($DisabledSlot in 1..$FlowMaxSlots | Where-Object { $_ -gt $ConfiguredFlowSlots }) {
     $DisabledService = (Get-MetronomeFlowSlot -Slot $DisabledSlot -BaseProfile $FlowProfile).ServiceName
     if (Get-Service -Name $DisabledService -ErrorAction SilentlyContinue) { & $NssmExe set $DisabledService Start SERVICE_DEMAND_START }
 }
+Set-SetupStepCurrent -Step 'services' -Fingerprint $ServiceConfigFingerprint
+} # end of service credentials, logging and worker service configuration
+Write-SetupTiming "service configuration"
 
 # Interactive tasks do not need a stored password. Enroll all supported slots so changing
 # visible capacity later takes effect immediately, without another setup run.
@@ -749,14 +931,40 @@ $HeadedTaskPrincipal = if ($ExistingHeadedTask) { $ExistingHeadedTask.Principal 
 $HeadedTaskSettings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -ExecutionTimeLimit (New-TimeSpan -Days 3) -MultipleInstances IgnoreNew
+# Registering 32 tasks costs about a second each. An unattended update leaves
+# a task alone when it already runs exactly this command and this script has
+# not changed since the tasks were last registered; anything else, and every
+# manual run, registers it again.
+$HeadedTasksFingerprint = Get-SetupFingerprint -Parts @('headed-tasks', (Get-SetupScriptsFingerprint), "$env:USERDOMAIN\$env:USERNAME")
+$HeadedTasksReusable = $Unattended -and (Test-SetupStepCurrent -Step 'headed_tasks' -Fingerprint $HeadedTasksFingerprint)
+$RegisteredHeadedTasks = @{}
+if ($HeadedTasksReusable) {
+    try {
+        foreach ($RegisteredHeadedTask in @(Get-ScheduledTask -TaskName "$HeadedFlowTaskName*" -ErrorAction Stop)) {
+            $RegisteredHeadedTasks[$RegisteredHeadedTask.TaskName] = $RegisteredHeadedTask
+        }
+    } catch {
+        $RegisteredHeadedTasks = @{}
+    }
+}
+$HeadedTasksRegistered = 0
 foreach ($VisibleSlot in 1..$FlowMaxSlots | ForEach-Object { Get-MetronomeFlowSlot -Slot $_ -BaseProfile $HeadedFlowProfile -Headed }) {
     $HeadedTaskArguments = "`"$CodeDir\app\flow_worker.py`" --server http://127.0.0.1:$Port --worker-id $($VisibleSlot.WorkerId) --name $($VisibleSlot.WorkerId) --profile-dir `"$($VisibleSlot.Profile)`" --headed --idle-exit-seconds 60"
     $HeadedPython = Join-Path $PyDir 'pythonw.exe'
+    $ReuseHeadedTask = $false
+    if ($HeadedTasksReusable) {
+        $KnownHeadedTask = $RegisteredHeadedTasks[$VisibleSlot.TaskName]
+        $ReuseHeadedTask = Test-MetronomeTaskActionCurrent -Task $KnownHeadedTask -Execute $HeadedPython -Arguments $HeadedTaskArguments -WorkingDirectory $CodeDir
+    }
+    if ($ReuseHeadedTask) { continue }
     $HeadedTaskAction = New-ScheduledTaskAction -Execute $HeadedPython -Argument $HeadedTaskArguments -WorkingDirectory $CodeDir
     Register-ScheduledTask -TaskName $VisibleSlot.TaskName -Action $HeadedTaskAction `
         -Principal $HeadedTaskPrincipal -Settings $HeadedTaskSettings -Force | Out-Null
+    $HeadedTasksRegistered++
 }
-Write-Host "  $FlowMaxSlots headed Flows tasks registered; $ConfiguredHeadedSlots visible slots enabled on demand." -ForegroundColor Green
+Set-SetupStepCurrent -Step 'headed_tasks' -Fingerprint $HeadedTasksFingerprint
+Write-Host "  $FlowMaxSlots headed Flows tasks present ($HeadedTasksRegistered registered now); $ConfiguredHeadedSlots visible slots enabled on demand." -ForegroundColor Green
+Write-SetupTiming "visible-worker tasks"
 
 # "Just run" Python Flows start their scripts through this task. Windows runs it
 # in the signed-in desktop session with the account's standard (non-elevated)
@@ -812,13 +1020,24 @@ if ($ServicePassword) {
     throw "The unattended auto-update task needs the Windows account password during first setup."
 }
 
-if (Test-Path "$CodeDir\tools\install_rdp_console_guard.ps1") {
+$RdpGuardFingerprint = ''
+try {
+    if ($SetupFastPathLoaded) {
+        $RdpGuardFingerprint = Get-SetupFingerprint -Parts @('rdp-guard', "$env:USERNAME", (Get-MetronomeFileFingerprint -Paths @(
+            "$CodeDir\tools\install_rdp_console_guard.ps1", "$CodeDir\tools\rdp_console_guard.ps1"
+        )))
+    }
+} catch { $RdpGuardFingerprint = '' }
+if ($Unattended -and (Test-SetupStepCurrent -Step 'rdp_guard' -Fingerprint $RdpGuardFingerprint)) {
+    Write-Host "RDP console guard unchanged; already installed." -ForegroundColor DarkGray
+} elseif (Test-Path "$CodeDir\tools\install_rdp_console_guard.ps1") {
     Write-Host "Installing RDP console guard..." -ForegroundColor Yellow
     try {
         & powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$CodeDir\tools\install_rdp_console_guard.ps1" -TargetUser $env:USERNAME
         if ($LASTEXITCODE -ne 0) {
             throw "installer exited with code $LASTEXITCODE"
         }
+        Set-SetupStepCurrent -Step 'rdp_guard' -Fingerprint $RdpGuardFingerprint
     } catch {
         Write-Host "  RDP console guard install failed: $_" -ForegroundColor Yellow
         Write-Host "  The app will still start, but interactive sync may fail after RDP disconnects." -ForegroundColor Yellow
@@ -934,12 +1153,16 @@ foreach ($FlowSlot in $FlowSlots | Where-Object { $_.Slot -gt 1 }) {
     }
 }
 
+Write-SetupTiming "tasks and sign-in"
 & $NssmExe start $AuditorServiceName 2>&1 | Out-Null
 & $NssmExe start $ServiceName
-Start-Sleep -Seconds 3
+Start-Sleep -Seconds 2
 
+# Up to two minutes, the most the earlier fixed-count loop could take, polled
+# every second so setup moves on as soon as Metronome answers.
 $MetronomeHealthy = $false
-for ($attempt = 0; $attempt -lt 30; $attempt++) {
+$HealthDeadline = (Get-Date).AddSeconds(120)
+while ((Get-Date) -lt $HealthDeadline) {
     try {
         $VersionResponse = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/version" -TimeoutSec 5
         if ($VersionResponse) {
@@ -947,8 +1170,9 @@ for ($attempt = 0; $attempt -lt 30; $attempt++) {
             break
         }
     } catch {}
-    Start-Sleep -Seconds 2
+    Start-Sleep -Seconds 1
 }
+Write-SetupTiming "start services and health check"
 if (-not $MetronomeHealthy -and $Unattended) {
     throw "Metronome failed its localhost health check after unattended setup. Check $LogDir\"
 }
@@ -1008,8 +1232,13 @@ function Describe-WorkerRegistrationFailure {
             (Test-MetronomeSetupWorkerFresh -Worker $_ -WorkerStartedAt $WorkerStartedAt)
         }).Count -eq $ExpectedWorkerIds.Count
     } catch {}
+    # The two-minute wait is for a person watching the console. Metronome is
+    # already serving by now, and nothing reads this during an unattended
+    # update, so that run looks for 20 seconds and leaves the rest to the
+    # Flows page, which shows each worker as it registers.
+    $WorkerPollAttempts = if ($Unattended) { 10 } else { 60 }
     if (-not $WorkerOnline) {
-        for ($attempt = 0; $attempt -lt 60; $attempt++) {
+        for ($attempt = 0; $attempt -lt $WorkerPollAttempts; $attempt++) {
             Start-Sleep -Seconds 2
             try {
                 $RegisteredWorkers = @(Get-MetronomeSetupFlowWorkers -Port $Port)
@@ -1034,6 +1263,7 @@ function Describe-WorkerRegistrationFailure {
         }
     }
 
+Write-SetupTiming "worker registration"
 $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($MetronomeHealthy -and $svc -and $svc.Status -eq "Running") {
     Write-Host ""

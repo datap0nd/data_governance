@@ -29,6 +29,16 @@ if (-not (Test-Path $Python)) {
 }
 
 New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+# Start-Transcript -Append never rotates, so this log used to grow for ever.
+# Move a large one aside under the rotated-file name Metronome's log clean-up
+# recognises. A failure here must not stop the worker.
+try {
+    $ExistingLog = Get-Item -LiteralPath $WorkerLog -ErrorAction SilentlyContinue
+    if ($ExistingLog -and $ExistingLog.Length -gt 10MB) {
+        $RotatedLog = Join-Path $LogDir ("flow_worker_{0}-{1}.log" -f $WorkerId, (Get-Date -Format "yyyyMMddTHHmmss.fff"))
+        Move-Item -LiteralPath $WorkerLog -Destination $RotatedLog -Force
+    }
+} catch {}
 Start-Transcript -Path $WorkerLog -Append | Out-Null
 Set-Location $CodeDir
 $arguments = @(

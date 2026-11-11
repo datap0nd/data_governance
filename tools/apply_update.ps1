@@ -169,7 +169,12 @@ try {
     try {
         $deployed = (Get-Content -LiteralPath (Join-Path $CodeDir "VERSION") -First 1).Trim()
     } catch {}
-    if (-not $deployed.EndsWith($TargetSha, [System.StringComparison]::OrdinalIgnoreCase)) {
+    # setup.ps1 stamps VERSION as "<timestamp>-<first characters of the commit>",
+    # so the stamp is a prefix of the 40-character target, never its ending.
+    # Comparing with EndsWith reported every successful update as failed.
+    $deployedCommit = ""
+    if ($deployed -match '-([0-9a-fA-F]{7,40})$') { $deployedCommit = $Matches[1].ToLowerInvariant() }
+    if (-not $deployedCommit -or -not $TargetSha.StartsWith($deployedCommit)) {
         throw "setup.ps1 completed but VERSION does not identify commit $TargetSha"
     }
     Save-Receipt -Status "succeeded" -Stage "healthy" `
