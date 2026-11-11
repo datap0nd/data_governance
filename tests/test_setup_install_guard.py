@@ -162,6 +162,22 @@ def test_the_installed_location_is_read_from_the_service_settings(places, servic
     assert result.stdout.strip() == f"{places.installed_code}|{places.installed_db}|[]"
 
 
+def test_sizes_are_shown_in_the_unit_that_tells_them_apart():
+    # A new empty database is about 1 MB and a real one can be 1 GB. Printed
+    # in KB they were "1364 KB" and "1364512 KB".
+    result = _powershell(
+        f"$ErrorActionPreference = 'Stop'; . '{GUARD}'; "
+        "\"$(Get-MetronomeSizeText -Bytes 300)|$(Get-MetronomeSizeText -Bytes 1396736)|"
+        "$(Get-MetronomeSizeText -Bytes 1397260288)\""
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    small, medium, large = result.stdout.strip().split("|")
+    assert small == "1 KB"
+    assert medium.endswith(" MB") and medium.startswith("1")
+    assert large.endswith(" GB") and large.startswith("1")
+
+
 def test_restarting_services_that_are_not_installed_does_nothing():
     result = _powershell(
         f"$ErrorActionPreference = 'Stop'; . '{GUARD}'; "
@@ -173,32 +189,112 @@ def test_restarting_services_that_are_not_installed_does_nothing():
     assert result.stdout.strip() == "started=0"
 
 
-@ci_runner_only
-@pytest.mark.parametrize("situation", ["no database here", "another database here",
-                                       "an older copy already stopped Metronome"])
-def test_setup_itself_stops_before_it_creates_or_replaces_anything(places, service_settings, situation):
-    # The real setup.ps1, placed in a second copy of the code while the
-    # service settings name the installed one.
+def test_only_the_copy_a_relaunching_setup_started_counts_as_relaunched():
+    def relaunched(marker, recorded, actual):
+        result = _powershell(
+            f"$ErrorActionPreference = 'Stop'; . '{GUARD}'; "
+            f"Test-MetronomeRelaunchedCopy -Marker '{marker}' -RecordedParent '{recorded}' -ActualParent {actual}"
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        return result.stdout.strip()
+
+    assert relaunched("1", "4242", 4242) == "True"
+    # What an older setup.ps1 leaves behind in the window it was run from.
+    assert relaunched("1", "", 4242) == "False"
+    # Recorded by some other process than the one that started this copy.
+    assert relaunched("1", "4242", 5151) == "False"
+    assert relaunched("", "4242", 4242) == "False"
+
+
+def test_a_marker_left_in_the_window_is_true_for_the_started_copy_only():
+    # One PowerShell process plays the window: it sets what a relaunching
+    # setup.ps1 sets, starts a child the way setup does, then asks itself the
+    # same question, as the next setup.ps1 run in that window would.
+    result = _powershell(
+        f"$ErrorActionPreference = 'Stop'; . '{GUARD}'; "
+        "$env:DG_SETUP_RELAUNCHED = '1'; $env:DG_SETUP_RELAUNCH_PARENT = \"$PID\"; "
+        "$child = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass "
+        f"-Command \". '{GUARD}'; Test-MetronomeRelaunchedCopy\"; "
+        "$here = Test-MetronomeRelaunchedCopy; "
+        "\"child=$child here=$here\""
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip() == "child=True here=False"
+
+
+def _second_copy(places):
+    """The real setup.ps1 and its helpers, placed in the second copy of the code."""
     (places.code / "setup.ps1").write_bytes((ROOT / "setup.ps1").read_bytes())
     (places.code / "tools").mkdir()
     for script in (ROOT / "tools").glob("*.ps1"):
         (places.code / "tools" / script.name).write_bytes(script.read_bytes())
     (places.code / "app").mkdir()
     (places.code / "app" / "main.py").write_text("# stand-in\n", encoding="ascii")
-    if situation == "another database here":
+
+
+def _setup_environment(**extra):
+    environment = {
+        name: value for name, value in os.environ.items()
+        if name not in {"DG_FLOWS_ROOT", "DG_GITHUB_TOKEN", "DG_UPDATE_ZIP_URL", "DG_SETUP_NEW_DATABASE",
+                        "DG_SETUP_RELAUNCHED", "DG_SETUP_RELAUNCH_PARENT", "DG_SETUP_SWITCH_CONFIRMED"}
+    }
+    environment["DG_UPDATE_COMMIT_SHA"] = "0" * 40  # no call to GitHub
+    environment.update(extra)
+    return environment
+
+
+@ci_runner_only
+def test_a_marker_left_in_the_window_does_not_make_setup_skip_the_stop_and_download(tmp_path):
+    # Reported from a work PC: setup.ps1 run a second time in the same
+    # PowerShell window went straight to the end, never stopped Metronome and
+    # finished with "An instance of the service is already running". The
+    # earlier run had left its relaunch marker in that window, and an archive
+    # from an earlier update was still on disk.
+    places = SimpleNamespace(code=tmp_path / "installed" / "data_governance-main")
+    places.code.mkdir(parents=True)
+    _second_copy(places)
+    project = places.code.parent
+    (project / "python313").mkdir()
+    (project / "python313" / "python.exe").write_bytes(b"")  # found, so nothing is downloaded
+    (project / "_update.zip").write_bytes(b"an archive from an earlier update")
+    empty_registry = rf"HKCU:\Software\MetronomeSetupTest\{uuid.uuid4().hex}"
+
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+         "-File", str(places.code / "setup.ps1"), "-Unattended"],
+        capture_output=True, text=True, timeout=300,
+        env=_setup_environment(
+            DG_SETUP_RELAUNCHED="1", DG_SETUP_TEST_SERVICE_ROOT=empty_registry,
+            DG_UPDATE_ZIP_URL="http://127.0.0.1:9/nothing-listens-here.zip",
+        ),
+    )
+
+    output = result.stdout + result.stderr
+    # It starts from the beginning: the download is attempted (and cannot
+    # succeed here), and Metronome is only ever stopped after a download.
+    assert "already downloaded and extracted" not in output, output
+    assert "[3/5] Downloading latest version" in output, output
+    assert result.returncode == 1 and "download failed" in output, output
+
+
+@ci_runner_only
+@pytest.mark.parametrize("situation", ["no database here", "another database here",
+                                       "another database here and an answer left in the window"])
+def test_setup_itself_stops_before_it_creates_or_replaces_anything(places, service_settings, situation):
+    # The real setup.ps1, placed in a second copy of the code while the
+    # service settings name the installed one.
+    _second_copy(places)
+    if situation != "no database here":
         places.db.write_bytes(b"s" * 300)
     beside = sorted(path.name for path in places.code.parent.iterdir())
     inside = sorted(str(path.relative_to(places.code)) for path in places.code.rglob("*"))
 
-    environment = {
-        name: value for name, value in os.environ.items()
-        if name not in {"DG_FLOWS_ROOT", "DG_GITHUB_TOKEN", "DG_UPDATE_ZIP_URL", "DG_SETUP_NEW_DATABASE",
-                        "DG_SETUP_RELAUNCHED", "DG_SETUP_SWITCH_CONFIRMED"}
-    }
-    environment["DG_SETUP_TEST_SERVICE_ROOT"] = service_settings(places.installed_code, places.installed_db)
-    environment["DG_UPDATE_COMMIT_SHA"] = "0" * 40  # no call to GitHub
-    if situation == "an older copy already stopped Metronome":
-        environment["DG_SETUP_RELAUNCHED"] = "1"
+    environment = _setup_environment(
+        DG_SETUP_TEST_SERVICE_ROOT=service_settings(places.installed_code, places.installed_db))
+    if situation == "another database here and an answer left in the window":
+        # SWITCH typed in an earlier run must not answer for this one.
+        environment.update(DG_SETUP_RELAUNCHED="1", DG_SETUP_SWITCH_CONFIRMED="1")
     result = subprocess.run(
         ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
          "-File", str(places.code / "setup.ps1"), "-Unattended"],
@@ -208,16 +304,16 @@ def test_setup_itself_stops_before_it_creates_or_replaces_anything(places, servi
     output = result.stdout + result.stderr
     assert result.returncode == 1, output
     assert "SETUP STOPPED" in output and str(places.installed_db) in output, output
-    expected = {
-        "no database here": "Nothing was changed.",
-        "another database here": "never switches Metronome to another database",
-        "an older copy already stopped Metronome": "The first part of this run stopped Metronome.",
-    }[situation]
-    assert expected in output, output
+    if situation == "no database here":
+        assert "No file at this path." in output, output
+    else:
+        assert "This file exists: 1 KB" in output, output
+        assert "never switches Metronome to another database" in output, output
+    assert "Nothing was changed." in output, output
     # No database, Python, download, Flow folders or state beside the copy...
     assert sorted(path.name for path in places.code.parent.iterdir()) == beside, output
     # ...nothing added to the copy itself, and neither database touched.
     assert sorted(str(path.relative_to(places.code)) for path in places.code.rglob("*")) == inside
     assert places.installed_db.read_bytes() == b"d" * 5000
-    if situation == "another database here":
+    if situation != "no database here":
         assert places.db.read_bytes() == b"s" * 300

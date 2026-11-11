@@ -61,12 +61,22 @@ function Test-MetronomeSameFile {
     }
 }
 
+function Get-MetronomeSizeText {
+    # A size a person can compare at a glance: "640 KB", "1.3 MB", "1.02 GB".
+    # In KB alone, a new empty database and a real one differ only in how many
+    # digits the number has.
+    param([long]$Bytes)
+    if ($Bytes -ge 1GB) { return ('{0:N2} GB' -f ($Bytes / 1GB)) }
+    if ($Bytes -ge 1MB) { return ('{0:N1} MB' -f ($Bytes / 1MB)) }
+    return ('{0:N0} KB' -f [math]::Ceiling($Bytes / 1KB))
+}
+
 function Get-MetronomeFileText {
-    # "1,234 KB, last changed 2026-11-11 14:02" for a message.
+    # "1.3 MB, last changed 2026-11-11 14:02" for a message.
     param([string]$Path)
     try {
         $file = Get-Item -LiteralPath $Path -ErrorAction Stop
-        return ('{0:N0} KB, last changed {1}' -f [math]::Ceiling($file.Length / 1024), $file.LastWriteTime.ToString('yyyy-MM-dd HH:mm'))
+        return ('{0}, last changed {1}' -f (Get-MetronomeSizeText -Bytes $file.Length), $file.LastWriteTime.ToString('yyyy-MM-dd HH:mm'))
     } catch {
         return 'size unknown'
     }
@@ -150,6 +160,34 @@ function Get-MetronomeInstallCheck {
         "  `$env:DG_SETUP_NEW_DATABASE = '1'; .\setup.ps1"
     )
     return $check
+}
+
+function Get-MetronomeParentProcessId {
+    # The process that started this one; 0 when it cannot be read.
+    param([int]$ProcessId = $PID)
+    try {
+        $process = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction Stop
+        return [int]$process.ParentProcessId
+    } catch {
+        return 0
+    }
+}
+
+function Test-MetronomeRelaunchedCopy {
+    # True only in the copy of setup.ps1 that another copy started to finish
+    # the same run. A copy that relaunches sets the marker and records its own
+    # process id, and only a process it started itself matches. The marker
+    # alone proves nothing: an older copy leaves it behind in the PowerShell
+    # window it was run from, where it outlives the run.
+    param(
+        [string]$Marker = $env:DG_SETUP_RELAUNCHED,
+        [string]$RecordedParent = $env:DG_SETUP_RELAUNCH_PARENT,
+        [int]$ActualParent = -1
+    )
+    if ($Marker -ne '1' -or -not "$RecordedParent".Trim()) { return $false }
+    if ($ActualParent -lt 0) { $ActualParent = Get-MetronomeParentProcessId }
+    if ($ActualParent -le 0) { return $false }
+    return ("$RecordedParent".Trim() -eq "$ActualParent")
 }
 
 function Start-MetronomeInstalledServices {
