@@ -65,7 +65,7 @@ request's Windows and PostgreSQL jobs cover the ones in their selections.
 
 | IDs | Status | Reason | Next action |
 | --- | --- | --- | --- |
-| Tests that launch a browser, 30 files, among them `test_recording_playback_ui`, `test_flow_list_browser`, `test_recording_clicks`, `test_recording_journey`, `test_flow_recordings` and `test_users_browser` | BLOCKED | The project's Playwright finds no browser it can start in this container, and the system Chromium stops under the verifier's temporary folder. They fail the same way on unchanged `main` | The pull request's Python shards run them |
+| The 32 test files that use a browser and were left out of the local run, among them `test_recording_playback_ui`, `test_flow_list_browser`, `test_recording_clicks`, `test_recording_journey`, `test_flow_recordings` and `test_users_browser` | BLOCKED | The project's Playwright finds no browser it can start in this container, and the system Chromium stops under the verifier's temporary folder. They fail the same way on unchanged `main` | The pull request's Python shards run them |
 | PostgreSQL 14 and 18 suites | NOT RUN | No PostgreSQL server here; `app/flow_sql.py` changed, so the PostgreSQL jobs run | The pull request's PostgreSQL jobs |
 | Full regression | NOT RUN | Final-head CI (`Merge ready`) | Record the run URL and tested head in the PR testing section |
 
