@@ -189,6 +189,76 @@ def test_restarting_services_that_are_not_installed_does_nothing():
     assert result.stdout.strip() == "started=0"
 
 
+def _data_folder_check(folder):
+    result = _powershell(
+        f"$ErrorActionPreference = 'Stop'; . '{GUARD}'; "
+        f"$check = Get-MetronomeDataFolderCheck -CodeDir '{folder}'; $check.Action; $check.Lines"
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    lines = result.stdout.splitlines()
+    return lines[0].strip(), "\n".join(lines[1:])
+
+
+@pytest.fixture
+def data_folder(tmp_path):
+    """Metronome's data folder as an installation lays it out, with a stray copy of the code in it."""
+    folder = tmp_path / "Metronome"
+    code = folder / "data_governance-main"
+    (code / "app").mkdir(parents=True)
+    (code / "setup.ps1").write_text("# the installed copy\n", encoding="ascii")
+    (code / "app" / "main.py").write_text("# the installed app\n", encoding="ascii")
+    (folder / "governance.db").write_bytes(b"d" * 5000)
+    (folder / "logs").mkdir()
+    return SimpleNamespace(folder=folder, code=code, db=folder / "governance.db")
+
+
+def test_setup_run_from_the_data_folder_is_sent_to_the_code_folder_inside_it(data_folder):
+    # Reported from a work PC: setup.ps1 was run from the folder that holds
+    # governance.db. Setup keeps the database one folder above where it runs,
+    # looked there, found nothing and started an empty Metronome.
+    action, message = _data_folder_check(data_folder.folder)
+
+    assert action == "stop"
+    assert str(data_folder.db) in message
+    assert str(data_folder.code / "setup.ps1") in message
+
+
+def test_a_code_folder_is_not_mistaken_for_the_data_folder(data_folder):
+    # The code folder itself, even with a database file inside it, has no
+    # subfolder that is a code folder.
+    (data_folder.code / "governance.db").write_bytes(b"x" * 10)
+    assert _data_folder_check(data_folder.code) == ("continue", "")
+    # A folder with the code folder in it but no database is not the data folder.
+    data_folder.db.unlink()
+    assert _data_folder_check(data_folder.folder) == ("continue", "")
+
+
+@ci_runner_only
+def test_setup_itself_stops_in_the_data_folder_and_creates_nothing_above_it(data_folder):
+    places = SimpleNamespace(code=data_folder.folder)  # the stray copy sits beside the database
+    _second_copy(places)
+    above = sorted(path.name for path in data_folder.folder.parent.iterdir())
+    inside = sorted(str(path.relative_to(data_folder.folder)) for path in data_folder.folder.rglob("*"))
+    empty_registry = rf"HKCU:\Software\MetronomeSetupTest\{uuid.uuid4().hex}"
+
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+         "-File", str(data_folder.folder / "setup.ps1"), "-Unattended"],
+        capture_output=True, text=True, timeout=180,
+        env=_setup_environment(DG_SETUP_TEST_SERVICE_ROOT=empty_registry),
+    )
+
+    output = result.stdout + result.stderr
+    assert result.returncode == 1, output
+    assert "SETUP STOPPED: this folder holds Metronome's data" in output, output
+    assert str(data_folder.code / "setup.ps1") in output, output
+    assert "Nothing was changed." in output, output
+    # No empty database, Python or anything else one folder up, where setup would have put them.
+    assert sorted(path.name for path in data_folder.folder.parent.iterdir()) == above, output
+    assert sorted(str(path.relative_to(data_folder.folder)) for path in data_folder.folder.rglob("*")) == inside
+    assert data_folder.db.read_bytes() == b"d" * 5000
+
+
 def test_only_the_copy_a_relaunching_setup_started_counts_as_relaunched():
     def relaunched(marker, recorded, actual):
         result = _powershell(

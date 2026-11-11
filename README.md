@@ -125,6 +125,10 @@ Setup checks for this before it changes anything. It prints the code folder
 and the one database path it will use, with the file's size or the fact that
 no file is there, then compares them with what the installed service uses:
 
+- The folder is Metronome's data folder (it holds `governance.db` and a
+  subfolder that is the code folder): setup stops and names the `setup.ps1`
+  inside that subfolder. The database lives one folder above the code folder,
+  so a copy of the code beside the database looks one folder too high.
 - The folder has no database and the installed one is somewhere else: setup
   stops with `SETUP STOPPED`, names both locations and the `setup.ps1` to run
   instead.
