@@ -193,7 +193,7 @@ def queue_test_notification() -> dict:
 
 
 def notify_stalled_module_runs() -> dict:
-    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=modules.STALE_AFTER_SECONDS)).isoformat(
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=modules.stale_after_seconds())).isoformat(
         timespec="seconds"
     )
     with get_db() as db:

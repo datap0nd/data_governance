@@ -25,7 +25,7 @@ from app.query_history import (
     observe_query,
     postgres_view_artifact_key,
 )
-from app.scanner.prober import _get_pg_connection
+from app.scanner.prober import _get_pg_connection, pg_session_limits
 from app.scanner.control import assert_not_cancelled
 from app.scanner.jobs import heartbeat as scanner_job_heartbeat
 from app.config import (
@@ -33,7 +33,6 @@ from app.config import (
     PGPORT,
     PGDATABASE,
     PGPASSWORD,
-    PG_SCAN_STATEMENT_TIMEOUT_SECONDS,
     UPLOAD_PGDATABASE,
     UPLOAD_PGHOST,
     UPLOAD_PGPASSWORD,
@@ -487,16 +486,13 @@ def _flow_catalog_connection(database: str):
     try:
         import psycopg2
 
+        connect_timeout, options = pg_session_limits()
         connection_kwargs = {
             "host": UPLOAD_PGHOST,
             "port": int(UPLOAD_PGPORT),
             "database": database or UPLOAD_PGDATABASE,
-            "connect_timeout": 10,
-            "options": (
-                f"-c statement_timeout={int(PG_SCAN_STATEMENT_TIMEOUT_SECONDS) * 1000} "
-                "-c lock_timeout=30000 "
-                "-c application_name=Metronome_Lineage"
-            ),
+            "connect_timeout": connect_timeout,
+            "options": f"{options} -c application_name=Metronome_Lineage",
         }
         if UPLOAD_PGUSER:
             connection_kwargs["user"] = UPLOAD_PGUSER

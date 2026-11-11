@@ -6,7 +6,7 @@ import json
 
 from app import flow_capacity, flow_paths, flow_parallel, flow_browser, flow_recording_timing
 from app.database import get_db
-from app.local_access import require_host
+from app.local_access import require_app_access, require_host
 from app.routers.eventlog import get_actor, log_event
 
 router = APIRouter(prefix='/api/system/flows', tags=['flows'])
@@ -92,6 +92,7 @@ def save_portal_capacity(site_id: int, body: PortalCapacityWrite, request: Reque
 @router.post('/start')
 def start_capacity(request: Request, mode: Literal['headless', 'headed'] = 'headless'):
     # Starting workers changes no setting, so any signed-in computer may do it.
+    require_app_access(request)
     from app.routers.flows import ensure_local_worker, launch_local_worker
     if mode == 'headed':
         return launch_local_worker('headed')

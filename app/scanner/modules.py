@@ -7,8 +7,10 @@ from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from app.database import get_db
-# One threshold drives the Scanner "stale" badge and the stalled-module email.
-from app.scanner.jobs import STALE_AFTER_SECONDS
+# One threshold drives the Scanner "stale" badge and the stalled-module email:
+# stale_after_seconds(), which follows the Settings page. STALE_AFTER_SECONDS
+# stays importable from here for callers that only need the start-up value.
+from app.scanner.jobs import STALE_AFTER_SECONDS, stale_after_seconds  # noqa: F401
 from app.scanner.lifecycle import normalize_scan_status, redact_component_payload
 from app.scanner.diagnostics import with_diagnostic
 
@@ -180,13 +182,16 @@ def _parse_time(value: Any) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
-def _serialize(row, *, now: datetime | None = None) -> dict:
+def _serialize(row, *, now: datetime | None = None, stale_after: int | None = None) -> dict:
     data = dict(row)
     data["details"] = _loads(data.pop("details_json", None))
     status = normalize_scan_status(data.get("status"))
     heartbeat = _parse_time(data.get("heartbeat_at") or data.get("started_at"))
     age = max(0, int(((now or datetime.now(timezone.utc)) - heartbeat).total_seconds())) if heartbeat else None
-    stalled = bool(status in ACTIVE_STATUSES and age is not None and age >= STALE_AFTER_SECONDS)
+    stalled = False
+    if status in ACTIVE_STATUSES and age is not None:
+        # Only a run still in progress can be stalled; finished rows skip the read.
+        stalled = age >= (stale_after_seconds() if stale_after is None else stale_after)
     data["status"] = status
     data["display_status"] = "stalled" if stalled else status
     data["active"] = status in ACTIVE_STATUSES
@@ -323,7 +328,8 @@ def list_module_runs(module_key: str, *, limit: int = 20) -> list[dict]:
                 WHERE module_key=? ORDER BY id DESC LIMIT ?""",
             (module_key, bounded),
         ).fetchall()
-    return [_serialize(row) for row in rows]
+    stale_after = stale_after_seconds()
+    return [_serialize(row, stale_after=stale_after) for row in rows]
 
 
 def runs_for_job(scanner_job_id: int) -> list[dict]:
@@ -333,7 +339,8 @@ def runs_for_job(scanner_job_id: int) -> list[dict]:
                 WHERE scanner_job_id=? ORDER BY id""",
             (int(scanner_job_id),),
         ).fetchall()
-    return [_serialize(row) for row in rows]
+    stale_after = stale_after_seconds()
+    return [_serialize(row, stale_after=stale_after) for row in rows]
 
 
 def recover_interrupted_module_runs(*, finished_at: str | None = None) -> int:
@@ -384,6 +391,7 @@ def finish_active_runs_for_scan(
 
 def module_definitions_with_runs() -> list[dict]:
     result = []
+    stale_after = stale_after_seconds()
     with get_db() as db:
         for definition in MODULE_DEFINITIONS:
             rows = db.execute(
@@ -391,7 +399,7 @@ def module_definitions_with_runs() -> list[dict]:
                     WHERE module_key=? ORDER BY id DESC LIMIT 25""",
                 (definition["key"],),
             ).fetchall()
-            serialized = [_serialize(row) for row in rows]
+            serialized = [_serialize(row, stale_after=stale_after) for row in rows]
             current = next((row for row in serialized if row["active"]), None)
             last = next((row for row in serialized if not row["active"]), None)
             result.append({**definition, "current_run": current, "last_run": last})

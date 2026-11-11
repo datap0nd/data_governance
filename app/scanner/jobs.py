@@ -35,9 +35,25 @@ def _bounded_int_env(name: str, default: int, minimum: int, maximum: int) -> int
 # Ten minutes without a phase/heartbeat is exceptional for the catalog calls.
 # It is deliberately a UI health signal rather than an automatic terminal
 # transition: a temporarily slow network call can still finish truthfully.
+DEFAULT_STALE_AFTER_SECONDS = 600
 STALE_AFTER_SECONDS = _bounded_int_env(
-    "DG_SCANNER_STALE_AFTER_SECONDS", 600, 60, 3600
+    "DG_SCANNER_STALE_AFTER_SECONDS", DEFAULT_STALE_AFTER_SECONDS, 60, 3600
 )
+
+
+def stale_after_seconds() -> int:
+    """Seconds without progress before work is shown as stalled (Settings).
+
+    One value drives the Scanner "stale" badge, the module "stalled" badge and
+    the stalled-module email. Read it once for a list of rows, not per row.
+    The setting itself falls back to DG_SCANNER_STALE_AFTER_SECONDS, so the
+    built-in passed here is the plain default, not STALE_AFTER_SECONDS.
+    """
+    from app.scanner import limits
+
+    return int(limits.value("scan.stalled_after_seconds", DEFAULT_STALE_AFTER_SECONDS))
+
+
 MAX_MESSAGE_CHARS = 1000
 MAX_RESULT_CHARS = 24000
 _VERBOSE_RESULT_KEYS = frozenset({"log", "query_change_log"})
@@ -211,6 +227,7 @@ def reserve_job(
     creating overlapping catalog mutations.
     """
     now = _iso()
+    stale_after = stale_after_seconds()  # before the write lock below is taken
     with get_db() as db:
         db.execute("BEGIN IMMEDIATE")
         existing = db.execute(
@@ -220,7 +237,7 @@ def reserve_job(
                 LIMIT 1"""
         ).fetchone()
         if existing is not None:
-            return _serialize(existing), False
+            return _serialize(existing, stale_after=stale_after), False
         cursor = db.execute(
             """INSERT INTO scanner_jobs
                    (job_type, trigger_source, status, current_step, message,
@@ -238,7 +255,7 @@ def reserve_job(
         )
         job_id = int(cursor.lastrowid)
         row = db.execute("SELECT * FROM scanner_jobs WHERE id=?", (job_id,)).fetchone()
-        return _serialize(row), True
+        return _serialize(row, stale_after=stale_after), True
 
 
 def mark_running(
@@ -535,7 +552,14 @@ def recover_interrupted_jobs(*, finished_at: str | None = None) -> int:
     )
 
 
-def _serialize(row: Mapping[str, Any], *, now: datetime | None = None) -> dict:
+def _serialize(
+    row: Mapping[str, Any],
+    *,
+    now: datetime | None = None,
+    stale_after: int | None = None,
+) -> dict:
+    if stale_after is None:
+        stale_after = stale_after_seconds()
     data = dict(row)
     data["context"] = _loads(data.pop("context_json", None))
     data["result"] = _loads(data.pop("result_json", None))
@@ -550,14 +574,14 @@ def _serialize(row: Mapping[str, Any], *, now: datetime | None = None) -> dict:
     is_stale = bool(
         status in ACTIVE_JOB_STATUSES
         and heartbeat_age is not None
-        and heartbeat_age >= STALE_AFTER_SECONDS
+        and heartbeat_age >= stale_after
     )
     data["status"] = status
     data["display_status"] = "stale" if is_stale else status
     data["active"] = status in ACTIVE_JOB_STATUSES
     data["is_stale"] = is_stale
     data["heartbeat_age_seconds"] = heartbeat_age
-    data["stale_after_seconds"] = STALE_AFTER_SECONDS
+    data["stale_after_seconds"] = stale_after
     return data
 
 
@@ -573,7 +597,8 @@ def list_jobs(*, limit: int = 30, now: datetime | None = None) -> list[dict]:
         rows = db.execute(
             "SELECT * FROM scanner_jobs ORDER BY id DESC LIMIT ?", (bounded_limit,)
         ).fetchall()
-    return [_serialize(row, now=now) for row in rows]
+    stale_after = stale_after_seconds()
+    return [_serialize(row, now=now, stale_after=stale_after) for row in rows]
 
 
 def find_active_job(job_types: set[str] | frozenset[str]) -> dict | None:

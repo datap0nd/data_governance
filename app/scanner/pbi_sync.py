@@ -63,6 +63,24 @@ PBI_SYNC_WAIT_POLL_SECONDS = 5
 PBI_SYNC_TERMINAL_STATUSES = {
     "completed", "completed_with_warnings", "failed", "skipped", "stopped",
 }
+# The -DaysBack default written in tools/pbi_usage_sync.ps1.
+PS1_USAGE_DEFAULT_DAYS_BACK = 30
+
+
+def sync_wait_seconds() -> int:
+    """How long a scan waits for a launched Power BI sync to finish (Settings)."""
+    from app.scanner import limits
+
+    minutes = limits.value("pbi.sync_wait_minutes", PBI_SYNC_WAIT_TIMEOUT_SECONDS / 60)
+    return max(1, int(float(minutes) * 60))
+
+
+def _usage_days_arguments() -> list[str]:
+    """``-DaysBack N`` for the usage script; nothing while N is the script's own default."""
+    from app.scanner.pbi_fetch import usage_days_back
+
+    days = usage_days_back()
+    return [] if days == PS1_USAGE_DEFAULT_DAYS_BACK else ["-DaysBack", str(days)]
 
 
 def _now_iso() -> str:
@@ -703,8 +721,9 @@ def _launch_cached_account_sync(
                     attempt_id=attempt_id,
                 )
             else:
-                from app.config import PBI_USAGE_DAYS_BACK
-                result = pbi_fetch.run_usage_sync(PBI_USAGE_DAYS_BACK, cancel_generation=generation)
+                result = pbi_fetch.run_usage_sync(
+                    pbi_fetch.usage_days_back(), cancel_generation=generation
+                )
                 logger.info("Headless PBI usage sync result: %s", result.get("status"))
         except ScannerWorkCancelled as exc:
             _record_sync_run(sync_type, "stopped", str(exc), attempt_id=attempt_id)
@@ -1447,15 +1466,20 @@ def wait_for_pbi_sync_completion(
     launch_result: dict,
     *,
     sync_type: str = "refresh",
-    timeout_seconds: int = PBI_SYNC_WAIT_TIMEOUT_SECONDS,
+    timeout_seconds: int | None = None,
     cancel_generation: int | None = None,
     operation_id: int | None = None,
 ) -> dict:
-    """Wait for this launch only, while keeping its scanner operation live."""
+    """Wait for this launch only, while keeping its scanner operation live.
+
+    ``timeout_seconds`` defaults to the wait set on the Settings page.
+    """
     sync_type = "usage" if str(sync_type).casefold() == "usage" else "refresh"
     status = (launch_result.get("status") or "").lower()
     if status != "launched":
         return launch_result
+    if timeout_seconds is None:
+        timeout_seconds = sync_wait_seconds()
 
     launch_id = launch_result.get("run_id")
     raw_attempt_id = launch_result.get("attempt_id")
@@ -1543,7 +1567,7 @@ def trigger_pbi_sync_and_wait(
     *,
     cancel_existing: bool = True,
     cancel_generation: int | None = None,
-    timeout_seconds: int = PBI_SYNC_WAIT_TIMEOUT_SECONDS,
+    timeout_seconds: int | None = None,
     operation_id: int | None = None,
 ) -> dict:
     """Launch refresh sync and wait for the import result before continuing."""
@@ -1565,7 +1589,7 @@ def trigger_pbi_usage_sync_and_wait(
     *,
     cancel_existing: bool = False,
     cancel_generation: int | None = None,
-    timeout_seconds: int = PBI_SYNC_WAIT_TIMEOUT_SECONDS,
+    timeout_seconds: int | None = None,
     operation_id: int | None = None,
 ) -> dict:
     """Launch usage metadata sync and wait for its exact terminal import result."""
@@ -2258,7 +2282,7 @@ def trigger_pbi_usage_sync(
             return {"status": "error", "message": message}
         return _launch_powershell_background(
             PS1_USAGE_SCRIPT,
-            ["-ApiBase", f"http://localhost:{port}", "-NoPause"],
+            ["-ApiBase", f"http://localhost:{port}", *_usage_days_arguments(), "-NoPause"],
             "usage",
         )
 
@@ -2283,9 +2307,10 @@ def trigger_pbi_usage_sync(
             "guard": guard_result,
         }
 
+    days_arguments = "".join(f"{item} " for item in _usage_days_arguments())
     ps_cmd = (
         f'powershell -NoProfile -ExecutionPolicy Bypass -File "{PS1_USAGE_SCRIPT}" '
-        f'-ApiBase "http://localhost:{port}" -NoPause'
+        f'-ApiBase "http://localhost:{port}" {days_arguments}-NoPause'
     )
 
     try:

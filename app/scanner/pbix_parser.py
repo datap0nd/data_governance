@@ -22,6 +22,37 @@ from app.scanner.tmdl_parser import (
 
 logger = logging.getLogger(__name__)
 
+# Largest .pbix the scanner opens, in MB. 0 means no limit, which is the
+# built-in behaviour; a limit comes from the Settings page.
+MAX_PBIX_MB = 0
+_MB = 1024 * 1024
+
+
+def max_pbix_bytes() -> int:
+    """The size above which a .pbix is left unopened; 0 for no limit (Settings).
+
+    Read once per walk and passed to ``size_limit_issue`` for each file.
+    """
+    from app.scanner import limits
+
+    return max(0, int(limits.value("scan.max_pbix_mb", MAX_PBIX_MB))) * _MB
+
+
+def size_limit_issue(file_path: str | Path, limit_bytes: int) -> str | None:
+    """Why ``file_path`` is too large to open, or None when it may be opened."""
+    if limit_bytes <= 0:
+        return None
+    try:
+        size = Path(file_path).stat().st_size
+    except OSError:
+        return None  # an unreadable file is reported by the parser itself
+    if size <= limit_bytes:
+        return None
+    return (
+        f"PBIX file is {size / _MB:,.1f} MB, over the {limit_bytes // _MB:,} MB limit "
+        "on the Settings page; it was not opened"
+    )
+
 
 def _df_col(df, *names) -> str | None:
     """Find a DataFrame column by trying names, with case-insensitive fallback."""

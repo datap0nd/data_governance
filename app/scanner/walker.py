@@ -38,10 +38,43 @@ class DiscoveredReport:
 
 
 MAX_DISCOVERY_DEPTH = 4
+# Folder names that are never opened. None are built in: the list comes from
+# the Settings page.
+SKIPPED_FOLDER_NAMES: tuple[str, ...] = ()
 
 
-def _bounded_directories(root: Path, max_depth: int = MAX_DISCOVERY_DEPTH):
-    """Yield directories without recursively walking an unbounded network share."""
+@dataclass(frozen=True)
+class DiscoveryLimits:
+    """What one walk of the reports folder may open."""
+    depth: int = MAX_DISCOVERY_DEPTH
+    skipped: frozenset = frozenset()  # folder names, case-folded
+
+
+def discovery_limits() -> DiscoveryLimits:
+    """How deep a walk looks and which folders it leaves out (Settings)."""
+    from app.scanner import limits
+
+    current = limits.values({
+        "scan.folder_depth": MAX_DISCOVERY_DEPTH,
+        "scan.skip_folders": SKIPPED_FOLDER_NAMES,
+    })
+    names = (str(name).strip().casefold() for name in current["scan.skip_folders"])
+    return DiscoveryLimits(
+        depth=max(0, int(current["scan.folder_depth"])),
+        skipped=frozenset(name for name in names if name),
+    )
+
+
+def _bounded_directories(
+    root: Path,
+    max_depth: int = MAX_DISCOVERY_DEPTH,
+    skipped: frozenset = frozenset(),
+):
+    """Yield directories without recursively walking an unbounded network share.
+
+    A folder whose own name is in ``skipped`` (case-folded) is not yielded or
+    opened, wherever it sits below ``root``. ``root`` itself is always walked.
+    """
     pending = [(root, 0)]
     while pending:
         folder, depth = pending.pop(0)
@@ -50,7 +83,10 @@ def _bounded_directories(root: Path, max_depth: int = MAX_DISCOVERY_DEPTH):
             continue
         try:
             children = sorted(
-                (item for item in folder.iterdir() if item.is_dir()),
+                (
+                    item for item in folder.iterdir()
+                    if item.is_dir() and item.name.casefold() not in skipped
+                ),
                 key=lambda item: item.name.casefold(),
             )
         except (OSError, PermissionError):
@@ -59,8 +95,9 @@ def _bounded_directories(root: Path, max_depth: int = MAX_DISCOVERY_DEPTH):
 
 
 def _discover_pbix_files(root: Path) -> list[Path]:
+    discovery = discovery_limits()
     found: list[Path] = []
-    for folder, _depth in _bounded_directories(root):
+    for folder, _depth in _bounded_directories(root, discovery.depth, discovery.skipped):
         try:
             found.extend(
                 item for item in folder.iterdir()
@@ -72,8 +109,9 @@ def _discover_pbix_files(root: Path) -> list[Path]:
 
 
 def _discover_tmdl_report_dirs(root: Path) -> list[Path]:
+    discovery = discovery_limits()
     parents: dict[str, Path] = {}
-    for folder, _depth in _bounded_directories(root):
+    for folder, _depth in _bounded_directories(root, discovery.depth, discovery.skipped):
         if not folder.name.casefold().endswith(".semanticmodel"):
             continue
         definition = folder / "Definition"
@@ -353,8 +391,19 @@ def diagnose_reports_root(root_path: str | Path) -> dict:
         "files": [str(f.relative_to(root)) for f in pbix_sub],
     })
 
+    discovery = discovery_limits()
+    if discovery.skipped:
+        result["steps"].append({
+            "action": "Folder names skipped (Settings page)",
+            "found": len(discovery.skipped),
+            "files": sorted(discovery.skipped),
+        })
+
     all_pbix = _discover_pbix_files(root)
     if all_pbix:
+        from app.scanner.pbix_parser import max_pbix_bytes, size_limit_issue
+
+        limit_bytes = max_pbix_bytes()
         result["mode"] = "pbix"
         result["pbix_files"] = [str(f.relative_to(root)) for f in all_pbix]
         # Try opening each one with PBIXRay directly to surface real errors
@@ -372,6 +421,14 @@ def diagnose_reports_root(root_path: str | Path) -> dict:
                     "result": f"Cannot stat: {e}",
                 })
                 result["errors"].append(f"{pbix_path.name}: cannot read file - {e}")
+                continue
+
+            too_large = size_limit_issue(pbix_path, limit_bytes)
+            if too_large:
+                result["steps"].append({
+                    "action": f"PBIXRay {pbix_path.name}",
+                    "result": f"Skipped: {too_large}",
+                })
                 continue
 
             # Step 2: Try PBIXRay directly (not through parse_pbix_file)
@@ -421,7 +478,10 @@ def diagnose_reports_root(root_path: str | Path) -> dict:
 
     # Walk bounded TMDL candidates, including nested project exports.
     diagnostic_dirs = _discover_tmdl_report_dirs(root)
-    entries = diagnostic_dirs or [entry for entry in sorted(scan_dir.iterdir()) if entry.is_dir()]
+    entries = diagnostic_dirs or [
+        entry for entry in sorted(scan_dir.iterdir())
+        if entry.is_dir() and entry.name.casefold() not in discovery.skipped
+    ]
     for entry in entries:
         if not entry.is_dir():
             continue
@@ -498,12 +558,28 @@ def diagnose_reports_root(root_path: str | Path) -> dict:
 
 def _walk_pbix(pbix_files: list[Path], on_report=None) -> list[DiscoveredReport]:
     """Parse .pbix files using PBIXRay."""
-    from app.scanner.pbix_parser import parse_pbix_file
+    from app.scanner.pbix_parser import max_pbix_bytes, parse_pbix_file, size_limit_issue
 
+    limit_bytes = max_pbix_bytes()
     discovered = []
     for pbix_path in sorted(pbix_files):
         if on_report is not None:
             on_report()
+        too_large = size_limit_issue(pbix_path, limit_bytes)
+        if too_large:
+            # Left unparsed, like a file that cannot be opened: the scan goes
+            # on and the report keeps what the last complete scan found.
+            logger.warning("Not opened: %s (%s)", pbix_path.name, too_large)
+            discovered.append(DiscoveredReport(
+                name=pbix_path.stem,
+                tmdl_path=str(pbix_path),
+                discovery={
+                    "snapshot_complete": False,
+                    "issues": [too_large],
+                    "over_size_limit": True,
+                },
+            ))
+            continue
         logger.info("Parsing: %s", pbix_path.name)
         report = parse_pbix_file(pbix_path)
         if report:
@@ -557,7 +633,11 @@ def _walk_tmdl(
     if candidates is None:
         candidates = _discover_tmdl_report_dirs(root)
     if not candidates and reports_dir.is_dir():
-        candidates = [item for item in sorted(reports_dir.iterdir()) if item.is_dir()]
+        skipped = discovery_limits().skipped
+        candidates = [
+            item for item in sorted(reports_dir.iterdir())
+            if item.is_dir() and item.name.casefold() not in skipped
+        ]
     for report_dir in candidates:
         if not report_dir.is_dir():
             continue
