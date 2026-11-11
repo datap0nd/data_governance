@@ -12,8 +12,9 @@ from app import flow_local_runner
 from app import flow_worker
 from app.routers import flows, pipelines
 
-# Saving a Flow here is set-up, not the subject: see skip_flow_files in conftest.py.
-pytestmark = pytest.mark.usefixtures("skip_flow_files")
+# Saving a Flow and reading a file the test wrote are set-up here, not the
+# subject: see skip_flow_files and no_settle_pause in conftest.py.
+pytestmark = pytest.mark.usefixtures("skip_flow_files", "no_settle_pause")
 
 
 @pytest.fixture()

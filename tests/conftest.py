@@ -16,15 +16,17 @@ def pytest_configure(config):
     )
 
 
-@pytest.fixture(autouse=True)
-def _no_settle_pause(monkeypatch):
-    """A test writes its file before the worker reads it.
+@pytest.fixture
+def no_settle_pause(monkeypatch):
+    """Do not wait between the two reads of a file the test wrote itself.
 
     The worker pauses half a second between two reads of a download, in case
-    the tail is still being flushed to a network share. In a test the file is
-    complete on local disk, so the pause only adds time; the two reads and
-    the comparison still happen. The tests of the settling rule itself stub
-    the sleep and do not depend on this.
+    the tail is still being flushed to a network share. Where a test writes
+    the complete file to local disk first, the pause only adds time; the two
+    reads and the comparison still happen. A module opts in with
+    ``pytestmark = pytest.mark.usefixtures("no_settle_pause")``. Modules that
+    download through a real browser do not use it, and the tests of the
+    settling rule itself stub the sleep and do not depend on it.
     """
     for name in ("app.flow_worker", "flow_worker"):
         module = sys.modules.get(name)
