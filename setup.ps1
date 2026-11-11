@@ -253,13 +253,49 @@ $InstalledLocation = if ($env:DG_SETUP_TEST_SERVICE_ROOT) {
 }
 $InstallCheck = Get-MetronomeInstallCheck -CodeDir $CodeDir -DbPath $DbPath -Installed $InstalledLocation `
     -AllowNewDatabase:($env:DG_SETUP_NEW_DATABASE -eq '1')
+$InstallRefused = $false
 if ($InstallCheck.Action -eq 'stop') {
     Write-Host ""
     foreach ($InstallCheckLine in $InstallCheck.Lines) { Write-Host $InstallCheckLine -ForegroundColor Red }
+    $InstallRefused = $true
+} elseif ($InstallCheck.Action -eq 'ask') {
+    Write-Host ""
+    foreach ($InstallCheckLine in $InstallCheck.Lines) { Write-Host $InstallCheckLine -ForegroundColor Yellow }
+    Write-Host ""
+    if ($env:DG_SETUP_SWITCH_CONFIRMED -eq '1') {
+        # Answered earlier in this run, before setup.ps1 relaunched itself.
+        Write-Host "Switching to this folder's database, as confirmed." -ForegroundColor Yellow
+    } elseif ($Unattended) {
+        Write-Host "SETUP STOPPED: an unattended update never switches Metronome to another database." -ForegroundColor Red
+        $InstallRefused = $true
+    } else {
+        $InstallAnswer = Read-Host "Type SWITCH to use this folder's database, or press Enter to stop"
+        if ("$InstallAnswer".Trim() -eq 'SWITCH') {
+            $env:DG_SETUP_SWITCH_CONFIRMED = '1'
+        } else {
+            Write-Host "SETUP STOPPED: Metronome keeps the database it uses now." -ForegroundColor Red
+            $InstallRefused = $true
+        }
+    }
+} else {
+    foreach ($InstallCheckLine in $InstallCheck.Lines) { Write-Host "  $InstallCheckLine" -ForegroundColor Yellow }
+}
+if ($InstallRefused) {
+    if ($env:DG_SETUP_RELAUNCHED -eq '1') {
+        # This copy was started by an older setup.ps1 in the same folder,
+        # which had already stopped Metronome before the check existed.
+        $RestartedServices = @(Start-MetronomeInstalledServices)
+        if ($RestartedServices.Count) {
+            Write-Host "The first part of this run stopped Metronome. Started again: $($RestartedServices -join ', ')." -ForegroundColor Yellow
+        } else {
+            Write-Host "The first part of this run stopped Metronome. Run setup.ps1 from the installed folder to start it." -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "Nothing was changed." -ForegroundColor Red
+    }
     if (-not $Unattended) { pause }
     exit 1
 }
-foreach ($InstallCheckLine in $InstallCheck.Lines) { Write-Host "  $InstallCheckLine" -ForegroundColor Yellow }
 
 foreach ($FlowSourceFolder in @('ASAP', 'GSCM', 'Outlook', 'Local', 'Web')) {
     New-Item -ItemType Directory -Force -Path (Join-Path $FlowsRoot $FlowSourceFolder) | Out-Null

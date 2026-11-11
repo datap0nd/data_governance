@@ -2,14 +2,14 @@
 
 - Plan: [test-plan.md](test-plan.md)
 - Change/PR: link in the PR's testing section
-- Evidence cutoff (UTC): 2026-11-11 13:05
+- Evidence cutoff (UTC): 2026-11-11 13:30
 - Tested code revision: the commit that adds this package, on `main` at
   `ab1b09f`
 - Environment: Linux 6.18 (cloud container), Python 3.13.18 checkout-owned
   `.venv`. No PowerShell is available here, so none of the PowerShell cases
   ran locally
 - Overall finding: the cases that need no PowerShell pass. Every case that
-  exercises the change (G-01 to G-08) is NOT RUN here and is left to the pull
+  exercises the change (G-01 to G-10) is NOT RUN here and is left to the pull
   request's Windows job, which is required before the merge.
 
 ## What was reported
@@ -40,32 +40,40 @@ the code.
 
 | Check/case IDs | Command or procedure | Revision/environment | Result/counts/duration | Evidence |
 | --- | --- | --- | --- | --- |
-| G-09 and the existing installer and sharding tests | The `python tools/check.py verify` command in the plan | Working tree, Linux | PASS: 49 passed, 0 failed, 33 skipped (7 new and 26 existing cases that need Windows PowerShell), 5.1 s | `.test-runs/20261111T130033605Z-19190-13b6c14d/result.json` |
+| G-11 and the existing installer and sharding tests | The `python tools/check.py verify` command in the plan | Working tree, Linux | PASS: 49 passed, 0 failed, 33 skipped (7 new and 26 existing cases that need Windows PowerShell), 5.1 s | `.test-runs/20261111T130033605Z-19190-13b6c14d/result.json` |
 | Plain-text review | `grep` for bytes outside ASCII in `setup.ps1`, `update_app.ps1` and the new helper | Working tree | None found (Windows PowerShell 5.1 reads these files without a byte-order mark) | Console output |
 
 ## Unperformed or blocked in-scope checks
 
 | IDs | Status | Reason | Next action |
 | --- | --- | --- | --- |
-| G-01 to G-08 | NOT RUN | Need Windows PowerShell | The pull request's `Windows verifier contracts` job runs them; record the run in the PR testing section |
+| G-01 to G-10 | NOT RUN | Need Windows PowerShell | The pull request's `Windows verifier contracts` job runs them; record the run in the PR testing section |
 | Full regression | NOT RUN | Final-head CI (`Merge ready`) | Record the run URL and tested head in the PR testing section |
 
 ## Findings, limitations and retests
 
-- The check reads only: the service's settings in the registry and whether two
-  files exist. The creation of the Flow source folders moved from the top of
-  the script to after the check, so a refused run leaves nothing behind (G-07).
-- A run from a folder that has its own database is never refused. That is what
-  lets a PC that already has a second copy installed be pointed back: setup is
-  run from the folder beside the real database, and prints which database the
-  services used until then (G-03).
+- The check reads only: the service's settings in the registry, and the size
+  and time of two files. The creation of the Flow source folders moved from
+  the top of the script to after the check, so a refused run leaves nothing
+  behind (G-09).
+- A first version of this change let a folder with its own database take the
+  services over with only a printed note. That would have let the same mistake
+  repeat on the affected PC, where the second copy now has a database too, so
+  it was replaced before the first CI run finished: setup shows both databases
+  with size and time and continues only on `SWITCH` (G-04); an unattended
+  update refuses (G-09).
+- A PC that already has a second copy installed is pointed back by running
+  `setup.ps1` from the folder beside the real database and typing `SWITCH`.
+  That folder's own `setup.ps1` predates the check, so the question appears
+  after the download and extraction, from the relaunched new copy. If the
+  answer is no there, the services that the older half stopped are started
+  again. Starting real services is not exercised by any test.
 - A run that is refused names the folder the services use now. On a PC where a
   second copy is already installed, that is the second copy, not the original.
 - `update_app.ps1` now prefers the folder the installed service runs from over
   the folder the file sits in. This is checked for syntax only.
-- Two paths that reach one file by different routes (a junction, a share name)
-  count as different. Setup still continues in that case, because the database
-  beside the folder exists, but prints the "different database" note.
+- Two paths that reach one file by different routes count as one database when
+  size and last-write time match (G-03).
 
 ## Final assessment
 
