@@ -6,21 +6,36 @@ import vm from "node:vm";
 const source = fs.readFileSync(new URL("../app/static/app.js", import.meta.url), "utf8");
 const index = fs.readFileSync(new URL("../app/static/index.html", import.meta.url), "utf8");
 const style = fs.readFileSync(new URL("../app/static/style.css", import.meta.url), "utf8");
-const start = source.indexOf("// ── System > AI settings ──");
+const start = source.indexOf("// ── Settings > AI ──");
 const end = source.indexOf("\nasync function renderRefreshSchedule", start);
 
-assert.notEqual(start, -1, "System AI settings implementation must exist");
+assert.notEqual(start, -1, "AI settings implementation must exist");
 assert.notEqual(end, -1, "AI settings implementation must have a bounded source section");
 const settingsSource = source.slice(start, end);
 
-assert.match(index, /data-pages="[^"]*\bai\b/,
-    "AI must be registered as a System page");
-assert.match(index, /href="#ai" data-page="ai"[^>]*>AI<\/a>/,
-    "System must expose an AI navigation item");
-assert.match(source, /ai:\s*renderAISettings/,
-    "the application router must render the AI page");
-assert.match(source, /page === "ai"\) bindAISettingsPage\(\)/,
-    "the application router must bind AI controls");
+// AI is a section of System > Settings, not a System menu entry. The router
+// lists it with the functions that draw and wire it; each name below stands
+// for the function app.js would resolve it to.
+assert.doesNotMatch(index, /data-page="ai"/,
+    "the System menu must not offer AI as a page of its own");
+assert.match(index, /href="#settings" data-page="settings"[^>]*>Settings<\/a>/,
+    "System must expose Settings, which holds the AI section");
+const tableStart = source.indexOf("const settingsSubpages = [");
+const tableEnd = source.indexOf("\n];", tableStart);
+assert.ok(tableStart > 0 && tableEnd > tableStart, "app.js must list the pages that live inside Settings");
+const names = new Proxy({}, {
+    has: (_target, name) => typeof name === "string" && name !== "table",
+    get: (_target, name) => (name === Symbol.unscopables ? undefined : name),
+});
+const listed = { names, table: null };
+vm.runInNewContext(`with (names) { table = ${source.slice(tableStart + "const settingsSubpages = ".length, tableEnd + 2)} }`, listed);
+const aiSection = listed.table.find(page => page.id === "ai");
+assert.ok(aiSection, "AI must be a section of Settings");
+assert.equal(aiSection.name, "AI");
+assert.equal(aiSection.render, "renderAISettings",
+    "Settings must draw the AI section with the AI page's own renderer");
+assert.equal(aiSection.bind, "bindAISettingsPage",
+    "Settings must wire the AI section with the AI page's own binder");
 assert.match(settingsSource, /\/api\/ai\/settings/,
     "the UI must use the centralized runtime settings API");
 assert.match(settingsSource, /\/api\/ai\/settings\/test/,
@@ -28,7 +43,7 @@ assert.match(settingsSource, /\/api\/ai\/settings\/test/,
 assert.match(settingsSource, /\/api\/ai\/settings\/models/,
     "the UI must load the provider model catalog through the server");
 assert.match(settingsSource, /_loadAISettingsModels\(\{ quiet: true \}\)/,
-    "opening System > AI must automatically load the provider model catalog");
+    "opening the AI section must automatically load the provider model catalog");
 assert.match(settingsSource, /endpoint\?\.addEventListener\("change",/,
     "editing the endpoint must refresh model discovery");
 assert.match(style, /\.ai-settings-shell\s*\{/,

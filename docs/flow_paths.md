@@ -1,6 +1,6 @@
 # Flow paths
 
-System > Paths configures a root and its ASAP, GSCM, Outlook, Local, Python
+System > Settings > Paths configures a root and its ASAP, GSCM, Outlook, Local, Python
 and Web subfolders. The default is metronome/flows beside governance.db; DG_FLOWS_ROOT
 can supply a bootstrap value, and a saved setting takes precedence.
 

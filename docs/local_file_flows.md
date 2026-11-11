@@ -6,7 +6,7 @@ configure the same schedule (including **More triggers**), owner,
 transformation, and SQL append/replace options used by other Flows.
 
 The background worker reads the path with its Windows service account. There
-is an optional path policy in System > Paths: when enforcement is enabled the
+is an optional path policy in System > Settings > Paths: when enforcement is enabled the
 source must be under the root's Local directory. The account must also be able
 to read the configured file. A missing, inaccessible, changing, encrypted, malformed,
 or incorrectly labelled file fails before transformation or SQL starts.

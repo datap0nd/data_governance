@@ -2,12 +2,42 @@
 // server's registry (GET /api/system/settings). Everyone can read it; only the
 // host PC can save. Unsaved edits live in settingsState, so a failed save or a
 // visit to another page loses nothing.
+//
+// The left rail also holds the configuration pages that used to be System menu
+// entries (AI, Paths, Flow workers, Premium Viewers). Those keep their own
+// forms, Save buttons and access rules; this file only shows them in its panel
+// area. settingsState.section is a registry section id or one of their ids.
 let settingsState = {
     sections: [], canEdit: false, section: null, query: '', onlyChanged: false,
     edits: {}, errors: {}, saving: false, saveError: '', loadError: null, logs: null, logsMessage: '',
     secretEditing: null, secretConfirming: null, secretError: '', tests: {},
     portal: null, portalMode: '', portalError: '',
+    pageView: null, pageLoad: 0,
 };
+
+// app.js lists the moved pages in settingsSubpages. It loads after this file,
+// so the list is read when it is needed, never while this file loads.
+function settingsPages() {
+    return typeof settingsSubpages === 'undefined' ? [] : settingsSubpages;
+}
+
+function settingsPage(id) {
+    return settingsPages().find(page => page.id === id) || null;
+}
+
+function settingsFiltering() {
+    return Boolean(settingsState.query || settingsState.onlyChanged);
+}
+
+// The moved page on screen, or null while a registry section or a search
+// result is shown instead.
+function settingsShownPage() {
+    return settingsFiltering() ? null : settingsPage(settingsState.section);
+}
+
+function settingsVisibleSections() {
+    return settingsState.sections.filter(section => section.groups.length || (section.links || []).length);
+}
 
 function settingsRows() {
     const rows = [];
@@ -206,39 +236,84 @@ function settingsGroupHtml(section, group, prefix) {
     return `<div class="st-group"><div class="st-group-head"><h3>${prefix ? esc(prefix) + ' · ' : ''}${esc(group.title)}</h3>${testButton}</div>${testLine}${rows.map(settingsRowHtml).join('')}${extra}</div>`;
 }
 
+// The search box reads the registry. A moved page that matches by name or by
+// what it holds is offered as a link, so it can be found from the same box.
+function settingsPageMatchesHtml() {
+    const words = settingsState.query.toLowerCase().split(/\s+/).filter(Boolean);
+    if (!words.length) return '';
+    const hits = settingsPages().filter(page => words.every(word => `${page.name} ${page.about}`.toLowerCase().includes(word)));
+    if (!hits.length) return '';
+    return `<div class="st-group"><h3>More settings</h3><ul class="st-links">${hits.map(page =>
+        `<li><a href="#settings/${esc(page.id)}" data-st-section="${esc(page.id)}">${esc(page.name)}</a> <span class="st-help">${esc(page.about)}</span></li>`).join('')}</ul></div>`;
+}
+
 function settingsPanelHtml() {
-    const filtering = settingsState.query || settingsState.onlyChanged;
+    const filtering = settingsFiltering();
     if (filtering) {
         const body = settingsState.sections.map(section =>
             section.groups.map(group => settingsGroupHtml(section, group, section.name)).join('')).join('')
-            + (settingsPortalMatches() ? settingsPortalHtml() : '');
+            + (settingsPortalMatches() ? settingsPortalHtml() : '') + settingsPageMatchesHtml();
         const title = settingsState.query ? `Settings matching "${esc(settingsState.query)}"` : 'Settings changed from their defaults';
         return `<header><h2>${title}</h2></header>${body || '<p class="st-empty">Nothing matches. Clear the search box or untick "Only changed from default" to see every setting.</p>'}`;
     }
     const section = settingsState.sections.find(item => item.id === settingsState.section) || settingsState.sections[0];
     if (!section) return '<p class="st-empty">No settings are available.</p>';
-    const links = (section.links || []).map(link =>
-        `<li><a href="#${esc(link.page)}" data-st-page="${esc(link.page)}">${esc(link.label)}</a>${link.note ? ` <span class="st-help">${esc(link.note)}</span>` : ''}</li>`).join('');
+    const links = (section.links || []).map(link => {
+        const moved = settingsPage(link.page);
+        const anchor = moved
+            ? `<a href="#settings/${esc(moved.id)}" data-st-section="${esc(moved.id)}">${esc(link.label)}</a>`
+            : `<a href="#${esc(link.page)}" data-st-page="${esc(link.page)}">${esc(link.label)}</a>`;
+        const note = [moved ? `Under ${moved.name} in More settings.` : '', link.note].filter(Boolean).join(' ');
+        return `<li>${anchor}${note ? ` <span class="st-help">${esc(note)}</span>` : ''}</li>`;
+    }).join('');
     return `<header><h2>${esc(section.name)}</h2><p>${esc(section.blurb)}</p></header>
         ${section.groups.map(group => settingsGroupHtml(section, group, '')).join('')}
         ${section.id === 'connections' ? settingsPortalHtml() : ''}
-        ${links ? `<div class="st-group"><h3>Set on another page</h3><ul class="st-links">${links}</ul></div>` : ''}`;
+        ${links ? `<div class="st-group"><h3>Set somewhere else</h3><ul class="st-links">${links}</ul></div>` : ''}`;
 }
 
 function settingsRailHtml() {
-    return settingsState.sections.filter(section => section.groups.length || (section.links || []).length).map(section => {
+    const filtering = settingsFiltering();
+    const registry = settingsVisibleSections().map(section => {
         const unsaved = section.groups.reduce((count, group) =>
             count + group.settings.filter(row => settingsIsDirty({ ...row, section, group })).length, 0);
-        const current = !settingsState.query && !settingsState.onlyChanged && section.id === settingsState.section;
+        const current = !filtering && section.id === settingsState.section;
         return `<button type="button" data-st-section="${esc(section.id)}" aria-current="${current}"><span>${esc(section.name)}</span>${unsaved ? `<span class="st-count">${unsaved} unsaved</span>` : ''}</button>`;
     }).join('');
+    const moved = settingsPages().map(page =>
+        `<button type="button" data-st-section="${esc(page.id)}" aria-current="${!filtering && page.id === settingsState.section}"><span>${esc(page.name)}</span></button>`).join('');
+    return registry + (moved ? `<p class="st-rail-label">More settings</p>${moved}` : '');
+}
+
+// What the moved page's place holds: its own markup, a loading line, or why it
+// could not be loaded.
+function settingsEmbedHtml() {
+    const page = settingsPage(settingsState.section);
+    if (!page) return '';
+    const view = settingsState.pageView;
+    if (!view || view.id !== page.id) return `<p class="st-empty" role="status">Loading ${esc(page.name)}…</p>`;
+    if (view.error !== undefined) {
+        return `<section class="settings-panel st-panel" role="alert"><header><h2>Could not load ${esc(page.name)}</h2><p>${esc(view.error)}</p></header>
+            <p class="st-embed-retry"><button type="button" class="btn-outline" data-st-section="${esc(page.id)}">Try again</button></p></section>`;
+    }
+    return view.html;
+}
+
+// Who may change what is decided by the server and differs per page, so the
+// notice says only what holds for the section on screen.
+function settingsNoticeHtml() {
+    if (settingsState.canEdit) return '';
+    const page = settingsShownPage();
+    if (!page) return '<p class="st-notice" role="note"><strong>Only the host PC can change settings.</strong> You are looking from another computer, so everything here is read-only. On the host PC, open Metronome as http://localhost:8000.</p>';
+    if (!page.hostOnly) return '';
+    return `<p class="st-notice" role="note"><strong>Only the host PC can save changes to ${esc(page.name)}.</strong> You are looking from another computer. On the host PC, open Metronome as http://localhost:8000.</p>`;
 }
 
 function settingsSaveBarHtml() {
     const count = settingsDirtyKeys().length;
     const errors = Object.keys(settingsState.errors).length;
     if (!count && !settingsState.saveError) return '';
-    let message = `${count} unsaved ${count === 1 ? 'change' : 'changes'}`;
+    let message = `${count} unsaved ${count === 1 ? 'change' : 'changes'}${settingsShownPage() ? ' in other sections' : ''}`;
     let tone = '';
     if (settingsState.saving) message = 'Saving…';
     else if (settingsState.saveError) { message = settingsState.saveError; tone = ' st-bad'; }
@@ -254,15 +329,17 @@ function settingsPageHtml() {
             <section class="settings-panel st-panel" role="alert"><h2>Could not load settings</h2><p>${esc(settingsState.loadError)}</p>
             <button type="button" class="btn-outline" id="st-retry">Try again</button></section>`;
     }
+    const page = settingsShownPage();
     return `<div class="st-page" id="st-page">
         <div class="page-header st-header"><div><h1>Settings</h1>
-            <p class="subtitle">Connections, folders, schedules and limits for the whole app. Every change is recorded in the Event Log with who made it.</p></div>
+            <p class="subtitle">Connections, folders, schedules and limits for the whole app.<span id="st-logged"${page ? ' hidden' : ''}> Every change is recorded in the Event Log with who made it.</span></p></div>
             <div class="st-tools"><label class="sr-only" for="st-search">Find a setting</label>
                 <input type="search" id="st-search" placeholder="Find a setting" value="${esc(settingsState.query)}">
                 <label class="st-check"><input type="checkbox" id="st-only-changed"${settingsState.onlyChanged ? ' checked' : ''}> Only changed from default</label></div></div>
-        ${settingsState.canEdit ? '' : '<p class="st-notice" role="note"><strong>Only the host PC can change settings.</strong> You are looking from another computer, so everything here is read-only. On the host PC, open Metronome as http://localhost:8000.</p>'}
+        <div id="st-notice-slot">${settingsNoticeHtml()}</div>
         <div class="st-layout"><div class="st-rail" id="st-rail" role="navigation" aria-label="Settings sections">${settingsRailHtml()}</div>
-            <section class="settings-panel st-panel" id="st-panel">${settingsPanelHtml()}</section></div>
+            <section class="settings-panel st-panel" id="st-panel"${page ? ' hidden' : ''}>${page ? '' : settingsPanelHtml()}</section>
+            <div class="st-embed" id="st-embed"${page ? '' : ' hidden'}>${settingsEmbedHtml()}</div></div>
         <div id="st-savebar-slot">${settingsSaveBarHtml()}</div></div>`;
 }
 
@@ -272,8 +349,7 @@ async function settingsLoad() {
         settingsState.sections = data.sections;
         settingsState.canEdit = Boolean(data.can_edit);
         settingsState.loadError = null;
-        const visible = data.sections.filter(section => section.groups.length || (section.links || []).length);
-        if (!visible.some(section => section.id === settingsState.section)) settingsState.section = visible[0]?.id || null;
+        if (!settingsKnownSection(settingsState.section)) settingsState.section = settingsVisibleSections()[0]?.id || null;
     } catch (error) {
         settingsState.loadError = error.message;
     }
@@ -281,17 +357,129 @@ async function settingsLoad() {
     try { settingsState.portal = await api('/api/system/settings/portal-login'); } catch (_) { settingsState.portal = null; }
 }
 
-async function renderSettings() {
-    await settingsLoad();
+function settingsKnownSection(id) {
+    return Boolean(settingsPage(id)) || settingsVisibleSections().some(section => section.id === id);
+}
+
+// A moved page draws itself from its own API. Its failure is shown in its own
+// place and never takes the rest of Settings down with it.
+async function settingsRenderPage(page) {
+    try {
+        return { id: page.id, html: await page.render() };
+    } catch (error) {
+        return { id: page.id, error: error.message };
+    }
+}
+
+// "section" is set when an address or another page asked for one section
+// (#settings/flows, or the old #paths); without it Settings reopens where it
+// was left.
+async function renderSettings(section) {
+    if (section) { settingsState.section = section; settingsState.query = ''; settingsState.onlyChanged = false; }
+    const load = ++settingsState.pageLoad;
+    const page = settingsPage(settingsState.section);
+    settingsState.pageView = null;
+    const [, view] = await Promise.all([settingsLoad(), page ? settingsRenderPage(page) : null]);
+    if (load === settingsState.pageLoad && settingsPage(settingsState.section) === page) settingsState.pageView = view;
     return settingsPageHtml();
 }
 
+// Inside Settings the moved page is a section: its page title becomes a
+// section title that matches its name in the rail, and its own binder wires
+// its controls exactly as on its former page.
+function settingsMountPage() {
+    const host = $('#st-embed'), page = settingsPage(settingsState.section), view = settingsState.pageView;
+    if (!host || !page || !view || view.id !== page.id || view.error !== undefined) return;
+    const title = host.querySelector('.page-header h1');
+    if (title) {
+        const heading = document.createElement('h2');
+        heading.textContent = page.name;
+        title.replaceWith(heading);
+    }
+    page.bind();
+}
+
+// The address names the open section, so a reload or a copied link returns to
+// it. Neither call fires hashchange.
+function settingsSyncAddress(push) {
+    if (!settingsState.section || !$('#st-page')) return;
+    const address = `#settings/${settingsState.section}`;
+    if (location.hash === address) return;
+    if (push) history.pushState(null, '', address); else history.replaceState(null, '', address);
+}
+
+// A moved page can save a value the registry shows as well: Flow workers and
+// the Workers group under Flows hold the same five. After one was open the
+// registry is read again, so its rows never show what was true before that
+// save. Unsaved edits are kept; a failed read keeps what is on screen.
+async function settingsReloadRegistry() {
+    let data;
+    try { data = await api('/api/system/settings'); } catch (_) { return; }
+    if (!$('#st-page') || JSON.stringify(data.sections) === JSON.stringify(settingsState.sections)) return;
+    settingsState.sections = data.sections;
+    settingsState.canEdit = Boolean(data.can_edit);
+    settingsRefresh();
+}
+
+// The other direction: the save bar stays in reach while a moved page is
+// open, so the registry can save a value that page's form is also showing.
+// The form's control is then set to the saved value. Left as it was, the
+// form's own Save, which sends every field, would put the old value back.
+// Nothing else typed into the form is touched.
+function settingsReconcilePage(changedKeys) {
+    const page = settingsPage(settingsState.section), host = $('#st-embed');
+    if (!page || !page.shared || !host) return;
+    for (const key of changedKeys) {
+        const selector = page.shared[key], row = settingsRow(key);
+        const control = selector ? host.querySelector(selector) : null;
+        if (control && row) control.value = String(row.value);
+    }
+}
+
+// Open one section without leaving the page: a registry section at once, a
+// moved page as soon as its own data has loaded.
+async function settingsOpenSection(id) {
+    if (!settingsKnownSection(id)) id = settingsVisibleSections()[0]?.id || null;
+    const embed = $('#st-embed');
+    if (!id || !embed) return;
+    const reload = settingsPage(settingsState.section) ? settingsReloadRegistry() : null;
+    // The clicked rail entry or link is redrawn below; keyboard focus follows
+    // to the entry of the section that opened instead of being dropped.
+    const refocus = $('#st-rail').contains(document.activeElement) || $('#st-panel').contains(document.activeElement);
+    settingsState.section = id; settingsState.query = ''; settingsState.onlyChanged = false;
+    $('#st-search').value = ''; $('#st-only-changed').checked = false;
+    const page = settingsPage(id);
+    const load = ++settingsState.pageLoad;
+    settingsState.pageView = null;
+    embed.innerHTML = settingsEmbedHtml();
+    settingsRefresh();
+    if (refocus) $('#st-rail').querySelector(`[data-st-section="${id}"]`)?.focus({ preventScroll: true });
+    settingsSyncAddress(true);
+    if (page) {
+        const view = await settingsRenderPage(page);
+        if (load === settingsState.pageLoad && embed.isConnected) {
+            settingsState.pageView = view;
+            embed.innerHTML = settingsEmbedHtml();
+            settingsMountPage();
+        }
+    }
+    await reload;
+}
+
 function settingsRefresh(focusId) {
-    const rail = $('#st-rail'), panel = $('#st-panel'), slot = $('#st-savebar-slot');
-    if (!rail || !panel || !slot) return;
+    const rail = $('#st-rail'), panel = $('#st-panel'), slot = $('#st-savebar-slot'), embed = $('#st-embed');
+    if (!rail || !panel || !slot || !embed) return;
+    // A moved page keeps its own DOM while a search hides it, so anything
+    // typed into its form is still there when the search is cleared.
+    const page = settingsShownPage();
     rail.innerHTML = settingsRailHtml();
-    panel.innerHTML = settingsPanelHtml();
+    panel.hidden = Boolean(page);
+    embed.hidden = !page;
+    panel.innerHTML = page ? '' : settingsPanelHtml();
+    if (!settingsPage(settingsState.section)) { embed.innerHTML = ''; settingsState.pageView = null; }
     slot.innerHTML = settingsSaveBarHtml();
+    $('#st-notice-slot').innerHTML = settingsNoticeHtml();
+    $('#st-logged').hidden = Boolean(page);
     if (focusId) document.getElementById(focusId)?.focus();
 }
 
@@ -338,6 +526,7 @@ async function settingsSave() {
         settingsState.saving = false;
         settingsState.tests = {};  // an earlier test result described the old values
         settingsRefresh();
+        settingsReconcilePage(payload.changed || []);
         const saved = (payload.changed || []).length;
         const newRuns = (payload.changed || []).some(key => settingsRow(key)?.applies === 'new_runs');
         toast(`Saved ${saved} ${saved === 1 ? 'setting' : 'settings'}.${newRuns ? ' Runs already in progress keep their old values.' : ''}`);
@@ -464,11 +653,7 @@ function bindSettingsPage() {
     });
     page.addEventListener('click', async event => {
         const section = event.target.closest('[data-st-section]');
-        if (section) {
-            settingsState.section = section.dataset.stSection; settingsState.query = ''; settingsState.onlyChanged = false;
-            $('#st-search').value = ''; $('#st-only-changed').checked = false;
-            settingsRefresh(); return;
-        }
+        if (section) { event.preventDefault(); await settingsOpenSection(section.dataset.stSection); return; }
         const reset = event.target.closest('[data-st-reset]');
         if (reset) {
             const row = settingsRow(reset.dataset.stReset);
@@ -504,4 +689,6 @@ function bindSettingsPage() {
             settingsRefresh();
         }
     });
+    settingsMountPage();
+    settingsSyncAddress(false);
 }

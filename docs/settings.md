@@ -22,6 +22,7 @@ setting nobody reads is refused by
 | `app/scanner/limits.py` | How scanner code reads its settings without failing a scan |
 | `app/routers/system_settings.py` | The page's API; every change is host PC only |
 | `app/static/settings.js`, `settings.css` | The page |
+| `app/static/app.js` (`settingsSubpages`) | The pages shown inside Settings that keep their own form |
 
 ## Where a value comes from
 
@@ -58,11 +59,53 @@ calls `config.refresh_if_changed()` on each loop. A password or token
 to a browser and is logged without its value. The ASAP and GSCM login and the
 AI key are kept encrypted for the Windows account the services run as.
 
+## Sections that keep their own form
+
+AI, Paths, Flow workers and Premium Viewers were System menu entries. They are
+now the **More settings** group at the end of the Settings rail. They are not
+in the registry: each keeps its own renderer, binder, API and Save button in
+`app/static/app.js`, and is listed in `settingsSubpages` there with its id,
+its name in the rail, the words the search box matches (`about`) and whether
+the server refuses a save from another computer (`hostOnly`). `settings.js`
+draws the page in its panel area with the page's own functions and turns the
+page's `h1` into a section title, so the journey on each page is unchanged.
+
+- Addresses: `#settings/<section>` opens any section, registry or not, and
+  the address follows the open section. The old addresses `#ai`, `#paths`,
+  `#flow-settings` and `#premiumviewers`, and `navigate('<old id>')` from
+  code, open the matching section.
+- The shared **Save changes** bar, **Reset to default**, the source labels and
+  the Event Log sentence in the page header describe registry settings only.
+  The search box lists a matching section of this group as a link.
+- A section that cannot load says so in its own place; the rest of Settings
+  stays usable.
+- Flows > Settings shows the Flow workers form as well and saves in place.
+- The Flow workers form holds five values that are also registry settings
+  (the Workers group under Flows: browser, total, background and visible
+  capacity, recording wait). Both write the same stored values. After a
+  section of this group was open, Settings reads the registry again, so the
+  registry rows show what that form saved.
+
+A page whose main content is configuration belongs here; a page that mainly
+shows status or history, or runs work, stays in the System menu. That is why
+Scanner and Updates did not move. To move a setting from one of these
+sections into the registry, declare it as described above and remove its
+control from the page's form.
+
 ## Who can change what
 
-Everyone can read the page. Only the host PC can change anything on it; see
+Everyone can read the page. Only the host PC can change a registry setting; see
 "Access" in the [README](../README.md). The route helper is
 `app.local_access.require_host`.
+
+The sections that keep their own form keep their own rules, which the move
+did not change: saving AI needs the host PC opened by a loopback address
+(`localhost` or `127.0.0.1`), saving Paths, Flow workers and portal limits
+needs the host PC, and anyone may start workers, check the impact of a path
+change or save Premium Viewers. Their
+controls are not disabled for another computer; the server refuses the save
+and the page shows its sentence. `hostOnly` only decides whether Settings
+shows another computer a notice above the section.
 
 ## What does not belong on the page
 

@@ -627,7 +627,7 @@ def test_disabled_mode_gates_operations_docs_and_email_content(ai_settings_db):
     assert email_payload["ai_analysis"] == {
         "enabled": False,
         "state": "disabled",
-        "reason": "AI analysis is disabled in System > AI.",
+        "reason": "AI analysis is disabled in System > Settings > AI.",
         "mode": "disabled",
     }
     summary = email._build_alert_summary(

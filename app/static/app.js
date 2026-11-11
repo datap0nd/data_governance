@@ -5202,7 +5202,7 @@ function _emailNextAction(alert) {
 function _emailAiAssessmentText(alert) {
     const assessment = alert.ai_assessment || {};
     if (alert.ai_analysis_enabled === false) {
-        return alert.ai_analysis_reason || "AI analysis is disabled in System > AI.";
+        return alert.ai_analysis_reason || "AI analysis is disabled in System > Settings > AI.";
     }
     if (!alert.ai_assessment) {
         return "Pending or unavailable; the deterministic Alert remains active and email delivery is not blocked.";
@@ -5356,7 +5356,7 @@ async function renderEmail() {
                 </div>
                 <p class="email-ai-mode-note ${aiAnalysis.enabled ? "enabled" : "disabled"}">${aiAnalysis.enabled
                     ? `AI analysis is enabled in ${esc(_AI_MODE_LABELS[aiAnalysis.mode] || aiAnalysis.mode)} mode. Current assessments are included when available.`
-                    : `${esc(aiAnalysis.reason || "AI analysis is disabled in System > AI.")} Outlook summaries use deterministic Alert facts and next steps.`}</p>
+                    : `${esc(aiAnalysis.reason || "AI analysis is disabled in System > Settings > AI.")} Outlook summaries use deterministic Alert facts and next steps.`}</p>
                 <p class="email-send-note">Nothing is selected by default. Review the ranked preview, select recipients, then create drafts or send.</p>
                 <div class="email-summary-list">${alertCards}</div>
             </section>
@@ -9540,7 +9540,7 @@ function bindPremiumViewersPage() {
     }
 }
 
-// ── System > AI settings ──
+// ── Settings > AI ──
 
 const _AI_MODE_LABELS = {
     disabled: "Disabled",
@@ -11536,9 +11536,9 @@ function _flowSyncParallelism() {
     control.disabled = false;
     const help = $('#flow-download-parallelism-help');
     if (help) help.textContent = [
-        headed ? 'Uses visible slots configured in System > Flow workers. Each window has its own browser profile; complete sign-in in each window if prompted.' : '',
+        headed ? 'Uses visible slots configured in System > Settings > Flow workers. Each window has its own browser profile; complete sign-in in each window if prompted.' : '',
 
-        !headed ? 'Uses available background slots configured in System > Flow workers.' : '',
+        !headed ? 'Uses available background slots configured in System > Settings > Flow workers.' : '',
         'SQL and transformations wait for the full bundle.',
     ].filter(Boolean).join(' ');
 }
@@ -13848,7 +13848,7 @@ async function _flowOpenWorksheetRecovery() {
     $('#flow-excel-names').focus();
 }
 
-// ── System > Paths ──
+// ── Settings > Paths and Flow workers ──
 function _pathsImpactHtml(rows) {
     return rows.length ? `<ul>${rows.map(row => `<li><strong>${esc(row.name)}</strong>: ${esc(row.reason)}<br><small>${esc(row.target_folder)}</small></li>`).join("")}</ul>` : '<p>All configured paths fit this root.</p>';
 }
@@ -13941,6 +13941,35 @@ function bindFlowSettingsPage() {
 
 // ── Router ──
 
+// Configuration pages that are sections of System > Settings instead of System
+// menu entries. Each keeps its own renderer and binder here; settings.js gives
+// them a place in its left rail and draws them in its panel. "about" is what
+// the Settings search matches; "hostOnly" says the server refuses a save from
+// another computer; "shared" names registry settings the page's own form also
+// saves. Their old addresses (#paths and so on) still open them.
+const settingsSubpages = [
+    { id: "ai", name: "AI", about: "Operating mode, the model connection and its key, and which features may use AI.",
+      hostOnly: true, render: renderAISettings, bind: bindAISettingsPage },
+    { id: "paths", name: "Paths", about: "The Flows root folder, its source folders and whether paths are enforced.",
+      hostOnly: true, render: renderPaths, bind: bindPathsPage },
+    { id: "flow-settings", name: "Flow workers", about: "Portal browser, recording wait, worker capacity and slots, and per-portal limits.",
+      hostOnly: true, render: renderFlowSettings, bind: bindFlowSettingsPage,
+      // Registry settings this form also holds, and the control that holds each.
+      shared: { "flows.browser": "#flow-browser-channel", "flows.total_workers": "#flow-total-capacity",
+                "flows.background_workers": "#flow-headless-capacity", "flows.visible_windows": "#flow-headed-capacity",
+                "flows.recording_wait_seconds": "#flow-recording-wait" } },
+    { id: "premiumviewers", name: "Premium Viewers", about: "Viewer emails whose report views weigh more in usage and impact.",
+      hostOnly: false, render: renderPremiumViewers, bind: bindPremiumViewersPage },
+];
+
+// "paths" (the old address) and "settings/paths" both name a section of
+// Settings; so does "settings/<registry section>". Anything else is null.
+function _settingsSectionOf(name) {
+    name = String(name || "");
+    if (name.startsWith("settings/")) return name.slice("settings/".length);
+    return settingsSubpages.some(item => item.id === name) ? name : null;
+}
+
 const pages = {
     dashboard: renderDashboard,
     sources: renderSources,
@@ -13952,7 +13981,7 @@ const pages = {
     users: renderUsers,
     // settings.js is a separate file. Looked up when the page is opened, so
     // app.js still loads where that file is not included (the preview pages).
-    settings: () => renderSettings(),
+    settings: section => renderSettings(section),
     dataquality: renderDataQuality,
     dataauditor: () => window.DataAuditor.render(),
     email: renderEmail,
@@ -13961,12 +13990,8 @@ const pages = {
     flows: renderFlows,
     eventlog: renderEventLog,
     faq: renderFaq,
-    ai: renderAISettings,
     updates: renderUpdates,
-    paths: renderPaths,
-    'flow-settings': renderFlowSettings,
     refreshschedule: renderScannerAdmin,
-    premiumviewers: renderPremiumViewers,
 };
 
 // Map old hash routes to new pages for backwards compat
@@ -13975,19 +14000,44 @@ const pageAliases = { alerts: "dashboard", issues: "dashboard", actions: "dashbo
 let currentPage = "dashboard";
 let navigationRequestId = 0;
 
+// Write the address without triggering hashchange. Nothing is written when it
+// is already right: an unchanged hash fires no event, and the skip flag would
+// then swallow the next real one (Back, or an address typed by hand).
+function _setAddress(address, replace) {
+    if (location.hash.replace(/^#/, "") === address) return;
+    if (replace) { history.replaceState(null, "", `#${address}`); return; }
+    window._skipHash = true;
+    location.hash = address;
+}
+
 async function navigate(page) {
     window.DataAuditor?.dispose();
     _flowStopActivityMonitor();
     clearTimeout(window._flowCatalogMonitorTimer);
-    const requestId = ++navigationRequestId;
     // Resolve aliases for old routes
     if (pageAliases[page]) page = pageAliases[page];
+    // A page that moved into Settings, or one of its sections by address.
+    const section = _settingsSectionOf(page);
+    if (section !== null) page = "settings";
     if (!pages[page]) page = "dashboard";
+    const address = page === "dashboard" ? "" : section ? `settings/${section}` : page;
+    const here = location.hash.slice(1);
+    // An old address for the same section (#paths) is rewritten, so Back does
+    // not return to it and bounce forward again.
+    const sameSection = section !== null && _settingsSectionOf(here) === section;
+    // Settings is already on screen: change its section and keep the rest.
+    if (section && currentPage === "settings" && document.getElementById("st-page")) {
+        _setAddress(address, sameSection);
+        await settingsOpenSection(section);
+        return;
+    }
+    const requestId = ++navigationRequestId;
     currentPage = page;
 
-    // Update URL hash without triggering hashchange
-    window._skipHash = true;
-    location.hash = page === "dashboard" ? "" : page;
+    // Plain "settings" reopens the section it was left on, and the page then
+    // writes that section's address itself; an address already inside Settings
+    // is left alone meanwhile.
+    if (!(page === "settings" && !section && /^settings(\/|$)/.test(here))) _setAddress(address, sameSection);
 
     // Reset lazy-init flags
     window._lineageBound = false;
@@ -14013,7 +14063,7 @@ async function navigate(page) {
     app.innerHTML = '<div class="loading">Loading...</div>';
 
     try {
-        const html = await pages[page]();
+        const html = await pages[page](section || undefined);
         if (requestId !== navigationRequestId || page !== currentPage) return;
         app.innerHTML = html;
 
@@ -14106,11 +14156,7 @@ async function navigate(page) {
         if (page === "export") bindExportPage();
         if (page === "faq") bindFaqPage();
         if (page === "eventlog") bindEventLogPage();
-        if (page === "ai") bindAISettingsPage();
         if (page === "updates") bindUpdatesPage();
-        if (page === "paths") bindPathsPage();
-        if (page === "flow-settings") bindFlowSettingsPage();
-        if (page === "premiumviewers") bindPremiumViewersPage();
         if (page === "lineage") bindLineageDiagramPage();
     } catch (err) {
         if (requestId !== navigationRequestId || page !== currentPage) return;
@@ -15531,12 +15577,12 @@ function getInitialPage() {
     if (location.hash && location.hash.length > 1) {
         let page = location.hash.substring(1);
         if (pageAliases[page]) page = pageAliases[page];
-        if (pages[page]) return page;
+        if (pages[page] || _settingsSectionOf(page) !== null) return page;
     }
     // Support path-based routing: /sources, /reports, etc.
     let path = location.pathname.replace(/^\/+/, "");
     if (pageAliases[path]) path = pageAliases[path];
-    if (path && pages[path]) return path;
+    if (path && (pages[path] || _settingsSectionOf(path) !== null)) return path;
     return "dashboard";
 }
 
@@ -15560,13 +15606,13 @@ function _showConnectedUser(user) {
 
 function _applyAccessUi(user) {
     const refreshLink = document.getElementById("nav-refresh-schedule");
-    const premiumLink = document.getElementById("nav-premium-viewers");
     const updateBtn = document.getElementById("btn-update-app");
     if (refreshLink) refreshLink.style.display = "";
-    if (premiumLink) premiumLink.style.display = "";
     if (updateBtn) updateBtn.style.display = "";
-    if (currentPage === "premiumviewers" || currentPage === "refreshschedule") {
-        navigate(currentPage);
+    // Premium Viewers is a section of Settings now (always offered in its
+    // rail); it is still redrawn once the user is known, as its page was.
+    if (currentPage === "settings" && settingsState.section === "premiumviewers") {
+        navigate("premiumviewers");
     }
 }
 
@@ -15726,6 +15772,8 @@ document.addEventListener("DOMContentLoaded", () => {
             page = pageAliases[page];
             history.replaceState(null, "", page === "dashboard" ? location.pathname : `${location.pathname}#${page}`);
         }
+        // A Settings section opens even when Settings is already on screen.
+        if (_settingsSectionOf(page) !== null) { navigate(page); return; }
         if (pages[page] && page !== currentPage) navigate(page);
     });
 
