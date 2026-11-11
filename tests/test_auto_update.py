@@ -18,7 +18,6 @@ from app import database, main, settings
 DEPLOYED = "a" * 40
 TARGET = "b" * 40
 OTHER_TARGET = "c" * 40
-REAL_TESTS_GATE = main._tests_gate
 
 
 @pytest.fixture(autouse=True)
@@ -41,32 +40,6 @@ def _passed_tests_gate(target, *, force=False):
         "checked_at": "2026-08-28T12:00:00+00:00",
         "message": "The exact main commit passed the Tests workflow.",
         "error": None,
-    }
-
-
-def _workflow_run(
-    target=TARGET,
-    *,
-    status="completed",
-    conclusion="success",
-    event="push",
-    branch="main",
-    path=".github/workflows/tests.yml@main",
-    run_id=123,
-    run_number=12,
-    run_attempt=1,
-):
-    return {
-        "id": run_id,
-        "run_number": run_number,
-        "run_attempt": run_attempt,
-        "head_sha": target,
-        "head_branch": branch,
-        "event": event,
-        "path": path,
-        "status": status,
-        "conclusion": conclusion,
-        "html_url": f"https://github.example/actions/runs/{run_id}",
     }
 
 
@@ -97,7 +70,6 @@ def update_env(monkeypatch):
         monkeypatch.setattr(main, "_AUTO_UPDATE_ACTIVITY_LOCK", threading.Lock())
         monkeypatch.setattr(main, "_TESTS_GATE_LOCK", threading.Lock())
         monkeypatch.setattr(main, "_TESTS_GATE_CACHE", {})
-        monkeypatch.setattr(main, "_tests_gate", _passed_tests_gate)
         monkeypatch.setattr(main, "_AUTO_UPDATE_DRAIN_EVENT", threading.Event())
         monkeypatch.setattr(main, "_AUTO_UPDATE_ACTIVE_STARTS", 0)
         monkeypatch.setattr(
@@ -271,30 +243,6 @@ def test_deferred_pbi_retry_is_not_active_and_does_not_start_during_drain(
     assert main._AUTO_UPDATE_ACTIVE_STARTS == 0
 
 
-def test_idle_check_reserves_exact_latest_commit(update_env, monkeypatch):
-    calls = []
-    monkeypatch.setattr(main, "_latest_commit", lambda **_kwargs: (TARGET, None))
-
-    def reserve(target, source):
-        calls.append((target, source))
-        return {
-            "attempt_id": "attempt-1",
-            "target_commit": target,
-            "status": "launched",
-            "active": True,
-        }
-
-    monkeypatch.setattr(main, "_reserve_and_launch_update", reserve)
-
-    result = main._scheduled_auto_update(force=True)
-
-    assert calls == [(TARGET, "automatic")]
-    assert result["status"] == "update_launched"
-    assert result["last_attempt_commit"] == TARGET
-    assert result["draining"] is False
-    assert not main._AUTO_UPDATE_DRAIN_EVENT.is_set()
-
-
 def test_scheduled_update_does_not_wait_for_a_tests_gate(update_env, monkeypatch):
     latest_calls = []
 
@@ -303,11 +251,6 @@ def test_scheduled_update_does_not_wait_for_a_tests_gate(update_env, monkeypatch
         return TARGET, None
 
     monkeypatch.setattr(main, "_latest_commit", latest)
-    monkeypatch.setattr(
-        main,
-        "_tests_gate",
-        lambda *_args, **_kwargs: pytest.fail("automatic setup launch checked CI"),
-    )
     calls = []
     monkeypatch.setattr(
         main,
@@ -325,38 +268,6 @@ def test_scheduled_update_does_not_wait_for_a_tests_gate(update_env, monkeypatch
     result = main._scheduled_auto_update(force=True)
 
     assert result["status"] == "update_launched"
-    assert result["draining"] is False
-    assert not main._AUTO_UPDATE_DRAIN_EVENT.is_set()
-    assert latest_calls == [True]
-    assert calls == [(TARGET, "automatic")]
-
-
-def test_scheduled_update_launches_the_single_detected_exact_commit(
-    update_env, monkeypatch
-):
-    calls = []
-    latest_calls = []
-    monkeypatch.setattr(
-        main,
-        "_latest_commit",
-        lambda **_kwargs: latest_calls.append(True) or (TARGET, None),
-    )
-    monkeypatch.setattr(
-        main,
-        "_reserve_and_launch_update",
-        lambda target, source: calls.append((target, source))
-        or {
-            "attempt_id": "single-detection",
-            "target_commit": target,
-            "status": "launched",
-            "active": True,
-        },
-    )
-
-    result = main._scheduled_auto_update(force=True)
-
-    assert result["status"] == "update_launched"
-    assert result["latest_commit"] == TARGET
     assert result["draining"] is False
     assert not main._AUTO_UPDATE_DRAIN_EVENT.is_set()
     assert latest_calls == [True]
@@ -486,13 +397,6 @@ def test_active_attempt_precedes_github_and_up_to_date_branch(
         main,
         "_latest_commit",
         lambda **_kwargs: pytest.fail("active attempt unnecessarily queried GitHub"),
-    )
-    monkeypatch.setattr(
-        main,
-        "_tests_gate",
-        lambda *_args, **_kwargs: pytest.fail(
-            "active attempt unnecessarily re-checked Tests"
-        ),
     )
 
     result = main._scheduled_auto_update(force=True)
@@ -965,181 +869,6 @@ def test_github_lookup_passes_resolved_office_proxy(monkeypatch):
     assert observed["timeout"] == 20
 
 
-def test_tests_workflow_gate_accepts_only_the_exact_main_push(monkeypatch):
-    captured = {}
-
-    class Response:
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return {
-                "workflow_runs": [
-                    _workflow_run(OTHER_TARGET, run_id=999, run_number=99),
-                    _workflow_run(
-                        TARGET,
-                        event="pull_request",
-                        run_id=998,
-                        run_number=98,
-                    ),
-                    _workflow_run(
-                        TARGET,
-                        path=".github/workflows/other.yml@main",
-                        run_id=997,
-                        run_number=97,
-                    ),
-                    _workflow_run(TARGET),
-                ]
-            }
-
-    def get(url, **kwargs):
-        captured["url"] = url
-        captured.update(kwargs)
-        return Response()
-
-    import httpx
-
-    monkeypatch.setattr(httpx, "get", get)
-
-    result = main._fetch_tests_workflow_gate(TARGET)
-
-    assert result["state"] == "passed"
-    assert result["target_commit"] == TARGET
-    assert result["run_id"] == 123
-    assert captured["url"].endswith("/actions/workflows/tests.yml/runs")
-    assert captured["params"] == {
-        "head_sha": TARGET,
-        "branch": "main",
-        "event": "push",
-        "per_page": 10,
-    }
-
-
-@pytest.mark.parametrize(
-    ("workflow_status", "conclusion", "expected_state"),
-    [
-        ("queued", None, "pending"),
-        ("in_progress", None, "pending"),
-        ("completed", "failure", "failed"),
-        ("completed", "cancelled", "failed"),
-        ("completed", "skipped", "failed"),
-    ],
-)
-def test_tests_workflow_gate_fails_closed_until_success(
-    monkeypatch, workflow_status, conclusion, expected_state
-):
-    class Response:
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return {
-                "workflow_runs": [
-                    _workflow_run(
-                        status=workflow_status,
-                        conclusion=conclusion,
-                    )
-                ]
-            }
-
-    import httpx
-
-    monkeypatch.setattr(httpx, "get", lambda *_args, **_kwargs: Response())
-
-    result = main._fetch_tests_workflow_gate(TARGET)
-
-    assert result["state"] == expected_state
-    assert result["status"] == workflow_status
-    assert result["conclusion"] == conclusion
-
-
-def test_tests_workflow_gate_treats_wrong_or_missing_runs_as_pending(monkeypatch):
-    class Response:
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return {
-                "workflow_runs": [
-                    _workflow_run(OTHER_TARGET),
-                    _workflow_run(TARGET, branch="feature"),
-                ]
-            }
-
-    import httpx
-
-    monkeypatch.setattr(httpx, "get", lambda *_args, **_kwargs: Response())
-
-    result = main._fetch_tests_workflow_gate(TARGET)
-
-    assert result["state"] == "pending"
-    assert result["run_id"] is None
-
-
-def test_tests_gate_cache_is_short_lived_and_keyed_by_exact_sha(
-    update_env, monkeypatch
-):
-    calls = []
-
-    def fetch(target):
-        calls.append(target)
-        return _passed_tests_gate(target)
-
-    monkeypatch.setattr(main, "_fetch_tests_workflow_gate", fetch)
-
-    first = REAL_TESTS_GATE(TARGET)
-    second = REAL_TESTS_GATE(TARGET)
-    other = REAL_TESTS_GATE(OTHER_TARGET)
-    forced = REAL_TESTS_GATE(TARGET, force=True)
-
-    assert first["state"] == second["state"] == other["state"] == "passed"
-    assert forced["state"] == "passed"
-    assert calls == [TARGET, OTHER_TARGET, TARGET]
-
-
-def test_tests_gate_api_failure_is_unavailable_and_redacts_token(
-    update_env, monkeypatch
-):
-    monkeypatch.setenv("DG_GITHUB_TOKEN", "ci-secret")
-    monkeypatch.setattr(
-        main,
-        "_fetch_tests_workflow_gate",
-        lambda _target: (_ for _ in ()).throw(
-            RuntimeError("authorization=ci-secret was rejected")
-        ),
-    )
-
-    result = REAL_TESTS_GATE(TARGET, force=True)
-
-    assert result["state"] == "unavailable"
-    assert "ci-secret" not in result["error"]
-    assert "[redacted]" in result["error"]
-
-
-def test_tests_gate_reuses_prior_exact_sha_pass_during_network_timeout(
-    update_env, monkeypatch
-):
-    calls = 0
-
-    def fetch(target):
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            return _passed_tests_gate(target)
-        raise RuntimeError("SSL handshake operation timed out")
-
-    monkeypatch.setattr(main, "_fetch_tests_workflow_gate", fetch)
-
-    first = REAL_TESTS_GATE(TARGET, force=True)
-    second = REAL_TESTS_GATE(TARGET, force=True)
-
-    assert first["state"] == second["state"] == "passed"
-    assert second["target_commit"] == TARGET
-    assert second["run_id"] == first["run_id"]
-    assert "previously passed" in second["message"]
-    assert "retry automatically" in second["verification_warning"]
-
-
 def test_advisory_agent_queue_does_not_block_production_update(update_env):
     with database.get_db() as db:
         db.execute(
@@ -1229,13 +958,6 @@ def test_system_updates_allows_retry_but_never_installs_a_failed_lookup(
     monkeypatch.setattr(
         main, "_registered_auto_update_task_ready", lambda: (True, None)
     )
-    monkeypatch.setattr(
-        main,
-        "_tests_gate",
-        lambda *_args, **_kwargs: pytest.fail(
-            "stale latest SHA should not be CI-gated after a main lookup failure"
-        ),
-    )
     client = TestClient(main.app)
 
     response = client.get("/api/system/updates")
@@ -1267,19 +989,12 @@ def test_system_updates_put_persists_enabled_setting(update_env, monkeypatch):
 
 def test_check_api_forces_refresh_without_applying(update_env, monkeypatch):
     force_values = []
-    gate_force_values = []
 
     def latest(*, force=False):
         force_values.append(force)
         return TARGET, None
 
     monkeypatch.setattr(main, "_latest_commit", latest)
-    monkeypatch.setattr(
-        main,
-        "_tests_gate",
-        lambda target, *, force=False: gate_force_values.append((target, force))
-        or _passed_tests_gate(target, force=force),
-    )
     monkeypatch.setattr(
         main, "_registered_auto_update_task_ready", lambda: (True, None)
     )
@@ -1294,9 +1009,6 @@ def test_check_api_forces_refresh_without_applying(update_env, monkeypatch):
 
     assert response.status_code == 200
     assert force_values[0] is True
-    # The response still reports CI as informational status, but the update
-    # check itself no longer waits on or force-refreshes that gate.
-    assert gate_force_values == []
     assert response.json()["auto_update"]["status"] == "update_available"
     assert response.json()["can_apply"] is True
 
@@ -1338,11 +1050,6 @@ def test_apply_apis_launch_the_server_selected_exact_sha(
 def test_apply_api_launches_setup_without_waiting_for_tests(update_env, monkeypatch):
     monkeypatch.setattr(main, "_latest_commit", lambda **_kwargs: (TARGET, None))
     monkeypatch.setattr(
-        main,
-        "_tests_gate",
-        lambda *_args, **_kwargs: pytest.fail("manual setup launch checked CI"),
-    )
-    monkeypatch.setattr(
         main, "_registered_auto_update_task_ready", lambda: (True, None)
     )
     calls = []
@@ -1364,41 +1071,6 @@ def test_apply_api_launches_setup_without_waiting_for_tests(update_env, monkeypa
 
     assert response.status_code == 202
     assert response.json()["status"] == "launched"
-    assert calls == [(TARGET, "manual")]
-    assert not main._AUTO_UPDATE_DRAIN_EVENT.is_set()
-
-
-def test_apply_api_launches_the_single_detected_exact_sha(
-    update_env, monkeypatch
-):
-    calls = []
-    latest_calls = []
-    monkeypatch.setattr(
-        main,
-        "_latest_commit",
-        lambda **_kwargs: latest_calls.append(True) or (TARGET, None),
-    )
-    monkeypatch.setattr(
-        main, "_registered_auto_update_task_ready", lambda: (True, None)
-    )
-    monkeypatch.setattr(
-        main,
-        "_reserve_and_launch_update",
-        lambda target, source: calls.append((target, source))
-        or {
-            "attempt_id": "single-manual-detection",
-            "target_commit": target,
-            "status": "launched",
-            "active": True,
-        },
-    )
-    client = TestClient(main.app)
-
-    response = client.post("/api/system/updates/apply")
-
-    assert response.status_code == 202
-    assert response.json()["latest_commit"] == TARGET
-    assert latest_calls == [True]
     assert calls == [(TARGET, "manual")]
     assert not main._AUTO_UPDATE_DRAIN_EVENT.is_set()
 

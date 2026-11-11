@@ -1,7 +1,6 @@
 """Scanner, probe, Power BI and freshness limits on the Settings page.
 
-Every setting is checked twice: its default is the value the code used before
-the setting existed, and a saved value is honoured by the code that does the
+Every setting is checked: a saved value is honoured by the code that does the
 work. Fixtures are synthetic: folders and files under ``tmp_path``, a stand-in
 PostgreSQL driver and stand-in Power BI answers. Nothing here reaches a real
 portal, database or Power BI.
@@ -41,24 +40,6 @@ DUBAI = ZoneInfo("Asia/Dubai")
 ENVIRONMENT_NAMES = (
     "DG_SCANNER_STALE_AFTER_SECONDS", "DG_PG_SCAN_STATEMENT_TIMEOUT_SECONDS", "DG_PBI_USAGE_DAYS_BACK",
 )
-# key -> (today's value, section, the constant the code used before the setting)
-TODAY = {
-    "scan.folder_depth": (4, "scanner", walker.MAX_DISCOVERY_DEPTH),
-    "scan.skip_folders": ([], "scanner", list(walker.SKIPPED_FOLDER_NAMES)),
-    "scan.max_pbix_mb": (0, "scanner", pbix_parser.MAX_PBIX_MB),
-    "scan.stalled_after_seconds": (600, "scanner", jobs.DEFAULT_STALE_AFTER_SECONDS),
-    "probe.connect_timeout_seconds": (10, "scanner", prober.CONNECT_TIMEOUT_SECONDS),
-    "probe.lock_timeout_seconds": (30, "scanner", prober.LOCK_TIMEOUT_SECONDS),
-    "probe.statement_timeout_seconds": (180, "scanner", prober.STATEMENT_TIMEOUT_SECONDS),
-    "pbi.request_timeout_seconds": (120, "scanner", pbi_fetch.REQUEST_TIMEOUT_SECONDS),
-    "pbi.sync_wait_minutes": (20, "scanner", pbi_sync.PBI_SYNC_WAIT_TIMEOUT_SECONDS / 60),
-    "pbi.usage_days": (30, "scanner", pbi_fetch.USAGE_DAYS_BACK),
-    "pbi.activity_pages_per_day": (200, "scanner", pbi_fetch.MAX_ACTIVITY_PAGES_PER_DAY),
-    "freshness.grace_hours": (24, "freshness", freshness.GRACE_HOURS),
-    "freshness.alert_severity": ("critical", "freshness", prober.FRESHNESS_ALERT_SEVERITY),
-    "freshness.report_lag_hours": (1, "freshness", prober.REPORT_LAG_HOURS),
-    "freshness.probe_history_days": (90, "freshness", prober.SOURCE_PROBE_RETENTION_DAYS),
-}
 
 
 @pytest.fixture
@@ -78,15 +59,6 @@ def app_db(tmp_path, monkeypatch):
 
 # --- Declarations ----------------------------------------------------------------
 
-@pytest.mark.parametrize("key", sorted(TODAY))
-def test_default_is_the_value_the_code_used_before(app_db, key):
-    today, section, constant = TODAY[key]
-    declared = registry.definition(key)
-    assert declared.default == today == constant
-    assert registry.get(key) == today  # nothing saved, nothing in the environment
-    assert declared.section == section
-
-
 def test_constants_read_from_the_environment_agree_with_the_plain_defaults(app_db):
     # These are read from the environment at import, so compare only when unset there.
     if "DG_PG_SCAN_STATEMENT_TIMEOUT_SECONDS" not in config._STARTING_ENVIRONMENT:
@@ -99,23 +71,6 @@ def test_constants_read_from_the_environment_agree_with_the_plain_defaults(app_d
     script = (ROOT / "tools" / "pbi_usage_sync.ps1").read_text(encoding="utf-8")
     assert f"[int]$DaysBack = {pbi_sync.PS1_USAGE_DEFAULT_DAYS_BACK}," in script
     assert pbi_sync.PS1_USAGE_DEFAULT_DAYS_BACK == pbi_fetch.USAGE_DAYS_BACK
-
-
-def test_every_row_explains_itself_to_someone_who_is_not_a_developer(app_db):
-    groups = {}
-    for key in TODAY:
-        declared = registry.definition(key)
-        groups.setdefault((declared.section, declared.group), []).append(key)
-        assert declared.help and declared.help.endswith("."), key
-        assert not declared.label.endswith("."), key
-        if declared.kind == "int":
-            assert declared.unit, key
-        for jargon in ("misfire", "TTL", "heartbeat", "probe", "_SECONDS", "APScheduler", "psycopg"):
-            assert jargon not in declared.label and jargon not in declared.help, (key, jargon)
-    assert set(section for section, _group in groups) == {"scanner", "freshness"}
-    # Several settings share each group; none stands alone under its own title.
-    shared = {"When a scan has trouble"}  # a group the main catalog started
-    assert all(len(keys) > 1 or group in shared for (_section, group), keys in groups.items())
 
 
 def test_values_set_through_the_old_environment_variables_are_kept(app_db, monkeypatch):

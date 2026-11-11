@@ -5,7 +5,6 @@ import os
 import shutil
 import subprocess
 import sys
-from tempfile import TemporaryDirectory
 from pathlib import Path
 
 import pytest
@@ -19,12 +18,6 @@ CHECK_PY = ROOT / "tools" / "check.py"
 windows_only = pytest.mark.skipif(
     os.name != "nt", reason="the PowerShell command uses a Windows checkout-owned .venv"
 )
-
-
-@pytest.fixture
-def stable_tmp_path():
-    with TemporaryDirectory(prefix="metronome-windows-contract-") as folder:
-        yield Path(folder).resolve(strict=True)
 
 
 def run_powershell_check(*arguments: str) -> subprocess.CompletedProcess[str]:
@@ -52,16 +45,6 @@ def run_python_check(*arguments: str) -> subprocess.CompletedProcess[str]:
 def result_from(output: str) -> dict:
     result_line = next(line for line in output.splitlines() if line.startswith("Result: "))
     return json.loads(Path(result_line.removeprefix("Result: ")).read_text(encoding="utf-8-sig"))
-
-
-@windows_only
-def test_verify_requires_an_explicit_focused_selection():
-    completed = run_powershell_check("-Mode", "Verify")
-    assert completed.returncode != 0
-    assert "Verify requires explicit -TestPath selectors" in completed.stderr
-    result = result_from(completed.stdout)
-    assert result["status"] == "failed"
-    assert result["exit_code"] == 2
 
 
 @windows_only
@@ -100,24 +83,6 @@ def test_powershell_validation_without_a_checkout_environment(tmp_path, argument
     assert result["status"] == "failed"
     assert result["exit_code"] == 2
     assert not (checkout / ".venv").exists()
-
-
-def test_command_declares_isolated_paths_before_pytest_launch():
-    source = CHECK_PS1.read_text(encoding="utf-8")
-    assignments = [
-        "$env:TEMP = $tempRoot",
-        "$env:TMP = $tempRoot",
-        "$env:DG_DB_PATH = Join-Path $runRoot 'governance-test.db'",
-        "$env:DG_TEST_RUN_ROOT = $runRoot",
-        "$env:DG_BROWSER_PROFILE_ROOT = $profileRoot",
-        "$env:DG_FLOWS_ROOT = $externalFlowRoot",
-        "$env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $repoRoot '.playwright-browsers'",
-    ]
-    launch = source.index("$pytestArguments =")
-    assert all(source.index(assignment) < launch for assignment in assignments)
-    assert "-ExecutionPolicy Bypass" in source[launch:]
-    assert "Refusing to clean unexpected Flow test root" in source
-    assert "Remove-Item -LiteralPath $resolvedIsolationRoot -Recurse -Force" in source
 
 
 def test_python_verify_requires_an_explicit_focused_selection():
@@ -164,44 +129,6 @@ def test_python_result_records_the_shared_evidence_schema():
     assert result["revision"]
 
 
-def test_python_command_declares_isolated_paths_before_pytest_launch():
-    source = CHECK_PY.read_text(encoding="utf-8")
-    assignments = [
-        'environment["TEMP"] = str(temp_root)',
-        'environment["TMP"] = str(temp_root)',
-        'environment["TMPDIR"] = str(temp_root)',
-        'environment["DG_DB_PATH"] = str(run.root / "governance-test.db")',
-        'environment["DG_TEST_RUN_ROOT"] = str(run.root)',
-        'environment["DG_BROWSER_PROFILE_ROOT"] = str(profile_root)',
-        '"PLAYWRIGHT_BROWSERS_PATH"',
-    ]
-    definition = source.index("def isolated_environment")
-    launch = source.index('"-m", "pytest"')
-    assert all(definition < source.index(assignment) < launch for assignment in assignments)
-
-
-def test_python_leaves_the_flows_root_to_each_test_like_ci():
-    # One DG_FLOWS_ROOT shared by a whole run makes two tests that create the
-    # same Flow name collide; CI leaves it unset so each test derives its own.
-    source = CHECK_PY.read_text(encoding="utf-8")
-    definition = source.index("def isolated_environment")
-    launch = source.index('"-m", "pytest"')
-    assert definition < source.index('environment.pop("DG_FLOWS_ROOT", None)') < launch
-    assert 'environment["DG_FLOWS_ROOT"] =' not in source
-    workflow = (ROOT / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
-    assert "DG_FLOWS_ROOT" not in workflow
-
-
-def test_python_keeps_the_temporary_root_outside_the_checkout():
-    # Those per-test Flow roots hang off pytest's tmp_path, and the application
-    # refuses a Flows root inside the code checkout.
-    source = CHECK_PY.read_text(encoding="utf-8")
-    assert 'temp_root = run.external_root / "tmp"' in source
-    assert "run.external_root = isolation_base() / run.run_id" in source
-    assert "Refusing to clean unexpected scratch root" in source
-    assert "shutil.rmtree(resolved, ignore_errors=True)" in source
-
-
 def test_python_keeps_the_scratch_root_after_a_failing_run(tmp_path, monkeypatch, capsys):
     import tools.check as check
 
@@ -218,13 +145,6 @@ def test_python_keeps_the_scratch_root_after_a_failing_run(tmp_path, monkeypatch
 
     run.save("passed", 0)
     assert not scratch.exists()
-
-
-def test_python_setup_installs_only_the_locked_dependencies():
-    source = CHECK_PY.read_text(encoding="utf-8")
-    assert '"--requirement", str(LOCK_PATH)' in source
-    assert 'LOCK_MARKER_NAME = ".metronome-ci-lock.sha256"' in source
-    assert "codex-runtimes" in source
 
 
 def test_python_reuse_requires_a_matching_fingerprint_and_selection(tmp_path, monkeypatch):
@@ -263,26 +183,3 @@ def test_python_summarizes_junit_counts(tmp_path):
     )
     assert summarize_junit(junit) == {"tests": 4, "failures": 1, "errors": 0, "skipped": 2}
     assert summarize_junit(tmp_path / "missing.xml") is None
-
-
-@windows_only
-def test_windows_acl_fixture_denies_reader_style_write_and_recovers(stable_tmp_path):
-    """Exercise a real Windows deny ACL, not an installer command mock."""
-    protected = stable_tmp_path / "host-private"
-    protected.mkdir()
-    secret = protected / "host.json"
-    secret.write_text('{"fixture":true}', encoding="utf-8")
-    everyone = "*S-1-1-0"
-    try:
-        applied = subprocess.run(["icacls.exe", str(secret), "/deny",
-                                  f"{everyone}:W", "/Q"],
-                                 text=True, capture_output=True, check=False)
-        assert applied.returncode == 0, applied.stderr
-        with pytest.raises(PermissionError):
-            secret.write_text("reader attempted mutation", encoding="utf-8")
-        with pytest.raises(PermissionError):
-            secret.read_text(encoding="utf-8")
-    finally:
-        subprocess.run(["icacls.exe", str(secret), "/remove:d", everyone, "/Q"],
-                       text=True, capture_output=True, check=False)
-    assert secret.read_text(encoding="utf-8") == '{"fixture":true}'

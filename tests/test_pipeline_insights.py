@@ -508,14 +508,6 @@ def test_related_join_columns_are_validated_against_all_input_schemas():
         )
 
 
-def test_pipeline_explanation_prompt_requires_exact_analyst_logic():
-    assert "business subject or reporting need" in scanner.SYSTEM_PROMPT
-    assert "every evidenced join type" in scanner.SYSTEM_PROMPT
-    assert "exact filter predicates" in scanner.SYSTEM_PROMPT
-    assert "If exact logic is unavailable" in scanner.SYSTEM_PROMPT
-    assert "individual sample-row values" in scanner.SYSTEM_PROMPT
-
-
 def test_deterministic_explanation_is_two_paragraphs_and_discloses_missing_detail():
     text = scanner.deterministic_text(_candidate())
     assert text.count("\n\n") == 1

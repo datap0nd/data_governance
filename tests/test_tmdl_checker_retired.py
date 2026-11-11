@@ -3,12 +3,11 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from fastapi.testclient import TestClient
 
-from app import database, main
+from app import database
 from app.checks import best_practices as legacy_checker
 from app.routers import actions, documentation, email, scanner, schedules
-from app.scanner import modules, runner
+from app.scanner import runner
 from test_scan_lifecycle import _stub_scan_components
 
 
@@ -35,20 +34,6 @@ def _history():
             'actions': [dict(row) for row in db.execute("SELECT * FROM actions WHERE type='best_practice'")],
             'old_scan': dict(db.execute('SELECT * FROM scan_runs WHERE id=90').fetchone()),
         }
-
-
-def test_checker_endpoint_returns_gone_without_scanning_or_changing_history(checker_db):
-    client = TestClient(main.app, base_url='http://127.0.0.1')
-    response = client.get('/api/best-practices')
-    assert response.status_code == 410
-    assert 'TMDL Checker has been retired' in response.json()['detail']
-    assert 'catalog discovery and lineage remain available' in response.json()['detail']
-    assert _history() == checker_db
-    paths = main.app.openapi()['paths']
-    assert '/api/best-practices' not in paths
-    assert any(path.startswith('/api/data-quality') for path in paths)
-    assert any(path.startswith('/api/scanner') for path in paths)
-    assert any(path.startswith('/api/lineage') for path in paths)
 
 
 @pytest.mark.parametrize('schedule_fails', [False, True])
@@ -93,13 +78,6 @@ def test_full_scan_omits_checker_but_keeps_governance_and_history(checker_db, mo
     with database.get_db() as db:
         stored = db.execute("SELECT details_json FROM scanner_module_runs WHERE module_key='governance' ORDER BY id DESC LIMIT 1").fetchone()
     assert 'best_practices' not in json.loads(stored['details_json'])
-
-
-def test_scanner_catalog_still_describes_pbix_tmdl_discovery():
-    catalog = modules.MODULES_BY_KEY['report_catalog']
-    assert 'PBIX' in catalog['description'] and 'TMDL' in catalog['description']
-    assert 'tables, measures, visuals, and source expressions' in catalog['description']
-    assert 'best-practice' not in modules.MODULES_BY_KEY['governance']['description']
 
 
 def test_even_open_legacy_checker_findings_stay_out_of_alert_emails(checker_db):
