@@ -55,7 +55,7 @@ the same flaw.
 
 | Check/case IDs | Command or procedure | Revision/environment | Result/counts/duration | Evidence |
 | --- | --- | --- | --- | --- |
-| Collection and non-PowerShell cases | The `python tools/check.py verify` command in the plan | Working tree, Linux | PASS: 9 passed, 0 failed, 39 skipped (all need Windows PowerShell, among them the 15 cases of the installer check), 3.5 s | `.test-runs/20261111T133215066Z-3104-e52472bd/result.json` |
+| Collection and non-PowerShell cases | The `python tools/check.py verify` command in the plan | Working tree, Linux | PASS: 9 passed, 0 failed, 39 skipped (all need Windows PowerShell, among them the 14 cases of the installer check), 3.5 s | `.test-runs/20261111T133215066Z-3104-e52472bd/result.json` |
 | Plain-text review | `grep` for bytes outside ASCII in `setup.ps1` and the helper; brace and parenthesis balance | Working tree | None found; balanced | Console output |
 
 ## Unperformed or blocked in-scope checks
