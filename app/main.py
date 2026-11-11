@@ -29,6 +29,7 @@ from app import remote_flow_control
 from app.routers.system_paths import router as system_paths_router
 from app.routers.system_flows import router as system_flows_router
 from app.routers.system_logs import router as system_logs_router
+from app.routers.system_settings import router as system_settings_router
 from app import log_housekeeping, logging_setup
 from app.routers.flow_tasks import router as flow_tasks_router
 from app.local_access import is_host_request, is_server_machine, require_app_access, require_host
@@ -984,6 +985,7 @@ app.include_router(flows.router)
 app.include_router(system_paths_router)
 app.include_router(system_flows_router)
 app.include_router(system_logs_router)
+app.include_router(system_settings_router)
 app.include_router(flow_tasks_router)
 app.include_router(pipelines.router)
 app.include_router(pipeline_insights.router)

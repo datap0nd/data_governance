@@ -8,10 +8,12 @@ the HTTP API: public projections report only whether it exists and its source.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
 import os
+import platform
 import re
 from dataclasses import dataclass, replace
 from typing import Any, Literal
@@ -28,6 +30,43 @@ logger = logging.getLogger(__name__)
 SETTINGS_KEY = "ai_runtime_settings_v1"
 API_KEY_KEY = "ai_api_key_v1"
 SETTINGS_VERSION = 1
+
+# A saved key is kept encrypted for the Windows account the service runs as,
+# so the database file and its backups do not hold it in plain text.
+PROTECTED_PREFIX = "dpapi:"
+
+
+def _windows_protect(data: bytes, protect: bool) -> bytes:
+    from app.flow_credentials import _dpapi
+
+    return _dpapi(data, protect)
+
+
+def protect_api_key(value: str) -> str:
+    """The form a key is stored in. Plain where Windows protection is absent."""
+    if not value or platform.system() != "Windows":
+        return value
+    try:
+        sealed = _windows_protect(value.encode("utf-8"), True)
+    except Exception:
+        logger.warning("Windows could not protect the AI key; it is stored as entered")
+        return value
+    return PROTECTED_PREFIX + base64.b64encode(sealed).decode("ascii")
+
+
+def reveal_api_key(stored: str) -> str:
+    """The usable key for a stored value; empty when it cannot be read."""
+    if not stored.startswith(PROTECTED_PREFIX):
+        return stored
+    try:
+        return _windows_protect(base64.b64decode(stored[len(PROTECTED_PREFIX):]), False).decode("utf-8")
+    except Exception:
+        logger.error(
+            "The saved AI key cannot be read by the Windows account Metronome runs as. "
+            "Enter the key again in System > AI."
+        )
+        return ""
+
 
 Mode = Literal["disabled", "preview", "qwen"]
 ProviderProfile = Literal["auto", "qwen_vllm", "openai_compatible"]
@@ -400,7 +439,7 @@ def _settings_from_rows(settings_row, key_row) -> AIRuntimeSettings:
     if key_row is not None:
         # Row presence is authoritative. An explicit empty tombstone prevents
         # `clear_api_key` from silently resurrecting DG_AI_API_KEY on reload.
-        stored_key = str(key_row["value"] or "")
+        stored_key = reveal_api_key(str(key_row["value"] or ""))
         resolved = replace(
             resolved,
             api_key=stored_key,
@@ -531,7 +570,7 @@ def save_runtime_settings(conn, update: AISettingsUpdate) -> AIRuntimeSettings:
                VALUES (?, ?, CURRENT_TIMESTAMP)
                ON CONFLICT(key) DO UPDATE SET
                    value=excluded.value, updated_at=CURRENT_TIMESTAMP""",
-            (API_KEY_KEY, submitted_key),
+            (API_KEY_KEY, protect_api_key(submitted_key)),
         )
     elif update.clear_api_key or endpoint_origin_changed:
         conn.execute(
@@ -546,7 +585,27 @@ def save_runtime_settings(conn, update: AISettingsUpdate) -> AIRuntimeSettings:
 
 def initialize_runtime_settings() -> AIRuntimeSettings:
     """Validate the effective startup configuration after schema migration."""
+    protect_stored_api_key()
     return load_runtime_settings()
+
+
+def protect_stored_api_key() -> bool:
+    """Encrypt a key saved before keys were protected. Returns whether it did."""
+    try:
+        with get_db() as db:
+            row = db.execute("SELECT value FROM app_settings WHERE key=?", (API_KEY_KEY,)).fetchone()
+            plain = str(row["value"] or "") if row else ""
+            if not plain or plain.startswith(PROTECTED_PREFIX):
+                return False
+            sealed = protect_api_key(plain)
+            if sealed == plain:
+                return False
+            # The saved time is when the key was entered, so it is left alone.
+            db.execute("UPDATE app_settings SET value=? WHERE key=?", (sealed, API_KEY_KEY))
+            return True
+    except Exception:
+        logger.exception("Could not protect the saved AI key")
+        return False
 
 
 def sanitize_ai_error(value: object, *secrets: str, limit: int = 500) -> str:

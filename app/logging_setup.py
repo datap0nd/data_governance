@@ -49,9 +49,9 @@ def refresh_request_log_mode() -> str:
     """Read the saved mode. Called at start-up and on a timer, never from a
     logging call, so writing a log line cannot wait on the database."""
     try:
-        from app.settings import get_setting
+        from app import settings_registry
 
-        return set_request_log_mode(get_setting(REQUEST_LOG_KEY, DEFAULT_REQUEST_LOG_MODE))
+        return set_request_log_mode(settings_registry.get(REQUEST_LOG_KEY))
     except Exception:
         return _request_log_mode
 

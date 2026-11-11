@@ -23,13 +23,9 @@ from app import config
 
 logger = logging.getLogger("log_housekeeping")
 
-# Stored in app_settings; the Settings page edits the same keys.
+# Declared in app/settings_catalog.py and edited on the Settings page.
 KEEP_DAYS_KEY = "logs.keep_days"
 MAX_TOTAL_MB_KEY = "logs.max_total_mb"
-DEFAULT_KEEP_DAYS = 14
-DEFAULT_MAX_TOTAL_MB = 1024
-KEEP_DAYS_RANGE = (1, 365)
-MAX_TOTAL_MB_RANGE = (50, 102400)
 # Update transcripts and receipts are small; keep the newest ones regardless
 # of age so the Updates page always has recent history to show.
 UPDATE_FILES_KEEP = 20
@@ -50,24 +46,16 @@ def update_directory() -> Path:
     return config.BASE_DIR.parent / "updates"
 
 
-def _bounded_setting(key: str, default: int, bounds: tuple[int, int]) -> int:
-    from app.settings import get_setting
-
-    try:
-        value = int(get_setting(key, str(default)) or default)
-    except (TypeError, ValueError):
-        return default
-    except Exception:  # the database is busy or absent; the default still applies
-        return default
-    return min(bounds[1], max(bounds[0], value))
-
-
 def keep_days() -> int:
-    return _bounded_setting(KEEP_DAYS_KEY, DEFAULT_KEEP_DAYS, KEEP_DAYS_RANGE)
+    from app import settings_registry
+
+    return int(settings_registry.get(KEEP_DAYS_KEY))
 
 
 def max_total_mb() -> int:
-    return _bounded_setting(MAX_TOTAL_MB_KEY, DEFAULT_MAX_TOTAL_MB, MAX_TOTAL_MB_RANGE)
+    from app import settings_registry
+
+    return int(settings_registry.get(MAX_TOTAL_MB_KEY))
 
 
 def _log_files(directory: Path) -> list[dict]:

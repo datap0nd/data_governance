@@ -94,6 +94,46 @@ def set_setting(key: str, value: str) -> None:
     _with_db_retry(_write)
 
 
+def get_all() -> dict[str, str]:
+    """Every saved setting in one read, for the Settings page."""
+    def _read():
+        conn = _get_conn()
+        try:
+            return {row["key"]: row["value"] for row in conn.execute("SELECT key, value FROM app_settings")}
+        finally:
+            conn.close()
+
+    return _with_db_retry(_read)
+
+
+def set_many(values: dict[str, str | None]) -> None:
+    """Save several settings in one transaction; ``None`` removes the saved value."""
+    def _write():
+        conn = _get_conn()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            for key, value in values.items():
+                if value is None:
+                    conn.execute("DELETE FROM app_settings WHERE key = ?", (key,))
+                else:
+                    conn.execute(
+                        """INSERT INTO app_settings (key, value, updated_at)
+                           VALUES (?, ?, CURRENT_TIMESTAMP)
+                           ON CONFLICT(key) DO UPDATE SET
+                               value = excluded.value,
+                               updated_at = CURRENT_TIMESTAMP""",
+                        (key, value),
+                    )
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    _with_db_retry(_write)
+
+
 def get_overall_refresh_time() -> dict:
     hour_raw = get_setting(SETTING_OVERALL_REFRESH_HOUR, str(DEFAULT_OVERALL_REFRESH_HOUR))
     minute_raw = get_setting(SETTING_OVERALL_REFRESH_MINUTE, str(DEFAULT_OVERALL_REFRESH_MINUTE))

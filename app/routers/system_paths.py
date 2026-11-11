@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from app import flow_paths
 from app.database import get_db
-from app.local_access import require_app_access
+from app.local_access import require_app_access, require_host
 from app.routers.eventlog import get_actor, log_event
 
 router = APIRouter(prefix="/api/system/paths", tags=["paths"])
@@ -57,7 +57,7 @@ def validate_paths(body: PathsWrite, request: Request):
 
 @router.put("")
 def put_paths(body: PathsWrite, request: Request):
-    require_app_access(request)
+    require_host(request, "Only the host PC can change where Flows keep their files.")
     try:
         root = flow_paths.validate_root(body.flows_root)
         with get_db() as db:

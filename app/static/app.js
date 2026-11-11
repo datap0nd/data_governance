@@ -13950,6 +13950,7 @@ const pages = {
     changelog: renderChangelog,
     create: renderCreate,
     users: renderUsers,
+    settings: renderSettings,
     dataquality: renderDataQuality,
     dataauditor: () => window.DataAuditor.render(),
     email: renderEmail,
@@ -14094,6 +14095,7 @@ async function navigate(page) {
         if (page === "flows") bindFlowsPage();
         if (page === "create") bindCreatePage();
         if (page === "users") bindUsersPage();
+        if (page === "settings") bindSettingsPage();
         if (page === "changelog") bindChangelogPage();
         if (page === "dataquality") bindDataQualityPage();
         if (page === "dataauditor") window.DataAuditor.bind();
