@@ -326,7 +326,12 @@ async function settingsSave() {
             settingsRefresh(first ? settingsFieldId(first.key) : null);
             return;
         }
-        if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : `The server answered ${response.status}.`);
+        if (!response.ok) {
+            // The server's own sentence says whether anything was saved.
+            const refusal = new Error(typeof payload.detail === 'string' ? payload.detail : `The server answered ${response.status}.`);
+            refusal.fromServer = true;
+            throw refusal;
+        }
         settingsState.sections = payload.sections;
         settingsState.canEdit = Boolean(payload.can_edit);
         settingsState.edits = {};
@@ -338,7 +343,9 @@ async function settingsSave() {
         toast(`Saved ${saved} ${saved === 1 ? 'setting' : 'settings'}.${newRuns ? ' Runs already in progress keep their old values.' : ''}`);
     } catch (error) {
         settingsState.saving = false;
-        settingsState.saveError = `Nothing was saved: ${String(error.message).replace(/\.$/, '')}. Your changes are still here.`;
+        settingsState.saveError = error.fromServer
+            ? `${error.message} Your changes are still here.`
+            : `Nothing was saved: the app could not be reached (${String(error.message).replace(/\.$/, '')}). Your changes are still here.`;
         settingsRefresh();
     }
 }

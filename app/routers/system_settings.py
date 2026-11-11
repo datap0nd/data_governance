@@ -40,20 +40,36 @@ def save_settings(body: SettingsWrite, request: Request):
             "detail": "Nothing was saved. Fix the highlighted settings and save again.",
             "errors": exc.errors,
         })
+    except settings_registry.SaveFailed as exc:
+        if not exc.saved:
+            # Everything was put back; the message says nothing was saved.
+            return JSONResponse(status_code=503, content={"detail": str(exc)})
+        _record(exc.saved, request)
+        labels = ", ".join(record["label"] for record in exc.saved)
+        return JSONResponse(status_code=503, content={
+            "detail": f"Saving stopped part-way. These were saved: {labels}. The rest were not. "
+                      "Reload the page before trying again.",
+        })
     except Exception as exc:
         raise HTTPException(
             503, f"Saving stopped part-way ({type(exc).__name__}). Reload the page to see what was saved, then try again."
         ) from exc
-    if changed:
-        with get_db() as db:
-            for record in changed:
-                log_event(
-                    db, "system", None, "Settings", "setting_changed",
-                    f"{record['label']}: {settings_registry.display(record['old'])} to "
-                    f"{settings_registry.display(record['new'])}",
-                    get_actor(request),
-                )
+    _record(changed, request)
     return {**_state(request), "changed": [record["key"] for record in changed]}
+
+
+def _record(changed: list[dict], request: Request) -> None:
+    """One Event Log entry per setting that changed, with who changed it."""
+    if not changed:
+        return
+    with get_db() as db:
+        for record in changed:
+            log_event(
+                db, "system", None, "Settings", "setting_changed",
+                f"{record['label']}: {settings_registry.display(record['old'])} to "
+                f"{settings_registry.display(record['new'])}",
+                get_actor(request),
+            )
 
 
 class SecretWrite(BaseModel):
