@@ -135,11 +135,17 @@ rejects failed, cancelled, missing or unexpectedly skipped selected work. The PR
 must contain current `main`, and its testing section must record the final run
 URL and tested head SHA before a head-pinned merge.
 
-Application PRs run the full Ubuntu Python collection in two isolated runner
+Application PRs run the full Ubuntu Python collection in six isolated runner
 jobs, plus a small Windows verifier contract job. Pushes to main retain the
-full Windows regression, also in two runners; scheduled/manual runs retain both
+full Windows regression, also in six runners; scheduled/manual runs retain both
 platforms. Within each runner tests remain sequential, and all tests in a file
-stay together. Assignment balances collected test counts, not measured duration.
+stay together. Assignment gives every runner about the same minutes of tests,
+using the seconds each file took in a recorded run
+(`tools/ci/test_durations.json`); a file never timed counts each of its tests
+at the average. The slowest runner sets how long a pull request waits, so when
+one runner has drifted well above the others, download the `python-*-results`
+artifacts of a passing run and refresh the record with
+`python tools/ci/record_durations.py --run <label> <each test-results.xml>`.
 Every shard publishes its collection, selection, completed tests, exit status
 and workflow revision. `Merge ready` audits their union for exact coverage per
 platform and rejects missing, overlapping, unfinished or stale evidence.

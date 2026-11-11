@@ -68,7 +68,10 @@ jobs:
       fail-fast: false
       matrix:
         os: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || github.event_name == 'push' && '["windows-latest"]' || '["ubuntu-latest","windows-latest"]') }}
-        shard: [0, 1]
+        # Six runners, each given about the same minutes of tests (see
+        # tools/ci/pytest_shard.py). Keep this list, --ci-shard-count below
+        # and the audit's --count in step.
+        shard: [0, 1, 2, 3, 4, 5]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -90,7 +93,7 @@ jobs:
         run: >-
           python -m pytest tests -q --durations=20 --junitxml=test-results.xml
           -p tools.ci.pytest_shard --ci-shard-index=${{ matrix.shard }}
-          --ci-shard-count=2 --ci-shard-manifest=shard-manifest.json
+          --ci-shard-count=6 --ci-shard-manifest=shard-manifest.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -224,6 +227,6 @@ jobs:
       - name: Require complete and non-overlapping Python coverage
         if: needs.scope.outputs.application == 'true'
         run: >-
-          python tools/ci/shard_audit.py --root .ci-results --count 2
+          python tools/ci/shard_audit.py --root .ci-results --count 6
           --platforms ${{ github.event_name == 'pull_request' && 'linux' || github.event_name == 'push' && 'win32' || 'linux win32' }}
           --revision ${{ github.sha }}
