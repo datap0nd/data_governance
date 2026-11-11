@@ -1226,3 +1226,94 @@ def test_each_network_commit_lookup_has_a_unique_cache_key(monkeypatch):
 def test_failed_version_refresh_does_not_claim_cached_match(update_env, monkeypatch):
     monkeypatch.setattr(main, "_latest_commit", lambda **kwargs: (DEPLOYED, "offline"))
     assert main.get_version()["up_to_date"] is None
+
+
+def test_idle_check_reserves_exact_latest_commit(update_env, monkeypatch):
+    calls = []
+    monkeypatch.setattr(main, "_latest_commit", lambda **_kwargs: (TARGET, None))
+
+    def reserve(target, source):
+        calls.append((target, source))
+        return {
+            "attempt_id": "attempt-1",
+            "target_commit": target,
+            "status": "launched",
+            "active": True,
+        }
+
+    monkeypatch.setattr(main, "_reserve_and_launch_update", reserve)
+
+    result = main._scheduled_auto_update(force=True)
+
+    assert calls == [(TARGET, "automatic")]
+    assert result["status"] == "update_launched"
+    assert result["last_attempt_commit"] == TARGET
+    assert result["draining"] is False
+    assert not main._AUTO_UPDATE_DRAIN_EVENT.is_set()
+
+
+def test_scheduled_update_launches_the_single_detected_exact_commit(
+    update_env, monkeypatch
+):
+    calls = []
+    latest_calls = []
+    monkeypatch.setattr(
+        main,
+        "_latest_commit",
+        lambda **_kwargs: latest_calls.append(True) or (TARGET, None),
+    )
+    monkeypatch.setattr(
+        main,
+        "_reserve_and_launch_update",
+        lambda target, source: calls.append((target, source))
+        or {
+            "attempt_id": "single-detection",
+            "target_commit": target,
+            "status": "launched",
+            "active": True,
+        },
+    )
+
+    result = main._scheduled_auto_update(force=True)
+
+    assert result["status"] == "update_launched"
+    assert result["latest_commit"] == TARGET
+    assert result["draining"] is False
+    assert not main._AUTO_UPDATE_DRAIN_EVENT.is_set()
+    assert latest_calls == [True]
+    assert calls == [(TARGET, "automatic")]
+
+
+def test_apply_api_launches_the_single_detected_exact_sha(
+    update_env, monkeypatch
+):
+    calls = []
+    latest_calls = []
+    monkeypatch.setattr(
+        main,
+        "_latest_commit",
+        lambda **_kwargs: latest_calls.append(True) or (TARGET, None),
+    )
+    monkeypatch.setattr(
+        main, "_registered_auto_update_task_ready", lambda: (True, None)
+    )
+    monkeypatch.setattr(
+        main,
+        "_reserve_and_launch_update",
+        lambda target, source: calls.append((target, source))
+        or {
+            "attempt_id": "single-manual-detection",
+            "target_commit": target,
+            "status": "launched",
+            "active": True,
+        },
+    )
+    client = TestClient(main.app)
+
+    response = client.post("/api/system/updates/apply")
+
+    assert response.status_code == 202
+    assert response.json()["latest_commit"] == TARGET
+    assert latest_calls == [True]
+    assert calls == [(TARGET, "manual")]
+    assert not main._AUTO_UPDATE_DRAIN_EVENT.is_set()

@@ -1,5 +1,6 @@
 """Project-local settings must stay private while reaching Flow SQL writes."""
 import os
+from pathlib import Path
 
 import pytest
 
@@ -57,6 +58,19 @@ def test_portable_config_reads_nearest_parent(tmp_path, monkeypatch):
     monkeypatch.setenv("DG_UPLOAD_PGUSER", "old")
     exec(CONFIG_SOURCE, namespace)
     assert namespace["UPLOAD_PGUSER"] == "old"
+
+
+def test_template_and_setup_contract():
+    root = Path(__file__).resolve().parents[1]
+    template = (root / ".env.example").read_text(encoding="utf-8")
+    assert [line for line in template.splitlines() if line.startswith("DG_UPLOAD_PG") and not line.startswith("#")] == [
+        "DG_UPLOAD_PGUSER=", "DG_UPLOAD_PGPASSWORD=",
+    ]
+    assert ".env\n" in (root / ".gitignore").read_text(encoding="utf-8")
+    setup = (root / "setup.ps1").read_text(encoding="utf-8")
+    assert "if (-not (Test-Path $EnvFile -PathType Leaf))" in setup
+    assert "${AuditorIdentity}:R" in setup
+    assert "/inheritance:r" in setup
 
 
 def test_write_value_replaces_one_setting_in_place(tmp_path):

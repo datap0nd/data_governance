@@ -28,6 +28,15 @@ DUBAI = ZoneInfo("Asia/Dubai")
 RETRY_JOB = "daily_overall_refresh_retry"
 COLLEAGUE = ("203.0.113.9", 50000)
 HINT = "On the host PC, open Metronome as http://localhost:8000."
+# key -> (today's value, section, the constant the code used before the setting)
+TODAY = {
+    "scan.late_start_hours": (6, "scanner", main._OVERALL_REFRESH_MISFIRE_GRACE_SECONDS / 3600),
+    "scan.retry_minutes": (5, "scanner", main._OVERALL_REFRESH_RETRY_MINUTES),
+    "updates.check_seconds": (90, "updates", main._AUTO_UPDATE_INTERVAL_SECONDS),
+    "updates.retry_minutes": (30, "updates", main._AUTO_UPDATE_RETRY_SECONDS / 60),
+    "backups.daily_time": ("06:00", "updates", main._DAILY_BACKUP_TIME),
+    "backups.keep": (0, "updates", runner.KEEP_ALL_BACKUPS),
+}
 
 
 @pytest.fixture
@@ -81,6 +90,38 @@ def _dubai(hour, minute, *, day=10):
 def _next_run(job):
     moment = job.next_run_time.astimezone(DUBAI)
     return moment.hour, moment.minute
+
+
+# --- Declarations ------------------------------------------------------------------
+
+@pytest.mark.parametrize("key", sorted(TODAY))
+def test_default_is_the_value_the_code_used_before(app_db, key):
+    today, section, constant = TODAY[key]
+    declared = registry.definition(key)
+    assert declared.default == today == constant
+    assert registry.get(key) == today  # nothing saved
+    assert declared.section == section
+
+
+def test_these_rows_are_plain_and_share_their_groups(app_db):
+    groups = {}
+    for key in TODAY:
+        declared = registry.definition(key)
+        groups.setdefault(declared.group, []).append(key)
+        assert declared.help and declared.help.endswith("."), key
+        assert not declared.label.endswith("."), key
+        if declared.kind == "int":
+            assert declared.unit, key
+        for jargon in ("misfire", "TTL", "cron", "_SECONDS", "APScheduler", "commit"):
+            assert jargon not in declared.label and jargon not in declared.help, (key, jargon)
+    assert {group: len(keys) for group, keys in groups.items()} == {"Schedule": 2, "Updates": 2, "Backups": 2}
+    # One setting replaces two constants in app/main.py; both must be its default.
+    assert main._UPDATE_CHECK_TTL_SECONDS == main._AUTO_UPDATE_INTERVAL_SECONDS == 90
+    # A daily refresh must never still count as late when the next day's is due.
+    assert registry.definition("scan.late_start_hours").maximum < 24
+    # Times are entered and shown as Dubai time, the zone the scheduler runs in.
+    assert registry.definition("backups.daily_time").kind == "time"
+    assert str(main.host_timezone()) == "Asia/Dubai"
 
 
 # --- Backups -----------------------------------------------------------------------
