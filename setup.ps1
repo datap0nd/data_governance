@@ -222,13 +222,29 @@ if (-not (Test-Path "$CodeDir\app\main.py")) {
 Write-Host ""
 Write-Host "MX Analytics Setup" -ForegroundColor Cyan
 Write-Host "==================" -ForegroundColor Cyan
-Write-Host "  Code dir:  $CodeDir" -ForegroundColor DarkGray
-Write-Host "  Database:  $DbPath" -ForegroundColor DarkGray
-if (Test-Path $DbPath) {
-    $dbSize = [math]::Round((Get-Item $DbPath).Length / 1024)
-    Write-Host "  DB exists: ${dbSize} KB (will be preserved)" -ForegroundColor Green
+$InstallGuardPath = Join-Path $CodeDir 'tools\setup_install_guard.ps1'
+if (-not (Test-Path $InstallGuardPath -PathType Leaf)) {
+    Write-Host "ERROR: This copy of Metronome is incomplete: tools\setup_install_guard.ps1 is missing." -ForegroundColor Red
+    if (-not $Unattended) { pause }
+    exit 1
+}
+. $InstallGuardPath
+# One statement about one file. These used to be two lines, "Database:" and
+# "DB exists:" or "DB: new", which read as if setup looked for two things.
+Write-Host "  Code folder: $CodeDir" -ForegroundColor DarkGray
+Write-Host "  Database:    $DbPath" -ForegroundColor DarkGray
+if (Test-Path $DbPath -PathType Leaf) {
+    Write-Host "               This file exists: $(Get-MetronomeFileText -Path $DbPath). It is kept." -ForegroundColor Green
 } else {
-    Write-Host "  DB: new (will be created on first run)" -ForegroundColor Yellow
+    Write-Host "               No file at this path. Setup would create a new, empty database here." -ForegroundColor Yellow
+}
+# Metronome started without its service settings looks for its database
+# inside the code folder. Setup never uses that file, so say when one is there.
+$InFolderDb = Join-Path $CodeDir 'governance.db'
+if (Test-Path $InFolderDb -PathType Leaf) {
+    Write-Host "  NOTE: another database file is inside the code folder, and setup does not use it:" -ForegroundColor Yellow
+    Write-Host "               $InFolderDb" -ForegroundColor Yellow
+    Write-Host "               $(Get-MetronomeFileText -Path $InFolderDb)" -ForegroundColor Yellow
 }
 
 # --- One installation per PC ---
@@ -237,13 +253,6 @@ if (Test-Path $DbPath) {
 # (a fresh download, an archive extracted one folder too deep) would build a
 # second, empty Metronome and point the services at it, leaving the real
 # database unused. Stop here, before anything is created, stopped or replaced.
-$InstallGuardPath = Join-Path $CodeDir 'tools\setup_install_guard.ps1'
-if (-not (Test-Path $InstallGuardPath -PathType Leaf)) {
-    Write-Host "ERROR: This copy of Metronome is incomplete: tools\setup_install_guard.ps1 is missing." -ForegroundColor Red
-    if (-not $Unattended) { pause }
-    exit 1
-}
-. $InstallGuardPath
 # DG_SETUP_TEST_SERVICE_ROOT lets the installer's own tests describe an
 # installed service without touching the real one.
 $InstalledLocation = if ($env:DG_SETUP_TEST_SERVICE_ROOT) {

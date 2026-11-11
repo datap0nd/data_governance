@@ -162,6 +162,22 @@ def test_the_installed_location_is_read_from_the_service_settings(places, servic
     assert result.stdout.strip() == f"{places.installed_code}|{places.installed_db}|[]"
 
 
+def test_sizes_are_shown_in_the_unit_that_tells_them_apart():
+    # A new empty database is about 1 MB and a real one can be 1 GB. Printed
+    # in KB they were "1364 KB" and "1364512 KB".
+    result = _powershell(
+        f"$ErrorActionPreference = 'Stop'; . '{GUARD}'; "
+        "\"$(Get-MetronomeSizeText -Bytes 300)|$(Get-MetronomeSizeText -Bytes 1396736)|"
+        "$(Get-MetronomeSizeText -Bytes 1397260288)\""
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    small, medium, large = result.stdout.strip().split("|")
+    assert small == "1 KB"
+    assert medium.endswith(" MB") and medium.startswith("1")
+    assert large.endswith(" GB") and large.startswith("1")
+
+
 def test_restarting_services_that_are_not_installed_does_nothing():
     result = _powershell(
         f"$ErrorActionPreference = 'Stop'; . '{GUARD}'; "
@@ -288,7 +304,10 @@ def test_setup_itself_stops_before_it_creates_or_replaces_anything(places, servi
     output = result.stdout + result.stderr
     assert result.returncode == 1, output
     assert "SETUP STOPPED" in output and str(places.installed_db) in output, output
-    if situation != "no database here":
+    if situation == "no database here":
+        assert "No file at this path." in output, output
+    else:
+        assert "This file exists: 1 KB" in output, output
         assert "never switches Metronome to another database" in output, output
     assert "Nothing was changed." in output, output
     # No database, Python, download, Flow folders or state beside the copy...
