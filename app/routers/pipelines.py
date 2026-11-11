@@ -55,7 +55,15 @@ router = APIRouter(prefix="/api/pipelines", tags=["pipelines"])
 TERMINAL_RUN_STATES = {"succeeded", "failed"}
 FLOW_TERMINAL_STATES = {"succeeded", "failed", "cancelled"}
 PBI_TERMINAL_STATES = {"completed", "failed", "disabled"}
-IDENTITY_MAX_AGE = timedelta(hours=48)
+
+
+def _identity_max_age() -> timedelta:
+    """How recent the lineage scan must be for a pipeline plan (Settings)."""
+    from app import settings_registry
+
+    return timedelta(hours=settings_registry.get("pipelines.scan_max_age_hours"))
+
+
 PLAN_TTL = timedelta(minutes=5)
 WORKER_READY_AGE = timedelta(seconds=90)
 WORKER_START_DEADLINE = timedelta(seconds=60)
@@ -596,7 +604,7 @@ def build_refresh_plan(report_id: int, requester: str | None, *, probe_mvs: bool
                     continue
                 if row["server_name"]:
                     verified = _parse_time(row["verified_at"])
-                    if not verified or _now() - verified > IDENTITY_MAX_AGE:
+                    if not verified or _now() - verified > _identity_max_age():
                         blockers.append(f"PostgreSQL source identity is stale for {row['name']}.")
                     identities[int(row["id"])] = {
                         "source_id": int(row["id"]), "source_name": row["name"],

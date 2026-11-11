@@ -1,0 +1,71 @@
+/* System > Settings. Uses the shared tokens from style.css. */
+.st-header { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: var(--space-md) var(--space-xl); }
+.st-tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-md); }
+.st-tools input[type="search"] { width: 16rem; max-width: 100%; min-height: 34px; padding: 0.35rem 0.6rem; border: 1px solid var(--border-light); border-radius: 5px; background: var(--surface); color: var(--text); font: inherit; font-size: 0.85rem; }
+.st-check { display: inline-flex; align-items: center; gap: 0.35rem; color: var(--text-secondary); font-size: 0.8rem; cursor: pointer; }
+.st-notice { margin-bottom: var(--space-lg); padding: var(--space-sm) var(--space-md); border: 1px solid var(--yellow-border); background: var(--yellow-bg); border-radius: 5px; color: var(--text-secondary); font-size: 0.82rem; }
+.st-notice strong { color: var(--yellow); }
+
+.st-layout { display: grid; grid-template-columns: 13.5rem minmax(0, 1fr); gap: var(--space-xl); align-items: start; padding-bottom: 5rem; }
+.st-rail { display: flex; flex-direction: column; gap: 2px; position: sticky; top: 1rem; }
+.st-rail button { display: flex; justify-content: space-between; align-items: baseline; gap: var(--space-sm); width: 100%; text-align: left; background: transparent; border: 0; border-radius: 5px; padding: 0.45rem 0.65rem; font-size: 0.85rem; font-weight: 500; color: var(--text-secondary); cursor: pointer; }
+.st-rail button:hover { background: var(--surface-hover); filter: none; }
+.st-rail button:active { transform: none; }
+.st-rail button[aria-current="true"] { background: var(--accent-bg); color: var(--text); font-weight: 700; }
+.st-count { font-size: 0.7rem; color: var(--yellow); font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+.st-panel { min-width: 0; font-size: 0.85rem; padding: var(--space-lg) var(--space-xl); }
+.st-panel > header h2 { font-size: 1.05rem; font-weight: 700; }
+.st-panel > header p { color: var(--text-muted); margin-top: 0.15rem; max-width: 70ch; }
+.st-group { border-top: 1px solid var(--border); margin-top: var(--space-lg); padding-top: var(--space-lg); }
+.st-group h3 { font-size: 0.95rem; font-weight: 700; }
+.st-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 19rem); gap: var(--space-sm) var(--space-xl); padding: var(--space-md) 0; border-top: 1px solid var(--surface-2); align-items: start; }
+.st-group h3 + .st-row { border-top: 0; }
+.st-row-text { min-width: 0; }
+.st-row-text label { display: block; font-weight: 600; font-size: 0.86rem; color: var(--text); }
+.st-help { color: var(--text-muted); font-size: 0.8rem; margin-top: 0.1rem; max-width: 62ch; overflow-wrap: anywhere; }
+.st-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem 0.4rem; margin-top: 0.4rem; }
+.st-chip { font-size: 0.7rem; font-weight: 600; padding: 0.05rem 0.45rem; border-radius: 999px; border: 1px solid var(--border); color: var(--text-muted); background: var(--surface-2); white-space: nowrap; }
+.st-chip-set { color: var(--accent); border-color: var(--accent-border); background: var(--accent-bg); }
+.st-chip-unsaved { color: var(--yellow); border-color: var(--yellow-border); background: var(--yellow-bg); }
+button.st-link { background: none; border: 0; padding: 0; color: var(--accent); font-size: 0.78rem; font-weight: 600; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+button.st-link:hover { filter: none; }
+
+.st-row-control { min-width: 0; display: flex; flex-direction: column; gap: 0.3rem; }
+.st-field { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm); }
+.st-field input, .st-field select, .st-field textarea { min-height: 34px; min-width: 0; padding: 0.3rem 0.55rem; border: 1px solid var(--border-light); border-radius: 5px; background: var(--surface); color: var(--text); font: inherit; font-size: 0.85rem; }
+.st-field input[type="number"] { width: 7rem; font-variant-numeric: tabular-nums; }
+.st-field input[type="time"] { width: 7.5rem; font-variant-numeric: tabular-nums; }
+.st-field input[type="text"], .st-field select, .st-field textarea { flex: 1 1 10rem; width: 100%; }
+.st-field textarea { resize: vertical; min-height: 3.2rem; }
+.st-field input:disabled, .st-field select:disabled, .st-field textarea:disabled { background: var(--surface-2); color: var(--text-muted); cursor: not-allowed; }
+.st-field input[aria-invalid="true"], .st-field textarea[aria-invalid="true"] { border-color: var(--red); }
+.st-mono { font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace; font-size: 0.78rem; }
+.st-unit { color: var(--text-muted); font-size: 0.8rem; }
+.st-error { color: var(--red); font-size: 0.78rem; font-weight: 500; }
+.st-toggle { display: inline-flex; align-items: center; gap: 0.45rem; cursor: pointer; font-size: 0.84rem; }
+.st-toggle input { width: 1.05rem; height: 1.05rem; accent-color: var(--accent); }
+.st-empty { color: var(--text-muted); padding: var(--space-xl) 0; }
+.st-links { margin: var(--space-sm) 0 0; padding-left: var(--space-lg); display: grid; gap: var(--space-xs); }
+.st-links a { color: var(--accent); font-weight: 600; }
+
+.st-logs { margin-top: var(--space-md); padding-top: var(--space-md); border-top: 1px solid var(--surface-2); display: grid; gap: var(--space-sm); }
+.st-logs table { width: auto; font-size: 0.8rem; }
+.st-logs td, .st-logs th { padding: 0.2rem 0.9rem 0.2rem 0; text-align: left; font-variant-numeric: tabular-nums; }
+
+.st-savebar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 50; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-sm) var(--space-lg); padding: var(--space-md) 2rem; background: var(--surface); border-top: 1px solid var(--border); box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.08); }
+.st-savebar-message { font-size: 0.84rem; font-weight: 600; }
+.st-savebar-message.st-bad { color: var(--red); }
+.st-savebar-actions { display: flex; gap: var(--space-sm); }
+
+@media (max-width: 900px) {
+    .st-layout { grid-template-columns: minmax(0, 1fr); gap: var(--space-md); }
+    .st-rail { position: static; flex-direction: row; flex-wrap: wrap; gap: var(--space-xs); }
+    .st-rail button { width: auto; white-space: nowrap; border: 1px solid var(--border); background: var(--surface); }
+    .st-panel { padding: var(--space-lg); }
+    .st-savebar { padding: var(--space-md) 1rem; }
+}
+@media (max-width: 640px) {
+    .st-row { grid-template-columns: minmax(0, 1fr); }
+    .st-tools, .st-tools input[type="search"] { width: 100%; }
+}
