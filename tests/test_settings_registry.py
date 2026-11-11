@@ -44,9 +44,13 @@ def test_every_setting_is_well_formed_and_sits_in_a_known_section():
     for item in declared:
         assert item.section in registry.SECTION_IDS and item.kind in registry.KINDS, item.key
         assert item.label and not item.label.endswith("."), item.key
+        if item.kind == "secret":
+            assert item.store == "file" and item.default is None, item.key
+            continue
         if item.kind in ("int", "float"):
             assert item.minimum is not None and item.maximum is not None, item.key
-            assert item.minimum <= item.default <= item.maximum, item.key
+            if not (item.optional and item.default == ""):
+                assert item.minimum <= item.default <= item.maximum, item.key
         if item.kind == "choice":
             assert item.default in item.choices, item.key
             assert not item.choice_labels or len(item.choice_labels) == len(item.choices), item.key

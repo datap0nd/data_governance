@@ -69,3 +69,13 @@ button.st-link:hover { filter: none; }
     .st-row { grid-template-columns: minmax(0, 1fr); }
     .st-tools, .st-tools input[type="search"] { width: 100%; }
 }
+
+.st-group-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--space-sm) var(--space-lg); }
+.st-group-head + .st-row { border-top: 0; }
+.st-test { margin-top: var(--space-sm); font-size: 0.8rem; font-weight: 600; }
+.st-ok { color: var(--green); }
+.st-bad { color: var(--red); }
+.st-secret { font-size: 0.84rem; color: var(--text-secondary); }
+.st-secret strong { color: var(--text); font-weight: 600; }
+.st-confirm { font-size: 0.8rem; color: var(--text-secondary); border: 1px solid var(--red-border); background: var(--red-bg); padding: var(--space-sm) var(--space-md); border-radius: 5px; }
+.st-field input[type="password"] { flex: 1 1 10rem; width: 100%; }

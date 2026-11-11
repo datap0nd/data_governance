@@ -475,6 +475,7 @@ def describe() -> list[dict]:
                 "placeholder": setting.placeholder, "optional": setting.optional,
                 "default": setting.default, "value": value, "source": source,
                 "applies": setting.applies, "applies_text": APPLIES[setting.applies],
+                "source_text": _source_text(setting, source),
                 "saved": source != "default" if setting.kind == "secret" else None,
             })
         sections.append({
@@ -485,6 +486,16 @@ def describe() -> list[dict]:
                       for label, page, note in SECTION_LINKS.get(section_id, ())],
         })
     return sections
+
+
+def _source_text(setting: Setting, source: str) -> str:
+    if source == "app":
+        return "Set here"
+    if source == "env":
+        # For a settings-file value the file is "here", so anything else that
+        # supplies it is the Windows environment the service was started with.
+        return "From the Windows environment" if setting.store == "file" else "From the .env file"
+    return "Not set" if setting.store == "file" and setting.default in ("", None) else "Default"
 
 
 def save(changes: dict[str, Any]) -> list[dict]:

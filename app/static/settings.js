@@ -5,9 +5,8 @@
 let settingsState = {
     sections: [], canEdit: false, section: null, query: '', onlyChanged: false,
     edits: {}, errors: {}, saving: false, saveError: '', loadError: null, logs: null, logsMessage: '',
+    secretEditing: null, secretConfirming: null, secretError: '', tests: {},
 };
-
-const SETTINGS_SOURCE_TEXT = { default: 'Default', app: 'Set here', env: 'From the .env file' };
 
 function settingsRows() {
     const rows = [];
@@ -37,6 +36,7 @@ function settingsCurrent(row) {
 }
 
 function settingsIsDirty(row) {
+    if (row.kind === 'secret') return false;
     if (!Object.prototype.hasOwnProperty.call(settingsState.edits, row.key)) return false;
     const edit = settingsState.edits[row.key];
     // A pending reset (null) is a change whenever something is saved here.
@@ -65,15 +65,39 @@ function settingsMetaHtml(row) {
     const pendingReset = settingsState.edits[row.key] === null;
     const chips = [];
     if (dirty) chips.push(`<span class="st-chip st-chip-unsaved">${pendingReset ? 'Will reset' : 'Unsaved'}</span>`);
-    else chips.push(`<span class="st-chip ${row.source === 'app' ? 'st-chip-set' : ''}">${SETTINGS_SOURCE_TEXT[row.source] || 'Default'}</span>`);
+    else chips.push(`<span class="st-chip ${row.source === 'app' ? 'st-chip-set' : ''}">${esc(row.source_text || 'Default')}</span>`);
     chips.push(`<span class="st-chip">${esc(row.applies_text)}</span>`);
+    if (row.kind === 'secret') return chips.join('');
     const canReset = settingsState.canEdit && !pendingReset && (row.source === 'app' || dirty);
     const reset = canReset
         ? `<button type="button" class="st-link" data-st-reset="${esc(row.key)}">Reset to default (${esc(settingsShow(row, row.default))})</button>` : '';
     return chips.join('') + reset;
 }
 
+// A password is never sent to the browser: the row says whether one is saved,
+// and offers to replace or clear it.
+function settingsSecretHtml(row) {
+    const id = settingsFieldId(row.key);
+    const off = !settingsState.canEdit ? ' disabled' : '';
+    if (settingsState.secretEditing === row.key) {
+        return `<div class="st-field"><input type="password" id="${id}" autocomplete="new-password" placeholder="New value" aria-label="New ${esc(row.label.toLowerCase())}"></div>
+            <div class="st-field"><button type="button" class="btn-sm" data-st-secret-save="${esc(row.key)}">Save</button>
+            <button type="button" class="btn-sm btn-outline" data-st-secret-cancel>Cancel</button></div>
+            ${settingsState.secretError ? `<p class="st-error" role="alert">${esc(settingsState.secretError)}</p>` : ''}`;
+    }
+    if (settingsState.secretConfirming === row.key) {
+        return `<p class="st-confirm">Clear the saved ${esc(row.label.toLowerCase())}? Whatever signs in with it stops working until a new one is saved.</p>
+            <div class="st-field"><button type="button" class="btn-sm btn-red" data-st-secret-clear="${esc(row.key)}">Clear it</button>
+            <button type="button" class="btn-sm btn-outline" data-st-secret-cancel>Keep it</button></div>
+            ${settingsState.secretError ? `<p class="st-error" role="alert">${esc(settingsState.secretError)}</p>` : ''}`;
+    }
+    return `<div class="st-secret">${row.saved ? '<strong>Saved</strong> <span aria-hidden="true">••••••••</span>' : 'Not set'}</div>
+        <div class="st-field"><button type="button" class="btn-sm btn-outline" id="${id}" data-st-secret-edit="${esc(row.key)}"${off}>${row.saved ? 'Replace' : 'Add'}</button>
+        ${row.saved && row.source === 'app' ? `<button type="button" class="btn-sm btn-outline" data-st-secret-ask="${esc(row.key)}"${off}>Clear</button>` : ''}</div>`;
+}
+
 function settingsControlHtml(row) {
+    if (row.kind === 'secret') return settingsSecretHtml(row);
     const id = settingsFieldId(row.key);
     const value = settingsState.edits[row.key] === null ? row.default : settingsCurrent(row);
     const off = !settingsState.canEdit || settingsState.saving ? ' disabled' : '';
@@ -134,7 +158,12 @@ function settingsGroupHtml(section, group, prefix) {
     const rows = group.settings.map(row => ({ ...row, section, group })).filter(settingsMatches);
     if (!rows.length) return '';
     const extra = section.id === 'updates' && group.title === 'Logs' && !settingsState.query && !settingsState.onlyChanged ? settingsLogsHtml() : '';
-    return `<div class="st-group"><h3>${prefix ? esc(prefix) + ' · ' : ''}${esc(group.title)}</h3>${rows.map(settingsRowHtml).join('')}${extra}</div>`;
+    const test = group.test ? settingsState.tests[group.test] : null;
+    const testButton = group.test && settingsState.canEdit
+        ? `<button type="button" class="btn-sm btn-outline" data-st-test="${esc(group.test)}"${test === 'busy' ? ' disabled' : ''}>${test === 'busy' ? 'Testing…' : 'Test connection'}</button>` : '';
+    const testLine = test && test !== 'busy'
+        ? `<p class="st-test ${test.ok ? 'st-ok' : 'st-bad'}" role="status">${esc(test.message)}</p>` : '';
+    return `<div class="st-group"><div class="st-group-head"><h3>${prefix ? esc(prefix) + ' · ' : ''}${esc(group.title)}</h3>${testButton}</div>${testLine}${rows.map(settingsRowHtml).join('')}${extra}</div>`;
 }
 
 function settingsPanelHtml() {
@@ -270,6 +299,55 @@ async function settingsSave() {
     }
 }
 
+async function settingsSecretAction(button) {
+    const data = button.dataset;
+    settingsState.secretError = '';
+    if ('stSecretCancel' in data) { settingsState.secretEditing = null; settingsState.secretConfirming = null; settingsRefresh(); return; }
+    if (data.stSecretEdit) { settingsState.secretEditing = data.stSecretEdit; settingsState.secretConfirming = null; settingsRefresh(settingsFieldId(data.stSecretEdit)); return; }
+    if (data.stSecretAsk) { settingsState.secretConfirming = data.stSecretAsk; settingsState.secretEditing = null; settingsRefresh(); return; }
+    const key = data.stSecretSave || data.stSecretClear;
+    const row = settingsRow(key);
+    const clearing = Boolean(data.stSecretClear);
+    const input = document.getElementById(settingsFieldId(key));
+    if (!clearing && !input.value) { settingsState.secretError = 'Enter the new value, or choose Cancel.'; settingsRefresh(settingsFieldId(key)); return; }
+    button.disabled = true;
+    try {
+        const response = await fetch(`/api/system/settings/secret/${encodeURIComponent(key)}`, clearing
+            ? { method: 'DELETE', headers: apiHeaders() }
+            : { method: 'PUT', headers: apiHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ value: input.value }) });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : `The server answered ${response.status}.`);
+        settingsState.sections = payload.sections;
+        settingsState.secretEditing = null; settingsState.secretConfirming = null;
+        settingsRefresh();
+        toast(clearing ? `${row.label} cleared.` : `${row.label} saved. It is used from the next sign-in; nothing needs restarting.`);
+    } catch (error) {
+        // The typed value stays in the field so it can be corrected or retried.
+        settingsState.secretError = error.message;
+        const typed = input ? input.value : '';
+        settingsRefresh(settingsFieldId(key));
+        const field = document.getElementById(settingsFieldId(key));
+        if (field && field.type === 'password') field.value = typed;
+    }
+}
+
+async function settingsTest(name) {
+    const group = settingsState.sections.flatMap(section => section.groups.map(item => ({ ...item, section }))).find(item => item.test === name);
+    const unsaved = group && group.settings.some(row => settingsIsDirty({ ...row, section: group.section, group }));
+    if (unsaved) {
+        settingsState.tests[name] = { ok: false, message: 'Save your changes first. The test signs in with the saved values.' };
+        settingsRefresh(); return;
+    }
+    settingsState.tests[name] = 'busy';
+    settingsRefresh();
+    try {
+        settingsState.tests[name] = await apiPost(`/api/system/settings/test/${encodeURIComponent(name)}`);
+    } catch (error) {
+        settingsState.tests[name] = { ok: false, message: `The test did not run: ${error.message}` };
+    }
+    settingsRefresh();
+}
+
 function bindSettingsPage() {
     const page = $('#st-page');
     if (!page) {
@@ -315,6 +393,10 @@ function bindSettingsPage() {
             delete settingsState.errors[row.key];
             settingsRefresh(); return;
         }
+        const secretButton = event.target.closest('[data-st-secret-edit], [data-st-secret-ask], [data-st-secret-cancel], [data-st-secret-save], [data-st-secret-clear]');
+        if (secretButton) { await settingsSecretAction(secretButton); return; }
+        const testButton = event.target.closest('[data-st-test]');
+        if (testButton) { await settingsTest(testButton.dataset.stTest); return; }
         const link = event.target.closest('[data-st-page]');
         if (link) { event.preventDefault(); navigate(link.dataset.stPage); return; }
         if (event.target.id === 'st-save') { settingsSave(); return; }
