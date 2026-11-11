@@ -191,16 +191,20 @@ def _move(page, button, deadline: float, log: dict) -> bool:
         page.wait_for_timeout(RENDER_POLL_MS)
 
 
-def select(page, step: dict, progress=None) -> dict:
+def select(page, step: dict, progress=None, *, deadline_seconds: float | None = None) -> dict:
     """Reveal and click a bookmark without changing the recorded journey.
 
     ``progress`` is the recording's existing progress channel; it raises when
     the run is cancelled, so it is called before every movement.
+    ``deadline_seconds`` is the recorded-action limit a job carries; without
+    it the built-in step deadline applies.
     """
     target = step["bookmark_target"]
     name = target["bookmark_name"]
     started = time.monotonic()
-    deadline = started + DEADLINE_SECONDS
+    deadline = started + (DEADLINE_SECONDS if deadline_seconds is None else deadline_seconds)
+    # The message names the limit in force: the job's, or the built-in 120.
+    named_limit = 120 if deadline_seconds is None else int(deadline_seconds)
     log = {"strategy": "favorite-scrollbar", "movement": False, "rendered": False,
            "movements": 0, "presses": 0, "top_established": False, "collided": False,
            "folder_confirmed": False, "reason": None, "scope": target.get("scope")}
@@ -210,7 +214,7 @@ def select(page, step: dict, progress=None) -> dict:
             progress({"phase": phase, "bookmark": dict(log)})
         if time.monotonic() >= deadline:
             log["reason"] = "deadline"
-            raise BookmarkSelectionError(f"GSCM Favorite bookmark {name!r} was not rendered within the 120-second step deadline.", log)
+            raise BookmarkSelectionError(f"GSCM Favorite bookmark {name!r} was not rendered within the {named_limit}-second step deadline.", log)
 
     identity, competitors = _identity(page, target, log)
     name = identity["identity_name"]

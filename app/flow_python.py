@@ -276,8 +276,12 @@ def saved_scripts(flow: dict) -> list[str]:
     return saved_steps(flow)[0]
 
 
-def job_section(flow: dict) -> dict:
-    """Build ``job["python_source"]`` from a ``_flow_out`` dict."""
+def job_section(flow: dict, *, default_timeout_minutes: int | None = None) -> dict:
+    """Build ``job["python_source"]`` from a ``_flow_out`` dict.
+
+    ``default_timeout_minutes`` is the Settings value the server passes for a
+    Flow saved without its own time limit; without it the built-in applies.
+    """
     enabled = (flow.get("source_type") or "portal") == SOURCE_TYPE
     destination = "sql" if flow.get("sql_handoff_enabled") else "file"
     output_format = str(flow.get("file_format") or "csv").strip().casefold()
@@ -293,7 +297,9 @@ def job_section(flow: dict) -> dict:
         "values": values,
         "output_format": output_format,
         "destination": destination,
-        "timeout_seconds": int(flow.get("python_timeout_minutes") or 60) * 60,
+        "timeout_seconds": int(
+            flow.get("python_timeout_minutes") or default_timeout_minutes or SCRIPT_TIMEOUT_SECONDS // 60
+        ) * 60,
     }
 
 

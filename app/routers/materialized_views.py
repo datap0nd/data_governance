@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 from app import flow_sql
 from app.config import UPLOAD_PGHOST, UPLOAD_PGPORT
 from app.database import get_db
-from app.flow_view_refresh import LOCK_TIMEOUT_MS, STATEMENT_TIMEOUT_MS
+from app import settings_registry
 from app.routers.eventlog import get_actor, log_event
 from app.source_identity import normalize_server, postgres_server_identity
 
@@ -77,31 +77,39 @@ def _refresh_materialized_view(engine, identity: dict) -> str:
         f"{flow_sql._quote_identifier(identity['schema_name'])}."
         f"{flow_sql._quote_identifier(identity['relation_name'])}"
     )
+    lock_ms, statement_ms = _refresh_limits_ms()
     with engine.begin() as connection:
         # Same backstops as the full-pipeline stage and the post-SQL Flow
         # refresh: never wait for a lock, or run, without a limit.
-        connection.execute(text(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT_MS}ms'"))
-        connection.execute(text(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT_MS}ms'"))
+        connection.execute(text(f"SET LOCAL lock_timeout = '{lock_ms}ms'"))
+        connection.execute(text(f"SET LOCAL statement_timeout = '{statement_ms}ms'"))
         connection.execute(text(f"REFRESH MATERIALIZED VIEW {qualified_name}"))
     return f"{identity['database_name']}.{identity['schema_name']}.{identity['relation_name']}"
 
 
+def _refresh_limits_ms() -> tuple[int, int]:
+    """The lock wait and longest refresh from Settings, in milliseconds."""
+    limits = settings_registry.snapshot(("flows.view_lock_minutes", "flows.view_refresh_minutes"))
+    return int(limits["flows.view_lock_minutes"]) * 60_000, int(limits["flows.view_refresh_minutes"]) * 60_000
+
+
 def _timeout_error(exc: Exception) -> HTTPException | None:
     """Explain a lock or statement timeout; None for any other failure."""
+    lock_ms, statement_ms = _refresh_limits_ms()
     original = getattr(exc, "orig", None) or exc
     lower = str(original).lower()
     if getattr(original, "pgcode", None) == "55P03" or "lock timeout" in lower:
         return HTTPException(
             409,
             "Materialized view refresh did not start: another refresh or query kept the "
-            f"view locked for more than {LOCK_TIMEOUT_MS // 60_000} minutes (for example a "
+            f"view locked for more than {lock_ms // 60_000} minutes (for example a "
             "pg_cron or pipeline refresh). Wait for it to finish, then retry.",
         )
     if "statement timeout" in lower:
         return HTTPException(
             504,
             "Materialized view refresh was stopped after running for "
-            f"{STATEMENT_TIMEOUT_MS // 60_000} minutes (statement timeout). "
+            f"{statement_ms // 60_000} minutes (statement timeout). "
             "The view keeps its previous contents.",
         )
     return None

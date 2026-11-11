@@ -4,9 +4,10 @@ Every producing flow run saves its immutable files into an owned subfolder,
 named ``#<run_id>_<dd-mm-yyyy>``. The parent is either the configured target
 (``run_folders``) or the target's hashed worker-private store
 (``direct_replace``). The Metronome server keeps only the newest three run
-folders per parent: it records each folder when the worker registers it,
-decides transactionally which recorded folders are old enough to remove, and
-hands the worker pre-recorded retention operations to execute.
+folders per parent (``RUN_FOLDER_KEEP``, or the number saved in Settings): it
+records each folder when the worker registers it, decides transactionally
+which recorded folders are old enough to remove, and hands the worker
+pre-recorded retention operations to execute.
 
 This module is the only place in the worker that deletes anything, and it
 deletes only what an operation from the server names: a path the server itself

@@ -25,6 +25,9 @@ from app.database import get_db
 from app.flow_clock import TIMEZONE
 
 EMAIL_PATTERN = re.compile(r"^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$")
+# MAX_RECIPIENTS and MAX_ATTACHMENT_BYTES are the defaults of the two Email
+# settings; the limits in force are read with recipient_limit() and
+# attachment_limit_bytes() at the moment of use.
 MAX_RECIPIENTS = 20
 MAX_ADDRESS_LENGTH = 254
 MAX_SUBJECT_LENGTH = 200
@@ -47,6 +50,20 @@ STATUS_LABELS = {
 }
 
 
+def recipient_limit() -> int:
+    """The most addresses an Email step may be saved with: the Settings value."""
+    from app import settings_registry
+
+    return int(settings_registry.get("email.flow_max_recipients"))
+
+
+def attachment_limit_bytes() -> int:
+    """The largest total attachment size: the Settings value, in bytes."""
+    from app import settings_registry
+
+    return int(settings_registry.get("email.flow_attachment_mb")) * 1024 * 1024
+
+
 def default_config() -> dict:
     return {"enabled": False, "recipients": [], "subject": None}
 
@@ -62,7 +79,13 @@ def split_recipients(value) -> list[str]:
     return [str(item or "").strip() for item in value if str(item or "").strip()]
 
 
-def normalize_recipients(value) -> list[str]:
+def normalize_recipients(value, *, stored: bool = False) -> list[str]:
+    """Valid, de-duplicated addresses, capped at the Settings limit.
+
+    ``stored`` reads addresses that were accepted when the Flow was saved:
+    lowering the limit afterwards must not silently switch that Flow's email
+    off, so their count is not checked again until the Flow is next saved.
+    """
     result: list[str] = []
     seen: set[str] = set()
     for address in split_recipients(value):
@@ -73,12 +96,13 @@ def normalize_recipients(value) -> list[str]:
             continue
         seen.add(key)
         result.append(address)
-    if len(result) > MAX_RECIPIENTS:
-        raise ValueError(f"Choose at most {MAX_RECIPIENTS} recipients for the Email step.")
+    limit = None if stored else recipient_limit()
+    if limit is not None and len(result) > limit:
+        raise ValueError(f"Choose at most {limit} recipients for the Email step.")
     return result
 
 
-def normalize_config(value) -> dict:
+def normalize_config(value, *, stored: bool = False) -> dict:
     """Validate a Flow's saved Email step; absent or disabled input reads as Off."""
     if value is None:
         return default_config()
@@ -87,7 +111,7 @@ def normalize_config(value) -> dict:
     enabled = bool(value.get("enabled"))
     if not enabled:
         return default_config()
-    recipients = normalize_recipients(value.get("recipients"))
+    recipients = normalize_recipients(value.get("recipients"), stored=stored)
     if not recipients:
         raise ValueError("Enter at least one recipient email address for the Email step.")
     subject = value.get("subject")
@@ -101,7 +125,7 @@ def saved_config(raw) -> dict:
     """Read a stored JSON column; malformed data means Off."""
     try:
         value = json.loads(raw) if isinstance(raw, str) and raw else raw
-        return normalize_config(value)
+        return normalize_config(value, stored=True)
     except (ValueError, TypeError):
         return default_config()
 
@@ -200,11 +224,12 @@ def attachment_plan(files: list[dict], extra_bytes: int = 0) -> tuple[bool, int,
 
     ``extra_bytes`` is what a script-written body's images already take."""
     total = sum(int(item.get("file_size") or 0) for item in files) + int(extra_bytes)
-    if total <= MAX_ATTACHMENT_BYTES:
+    limit = attachment_limit_bytes()
+    if total <= limit:
         return True, total, None
     return False, total, (
         f"Attachments skipped: {_megabytes(total)} MB exceeds the "
-        f"{MAX_ATTACHMENT_BYTES // (1024 * 1024)} MB limit; the email names the file location."
+        f"{limit // (1024 * 1024)} MB limit; the email names the file location."
     )
 
 

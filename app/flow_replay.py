@@ -39,8 +39,10 @@ Safety properties, in order of importance:
   always comes live from the browser profile at replay time. A portal that
   authorizes exports some other way simply falls back to the browser flow.
 
-Kill switches: set ``DG_FLOW_REPLAY=0`` in the worker's environment, or
-``downloads.network_replay: false`` on one flow.
+Switches: the Settings page turns replay on or off for every new run (the
+choice is frozen into the job as ``limits.network_replay``), and one flow can
+opt out with ``downloads.network_replay: false``. A job that carries no frozen
+choice follows ``DG_FLOW_REPLAY=0`` in the worker's environment, as before.
 """
 
 from __future__ import annotations
@@ -54,6 +56,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app import flow_job_limits
 from app.flow_download_security import looks_like_sign_in
 
 RECIPES_FILENAME = ".export_replay.json"
@@ -94,11 +97,15 @@ EXPORT_CONTENT_TYPES = (
 def enabled(job: dict) -> bool:
     """Whether capture and replay apply to this job at all.
 
-    The environment variable is the operator's kill switch and wins over the
-    per-flow setting; a flow can also opt out on its own with
-    ``downloads.network_replay: false``.
+    The operator's switch wins over the per-flow setting: the choice frozen
+    into the job when the server queued it, or, for a job without one, the
+    ``DG_FLOW_REPLAY`` variable in this worker's environment. A flow can also
+    opt out on its own with ``downloads.network_replay: false``.
     """
-    if os.environ.get("DG_FLOW_REPLAY", "").strip().casefold() in {
+    frozen = flow_job_limits.value(job, "network_replay")
+    if frozen is False:
+        return False
+    if frozen is None and os.environ.get("DG_FLOW_REPLAY", "").strip().casefold() in {
         "0", "false", "off", "no",
     }:
         return False
@@ -316,7 +323,7 @@ def recipe_key(job: dict, task_key: str) -> str:
     }, sort_keys=True, default=str)
 
 
-def _recipe_expired(recipe: dict) -> bool:
+def _recipe_expired(recipe: dict, max_age_days: float = RECIPE_MAX_AGE_DAYS) -> bool:
     try:
         captured = datetime.fromisoformat(str(recipe.get("captured_at")))
     except (TypeError, ValueError):
@@ -324,7 +331,7 @@ def _recipe_expired(recipe: dict) -> bool:
     if captured.tzinfo is None:
         captured = captured.replace(tzinfo=timezone.utc)
     age = datetime.now(timezone.utc) - captured
-    return age.days >= RECIPE_MAX_AGE_DAYS or age.total_seconds() < 0
+    return age.days >= max_age_days or age.total_seconds() < 0
 
 
 def load_recipe(profile_dir: Path, job: dict, task_key: str) -> dict | None:
@@ -333,7 +340,7 @@ def load_recipe(profile_dir: Path, job: dict, task_key: str) -> dict | None:
         return None
     if recipe.get("version") != RECIPE_VERSION or not recipe.get("url"):
         return None
-    if _recipe_expired(recipe):
+    if _recipe_expired(recipe, flow_job_limits.value(job, "replay_max_age_days", RECIPE_MAX_AGE_DAYS)):
         forget_recipe(profile_dir, job, task_key)
         return None
     return recipe

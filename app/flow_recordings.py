@@ -51,8 +51,19 @@ def _queued_wait_reason(db, row, job):
     return None
 
 
-def refresh_queued_operation(db, row, now):
-    """Describe capacity waits; bound startup only while a request can run."""
+def startup_seconds() -> int:
+    """How long a recording browser may take to open: the Settings value."""
+    from app import settings_registry
+
+    return int(settings_registry.get('flows.recording_start_seconds'))
+
+
+def refresh_queued_operation(db, row, now, *, startup_limit=None):
+    """Describe capacity waits; bound startup only while a request can run.
+
+    ``startup_limit`` is the allowance in seconds when the caller has already
+    read it for several requests; otherwise it is read from Settings here.
+    """
     from app import flow_capacity
     job = json.loads(row['job_json'])
     previous = json.loads(row['progress_json'] or '{}')
@@ -69,7 +80,7 @@ def refresh_queued_operation(db, row, now):
                    if previous.get('stage') == 'starting_worker'
                    else now if previous.get('stage') == 'waiting_for_capacity'
                    else _timestamp(row['created_at'], now))
-        if (now - started).total_seconds() >= STARTUP_TIMEOUT_SECONDS:
+        if (now - started).total_seconds() >= (startup_seconds() if startup_limit is None else startup_limit):
             message = ('The recording browser did not start. Try again. '
                        'If it repeats, check Flow workers in System.')
             return fail_queued_operation(db, row['id'], message, now)
@@ -112,8 +123,9 @@ def reap(db, *, restarted_worker=None, timeout_seconds=180):
     # registered or claimed the operation. Detect crashes before registration.
     queued = db.execute('''SELECT c.* FROM flow_recording_sessions s
         JOIN flow_catalog_scans c ON c.id=s.scan_id WHERE c.status='queued' ORDER BY c.id''').fetchall()
+    startup_limit = startup_seconds() if queued else None
     for row in queued:
-        refresh_queued_operation(db, row, now)
+        refresh_queued_operation(db, row, now, startup_limit=startup_limit)
 
 
 def assert_flow_idle(db, flow_id):
@@ -127,7 +139,9 @@ def assert_flow_idle(db, flow_id):
 
 def config_hash(job, *, legacy=False):
     clean = copy.deepcopy(job)
-    for key in ('recording', 'recording_parameters', 'resume', 'sql_retry', 'view_retry', 'job_type', 'post_sql_refresh', 'email_delivery'):
+    # 'limits' are this installation's Settings, not the Flow's configuration:
+    # changing one must neither undo a recording's test nor block a resume.
+    for key in ('recording', 'recording_parameters', 'resume', 'sql_retry', 'view_retry', 'job_type', 'post_sql_refresh', 'email_delivery', 'limits'):
         clean.pop(key, None)
     # Browser validation runs headed; the intended production mode remains a
     # compatibility attribute tested independently when changing it.

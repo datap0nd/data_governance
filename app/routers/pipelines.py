@@ -66,7 +66,7 @@ def _identity_max_age() -> timedelta:
 
 
 PLAN_TTL = timedelta(minutes=5)
-WORKER_READY_AGE = timedelta(seconds=90)
+WORKER_READY_AGE = timedelta(seconds=90)  # the default; see flow_capacity.online_seconds
 WORKER_START_DEADLINE = timedelta(seconds=60)
 FLOW_CLAIM_DEADLINE = timedelta(minutes=10)
 FLOW_WATCHDOG = timedelta(hours=12)
@@ -260,7 +260,8 @@ def _topological_mvs(mv_ids: set[int], edges: list[tuple[int, int]]) -> tuple[li
 
 
 def _worker_readiness(db, modes: set[str]) -> list[dict]:
-    cutoff = _iso(_now() - WORKER_READY_AGE)
+    # The same window every other page uses to call a worker online (Settings).
+    cutoff = _iso(_now() - timedelta(seconds=flow_capacity.online_seconds()))
     result = []
     for mode in sorted(modes):
         identities = [flow_capacity.worker_id(slot, mode) for slot in range(1, flow_capacity.capacity(db, mode) + 1)]
