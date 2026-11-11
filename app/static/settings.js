@@ -107,7 +107,7 @@ function settingsControlHtml(row) {
         ? `${Number(row.minimum).toLocaleString('en')} to ${Number(row.maximum).toLocaleString('en')}` : '';
     let html;
     if (row.kind === 'int' || row.kind === 'float') {
-        html = `<div class="st-field"><input type="number" id="${id}" data-st-key="${esc(row.key)}" value="${esc(value)}" min="${row.minimum ?? ''}" max="${row.maximum ?? ''}" step="${row.kind === 'int' ? 1 : 'any'}"${off}${invalid}>
+        html = `<div class="st-field"><input type="number" id="${id}" data-st-key="${esc(row.key)}" value="${esc(value)}" min="${row.minimum ?? ''}" max="${row.maximum ?? ''}" step="${row.kind === 'int' ? 1 : 'any'}" placeholder="${esc(row.placeholder || '')}"${off}${invalid}>
             <span class="st-unit">${esc([row.unit, range].filter(Boolean).join(' · '))}</span></div>`;
     } else if (row.kind === 'time') {
         html = `<div class="st-field"><input type="time" id="${id}" data-st-key="${esc(row.key)}" value="${esc(value)}"${off}${invalid}><span class="st-unit">Dubai time</span></div>`;
@@ -288,6 +288,7 @@ async function settingsSave() {
         settingsState.canEdit = Boolean(payload.can_edit);
         settingsState.edits = {};
         settingsState.saving = false;
+        settingsState.tests = {};  // an earlier test result described the old values
         settingsRefresh();
         const saved = (payload.changed || []).length;
         const newRuns = (payload.changed || []).some(key => settingsRow(key)?.applies === 'new_runs');
