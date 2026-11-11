@@ -65,7 +65,9 @@ verification and the explicit remaining live checks.
 
 Validation runs the downloads and configured Python transformation in a private
 folder. It does not publish production files or execute SQL. Trace evidence is
-kept under `.recording-validation/<session>/` in the managed Flow folder.
+kept under `.recording-validation/<session>/` in the managed Flow folder; only
+the three most recent test folders of a Flow are kept, and a test removes the
+older ones. A cancelled or rejected recording leaves no raw script behind.
 Cancel discards unsaved actions and closes the recorder's owned process tree.
 The reservation remains occupied until the worker acknowledges cancellation.
 If it has not responded after ten seconds, **Force close recording** stops and
