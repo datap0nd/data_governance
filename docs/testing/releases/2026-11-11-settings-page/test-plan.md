@@ -86,8 +86,9 @@ the job; the worker never reads the app database.
 
 ## Page walk
 
-A temporary instance on `127.0.0.1`, Chromium driven by Playwright, desktop
-(1360 px) and phone (390 px) widths:
+A temporary instance on `127.0.0.1`, Chromium driven by Playwright, at a
+desktop width of 1360 px. Metronome is not used on phones, so no phone layout
+is in scope.
 
 1. Open every section; each row has a label, a control or state, and says when
    a change applies; no sideways scrolling.
