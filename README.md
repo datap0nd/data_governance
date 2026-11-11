@@ -71,7 +71,11 @@ For other people on the network to access it, they go to `http://YOUR_COMPUTER_I
 
 ### Access
 
-All registered users have the same application access, including remote PCs on the network. There is no app-level admin allowlist or IP toggle.
+Everyone on the network can use Metronome, and each browser chooses its person from Users. One thing is reserved for the host PC, the computer running Metronome: changing app-wide configuration. That covers **System > Settings**, Users, SQL passwords, portal sign-in details and the other settings pages. A request counts as coming from the host PC when it arrives from one of that computer's own addresses and asks for one of its own names: `localhost`, `127.0.0.1`, its IP addresses or its computer name. If the host PC is reached under another name, list it in the `DG_HOST_NAMES` environment variable (comma separated). Other computers can read Settings but not change them.
+
+### Settings
+
+**System > Settings** holds the app-wide limits, schedules and options in one place. Each setting shows where its value comes from (set here, the `.env` file, or the default), when a change takes effect (immediately, at the next scan, or for new runs) and its allowed range. A value saved on the page wins over the `.env` or Windows environment variable it replaces, and **Reset to default** hands control back to that variable. Nothing needs a restart. Every change is recorded in the Event Log with who made it.
 
 ### Automatic main updates
 
