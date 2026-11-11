@@ -82,7 +82,7 @@ def refresh_queued_operation(db, row, now, *, startup_limit=None):
                    else _timestamp(row['created_at'], now))
         if (now - started).total_seconds() >= (startup_seconds() if startup_limit is None else startup_limit):
             message = ('The recording browser did not start. Try again. '
-                       'If it repeats, check Flow workers in System.')
+                       'If it repeats, check Flow workers in System > Settings.')
             return fail_queued_operation(db, row['id'], message, now)
         progress = {'stage': 'starting_worker', 'message': 'Waiting for worker…',
                     'startup_started_at': started.isoformat()}

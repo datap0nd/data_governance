@@ -59,8 +59,10 @@ SECTIONS = (
 SECTION_IDS = tuple(section[0] for section in SECTIONS)
 # Groups that offer a "Test connection" button: (section, group) -> test name.
 GROUP_TESTS: dict[tuple[str, str], str] = {}
-# Settings that keep their own page for now, listed in the section they belong
-# to: (label, page, note).
+# Settings that keep their own form, listed in the registry section they belong
+# to: (label, page, note). "page" is a router page, or the id of a section of
+# this page that holds such a form (ai, paths, flow-settings); the Settings
+# page opens the latter in place.
 SECTION_LINKS = {
     "connections": (
         ("SQL users and passwords", "users", "Each person's SQL identity for Flow writes."),

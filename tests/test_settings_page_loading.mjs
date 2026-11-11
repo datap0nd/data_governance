@@ -31,6 +31,20 @@ vm.runInNewContext(`with (scope) { pages = ${literal} }`, sandbox);
 assert.equal(typeof sandbox.pages.settings, "function", "Settings stays a page of the router");
 assert.equal(typeof sandbox.pages.dashboard, "function");
 
+// The same holds for the list of pages that live inside Settings: app.js
+// builds it while loading, from its own functions only.
+const listStart = source.indexOf("const settingsSubpages = [");
+assert.ok(listStart > 0 && listStart < start, "app.js lists the pages inside Settings before its page table");
+const listEnd = source.indexOf("\n];", listStart);
+// The stand-in scope leaves the name "pages" alone, so the list lands there.
+const listed = { scope, pages: null };
+vm.runInNewContext(`with (scope) { pages = ${source.slice(listStart + "const settingsSubpages = ".length, listEnd + 2)} }`, listed);
+assert.equal(listed.pages.length, 4);
+for (const page of listed.pages) {
+    assert.equal(typeof page.render, "function", `${page.id} is drawn by a function of app.js`);
+    assert.equal(typeof page.bind, "function", `${page.id} is wired by a function of app.js`);
+}
+
 // With settings.js loaded as well, opening the page reaches its renderer.
 let opened = 0;
 const loaded = { scope: new Proxy({ renderSettings: () => { opened += 1; return "<div></div>"; } }, {

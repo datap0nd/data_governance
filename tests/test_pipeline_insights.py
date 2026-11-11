@@ -616,7 +616,7 @@ def test_fallback_text_describes_joins_filters_and_the_reason_ai_text_is_missing
     assert "PostgreSQL dependency discovery" in first
     assert "rejected because it did not describe the exact join columns" in second
     assert "feature_disabled" not in text
-    assert "System > AI" in scanner.deterministic_text(candidate, "feature_disabled")
+    assert "System > Settings > AI" in scanner.deterministic_text(candidate, "feature_disabled")
     assert "no SQL definition" in scanner.deterministic_text({**candidate, "definition": ""}, None)
 
 
@@ -729,7 +729,7 @@ def test_missing_explanations_report_why_the_feature_did_not_run(insights_store,
     insight = scanner.current_edge_insights()[candidate["edge_key"]]
     assert insight["origin"] == "fallback"
     assert insight["error_code"] == "feature_disabled"
-    assert "System > AI" in insight["text"]
+    assert "System > Settings > AI" in insight["text"]
     monkeypatch.setattr(scanner, "load_runtime_settings", lambda: replace(disabled, mode="preview"))
     assert scanner.current_edge_insights()[candidate["edge_key"]]["error_code"] == "preview_mode"
 

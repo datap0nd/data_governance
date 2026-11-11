@@ -1348,7 +1348,7 @@ def get_alert_summaries():
             "reason": (
                 None
                 if enabled
-                else "AI analysis is disabled in System > AI."
+                else "AI analysis is disabled in System > Settings > AI."
             ),
             "mode": ai_settings.mode,
         },

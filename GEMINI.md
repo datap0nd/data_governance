@@ -87,7 +87,7 @@ full loop and the playbooks in `.gemini/commands/metronome/`.
 ## Where things are on the work PC
 
 - Application checkout with `governance.db`, `.venv` and `tools\`.
-- Flows root (System > Paths, default `metronome\flows` beside the database):
+- Flows root (System > Settings > Paths, default `metronome\flows` beside the database):
   each managed Flow folder has `Downloads\`, `Scripts\run_flow.py`,
   `Scripts\versions\`, `Scripts\standalone-logs\` and, after a recording
   test, `.recording-validation\<session>\trace.zip`.

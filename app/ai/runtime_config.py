@@ -63,7 +63,7 @@ def reveal_api_key(stored: str) -> str:
     except Exception:
         logger.error(
             "The saved AI key cannot be read by the Windows account Metronome runs as. "
-            "Enter the key again in System > AI."
+            "Enter the key again in System > Settings > AI."
         )
         return ""
 
@@ -352,9 +352,9 @@ def environment_settings() -> AIRuntimeSettings:
         endpoint = normalize_endpoint(config.AI_API_URL)
     except ValueError:
         # AI configuration must never prevent the rest of Metronome from
-        # starting. The user can repair the value from System > AI.
+        # starting. The user can repair the value from System > Settings > AI.
         logger.error(
-            "The environment AI endpoint is invalid; AI starts disabled until it is corrected in System > AI."
+            "The environment AI endpoint is invalid; AI starts disabled until it is corrected in System > Settings > AI."
         )
         endpoint = ""
         mode = "disabled"

@@ -291,7 +291,7 @@ def ai_chat(req: ChatRequest):
     try:
         snapshot = load_runtime_settings()
         if not snapshot.enabled:
-            raise HTTPException(503, "AI is disabled in System > AI.")
+            raise HTTPException(503, "AI is disabled in System > Settings > AI.")
         from app.ai.context_builder import get_full_context
         ctx = get_full_context()
         if snapshot.mock_mode:
@@ -330,7 +330,7 @@ def ai_briefing():
     """Get an AI-generated dashboard briefing."""
     try:
         if not load_runtime_settings().enabled:
-            raise HTTPException(503, "AI is disabled in System > AI.")
+            raise HTTPException(503, "AI is disabled in System > Settings > AI.")
         from app.ai.context_builder import get_dashboard_summary
         summary = get_dashboard_summary()
         result = mock_briefing(summary)
@@ -347,7 +347,7 @@ def ai_report_risk(report_id: int):
     """Get AI risk assessment for a specific report."""
     try:
         if not load_runtime_settings().enabled:
-            raise HTTPException(503, "AI is disabled in System > AI.")
+            raise HTTPException(503, "AI is disabled in System > Settings > AI.")
         from app.ai.context_builder import get_report_context
         ctx = get_report_context(report_id)
         if not ctx:
@@ -368,7 +368,7 @@ def create_operations_run(body: OperationsRunCreate, request: Request):
 
     snapshot = load_runtime_settings()
     if not snapshot.feature_enabled("operations_investigator"):
-        raise HTTPException(503, "Operations Investigator is disabled in System > AI.")
+        raise HTTPException(503, "Operations Investigator is disabled in System > Settings > AI.")
     actor = get_actor(request)
     try:
         run_id, created = run_store.create_or_reuse_run(
