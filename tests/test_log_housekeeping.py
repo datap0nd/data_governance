@@ -219,6 +219,25 @@ def test_an_identical_message_is_written_a_few_times_then_counted():
     assert plain.getMessage() == "Job failed: database is locked"
 
 
+def test_a_different_exception_under_the_same_message_is_still_written():
+    limiter = logging_setup.RepeatLimiter(burst=2, window=60.0, clock=lambda: 0.0)
+
+    def failed(error):
+        try:
+            raise error
+        except Exception:
+            import sys
+
+            return logging.LogRecord("scanner", logging.ERROR, __file__, 1, "Scan failed", None, sys.exc_info())
+
+    connection = [limiter.filter(failed(ConnectionError("database is unreachable"))) for _ in range(6)]
+    assert connection == [True, True, False, False, False, False]
+    # Same message, another failure: its traceback must reach the log.
+    assert limiter.filter(failed(ValueError("report 12 has no data model")))
+    assert limiter.filter(failed(ConnectionError("a different host is unreachable")))
+    assert not limiter.filter(failed(ConnectionError("database is unreachable")))
+
+
 def test_configure_quietens_the_scheduler_and_filters_requests():
     logging_setup.configure()
     assert logging.getLogger("apscheduler.executors.default").level == logging.WARNING

@@ -2,22 +2,26 @@
 
 - Plan: [test-plan.md](test-plan.md)
 - Change/PR: link in the PR's testing section
-- Evidence cutoff (UTC): 2026-11-11 08:30
-- Tested code revision: the working tree this report is committed with, on
+- Evidence cutoff (UTC): 2026-11-11 08:50
+- Tested code revisions: `4421736` (first push), `f996e33` (file hashing
+  fix) and the commit this report is updated in (repeat limiter fix), all on
   `main` at `bd09c94`
 - Environment: Linux 6.18 (cloud container), Python 3.13.18 checkout-owned
   `.venv` with the locked CI dependencies, git 2.43, Node 22.23. No PowerShell
   is available in this environment
 - Overall finding: every case that can run on Linux passes (automated,
-  synthetic fixtures). The Windows PowerShell cases W-01 to W-06 have not run
-  yet; they run in the pull request's Windows job. `setup.ps1` was not
-  executed anywhere.
+  synthetic fixtures). The Windows PowerShell cases passed in the pull
+  request's Windows job at `f996e33` after one real failure at `4421736` was
+  fixed. Final-head CI is pending. `setup.ps1` was not executed anywhere.
 
 ## Executed checks
 
 | Check/case IDs | Command or procedure | Revision/environment | Result/counts/duration | Evidence |
 | --- | --- | --- | --- | --- |
 | L-01 to L-09, S-01 to S-06, R-01 | The `python tools/check.py verify` command in the plan | Working tree above, Linux | PASS: 180 passed, 0 failed, 30 skipped, 2 third-party deprecation warnings, 93.6 s; four syntax checks passed | `.test-runs/20261111T082719418Z-8472-2ac00a2a/result.json` |
+| W-01 to W-06, first run | Pull request job `Windows verifier contracts` | `4421736`, `windows-latest`, Windows PowerShell 5.1 started from PowerShell 7 | FAIL: 62 passed, 1 failed. Every script parsed. `test_file_fingerprint_follows_content_and_presence` got an empty fingerprint | [job 130412580261](https://github.com/datap0nd/data_governance/actions/runs/42987600632/job/130412580261) |
+| W-01 to W-07, retest | Same job after the fix | `f996e33`, same runner image | PASS | [job 130414609721](https://github.com/datap0nd/data_governance/actions/runs/42988175201/job/130414609721) |
+| L-10 | `python tools/check.py verify --test tests/test_log_housekeeping.py --syntax app/logging_setup.py` | The commit this report is updated in, Linux | PASS: 16 passed, 0 failed | `.test-runs/20261111T084710179Z-3109-9c3e5985/result.json` |
 | N-01 | `python -m pytest tests/test_setup_fast_path.py` with `setup.ps1`, `.gitattributes` and `tools/apply_update.ps1` restored from `bd09c94`, then put back | New tests, previous scripts | 7 failed, 4 passed, 23 skipped: S-01 to S-06 and the worker-poll contract fail against the previous files, as intended | Console output |
 | Brace balance | `test_every_block_setup_opens_is_closed` | Working tree | PASS for all 17 scripts. `setup.ps1` holds 347 opening and 347 closing braces (274 each at `bd09c94`) | Same result file |
 | Frontend contracts | `for f in tests/test_*.mjs; do node "$f"; done` | Working tree | All pass except `tests/test_gemini_extension.mjs`, which stops with `ERR_MODULE_NOT_FOUND` because the extension's npm packages are not installed here. No JavaScript changed in this PR | Console output |
@@ -33,8 +37,8 @@ This run executed those files whole.
 
 | IDs | Status | Reason | Next action |
 | --- | --- | --- | --- |
-| W-01 to W-06 | NOT RUN | They need Windows PowerShell; this environment has none | The pull request's `Windows verifier contracts` job runs them; record its result in the PR testing section |
-| Full regression | NOT RUN | Final-head CI (`Merge ready`) has not run at this cutoff | Record the run URL and tested head in the PR testing section |
+| W-01 to W-07 on the final head | NOT RUN | They passed at `f996e33`; the head has moved since | The pull request's `Windows verifier contracts` job reruns them; record its result in the PR testing section |
+| Full regression | NOT RUN | Final-head CI (`Merge ready`) has not finished at this cutoff | Record the run URL and tested head in the PR testing section |
 
 ## Findings, limitations and retests
 
@@ -62,8 +66,24 @@ minutes after Metronome starts, the clean-up deletes rotated logs older than
 history. Nothing outside `*.log` files directly inside the `logs` folder, and
 old transcripts and receipts under `updates`, is touched.
 
-**Skips.** 30 skips, all Windows-only: the 23 PowerShell cases added here
-(17 of them one parse case per script), the scheduled updater (1), the worker
+**Windows failure and retest.** At `4421736` the file fingerprint helper
+returned nothing on the Windows runner. It called `Get-FileHash`, a script
+function Windows PowerShell loads from a module on first use; that load fails
+when the process inherits PowerShell 7's module path, as it does when the
+runner's `pwsh` step starts `powershell.exe`. On the work PC that failure
+would have made every fingerprint empty, which the fast path treats as "not
+current, do the full work", so updates would have been correct but no faster.
+`f996e33` hashes with `System.Security.Cryptography` directly and adds W-07.
+
+**Review finding fixed.** The automated review pointed out that the repeat
+limiter compared only the message text, so five connection failures logged as
+"Scan failed" would have hidden a sixth "Scan failed" caused by something
+else, traceback included. The limiter now also compares the exception a
+record carries (L-10).
+
+**Skips.** 30 skips in the Linux run above, all Windows-only: the 23
+PowerShell cases present at that revision (17 of them one parse case per
+script), the scheduled updater (1), the worker
 health response (1), Windows PowerShell with real DPAPI (2), the Windows ACL
 contract (1) and PowerShell service configuration (2).
 

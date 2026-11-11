@@ -30,6 +30,7 @@ task or ACL is touched. `setup.ps1` itself is never executed by a test.
 | L-06 | 25 update transcripts older than the keep period | The newest 20 stay | `...::test_update_transcripts_keep_the_newest_twenty` |
 | L-07 | Access records for page loads, worker polling, a saved Flow, a 404 and a 500, in each mode | `changes` keeps failures and changes; `errors` keeps failures; `all` keeps everything; an unknown mode means `changes`; an unrecognised record passes | `...::test_request_log_keeps_failures_and_changes_and_drops_polling`, `...::test_request_log_passes_a_record_it_does_not_recognise` |
 | L-08 | One identical error ten times in a minute, then again after a quiet minute | Three written (the test's burst), seven dropped, and the next line says seven were dropped | `...::test_an_identical_message_is_written_a_few_times_then_counted` |
+| L-10 | Five identical "Scan failed" records carrying one exception, then the same message carrying a different exception | The repeats are dropped; the different failure and its traceback are written | `...::test_a_different_exception_under_the_same_message_is_still_written` |
 | L-09 | `GET /api/system/logs`, then `POST /api/system/logs/prune` from a colleague's browser and from the host PC | Anyone sees usage; the colleague gets 403 and nothing is deleted; the host PC deletes and the Event Log records it | `...::test_anyone_sees_log_usage_but_only_the_host_pc_cleans_up` |
 | S-01 | Read `setup.ps1` | Every service sets `AppRotateOnline 1`, `AppRotateSeconds 0` and the shared 10 MB size; `86400` is gone | `tests/test_setup_fast_path.py::test_logs_rotate_while_a_service_runs_not_only_after_a_quiet_day` |
 | S-02 | Read `setup.ps1` | A relaunched copy skips download, stop and extract only when the archive is on disk; the variables those stages defined exist on both paths; VERSION can be stamped from the requested commit | `...::test_a_relaunched_setup_resumes_after_extraction` |
@@ -42,6 +43,7 @@ task or ACL is touched. `setup.ps1` itself is never executed by a test.
 | W-03 | Windows: record two steps, read them back, then damage the state file | Round trip is exact and case-sensitive; a damaged file reads as empty and is replaced on the next write | `...::test_step_state_round_trips_and_survives_a_damaged_file` |
 | W-04 | Windows: extract a zip into a folder that already holds a leftover from a failed run | Only the archive's content is there afterwards | `...::test_archive_extraction_matches_the_archive_and_replaces_a_leftover_folder` |
 | W-05 | Windows: compare a task object with the intended program, arguments and folder | Reused only on an exact match; a missing task or a task with two actions is not | `...::test_task_is_reused_only_when_its_command_is_exactly_the_intended_one` |
+| W-07 | Windows: read `tools/setup_fast_path.ps1` | It hashes with `System.Security.Cryptography` and never calls `Get-FileHash`, which fails to load when Windows PowerShell inherits PowerShell 7's module path | `...::test_file_hashing_does_not_depend_on_a_module_that_may_fail_to_load` |
 | W-06 | Windows: the bridge's version rule on a 9-character stamp, an upper-case stamp, a full stamp, another commit and no commit | True for the first three, false for the rest | `...::test_bridge_version_rule_accepts_a_prefix_and_rejects_another_commit` |
 | R-01 | Existing installer and updater tests | Unchanged behaviour still passes | The 20 `setup.ps1` tests listed in the report, `tests/test_auto_update.py`, `tests/test_unattended_update_scripts.py` |
 | N-01 | The new `setup.ps1` text contracts run against `setup.ps1`, `.gitattributes` and `tools/apply_update.ps1` from `bd09c94` | They fail | Console output in the report |
@@ -61,7 +63,7 @@ python tools/check.py verify \
   --syntax app/routers/system_logs.py --syntax app/main.py
 ```
 
-W-01 to W-06 need Windows PowerShell and are skipped on Linux. The pull
+W-01 to W-07 need Windows PowerShell and are skipped on Linux. The pull
 request's `Windows verifier contracts` job runs them, together with the
 Windows-only cases already in `tests/test_unattended_update_scripts.py` and
 `tests/test_setup_worker_health.py`; this change adds those three files to
@@ -69,7 +71,7 @@ that job. Required final-head CI is the full regression.
 
 ## Acceptance and cleanup
 
-Accepted when every case passes, including W-01 to W-06 on the pull request's
+Accepted when every case passes, including W-01 to W-07 on the pull request's
 Windows job, and `Merge ready` passes on the final head.
 
 Not covered by any test: `setup.ps1` running end to end, nssm's rotation

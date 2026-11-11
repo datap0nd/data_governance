@@ -91,8 +91,11 @@ class RepeatLimiter(logging.Filter):
 
     The first line after a quiet window says how many copies were dropped, so
     a failure that repeats on every scheduler tick stays visible without
-    filling the disk. Messages are compared after formatting, so lines that
-    differ in any detail are all written.
+    filling the disk. Messages are compared after formatting, and a record
+    that carries an exception is compared by that exception too, so lines
+    that differ in any detail are all written: five connection failures
+    logged as "Scan failed" do not hide a sixth "Scan failed" that is a
+    parsing error with its own traceback.
     """
 
     def __init__(self, burst: int = 5, window: float = 60.0, clock=time.monotonic) -> None:
@@ -103,12 +106,20 @@ class RepeatLimiter(logging.Filter):
         self._lock = threading.Lock()
         self._seen: dict[tuple, list] = {}
 
+    @staticmethod
+    def _failure(record: logging.LogRecord) -> str:
+        """The exception a record carries, as part of what makes it a repeat."""
+        info = record.exc_info
+        if not isinstance(info, tuple) or len(info) < 2 or info[0] is None:
+            return ""
+        return f"{getattr(info[0], '__name__', info[0])}: {info[1]}"[:300]
+
     def filter(self, record: logging.LogRecord) -> bool:
         try:
             message = record.getMessage()
         except Exception:
             return True
-        key = (record.name, record.levelno, message[:300])
+        key = (record.name, record.levelno, message[:300], self._failure(record))
         now = self._clock()
         with self._lock:
             state = self._seen.get(key)
