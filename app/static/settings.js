@@ -199,11 +199,27 @@ function settingsPortalPausedHtml() {
         <span class="st-field"><button type="button" class="btn-sm btn-outline" data-st-portal="resume"${settingsState.canEdit ? '' : ' disabled'}>Try again</button></span></div>`;
 }
 
-// The older ASAP and GSCM login is one Windows-protected file, not a
-// settings-file value, so it has its own block: saved or not, replace, clear.
+// Flow scripts read the portal sign-in from the Windows-protected file. While
+// the User ID and Password above are set, Metronome keeps that file as a copy
+// of them, so there is nothing to replace or clear here: only whether the
+// copy is in step.
+function settingsPortalCopyHtml(portal) {
+    const state = portal.copy_current ? 'Matches the fields above'
+        : portal.available ? 'Not written yet' : 'Written on the Windows host PC only';
+    return `<div class="st-group"><div class="st-group-head"><h3>Encrypted copy of the portal sign-in</h3></div>
+        <div class="st-row"><div class="st-row-text"><label for="st-portal-copy">ASAP and GSCM login, encrypted, for Flow scripts</label>
+            <p class="st-help">Flow scripts read the portal sign-in from an encrypted file kept for the Windows account the Metronome services run as. Metronome writes that file from the User ID and Password above each time it starts, each time a worker starts, and whenever either one changes. To change the sign-in, change it above; this copy follows. It is never shown here.</p>
+            <div class="st-meta"><span class="st-chip ${portal.copy_current ? 'st-chip-set' : ''}">${state}</span></div></div>
+            <div class="st-row-control"><output id="st-portal-copy" class="st-secret">${portal.copy_current ? '<strong>Saved</strong> <span aria-hidden="true">••••••••</span>' : 'Not written'}</output></div></div></div>`;
+}
+
+// Without a sign-in in the fields above, the Windows-protected file is the
+// older stand-alone ASAP and GSCM login, with its own block: saved or not,
+// replace, clear.
 function settingsPortalHtml() {
     const portal = settingsState.portal;
     if (!portal) return '';
+    if (portal.source === 'settings_file') return settingsPortalCopyHtml(portal);
     const off = !settingsState.canEdit || !portal.available ? ' disabled' : '';
     const error = settingsState.portalError ? `<p class="st-error" role="alert">${esc(settingsState.portalError)}</p>` : '';
     let control;
@@ -222,10 +238,10 @@ function settingsPortalHtml() {
             ${portal.configured ? `<button type="button" class="btn-sm btn-outline" data-st-portal="ask"${off}>Clear</button>` : ''}</div>`;
     }
     const chips = [`<span class="st-chip ${portal.configured ? 'st-chip-set' : ''}">${portal.configured && portal.updated_at ? 'Saved ' + esc(formatDate(portal.updated_at)) : portal.configured ? 'Saved' : 'Not set'}</span>`,
-        `<span class="st-chip">${portal.source === 'settings_file' ? 'Not in use: the fields above are set' : portal.configured ? 'In use' : 'Used when the fields above are empty'}</span>`];
+        `<span class="st-chip">${portal.configured ? 'In use' : 'Used when the fields above are empty'}</span>`];
     return `<div class="st-group"><div class="st-group-head"><h3>Encrypted portal sign-in from an earlier version</h3></div>
         <div class="st-row"><div class="st-row-text"><label for="st-portal-edit">ASAP and GSCM login, encrypted</label>
-            <p class="st-help">Workers use the User ID and Password under Portal sign-in above when both are set. This older copy, kept encrypted for the Windows account the Metronome services run as, is used only while those are empty. It is never shown here.</p>
+            <p class="st-help">Workers use the User ID and Password under Portal sign-in above when both are set, and this file then becomes a copy of them. This older sign-in, kept encrypted for the Windows account the Metronome services run as, is used only while those are empty. It is never shown here.</p>
             <div class="st-meta">${chips.join('')}</div></div>
             <div class="st-row-control">${control}</div></div></div>`;
 }

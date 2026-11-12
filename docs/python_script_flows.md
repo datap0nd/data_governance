@@ -227,6 +227,15 @@ scripts should be configured.
 Script output is captured as UTF-8 text with undecodable bytes replaced, and
 no console window is opened on Windows.
 
+A script that signs in to ASAP or GSCM itself reads the portal sign-in from
+`.asap_credentials` in the `.metronome-flow-browser` folder of the Windows
+account the worker runs as: JSON with `"format": "dpapi"` and the record,
+protected by Windows for that account, in `data`. Metronome keeps that file
+as a copy of the sign-in set under **System > Settings > Connections > Portal
+sign-in** and rewrites it when it or a worker starts and whenever the sign-in
+changes, so a script needs no password of its own. Metronome's pause after a
+refused sign-in covers what its workers submit, not what a script submits.
+
 ## Outputs
 
 The Output section offers two destinations:

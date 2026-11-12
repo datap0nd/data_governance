@@ -281,6 +281,11 @@ def _file_signature() -> tuple | None:
     return (stat.st_mtime_ns, stat.st_size)
 
 
+def settings_file_signature() -> tuple | None:
+    """A value that changes whenever the settings file is written; None without one."""
+    return _file_signature()
+
+
 def _is_metronome_module(module) -> bool:
     name = getattr(module, "__name__", "") or ""
     if name == "app" or name.startswith("app."):

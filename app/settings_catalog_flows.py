@@ -67,6 +67,12 @@ _frozen("flows.recording_test_folders_kept", RUN_LIMITS, "Recording test folders
         help="Each test of a recording keeps its trace and output; older ones are removed after a new test.",
         keeps=" Tests already queued or in progress keep the old value.")
 
+_server("flows.setup_sign_in_browsers", RUN_LIMITS, "Worker browsers signed in during setup",
+        flow_capacity.DEFAULT_SETUP_SIGN_IN_BROWSERS, minimum=1, maximum=flow_capacity.MAX_SLOTS, unit="of each kind",
+        help="Setup signs in this many background and this many visible worker browsers, lowest slots first. "
+             "Every other worker signs in by itself, with the saved portal sign-in, the first time a Flow needs "
+             "a portal.")
+
 # --- Downloads -------------------------------------------------------------------
 
 _frozen("flows.download_start_minutes", DOWNLOADS, "Wait for an ASAP download to start", 15,

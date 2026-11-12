@@ -195,6 +195,11 @@ Unattended updates cannot install additional background services without their
 Windows account credential. Missing slots remain offline until interactive
 setup installs them. Visible tasks are pre-registered and start on demand. New
 browser profiles may require separate sign-in; no credentials are copied.
+Interactive setup signs in the first two background and the first two visible
+worker browsers for each portal (**Worker browsers signed in during setup**
+under System > Settings > Flows changes the number). Every other worker signs
+in by itself, with the saved portal sign-in, the first time a Flow needs a
+portal.
 Updates stop every installed slot through 32 before replacing code, including
 slots above a subsequently reduced capacity. Slots 1–5 keep their identities.
 
