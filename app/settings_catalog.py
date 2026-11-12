@@ -17,6 +17,7 @@ from app.settings_registry import GROUP_TESTS, Setting, file_value_writer, regis
 PROBE = "Read-only probe database"
 UPLOAD = "Flow upload database"
 POWER_BI = "Power BI"
+PORTAL = "Portal sign-in"
 GROUP_TESTS[("connections", PROBE)] = "probe"
 GROUP_TESTS[("connections", UPLOAD)] = "upload"
 
@@ -44,6 +45,13 @@ _file("conn.upload_database", UPLOAD, "Default database", "DG_UPLOAD_PGDATABASE"
       placeholder="Same as the probe database")
 _file("conn.upload_user", UPLOAD, "Shared user", "DG_UPLOAD_PGUSER")
 _file("conn.upload_password", UPLOAD, "Shared password", "DG_UPLOAD_PGPASSWORD", kind="secret", default=None)
+
+_file("conn.portal_user", PORTAL, "User ID", "DG_PORTAL_USER",
+      help="The company sign-on Flow workers use when an ASAP or GSCM session expires. With both fields set, "
+           "this is the sign-in every worker uses. It is kept as plain text in the settings file.")
+_file("conn.portal_password", PORTAL, "Password", "DG_PORTAL_PASSWORD", kind="secret", default=None,
+      help="A password the portal refuses is tried once and then not again, so the account cannot be locked "
+           "by repeated attempts.")
 
 _file("conn.pbi_workspace", POWER_BI, "Workspace", "DG_PBI_WORKSPACE",
       help="The workspace whose refresh schedules and usage are synced.")

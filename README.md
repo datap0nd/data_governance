@@ -297,6 +297,10 @@ Metronome queues each run for a browser worker on the BI desktop. Website flows 
 
 ASAP credentials are enrolled once in the website dialog and stored only on the BI desktop as a Windows DPAPI-encrypted blob beside the default automation browser profile. The API reports only whether a credential is configured and never returns its values. When ASAP redirects to SSO because a session expired, the worker detects the password form, fills it with Playwright DOM APIs, signs in, and resumes the scan or download. Credentials are not stored in SQLite, logs, or the repository.
 
+**Portal sign-in.** Flow workers sign in to ASAP and GSCM with one user ID and password: `DG_PORTAL_USER` and `DG_PORTAL_PASSWORD` in the settings file (`.env`, one level above the code folder), in plain text. They can be edited under **System > Settings > Connections > Portal sign-in** or by hand in the file, also while Metronome is stopped, and are read again at every sign-in, so nothing needs restarting. The file is readable by SYSTEM, Administrators and the installing account only; anyone who can read it can read this password. While either line is empty, an encrypted sign-in saved by an earlier version is used instead.
+
+A sign-in is never repeated into a lockout. Only one worker submits at a time. A sign-in the portal refuses is not submitted again by any worker, browser profile or portal, and one that was submitted twice without the portal opening is not submitted a third time; Flows that need it fail with that reason, and setup stops its browser sign-in step. Correcting the user ID or password makes it a new sign-in that is tried again. If they were right all along (a prompt nobody answered, a portal outage), **Try again** on the same page lifts the pause.
+
 When `DG_SVC_PASSWORD` is supplied to `setup.ps1`, setup also refreshes the saved ASAP/GSCM SSO password before browser authentication, preserving the enrolled portal user ID. This applies to interactive and unattended setup; unattended setup still does not open browsers. The password stays in the inherited process environment and encrypted credential file, and is not passed to the helper on its command line or printed. If no portal user ID is enrolled, setup asks you to enroll it once through Flows > Catalog > ASAP. Without the variable, the saved portal credential is unchanged. A credential read/write failure stops setup before portal sign-in; repair the saved credential through the same website dialog and rerun setup.
 
 The two workers use separate persistent browser profiles to prevent Edge profile contention. Both read the same Windows DPAPI-protected ASAP credential stored locally for the BI desktop account. Headed runs require that account to be signed in to the desktop. No website credentials or flow configuration are committed to GitHub.
@@ -503,6 +507,7 @@ Set by `setup.ps1`; override them only for a manual run.
 | `PGHOST`, `PGUSER`, `PGPASSWORD`, `PGDATABASE` | Read-only probe connection to PostgreSQL |
 | `DG_UPLOAD_PGHOST`, `DG_UPLOAD_PGPORT`, `DG_UPLOAD_PGDATABASE`, `DG_UPLOAD_PGUSER`, `DG_UPLOAD_PGPASSWORD` | Separate write credentials used only by Flow SQL handoffs; the user and password apply to unassigned Flows |
 | `DG_USER_SQL_PASSWORD_<person id>` | A person's SQL password, saved by the host PC from Users; assigned Flows sign in with it |
+| `DG_PORTAL_USER`, `DG_PORTAL_PASSWORD` | The company sign-on Flow workers use for ASAP and GSCM, in plain text. Edited under **System > Settings > Connections > Portal sign-in** or by hand in the settings file; read again at every sign-in |
 
 `endpoint_url.txt`, placed in the project root one level above the code folder,
 holds the assistant endpoint URL on a single line and takes priority over

@@ -55,6 +55,7 @@ try:
         resolve_asap_download_type,
     )
     from app.flow_credentials import load_asap_credentials
+    from app import flow_sign_in_guard
     from app.flow_download_security import looks_like_sign_in
 except ModuleNotFoundError:  # setup.ps1 also invokes this file directly
     import flow_gscm
@@ -69,10 +70,13 @@ except ModuleNotFoundError:  # setup.ps1 also invokes this file directly
         resolve_asap_download_type,
     )
     from flow_credentials import load_asap_credentials
+    import flow_sign_in_guard
     from flow_download_security import looks_like_sign_in
 
 
 ASAP_FRAME_SELECTOR = "iframe#content-frame"
+#: What ``--authenticate-url`` exits with when the portal sign-in is paused.
+SIGN_IN_PAUSED_EXIT_CODE = 3
 ASAP_PORTAL_ADAPTER = "asap_portal"
 GSCM_PORTAL_ADAPTER = flow_gscm.GSCM_PORTAL_ADAPTER
 OUTLOOK_ATTACHMENT_ADAPTER = flow_outlook.OUTLOOK_ATTACHMENT_ADAPTER
@@ -1093,6 +1097,15 @@ def _sso_fill_and_submit(page: Page, credentials: dict, portal_label: str) -> No
         raise RuntimeError(f"{portal_label} sign-in form was found, but its Login action was not recognized.")
 
 
+def _sso_refusal_text(page: Page) -> str:
+    """What the sign-on page says when it will not accept the user ID or password; '' otherwise."""
+    try:
+        error = page.locator("text=/incorrect user id|incorrect password|try again/i").first
+        return _clean_text(error.text_content()) if error.count() else ""
+    except Exception:
+        return ""
+
+
 def _asap_authenticate_if_needed(page: Page, profile_dir: Path) -> bool:
     """Recover an expired ASAP session using the local DPAPI credential."""
     if not _asap_login_visible(page):
@@ -1102,14 +1115,22 @@ def _asap_authenticate_if_needed(page: Page, profile_dir: Path) -> bool:
     credentials = load_asap_credentials()
     if not credentials:
         raise RuntimeError(
-            "ASAP sign-in is required. Configure the encrypted BI desktop credential in Flows > Catalog."
+            "ASAP sign-in is required. Set the portal sign-in under System > Settings > Connections."
         )
-    _sso_fill_and_submit(page, credentials, "ASAP")
-    roots = _wait_for_navigation_roots(page, 120_000)
-    if not roots:
-        error = page.locator("text=/incorrect user id|incorrect password|try again/i").first
-        detail = _clean_text(error.text_content()) if error.count() else "ASAP did not open after automatic sign-in."
-        raise RuntimeError(f"ASAP automatic sign-in failed: {detail}")
+    # Nothing is typed into the form unless the guard allows it: a sign-in the
+    # portal already refused is not sent again, by this or any other worker.
+    with flow_sign_in_guard.attempt(credentials, "ASAP") as attempt:
+        _sso_fill_and_submit(page, credentials, "ASAP")
+        attempt.submitted()
+        roots = _wait_for_navigation_roots(page, 120_000)
+        if not roots:
+            refusal = _sso_refusal_text(page)
+            if refusal:
+                attempt.refused()
+            else:
+                attempt.failed()
+            raise RuntimeError(f"ASAP automatic sign-in failed: {refusal or 'ASAP did not open after automatic sign-in.'}")
+        attempt.succeeded()
     return True
 
 
@@ -1132,19 +1153,27 @@ def _gscm_authenticate_if_needed(page: Page, profile_dir: Path) -> bool:
     credentials = load_asap_credentials()
     if not credentials:
         return False
-    _sso_fill_and_submit(page, credentials, "GSCM")
-    deadline = time.monotonic() + GSCM_AUTO_LOGIN_TIMEOUT_MS / 1000
-    while time.monotonic() < deadline:
-        if flow_gscm.portal_shell_rendered(page):
-            flow_gscm.clear_screen(page)
-            return True
-        page.wait_for_timeout(1_000)
-    raise RuntimeError(
-        "GSCM automatic sign-in submitted the stored credential, but the portal "
-        "did not render within 180 seconds. The password may be wrong, or a "
-        "Knox MFA prompt is blocking it - run the flow in headed mode once and "
-        "complete the prompt in the visible window."
-    )
+    with flow_sign_in_guard.attempt(credentials, "GSCM") as attempt:
+        _sso_fill_and_submit(page, credentials, "GSCM")
+        attempt.submitted()
+        deadline = time.monotonic() + GSCM_AUTO_LOGIN_TIMEOUT_MS / 1000
+        while time.monotonic() < deadline:
+            if flow_gscm.portal_shell_rendered(page):
+                attempt.succeeded()
+                flow_gscm.clear_screen(page)
+                return True
+            refusal = _sso_refusal_text(page)
+            if refusal:
+                attempt.refused()
+                raise RuntimeError(f"GSCM automatic sign-in failed: {refusal}")
+            page.wait_for_timeout(1_000)
+        attempt.failed()
+        raise RuntimeError(
+            "GSCM automatic sign-in submitted the stored credential, but the portal "
+            "did not render within 180 seconds. The password may be wrong, or a "
+            "Knox MFA prompt is blocking it - run the flow in headed mode once and "
+            "complete the prompt in the visible window."
+        )
 
 
 def _asap_goto(page: Page, url: str, profile_dir: Path) -> bool:
@@ -9216,6 +9245,9 @@ def authenticate_site(profile_dir: Path, auth_url: str, timeout_minutes: int = 1
     """
     adapter = (adapter or "").strip() or _adapter_for_auth_url(auth_url)
     label = "GSCM" if adapter == GSCM_PORTAL_ADAPTER else "ASAP"
+    saved_sign_in = load_asap_credentials()
+    if saved_sign_in:
+        flow_sign_in_guard.raise_if_paused(saved_sign_in)
     with _exclusive_worker_lock(profile_dir) as acquired:
         if not acquired:
             raise RuntimeError("The Flows worker is still using the automation browser profile.")
@@ -9319,10 +9351,21 @@ def main():
         sys.stdout = sys.stdout or log
         sys.stderr = sys.stderr or log
     if args.authenticate_url:
-        authenticate_site(
-            profile_dir, args.authenticate_url, args.authentication_timeout_minutes,
-            args.authenticate_adapter, _bootstrap_browser_channel(args.server),
-        )
+        try:
+            authenticate_site(
+                profile_dir, args.authenticate_url, args.authentication_timeout_minutes,
+                args.authenticate_adapter, _bootstrap_browser_channel(args.server),
+            )
+        except RuntimeError as error:
+            # Exit code 3 tells setup.ps1 that the portal sign-in is paused, so
+            # it stops instead of opening the next browser profile to be told
+            # the same thing.
+            saved_sign_in = load_asap_credentials()
+            if isinstance(error, flow_sign_in_guard.SignInPaused) or (
+                    saved_sign_in and flow_sign_in_guard.status(saved_sign_in)["paused"]):
+                print(str(error), file=sys.stderr, flush=True)
+                raise SystemExit(SIGN_IN_PAUSED_EXIT_CODE) from None
+            raise
         return
     def _run():
         run_worker(
