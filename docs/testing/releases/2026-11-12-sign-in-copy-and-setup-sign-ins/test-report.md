@@ -2,7 +2,7 @@
 
 - Plan: [test-plan.md](test-plan.md)
 - Change/PR: link in the PR's testing section
-- Evidence cutoff (UTC): 2026-11-12 08:45
+- Evidence cutoff (UTC): 2026-11-12 08:50
 - Tested code revision: the commit that adds this package, on `main` at
   `ae6ff9c`
 - Environment: Linux 6.18 (cloud container), Python 3.13.18 checkout-owned
@@ -42,11 +42,21 @@ two for headless, and wake more from Settings.
   many it left, and reads the number from the new setting **Worker browsers
   signed in during setup** (Flows, 1 to 32, default 2).
 
+## Review finding
+
+The automated reviewer pointed out that a worker which found the settings
+file unreadable at the moment it looked (the file was being saved) recorded
+the file as seen and did not look again until its next change. Correct. An
+unreadable settings file is now its own answer, `settings_unreadable`, which
+touches nothing, and the worker looks again on its next loop (C-22).
+
 ## Executed checks
 
 | Check/case IDs | Command or procedure | Revision/environment | Result/counts/duration | Evidence |
 | --- | --- | --- | --- | --- |
-| C-01 to C-20, S-01, S-02, R-01 | The `python tools/check.py verify` command in the plan | Working tree, Linux | PASS: 329 passed, 0 failed, 14 skipped, 79.7 s. All 14 skips need Windows PowerShell | `.test-runs/20261112T084252082Z-5312-ab6335da/result.json` |
+| C-01 to C-20, S-01, S-02, R-01 | The `python tools/check.py verify` command in the plan | Working tree before the review fix, Linux | PASS: 329 passed, 0 failed, 14 skipped, 79.7 s. All 14 skips need Windows PowerShell | `.test-runs/20261112T084252082Z-5312-ab6335da/result.json` |
+| C-01 to C-20 and C-22 after the review fix | `python tools/check.py verify` on `tests/test_portal_sign_in_copy.py`, `tests/test_settings_flows_worker.py`, `tests/test_flow_worker_startup.py`, `tests/test_settings_connections.py`, with syntax checks of `app/flow_worker.py` and `app/flow_credentials.py` | Working tree with the review fix, Linux | PASS: 129 passed, 0 failed, 6.7 s | `.test-runs/20261112T084843903Z-5812-e83457b9/result.json` |
+| C-22 without the fix | The same test with the worker's "look again" line taken out, then put back | Working tree, Linux | FAILS as intended: the copy is never written | Console output |
 | S-02, first attempt | The same command before the last edit | Working tree, Linux | FAILED once: the new setting's help text was 270 characters and the catalog allows fewer than 260. The text was shortened; the test was not changed | `.test-runs/20261112T084022487Z-5042-dd9348c7/result.json` |
 | C-21 and the other Settings browser cases | `python -m pytest tests/test_settings_sections_browser.py` with the container's Chromium, synthetic responses | Working tree, Chromium | PASS: 19 passed, 33.7 s | Console output |
 | Settings contract in Node; script syntax | `node --test tests/test_settings_sections.mjs`; `node --check app/static/settings.js`; `node --check app/static/app.js` | Working tree, Node 22 | PASS | Console output |

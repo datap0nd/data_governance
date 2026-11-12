@@ -212,16 +212,21 @@ def sync_credential_file(profile_dir: Path | None = None) -> str:
     * ``removed``: the settings-file sign-in is gone, and so is its copy;
     * ``not_set``: no sign-in in the settings file, and no copy to remove. An
       older stand-alone encrypted sign-in is left exactly as it is;
+    * ``settings_unreadable``: the settings file is missing or could not be
+      read at this moment, so nothing is known and nothing was touched. The
+      caller asks again; it must not take this for an answer;
     * ``unsupported``: not Windows, whose protection the file relies on.
     """
     if platform.system() != "Windows":
         return "unsupported"
     sign_in, believable = _read_settings_file_sign_in()
-    held = _encrypted_record(profile_dir)
-    if sign_in is None:
+    if sign_in is None and not believable:
         # Removing the copy on the word of a settings file that could not be
         # read would break the scripts that are running.
-        if believable and held and held.get("copy_of") == COPY_OF_SETTINGS_FILE:
+        return "settings_unreadable"
+    held = _encrypted_record(profile_dir)
+    if sign_in is None:
+        if held and held.get("copy_of") == COPY_OF_SETTINGS_FILE:
             clear_asap_credentials(profile_dir)
             return "removed"
         return "not_set"

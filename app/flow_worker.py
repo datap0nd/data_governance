@@ -8809,7 +8809,8 @@ def _keep_credential_file_current() -> None:
     one ``stat`` and rewrite it only when the settings file was written since,
     so a password corrected by hand reaches the scripts without a restart. A
     failure never stops the worker; it is reported once and tried again on
-    the next loop.
+    the next loop, and so is a settings file that could not be read just
+    then (it is being saved, or locked).
     """
     global _credential_copy_signature, _credential_copy_problem
     try:
@@ -8818,6 +8819,8 @@ def _keep_credential_file_current() -> None:
         if signature == _credential_copy_signature:
             return
         outcome = flow_credentials.sync_credential_file()
+        if outcome == "settings_unreadable":
+            return  # nothing was learned: look again on the next loop
         _credential_copy_signature = signature
     except Exception as exc:
         # The kind of failure only: the record holds the password.

@@ -145,7 +145,7 @@ def test_a_settings_file_that_cannot_be_read_does_not_remove_the_copy(windows, s
         settings_file.unlink()
     else:  # being rewritten, or locked, at this moment
         monkeypatch.setattr(env_file, "read", lambda path: ({}, {"exists": True, "error": "PermissionError"}))
-    assert flow_credentials.sync_credential_file() == "not_set"
+    assert flow_credentials.sync_credential_file() == "settings_unreadable"
     assert _file().read_bytes() == before
 
 
@@ -248,6 +248,25 @@ def test_a_worker_writes_the_copy_when_it_starts_and_again_only_after_the_settin
     assert len(fresh_worker) == 2 and _held()["password"] == OLDER + " typed by hand"
     printed = capsys.readouterr()
     assert PASSWORD not in printed.out + printed.err and OLDER not in printed.out + printed.err
+
+
+def test_a_settings_file_unreadable_when_the_worker_looks_is_read_again_on_the_next_loop(
+        windows, settings_file, fresh_worker, monkeypatch):
+    # The file is being saved at the moment the worker starts. Its date does
+    # not change again afterwards, so the worker must not take "could not
+    # read it" for "looked, nothing to do".
+    _set(settings_file)
+    read = env_file.read
+    monkeypatch.setattr(env_file, "read", lambda path: ({}, {"exists": True, "error": "PermissionError"}))
+    flow_worker._keep_credential_file_current()
+    assert not _file().exists()
+
+    monkeypatch.setattr(env_file, "read", read)
+    flow_worker._keep_credential_file_current()
+    assert _held()["password"] == PASSWORD
+
+    flow_worker._keep_credential_file_current()
+    assert len(fresh_worker) == 2  # and once it is written, idle loops stop asking
 
 
 def test_a_copy_that_cannot_be_written_never_stops_a_worker_and_is_tried_again(
