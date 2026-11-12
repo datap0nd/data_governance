@@ -14,6 +14,25 @@ from pathlib import Path
 
 CREDENTIAL_FILENAME = ".asap_credentials"
 
+#: The portal sign-in as the settings file (.env) names it. Plain text, at the
+#: owner's request and like the SQL passwords kept there: the file is readable
+#: by SYSTEM, Administrators and the installing account only. When both are
+#: set they are what every worker signs in with; the encrypted file below is
+#: then not read.
+PORTAL_USER_SETTING = "DG_PORTAL_USER"
+PORTAL_PASSWORD_SETTING = "DG_PORTAL_PASSWORD"
+
+
+def settings_file_credentials() -> dict | None:
+    """The portal sign-in from the settings file, as it reads right now."""
+    from app import config
+
+    username = (config.current_setting(PORTAL_USER_SETTING) or "").strip()
+    password = config.current_setting(PORTAL_PASSWORD_SETTING) or ""
+    if not username or not password:
+        return None
+    return {"username": username, "password": password, "updated_at": None, "source": "settings_file"}
+
 
 def flow_profile_dir() -> Path:
     return Path(os.environ.get("METRONOME_FLOW_PROFILE", str(Path.home() / ".metronome-flow-browser")))
@@ -65,7 +84,15 @@ def save_asap_credentials(username: str, password: str, profile_dir: Path | None
 
 
 def load_asap_credentials(profile_dir: Path | None = None) -> dict | None:
-    """Load the credential from the requested or account-default location."""
+    """The portal sign-in workers use: the settings file's, else the encrypted file's.
+
+    A caller that names a profile folder asks for the encrypted file there and
+    nothing else, which is what the tools that maintain that file need.
+    """
+    if profile_dir is None:
+        from_settings = settings_file_credentials()
+        if from_settings:
+            return from_settings
     path = credential_path(profile_dir)
     if not path.exists():
         return None
@@ -91,6 +118,8 @@ def clear_asap_credentials(profile_dir: Path | None = None) -> dict:
 
 def asap_credential_status(profile_dir: Path | None = None) -> dict:
     """Report shared credential status without returning decrypted values."""
+    if profile_dir is None and settings_file_credentials():
+        return {"configured": True, "updated_at": None}
     path = credential_path(profile_dir)
     if not path.exists():
         return {"configured": False, "updated_at": None}

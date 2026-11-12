@@ -1174,7 +1174,15 @@ if ($env:DG_SVC_PASSWORD) {
 # without user interaction. Otherwise the worker reports a clear UI action.
 if (-not $Unattended) {
 $FlowCredentialPath = Join-Path $FlowProfile ".asap_credentials"
-if ((Test-Path $DbPath) -and (Test-Path $FlowCredentialPath)) {
+# The portal sign-in is either in the settings file (DG_PORTAL_USER and
+# DG_PORTAL_PASSWORD, plain text) or in the older encrypted file.
+$PortalSignInInSettingsFile = $false
+try {
+    $PortalSignInInSettingsFile =
+        [bool](Select-String -LiteralPath $EnvFile -Pattern '^\s*(export\s+)?DG_PORTAL_USER\s*=\s*\S' -Quiet) -and
+        [bool](Select-String -LiteralPath $EnvFile -Pattern '^\s*(export\s+)?DG_PORTAL_PASSWORD\s*=\s*\S' -Quiet)
+} catch {}
+if ((Test-Path $DbPath) -and ((Test-Path $FlowCredentialPath) -or $PortalSignInInSettingsFile)) {
     # Create any portal the new code registers before reading the site list.
     # Migrations otherwise run when the service starts, which is after this
     # point, so a newly shipped portal would be missing here and its one-time
@@ -1208,6 +1216,7 @@ if ((Test-Path $DbPath) -and (Test-Path $FlowCredentialPath)) {
             # browser channel from the same database the service uses (the
             # app's default path is beside the code folder, not $DbPath).
             $env:DG_DB_PATH = $DbPath
+            $PortalSignInPaused = $false
             foreach ($ProfileTarget in $AuthenticationProfiles) {
                 Write-Host "Authenticating the $($ProfileTarget.Label) Flows browser for $PortalLabel..." -ForegroundColor Yellow
                 Write-Host "  Complete $PortalLabel sign-in in the selected browser window if prompted." -ForegroundColor DarkGray
@@ -1220,6 +1229,13 @@ if ((Test-Path $DbPath) -and (Test-Path $FlowCredentialPath)) {
                         --authenticate-url $FlowAuthUrl `
                         --authenticate-adapter $FlowAuthAdapter `
                         --authentication-timeout-minutes 10
+                    if ($LASTEXITCODE -eq 3) {
+                        # The portal refused the saved sign-in, or it failed
+                        # twice. Every further profile would submit nothing
+                        # and say the same, so the step ends here.
+                        $PortalSignInPaused = $true
+                        break
+                    }
                     if ($LASTEXITCODE -ne 0) {
                         throw "authentication helper exited with code $LASTEXITCODE"
                     }
@@ -1229,11 +1245,19 @@ if ((Test-Path $DbPath) -and (Test-Path $FlowCredentialPath)) {
                     Write-Host "  Runs in that mode will wait for sign-in (headed) or fail as not signed in (headless) until setup is rerun." -ForegroundColor Yellow
                 }
             }
+            if ($PortalSignInPaused) { break }
+        }
+        if ($PortalSignInPaused) {
+            Write-Host "  The portal sign-in is not being used: the portal refused it, or it failed twice." -ForegroundColor Yellow
+            Write-Host "  Nothing more was submitted, so the account cannot be locked by this setup." -ForegroundColor Yellow
+            Write-Host "  Correct it in Metronome under System > Settings > Connections > Portal sign-in, or in the settings file," -ForegroundColor Yellow
+            Write-Host "  then run setup.ps1 again to sign the browser profiles in." -ForegroundColor Yellow
         }
     }
 } elseif (Test-Path $DbPath) {
-    Write-Host "ASAP automatic sign-in is not configured yet." -ForegroundColor DarkGray
-    Write-Host "  Open Metronome > Flows > Catalog > ASAP and store the encrypted BI-desktop credential once." -ForegroundColor DarkGray
+    Write-Host "The portal sign-in is not set yet, so no browser was signed in." -ForegroundColor DarkGray
+    Write-Host "  Set it in Metronome under System > Settings > Connections > Portal sign-in," -ForegroundColor DarkGray
+    Write-Host "  or as DG_PORTAL_USER and DG_PORTAL_PASSWORD in $EnvFile." -ForegroundColor DarkGray
 }
 } else {
     Write-Host "Flows browser sign-in was left unchanged (unattended update mode)." -ForegroundColor DarkGray

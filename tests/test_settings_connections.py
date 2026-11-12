@@ -461,3 +461,63 @@ def test_when_putting_back_also_fails_the_answer_says_what_was_saved(installed, 
     with database.get_db() as db:
         actions = [row["action"] for row in db.execute("SELECT action FROM event_log WHERE entity_name='Settings'")]
     assert actions == ["setting_changed"]
+
+
+def test_the_portal_sign_in_saved_in_settings_is_plain_text_in_the_settings_file_and_what_workers_use(
+        installed, portal_store):
+    # The owner asked for the sign-in to live in .env in plain text, where it
+    # can also be corrected by hand before Metronome is started.
+    from pathlib import Path
+
+    from app import env_file, flow_credentials
+
+    registry.save({"conn.portal_user": "maya.k"})
+    registry.save_secret("conn.portal_password", SECRET)
+
+    values, _status = env_file.read(config.ENV_FILE)
+    assert (values["DG_PORTAL_USER"], values["DG_PORTAL_PASSWORD"]) == ("maya.k", SECRET)
+    assert SECRET in Path(config.ENV_FILE).read_text(encoding="utf-8")
+    used = flow_credentials.load_asap_credentials()
+    assert (used["username"], used["password"], used["source"]) == ("maya.k", SECRET, "settings_file")
+
+    # Edited by hand while Metronome runs: the next sign-in reads the new line.
+    env_file.write_value(config.ENV_FILE, "DG_PORTAL_PASSWORD", "typed by hand")
+    assert flow_credentials.load_asap_credentials()["password"] == "typed by hand"
+
+    # The Settings page is told that a password is saved, never what it is.
+    page = json.dumps(system_settings.get_settings(host()))
+    assert SECRET not in page and "typed by hand" not in page and "maya.k" in page
+
+
+def test_the_sign_in_state_shows_its_source_and_a_pause_and_try_again_is_for_the_host_pc(installed, portal_store):
+    from app import flow_credentials, flow_sign_in_guard
+
+    assert system_settings.get_portal_login()["source"] is None
+    registry.save({"conn.portal_user": "maya.k"})
+    registry.save_secret("conn.portal_password", SECRET)
+    state = system_settings.get_portal_login()
+    assert (state["source"], state["paused"], state["configured"]) == ("settings_file", False, False)
+    assert SECRET not in json.dumps(state)
+
+    with flow_sign_in_guard.attempt(flow_credentials.load_asap_credentials(), "ASAP") as attempt:
+        attempt.submitted()
+        attempt.refused()
+    paused = system_settings.get_portal_login()
+    assert (paused["paused"], paused["paused_refused"], paused["paused_portal"]) == (True, True, "ASAP")
+
+    with pytest.raises(HTTPException) as refused:
+        system_settings.resume_portal_login(colleague())
+    assert refused.value.status_code == 403 and "localhost" in refused.value.detail
+    assert system_settings.get_portal_login()["paused"] is True
+
+    assert system_settings.resume_portal_login(host())["paused"] is False
+    with database.get_db() as db:
+        actions = [row[0] for row in db.execute("SELECT action FROM event_log WHERE entity_name='Settings' ORDER BY id")]
+    assert actions[-1] == "sign_in_resumed"
+
+    # A corrected password is a different sign-in and is not paused to begin with.
+    with flow_sign_in_guard.attempt(flow_credentials.load_asap_credentials(), "ASAP") as attempt:
+        attempt.submitted()
+        attempt.refused()
+    registry.save_secret("conn.portal_password", "the new one")
+    assert system_settings.get_portal_login()["paused"] is False

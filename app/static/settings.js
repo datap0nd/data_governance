@@ -186,8 +186,21 @@ function settingsLogsHtml() {
             <span class="st-help" id="st-logs-message" role="status">${esc(settingsState.logsMessage)}</span></p></div>`;
 }
 
-// The ASAP and GSCM login is one Windows-protected file, not a settings-file
-// value, so it has its own block: saved or not, replace, clear.
+// A sign-in the portal refused, or that failed twice, is not submitted again
+// by any worker. Said at the top of Connections, where it is corrected.
+function settingsPortalPausedHtml() {
+    const portal = settingsState.portal;
+    if (!portal || !portal.paused) return '';
+    const what = portal.paused_refused
+        ? `${esc(portal.paused_portal || 'The portal')} refused the user ID or password${portal.paused_at ? ' on ' + esc(formatDate(portal.paused_at)) : ''}.`
+        : `It was submitted ${esc(String(portal.failed_attempts))} times without ${esc(portal.paused_portal || 'the portal')} opening${portal.paused_at ? ', last on ' + esc(formatDate(portal.paused_at)) : ''}.`;
+    return `<div class="st-notice" role="alert"><strong>The portal sign-in is paused.</strong> ${what}
+        Metronome will not submit it again, so the account cannot be locked by repeated attempts. Correct the User ID or Password under Portal sign-in. If they are right, choose Try again.
+        <span class="st-field"><button type="button" class="btn-sm btn-outline" data-st-portal="resume"${settingsState.canEdit ? '' : ' disabled'}>Try again</button></span></div>`;
+}
+
+// The older ASAP and GSCM login is one Windows-protected file, not a
+// settings-file value, so it has its own block: saved or not, replace, clear.
 function settingsPortalHtml() {
     const portal = settingsState.portal;
     if (!portal) return '';
@@ -209,10 +222,10 @@ function settingsPortalHtml() {
             ${portal.configured ? `<button type="button" class="btn-sm btn-outline" data-st-portal="ask"${off}>Clear</button>` : ''}</div>`;
     }
     const chips = [`<span class="st-chip ${portal.configured ? 'st-chip-set' : ''}">${portal.configured && portal.updated_at ? 'Saved ' + esc(formatDate(portal.updated_at)) : portal.configured ? 'Saved' : 'Not set'}</span>`,
-        '<span class="st-chip">Used at the next portal sign-in</span>'];
-    return `<div class="st-group"><div class="st-group-head"><h3>Portal sign-in</h3></div>
-        <div class="st-row"><div class="st-row-text"><label for="st-portal-edit">ASAP and GSCM login</label>
-            <p class="st-help">The one company sign-on that Flow workers use when an ASAP or GSCM session expires. It is kept encrypted for the Windows account the Metronome services run as; it is never shown here.${portal.available ? '' : ' It can only be saved on the Windows host PC.'}</p>
+        `<span class="st-chip">${portal.source === 'settings_file' ? 'Not in use: the fields above are set' : portal.configured ? 'In use' : 'Used when the fields above are empty'}</span>`];
+    return `<div class="st-group"><div class="st-group-head"><h3>Encrypted portal sign-in from an earlier version</h3></div>
+        <div class="st-row"><div class="st-row-text"><label for="st-portal-edit">ASAP and GSCM login, encrypted</label>
+            <p class="st-help">Workers use the User ID and Password under Portal sign-in above when both are set. This older copy, kept encrypted for the Windows account the Metronome services run as, is used only while those are empty. It is never shown here.</p>
             <div class="st-meta">${chips.join('')}</div></div>
             <div class="st-row-control">${control}</div></div></div>`;
 }
@@ -252,7 +265,7 @@ function settingsPanelHtml() {
     if (filtering) {
         const body = settingsState.sections.map(section =>
             section.groups.map(group => settingsGroupHtml(section, group, section.name)).join('')).join('')
-            + (settingsPortalMatches() ? settingsPortalHtml() : '') + settingsPageMatchesHtml();
+            + (settingsPortalMatches() ? settingsPortalPausedHtml() + settingsPortalHtml() : '') + settingsPageMatchesHtml();
         const title = settingsState.query ? `Settings matching "${esc(settingsState.query)}"` : 'Settings changed from their defaults';
         return `<header><h2>${title}</h2></header>${body || '<p class="st-empty">Nothing matches. Clear the search box or untick "Only changed from default" to see every setting.</p>'}`;
     }
@@ -267,6 +280,7 @@ function settingsPanelHtml() {
         return `<li>${anchor}${note ? ` <span class="st-help">${esc(note)}</span>` : ''}</li>`;
     }).join('');
     return `<header><h2>${esc(section.name)}</h2><p>${esc(section.blurb)}</p></header>
+        ${section.id === 'connections' ? settingsPortalPausedHtml() : ''}
         ${section.groups.map(group => settingsGroupHtml(section, group, '')).join('')}
         ${section.id === 'connections' ? settingsPortalHtml() : ''}
         ${links ? `<div class="st-group"><h3>Set somewhere else</h3><ul class="st-links">${links}</ul></div>` : ''}`;
@@ -436,6 +450,13 @@ function settingsReconcilePage(changedKeys) {
     }
 }
 
+// A new portal user ID or password is a different sign-in: which one is in
+// use, and whether it is paused, has to be read again after either is saved.
+async function settingsReloadPortalState(savedKeys) {
+    if (!savedKeys.some(key => String(key).startsWith('conn.portal_'))) return;
+    try { settingsState.portal = await api('/api/system/settings/portal-login'); settingsRefresh(); } catch (_) { /* keeps what is shown */ }
+}
+
 // Open one section without leaving the page: a registry section at once, a
 // moved page as soon as its own data has loaded.
 async function settingsOpenSection(id) {
@@ -527,6 +548,7 @@ async function settingsSave() {
         settingsState.tests = {};  // an earlier test result described the old values
         settingsRefresh();
         settingsReconcilePage(payload.changed || []);
+        await settingsReloadPortalState(payload.changed || []);
         const saved = (payload.changed || []).length;
         const newRuns = (payload.changed || []).some(key => settingsRow(key)?.applies === 'new_runs');
         toast(`Saved ${saved} ${saved === 1 ? 'setting' : 'settings'}.${newRuns ? ' Runs already in progress keep their old values.' : ''}`);
@@ -561,6 +583,7 @@ async function settingsSecretAction(button) {
         settingsState.secretEditing = null; settingsState.secretConfirming = null;
         settingsRefresh();
         toast(clearing ? `${row.label} cleared.` : `${row.label} saved. It is used from the next sign-in; nothing needs restarting.`);
+        await settingsReloadPortalState([key]);
     } catch (error) {
         // The typed value stays in the field so it can be corrected or retried.
         settingsState.secretError = error.message;
@@ -577,6 +600,22 @@ async function settingsPortalAction(button) {
     if (action === 'cancel') { settingsState.portalMode = ''; settingsRefresh('st-portal-edit'); return; }
     if (action === 'edit') { settingsState.portalMode = 'edit'; settingsRefresh('st-portal-user'); return; }
     if (action === 'ask') { settingsState.portalMode = 'confirm'; settingsRefresh(); return; }
+    if (action === 'resume') {
+        // The owner says the sign-in is right after all; workers may submit it again.
+        button.disabled = true;
+        try {
+            const response = await fetch('/api/system/settings/portal-login/resume', { method: 'POST', headers: apiHeaders() });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : `The server answered ${response.status}.`);
+            settingsState.portal = payload;
+            settingsRefresh();
+            toast('The portal sign-in will be tried again the next time a portal asks for it.');
+        } catch (error) {
+            button.disabled = false;
+            toast(error.message);
+        }
+        return;
+    }
     const user = $('#st-portal-user'), password = $('#st-portal-password');
     const typed = { user: user ? user.value : '', password: password ? password.value : '' };
     if (action === 'save' && (!typed.user.trim() || !typed.password)) {
