@@ -32,13 +32,14 @@ they are asked: no browser opens.
 | C-05 | A file that is not JSON, not decryptable, or not `dpapi`; sync | Replaced by the copy | `...::test_a_file_that_cannot_be_read_is_replaced` |
 | C-06 | The password is removed from the settings file; sync | The copy is removed; workers have no sign-in | `...::test_removing_the_sign_in_removes_its_copy` |
 | C-07 | Only an older encrypted sign-in, nothing in the settings file; sync | Left byte for byte and still used | `...::test_an_older_stand_alone_sign_in_is_never_removed` |
-| C-08 | A copy exists; the settings file is missing, or cannot be read at that moment; sync | The copy is kept | `...::test_a_settings_file_that_cannot_be_read_does_not_remove_the_copy` |
+| C-08 | A copy exists; the settings file is missing, or cannot be read at that moment; sync | The copy is kept, and the answer is "could not read", not "no sign-in" | `...::test_a_settings_file_that_cannot_be_read_does_not_remove_the_copy` |
 | C-09 | Not Windows | Nothing is written; workers still read the settings file | `...::test_nothing_is_written_where_windows_protection_does_not_exist` |
 | C-10 | The file is held open by a reader for two attempts | Written on the third; no temporary file left | `...::test_a_file_a_reader_holds_open_is_tried_again` |
 | C-11 | Another worker writes the copy while ours is refused | Accepted as in step | `...::test_a_copy_another_worker_wrote_in_the_meantime_is_accepted` |
 | C-12 | Every write refused | The error is raised, the file is as it was, no temporary file left | `...::test_a_write_that_keeps_failing_is_reported_and_leaves_the_file_as_it_was` |
 | C-13 | Two processes write | Each through its own temporary file | `...::test_each_process_writes_through_its_own_temporary_file` |
 | C-14 | A worker starts, loops three times, then the settings file is edited | Written at start; no further sync until the edit; then the new password. No password in the worker's output | `...::test_a_worker_writes_the_copy_when_it_starts_and_again_only_after_the_settings_file_changes` |
+| C-22 | The settings file cannot be read at the moment a worker starts; it can on the next loop, with the same date and size | Nothing written the first time; written on the next loop; no further sync after that | `...::test_a_settings_file_unreadable_when_the_worker_looks_is_read_again_on_the_next_loop` |
 | C-15 | The write fails for a worker, twice, then succeeds | The worker carries on, reports the kind of failure once without the password, and writes it on the next loop | `...::test_a_copy_that_cannot_be_written_never_stops_a_worker_and_is_tried_again` |
 | C-16 | The web service's start-up step, then the same with a failing write | Written; the failure is logged by kind only and start-up carries on | `...::test_the_web_service_writes_the_copy_when_it_starts_and_a_failure_only_logs_its_kind` |
 | C-17 | Settings API: save the user ID, save the password, replace it, clear it | No file after the user ID alone; copy after the password; follows the replacement; removed on clear. State reports `copy_current` and holds no password | `...::test_saving_or_clearing_the_sign_in_on_the_settings_page_moves_the_copy_at_once` |
@@ -85,7 +86,7 @@ buttons. C-21 walks each state in a browser.
 
 ## Acceptance and cleanup
 
-Accepted when C-01 to C-21, S-01, S-02 and R-01 pass here, S-03 to S-05 and
+Accepted when C-01 to C-22, S-01, S-02 and R-01 pass here, S-03 to S-05 and
 R-02 pass in the pull request's Windows job and are not skipped there, and
 `Merge ready` passes on the final head. Nothing to clean up.
 
