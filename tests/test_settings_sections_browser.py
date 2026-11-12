@@ -433,6 +433,43 @@ def test_a_paused_portal_sign_in_is_announced_where_it_is_corrected_and_try_agai
     assert _calls(state, "POST", "/api/system/settings/portal-login/resume") == [None]
 
 
+def test_the_encrypted_sign_in_is_shown_as_a_copy_while_the_settings_file_holds_it(settings_browser):
+    # Flow scripts read the encrypted file, so Metronome keeps it as a copy of
+    # the User ID and Password above: it has nothing of its own to replace.
+    page, state = settings_browser("#settings")
+    state["portal"].update(source="settings_file", configured=True, available=True, copy_current=True,
+                           updated_at="2026-11-12T05:14:00+00:00")
+    page.reload()
+    page.locator("#st-search").fill("portal")
+    copy = page.locator(".st-group").filter(has_text="Encrypted copy of the portal sign-in")
+    expect(copy).to_contain_text("Flow scripts read the portal sign-in from an encrypted file")
+    expect(copy).to_contain_text("Matches the fields above")
+    expect(copy.get_by_label("ASAP and GSCM login, encrypted, for Flow scripts")).to_contain_text("Saved")
+    expect(copy.get_by_role("button")).to_have_count(0)
+    expect(page.get_by_text("Encrypted portal sign-in from an earlier version")).to_have_count(0)
+
+    # Not written, and why: Metronome has not started since, or this is not Windows.
+    state["portal"].update(copy_current=False)
+    page.reload()
+    page.locator("#st-search").fill("portal")
+    expect(copy).to_contain_text("Not written yet")
+    expect(copy.get_by_label("ASAP and GSCM login, encrypted, for Flow scripts")).to_have_text("Not written")
+    state["portal"].update(available=False)
+    page.reload()
+    page.locator("#st-search").fill("portal")
+    expect(copy).to_contain_text("Written on the Windows host PC only")
+
+    # With no sign-in in the fields above, the older block and its buttons are back.
+    state["portal"].update(source="encrypted_file", available=True)
+    page.reload()
+    page.locator("#st-search").fill("portal")
+    older = page.locator(".st-group").filter(has_text="Encrypted portal sign-in from an earlier version")
+    expect(older.locator("#st-portal-edit")).to_have_text("Replace")
+    expect(older.locator("#st-portal-edit")).to_be_enabled()
+    expect(older.get_by_role("button", name="Clear")).to_be_enabled()
+    expect(page.get_by_text("Encrypted copy of the portal sign-in")).to_have_count(0)
+
+
 def test_flows_page_keeps_its_own_settings_view(settings_browser):
     page, state = settings_browser("#flows")
     expect(page.get_by_role("heading", level=1, name="Flows", exact=True)).to_be_visible()

@@ -8796,6 +8796,44 @@ def _refresh_connection_settings() -> list[str]:
     return changed
 
 
+#: The settings file the encrypted copy of the portal sign-in was last made from.
+_credential_copy_signature = object()
+_credential_copy_problem = None
+
+
+def _keep_credential_file_current() -> None:
+    """Keep the encrypted portal sign-in a copy of the one in the settings file.
+
+    Flow scripts read the sign-in from the encrypted file. The first call
+    writes the copy when the worker starts. Later ones, once per loop, cost
+    one ``stat`` and rewrite it only when the settings file was written since,
+    so a password corrected by hand reaches the scripts without a restart. A
+    failure never stops the worker; it is reported once and tried again on
+    the next loop.
+    """
+    global _credential_copy_signature, _credential_copy_problem
+    try:
+        from app import config, flow_credentials
+        signature = config.settings_file_signature()
+        if signature == _credential_copy_signature:
+            return
+        outcome = flow_credentials.sync_credential_file()
+        _credential_copy_signature = signature
+    except Exception as exc:
+        # The kind of failure only: the record holds the password.
+        problem = type(exc).__name__
+        if problem != _credential_copy_problem:
+            _credential_copy_problem = problem
+            print(f"Could not write the encrypted copy of the portal sign-in ({problem}). "
+                  "Flow scripts that read it may not find the current one.", file=sys.stderr, flush=True)
+        return
+    _credential_copy_problem = None
+    if outcome == "written":
+        print("Wrote the encrypted copy of the portal sign-in from the settings file.", flush=True)
+    elif outcome == "removed":
+        print("Removed the encrypted copy of the portal sign-in: the settings file no longer holds one.", flush=True)
+
+
 def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path, headed: bool,
                once: bool, idle_exit_seconds: int = 0):
     from app import flow_browser
@@ -8874,6 +8912,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                 # A connection or password the host PC saved since the last
                 # loop applies to the work claimed next.
                 _refresh_connection_settings()
+                _keep_credential_file_current()
                 claimed = _api(client, "POST", f"/api/flows/worker/{worker_id}/claim")
                 run = claimed.get("run")
                 scan = claimed.get("scan")
@@ -9350,6 +9389,9 @@ def main():
         log = (profile_dir / 'worker-console.log').open('a', encoding='utf-8', buffering=1)
         sys.stdout = sys.stdout or log
         sys.stderr = sys.stderr or log
+    # Before anything signs in or runs a script: the encrypted file that Flow
+    # scripts read holds the sign-in the settings file holds now.
+    _keep_credential_file_current()
     if args.authenticate_url:
         try:
             authenticate_site(

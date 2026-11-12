@@ -23,7 +23,7 @@ from app.config import DB_PATH, UPLOAD_PGHOST, UPLOAD_PGPORT
 from app.database import get_db
 from app import flow_paths, flow_layout, flow_capacity, flow_tasks, flow_parallel, flow_browser, flow_recording, flow_view_refresh
 from app import flow_email_delivery, flow_excel, flow_job_limits, flow_python, settings_registry, user_identity
-from app.flow_credentials import asap_credential_status, save_asap_credentials
+from app.flow_credentials import asap_credential_status, save_asap_credentials, settings_file_credentials
 from app.flow_asap_exports import (
     public_asap_download_types,
     resolve_asap_download_type,
@@ -2557,6 +2557,12 @@ def configure_site_credentials(site_id: int, body: CredentialWrite, request: Req
             raise HTTPException(404, "Website not found.")
         if site["adapter"] != ASAP_PORTAL_ADAPTER:
             raise HTTPException(400, "Local credential storage is only supported for ASAP.")
+    if settings_file_credentials():
+        # The encrypted file is then Metronome's copy of that sign-in; a
+        # different one saved here would be read by Flow scripts until the
+        # next start put the copy back.
+        raise HTTPException(409, "The portal sign-in is set under System > Settings > Connections > Portal sign-in. "
+                                 "Change the User ID or Password there; leave these two fields empty here.")
     try:
         result = save_asap_credentials(body.username, body.password)
     except (OSError, RuntimeError, ValueError) as exc:

@@ -877,10 +877,27 @@ def _run_optional_startup_step(name: str, function, *, default=None):
         return default
 
 
+def _sync_portal_sign_in_copy() -> None:
+    """Flow scripts read the portal sign-in from the encrypted file: make it the settings file's."""
+    from app import flow_credentials
+
+    try:
+        outcome = flow_credentials.sync_credential_file()
+    except Exception as exc:
+        # The kind of failure only: the record holds the password.
+        logging.getLogger(__name__).warning(
+            "The encrypted copy of the portal sign-in was not written (%s)", type(exc).__name__
+        )
+        return
+    if outcome in ("written", "removed"):
+        logging.getLogger(__name__).info("Encrypted copy of the portal sign-in: %s", outcome)
+
+
 def _start_runtime():
     """Recover interrupted work, then start the scheduler and Flow workers."""
     from app.pipeline_insights_db import init_pipeline_insights_db
     init_pipeline_insights_db()
+    _sync_portal_sign_in_copy()
     startup_update_attempt = _run_optional_startup_step(
         "update-attempt reconciliation",
         _reconcile_update_attempts,

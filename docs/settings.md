@@ -56,8 +56,11 @@ Connection values (`store="file"`) are written to the protected settings file
 too. `config.refresh()` applies a save to the web service at once; a worker
 calls `config.refresh_if_changed()` on each loop. A password or token
 (`kind="secret"`) is write-only: it can be replaced or cleared, is never sent
-to a browser and is logged without its value. The ASAP and GSCM login and the
-AI key are kept encrypted for the Windows account the services run as.
+to a browser and is logged without its value. The ASAP and GSCM login is two such values
+(`conn.portal_user`, `conn.portal_password`); Flow scripts read it from an
+encrypted file, which `flow_credentials.sync_credential_file` keeps as a copy
+of them. The AI key is kept encrypted for the Windows account the services
+run as.
 
 ## Sections that keep their own form
 

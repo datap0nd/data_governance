@@ -4,7 +4,10 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 from app.flow_paths import setting
-from app.flow_limits import MAX_SLOTS, DEFAULT_TOTAL_CAPACITY, DEFAULT_HEADLESS_CAPACITY, DEFAULT_HEADED_CAPACITY
+from app.flow_limits import (
+    MAX_SLOTS, DEFAULT_TOTAL_CAPACITY, DEFAULT_HEADLESS_CAPACITY, DEFAULT_HEADED_CAPACITY,
+    DEFAULT_SETUP_SIGN_IN_BROWSERS,
+)
 
 CAPACITY_KEY = 'flows_headless_capacity'
 HEADED_CAPACITY_KEY = 'flows_headed_capacity'
@@ -20,6 +23,13 @@ def online_seconds() -> int:
     from app import settings_registry
 
     return int(settings_registry.get('flows.worker_online_seconds'))
+
+
+def setup_sign_in_browsers() -> int:
+    """How many background, and how many visible, worker browsers setup.ps1 signs in."""
+    from app import settings_registry
+
+    return int(settings_registry.get('flows.setup_sign_in_browsers'))
 
 
 def online_cutoff(now: datetime | None = None) -> datetime:

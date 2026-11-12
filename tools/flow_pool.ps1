@@ -13,3 +13,24 @@ function Get-MetronomeFlowSlot {
         LogName = "flow_worker$ServiceSuffix"
     }
 }
+
+# The worker browsers setup signs in: the first $Limit background slots and
+# the first $Limit visible slots, slot 1 of each first. Signing in every
+# configured slot for every portal made each setup run take many minutes; the
+# other workers sign in by themselves, with the saved portal sign-in, the
+# first time a Flow needs a portal.
+function Get-MetronomeSignInProfiles {
+    param([object[]]$FlowSlots = @(), [object[]]$HeadedSlots = @(), [ValidateRange(1,32)][int]$Limit = 2)
+    $Pools = @(
+        @{ Slots = $FlowSlots;   Mode = 'headless'; First = 'headless service' },
+        @{ Slots = $HeadedSlots; Mode = 'headed';   First = 'headed on-demand' }
+    )
+    foreach ($Slot in 1..$Limit) {
+        foreach ($Pool in $Pools) {
+            $Found = @($Pool.Slots | Where-Object { $_.Slot -eq $Slot })
+            if (-not $Found.Count) { continue }
+            $Label = if ($Slot -eq 1) { $Pool.First } else { "$($Pool.Mode) slot $Slot" }
+            @{ Path = $Found[0].Profile; Label = $Label }
+        }
+    }
+}
