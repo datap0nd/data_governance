@@ -70,6 +70,8 @@ def _fresh_state(me):
                   "browser_channel": "chrome", "recording_wait_seconds": 10,
                   "portals": [{"id": 7, "name": "Fixture portal", "adapter": "asap_portal", "capacity": 4, "gscm_discovery": {}}]},
         "viewers": ["ana@example.test"],
+        "portal": {"configured": False, "updated_at": None, "available": False, "source": None, "paused": False,
+                   "paused_at": None, "paused_portal": None, "paused_refused": False, "failed_attempts": 0},
         "ai": {"mode": "preview", "effective_state": "deterministic_preview", "endpoint": "http://ai.example.test/v1/chat/completions",
                "model": "fixture-model", "provider_profile": "auto", "reasoning_effort": "medium", "max_tool_calls": 8,
                "max_model_turns": 6, "max_seconds": 180, "http_timeout_seconds": 90, "max_output_tokens": 4096,
@@ -104,7 +106,10 @@ def _respond(state, route):
     elif path == "/api/system/logs":
         payload = {"directory": "D:\\Metronome\\logs", "exists": False, "file_count": 0, "total_bytes": 0, "largest": []}
     elif path == "/api/system/settings/portal-login":
-        payload = {"configured": False, "updated_at": None, "available": False}
+        payload = state["portal"]
+    elif path == "/api/system/settings/portal-login/resume" and method == "POST":
+        state["portal"].update(paused=False, paused_at=None, paused_portal=None, paused_refused=False, failed_attempts=0)
+        payload = state["portal"]
     elif path == "/api/system/paths" and method == "GET":
         payload = state["paths"]
     elif path == "/api/system/paths" and method == "PUT":
@@ -408,6 +413,24 @@ def test_a_registry_save_reaches_the_open_flow_workers_form(settings_browser):
     expect(page.locator(".toast").filter(has_text="Flows settings saved")).to_be_visible()
     assert _calls(state, "PUT", "/api/system/flows")[-1]["headed_capacity"] == 4
     assert state["flows"]["headed_capacity"] == 4
+
+
+def test_a_paused_portal_sign_in_is_announced_where_it_is_corrected_and_try_again_resumes_it(settings_browser):
+    # The portal refused the saved password once; no worker submits it again.
+    # Settings says so beside the fields that correct it.
+    page, state = settings_browser("#settings")
+    state["portal"].update(source="settings_file", paused=True, paused_refused=True, paused_portal="ASAP",
+                           paused_at="2026-11-12T05:14:00+00:00", failed_attempts=1)
+    page.reload()
+    page.locator("#st-search").fill("portal")
+    notice = page.get_by_role("alert").filter(has_text="The portal sign-in is paused.")
+    expect(notice).to_contain_text("ASAP refused the user ID or password")
+    expect(notice).to_contain_text("the account cannot be locked by repeated attempts")
+
+    notice.get_by_role("button", name="Try again").click()
+    expect(page.locator(".toast")).to_contain_text("will be tried again")
+    expect(page.get_by_text("The portal sign-in is paused.")).to_have_count(0)
+    assert _calls(state, "POST", "/api/system/settings/portal-login/resume") == [None]
 
 
 def test_flows_page_keeps_its_own_settings_view(settings_browser):

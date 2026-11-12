@@ -8,6 +8,7 @@ templates and the result vocabulary.
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-11-12: Portal sign-in in the settings file, and never repeated into a lockout | [Test plan](releases/2026-11-12-portal-sign-in/test-plan.md) | [Test report](releases/2026-11-12-portal-sign-in/test-report.md) |
 | 2026-11-11: Settings holds the System configuration pages | [Test plan](releases/2026-11-11-settings-holds-system-pages/test-plan.md) | [Test report](releases/2026-11-11-settings-holds-system-pages/test-report.md) |
 | 2026-11-11: Setup run from the data folder stops and names the code folder | [Test plan](releases/2026-11-11-installer-data-folder/test-plan.md) | [Test report](releases/2026-11-11-installer-data-folder/test-report.md) |
 | 2026-11-11: A reused PowerShell window no longer makes setup skip its first half | [Test plan](releases/2026-11-11-installer-relaunch-marker/test-plan.md) | [Test report](releases/2026-11-11-installer-relaunch-marker/test-report.md) |

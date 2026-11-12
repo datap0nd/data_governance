@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from app import connection_tests, flow_credentials, settings_registry, user_identity
+from app import connection_tests, flow_credentials, flow_sign_in_guard, settings_registry, user_identity
 from app.database import get_db
 from app.local_access import require_host
 from app.routers.eventlog import get_actor, log_event
@@ -133,10 +133,20 @@ class PortalLoginWrite(BaseModel):
 
 
 def _portal_login_state() -> dict:
+    """The encrypted sign-in this block manages, which sign-in is in use, and whether it is paused."""
+    # Named folder: the encrypted file's own state, whatever the settings file holds.
+    encrypted = flow_credentials.asap_credential_status(flow_credentials.flow_profile_dir())
+    from_settings_file = flow_credentials.settings_file_credentials() is not None
+    try:
+        in_use = flow_credentials.load_asap_credentials()
+    except Exception:  # an unreadable encrypted file is simply not in use
+        in_use = None
     return {
-        **flow_credentials.asap_credential_status(),
+        **encrypted,
         # The protection is Windows' own; elsewhere the login cannot be stored.
         "available": platform.system() == "Windows",
+        "source": "settings_file" if from_settings_file else "encrypted_file" if in_use else None,
+        **flow_sign_in_guard.status(in_use),
     }
 
 
@@ -154,6 +164,16 @@ def save_portal_login(body: PortalLoginWrite, request: Request):
         raise HTTPException(422, f"The portal sign-in was not saved: {exc}") from exc
     with get_db() as db:
         log_event(db, "system", None, "Settings", "secret_replaced", "Portal sign-in replaced", get_actor(request))
+    return _portal_login_state()
+
+
+@router.post("/portal-login/resume")
+def resume_portal_login(request: Request):
+    """A person says the paused sign-in is right: allow it to be submitted again."""
+    require_host(request, "Only the host PC can change the portal sign-in.")
+    flow_sign_in_guard.resume()
+    with get_db() as db:
+        log_event(db, "system", None, "Settings", "sign_in_resumed", "Portal sign-in allowed again", get_actor(request))
     return _portal_login_state()
 
 
