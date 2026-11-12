@@ -87,12 +87,26 @@ def _record_for(credential: dict, state: dict) -> dict:
     return {"salt": salt, "fingerprint": fingerprint, "failures": []}
 
 
+def _failures(record: dict) -> list[dict]:
+    return [item for item in (record.get("failures") or []) if isinstance(item, dict)]
+
+
+def _refused(record: dict) -> bool:
+    return any(item.get("refused") for item in _failures(record))
+
+
+def _paused(record: dict) -> bool:
+    return _refused(record) or len(_failures(record)) >= MAX_FAILURES
+
+
 def _paused_message(record: dict) -> str:
-    portal = record.get("paused_portal") or "the portal"
-    if record.get("paused_refused"):
+    failures = _failures(record)
+    portal = (failures[-1].get("portal") if failures else None) or "the portal"
+    if _refused(record):
+        portal = next(item.get("portal") for item in failures if item.get("refused")) or portal
         reason = f"{portal} refused the saved portal sign-in"
     else:
-        reason = f"The saved portal sign-in was submitted {len(record.get('failures') or [])} times without {portal} opening"
+        reason = f"The saved portal sign-in was submitted {len(failures)} times without {portal} opening"
     return (
         f"{reason}, so Metronome has stopped using it: repeating a wrong password would lock the account. "
         f"{WHERE_TO_FIX}, or choose Try again there if the password is right."
@@ -172,35 +186,68 @@ def attempt(credential: dict, portal: str, profile_dir: Path | None = None):
     ``refused()`` (the portal said the user ID or password is wrong) or
     ``failed()``. Leaving the block after ``submitted()`` without an outcome
     counts as a failure, whatever the reason.
+
+    The attempt is written down as a failure before the block runs and
+    corrected afterwards. A worker that is stopped while it waits for the
+    portal (a service restart, an update, a power cut) never reaches the end
+    of the block; counted only there, its submission would be forgotten and
+    the next worker would send the same password again.
     """
     directory = _directory(profile_dir)
     with _lock(directory):
         record = _record_for(credential, _read(directory))
-        if record.get("paused"):
+        if _paused(record):
             raise SignInPaused(_paused_message(record))
+        kept = {"salt": record["salt"], "fingerprint": record["fingerprint"]}
+        before = _failures(record)
+
+        def entry(*, refused: bool = False, pending: bool = False) -> dict:
+            now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            return {"at": now, "portal": portal, "refused": refused, **({"pending": True} if pending else {})}
+
+        _write(directory, {**kept, "failures": [*before, entry(pending=True)]})
         outcome = _Attempt()
         try:
             yield outcome
         finally:
             if outcome.result == "succeeded":
-                _write(directory, {"salt": record["salt"], "fingerprint": record["fingerprint"], "failures": []})
+                _write(directory, {**kept, "failures": []})
             elif outcome.result == "failed" or outcome.was_submitted:
-                now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-                failures = [*(record.get("failures") or []),
-                            {"at": now, "portal": portal, "refused": outcome.was_refused}]
-                paused = outcome.was_refused or len(failures) >= MAX_FAILURES
-                _write(directory, {
-                    "salt": record["salt"], "fingerprint": record["fingerprint"], "failures": failures,
-                    "paused": paused, "paused_at": now if paused else None,
-                    "paused_portal": portal if paused else None, "paused_refused": outcome.was_refused,
-                })
+                _write(directory, {**kept, "failures": [*before, entry(refused=outcome.was_refused)]})
+            else:
+                # The form was never sent, so nothing was tried.
+                _write(directory, {**kept, "failures": before})
 
 
 def raise_if_paused(credential: dict, profile_dir: Path | None = None) -> None:
     """Refuse early, before a browser is even opened, when the sign-in is paused."""
     record = _record_for(credential, _read(_directory(profile_dir)))
-    if record.get("paused"):
+    if _paused(record):
         raise SignInPaused(_paused_message(record))
+
+
+def _someone_is_signing_in(directory: Path) -> bool:
+    """Whether a process holds the sign-in lock right now."""
+    try:
+        handle = (directory / LOCK_FILENAME).open("r+b")
+    except OSError:
+        return False
+    try:
+        handle.seek(0)
+        try:
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            return False
+        except OSError:
+            return True
+    finally:
+        handle.close()
 
 
 def status(credential: dict | None, profile_dir: Path | None = None) -> dict:
@@ -208,14 +255,19 @@ def status(credential: dict | None, profile_dir: Path | None = None) -> dict:
     clear = {"paused": False, "paused_at": None, "paused_portal": None, "paused_refused": False, "failed_attempts": 0}
     if not credential:
         return clear
-    record = _record_for(credential, _read(_directory(profile_dir)))
-    return {
-        "paused": bool(record.get("paused")),
-        "paused_at": record.get("paused_at"),
-        "paused_portal": record.get("paused_portal"),
-        "paused_refused": bool(record.get("paused_refused")),
-        "failed_attempts": len(record.get("failures") or []),
-    }
+    directory = _directory(profile_dir)
+    record = _record_for(credential, _read(directory))
+    failures = _failures(record)
+    # An attempt that is still waiting for the portal is not a failure yet.
+    if failures and failures[-1].get("pending") and _someone_is_signing_in(directory):
+        failures = failures[:-1]
+    counted = {**record, "failures": failures}
+    if not _paused(counted):
+        return {**clear, "failed_attempts": len(failures)}
+    refused = _refused(counted)
+    decisive = next((item for item in failures if item.get("refused")), failures[-1])
+    return {"paused": True, "paused_at": decisive.get("at"), "paused_portal": decisive.get("portal"),
+            "paused_refused": refused, "failed_attempts": len(failures)}
 
 
 def resume(profile_dir: Path | None = None) -> None:

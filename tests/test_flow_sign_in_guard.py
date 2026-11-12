@@ -9,7 +9,11 @@ Everything here is synthetic: fictional people and passwords, stand-in pages
 instead of a browser, a temporary folder instead of the Windows profile.
 """
 import json
+import os
+import subprocess
+import sys
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -111,7 +115,7 @@ def test_the_record_holds_neither_the_user_id_nor_the_password(profile):
         attempt.refused()
     record = (profile / flow_sign_in_guard.STATE_FILENAME).read_text(encoding="utf-8")
     assert OLD_PASSWORD not in record and "maya.k" not in record
-    assert json.loads(record)["paused"] is True
+    assert [item["refused"] for item in json.loads(record)["failures"]] == [True]
 
 
 def test_workers_submit_one_at_a_time_and_the_second_sees_the_first_refusal(profile):
@@ -145,6 +149,63 @@ def test_workers_submit_one_at_a_time_and_the_second_sees_the_first_refusal(prof
     for thread in threads:
         thread.join(10)
     assert second == {"paused": True}
+
+
+_STOPPED_WHILE_WAITING = """
+import os, sys
+sys.path.insert(0, sys.argv[1])
+from app import flow_sign_in_guard
+sign_in = {"username": "maya.k", "password": "Winter-2025-old"}
+try:
+    with flow_sign_in_guard.attempt(sign_in, "ASAP") as attempt:
+        attempt.submitted()
+        os._exit(7)   # the service is restarted, or the PC loses power, mid-wait
+except flow_sign_in_guard.SignInPaused:
+    os._exit(9)
+"""
+
+
+def test_a_worker_stopped_while_it_waits_for_the_portal_still_counts(profile):
+    # Found in review: the outcome used to be written only when the block
+    # ended. A worker killed after sending the password never got there, so
+    # each restart sent the same password again and nothing was ever counted.
+    root = str(Path(__file__).resolve().parents[1])
+    environment = {**os.environ, "METRONOME_FLOW_PROFILE": str(profile), "DG_ENV_FILE": ""}
+
+    def worker_is_killed_mid_sign_in():
+        return subprocess.run([sys.executable, "-c", _STOPPED_WHILE_WAITING, root],
+                              env=environment, capture_output=True, text=True, timeout=60).returncode
+
+    assert worker_is_killed_mid_sign_in() == 7
+    assert flow_sign_in_guard.status(_sign_in())["failed_attempts"] == 1
+    assert worker_is_killed_mid_sign_in() == 7
+    assert flow_sign_in_guard.status(_sign_in())["paused"] is True
+    # The third worker submits nothing.
+    assert worker_is_killed_mid_sign_in() == 9
+
+
+def test_a_sign_in_still_waiting_for_the_portal_is_not_reported_as_failed(profile):
+    with flow_sign_in_guard.attempt(_sign_in(), "ASAP") as attempt:
+        attempt.submitted()
+        attempt.failed()
+
+    inside, finish = threading.Event(), threading.Event()
+
+    def second_attempt():
+        with flow_sign_in_guard.attempt(_sign_in(), "ASAP") as attempt:
+            attempt.submitted()
+            inside.set()
+            finish.wait(10)
+            attempt.succeeded()
+
+    thread = threading.Thread(target=second_attempt)
+    thread.start()
+    inside.wait(10)
+    during = flow_sign_in_guard.status(_sign_in())
+    finish.set()
+    thread.join(10)
+    assert (during["paused"], during["failed_attempts"]) == (False, 1)
+    assert flow_sign_in_guard.status(_sign_in())["failed_attempts"] == 0
 
 
 # --- Which sign-in workers use ------------------------------------------------------

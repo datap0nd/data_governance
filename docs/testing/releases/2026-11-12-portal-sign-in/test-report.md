@@ -2,7 +2,7 @@
 
 - Plan: [test-plan.md](test-plan.md)
 - Change/PR: link in the PR's testing section
-- Evidence cutoff (UTC): 2026-11-12 07:10
+- Evidence cutoff (UTC): 2026-11-12 07:20
 - Tested code revision: the commit that adds this package, on `main` at
   `6d1585b`
 - Environment: Linux 6.18 (cloud container), Python 3.13.18 checkout-owned
@@ -50,7 +50,8 @@ profile of every portal in a row.
 
 | Check/case IDs | Command or procedure | Revision/environment | Result/counts/duration | Evidence |
 | --- | --- | --- | --- | --- |
-| L-01 to L-15, L-17 | The `python tools/check.py verify` command in the plan | Working tree, Linux | PASS: 306 passed, 0 failed, 45 skipped, 42.8 s. The skips are the 18 browser cases, which cannot start a browser under the verifier here, and 27 that need Windows | `.test-runs/20261112T070124371Z-6353-1fe869ad/result.json` |
+| L-01 to L-15, L-17, L-19, L-20 | The `python tools/check.py verify` command in the plan | Working tree with the review fix, Linux | PASS: 308 passed, 0 failed, 45 skipped, 42.2 s. The skips are the 18 browser cases, which cannot start a browser under the verifier here, and 27 that need Windows | `.test-runs/20261112T070846152Z-7169-982cceec/result.json` |
+| L-19 without the fix | The same test with the write-ahead line taken out, then put back | Working tree, Linux | FAILS as intended: the killed worker's submission is forgotten | Console output |
 | L-16 and the other Settings browser cases | `python -m pytest tests/test_settings_sections_browser.py` with the container's Chromium, synthetic responses | Working tree, Chromium 153 | PASS: 18 passed, 30 s | Console output |
 | Settings contracts in Node | `node tests/test_settings_sections.mjs`, `node tests/test_settings_page_loading.mjs`; `node --check app/static/settings.js` | Working tree, Node 22 | PASS | Console output |
 | Page walk, steps 1 to 4 | Playwright script against a temporary instance on `127.0.0.1:8791` | Working tree, Chromium 153, 1360 px | PASS, details below | Console output; two screenshots kept outside the repository |
@@ -94,6 +95,19 @@ are ordinary settings rows, and the notice is a status line.
 | --- | --- | --- | --- |
 | L-18 | NOT RUN | Needs Windows PowerShell | The pull request's `Windows verifier contracts` job |
 | Full regression | NOT RUN | Final-head CI (`Merge ready`) | Record the run URL and tested head in the PR testing section |
+
+## Found by the automated review of the pull request
+
+- A submission could be forgotten. The outcome of an attempt was written when
+  the attempt ended. A worker stopped after sending the password and before
+  the portal answered (a service restart, an update killing leftover workers,
+  a power cut) never reached that point, so the next worker sent the same
+  password again and no count ever rose. The attempt is now written down as a
+  failure before the form is sent and corrected when the outcome is known:
+  cleared on success, kept on failure, removed if the form was never sent.
+  Covered by L-19, which kills a real worker process mid-attempt and fails
+  with the fix taken out. The Settings page does not report an attempt as
+  failed while it is still waiting (L-20).
 
 ## Findings, limitations and retests
 
