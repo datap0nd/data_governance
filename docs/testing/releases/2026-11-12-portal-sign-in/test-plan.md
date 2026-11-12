@@ -29,6 +29,8 @@ temporary settings file and a temporary profile folder.
 | L-05 | A refused password, then a different one; the same one refused again, then Try again | The different one gets its first try; the same one stays paused until Try again | `...::test_a_new_password_starts_clean_and_try_again_lifts_the_pause_for_the_same_one` |
 | L-06 | Read the record the guard keeps on disk | Neither the user ID nor the password is in it | `...::test_the_record_holds_neither_the_user_id_nor_the_password` |
 | L-07 | Two workers reach the sign-on form at the same moment; the first is refused | The second waits, then submits nothing | `...::test_workers_submit_one_at_a_time_and_the_second_sees_the_first_refusal` |
+| L-19 | A worker process is killed after sending the form, twice; a third worker then starts | One failed attempt after the first, paused after the second, and the third submits nothing | `...::test_a_worker_stopped_while_it_waits_for_the_portal_still_counts` |
+| L-20 | Read the state while a second attempt is still waiting for the portal, then after it succeeds | Not reported as paused while it waits; cleared after it succeeds | `...::test_a_sign_in_still_waiting_for_the_portal_is_not_reported_as_failed` |
 | L-08 | `DG_PORTAL_USER` and `DG_PORTAL_PASSWORD` set; only one of them set; a tool that names the profile folder | Both set: that is the sign-in workers use. One: not a sign-in. Named folder: the encrypted file only | `...::test_the_settings_file_sign_in_is_what_workers_use` |
 | L-09 | The worker's ASAP sign-in with an old password, then three more browser profiles and portals | The password is typed into one form; the other three leave the form untouched | `...::test_an_old_password_is_typed_into_one_browser_and_no_other` |
 | L-10 | The worker's GSCM sign-in when the page says the user ID or password is wrong | Stops at once instead of waiting 180 seconds, and the sign-in is paused as refused | `...::test_gscm_stops_waiting_as_soon_as_the_page_says_no` |
@@ -67,7 +69,7 @@ On a temporary instance, as the host PC, at 1360 px:
 
 ## Acceptance and cleanup
 
-Accepted when L-01 to L-17 pass, L-18 passes in the pull request's Windows
+Accepted when L-01 to L-17, L-19 and L-20 pass, L-18 passes in the pull request's Windows
 job, the walk shows no page error, and `Merge ready` passes on the final head.
 The walk's instance is stopped and its folder removed.
 
