@@ -1,4 +1,5 @@
 """The Settings page: everyone may read it, only the host PC may change it."""
+import logging
 import platform
 from typing import Any
 
@@ -45,6 +46,7 @@ def save_settings(body: SettingsWrite, request: Request):
             # Everything was put back; the message says nothing was saved.
             return JSONResponse(status_code=503, content={"detail": str(exc)})
         _record(exc.saved, request)
+        _sync_portal_copy(record["key"] for record in exc.saved)
         labels = ", ".join(record["label"] for record in exc.saved)
         return JSONResponse(status_code=503, content={
             "detail": f"Saving stopped part-way. These were saved: {labels}. The rest were not. "
@@ -55,7 +57,29 @@ def save_settings(body: SettingsWrite, request: Request):
             503, f"Saving stopped part-way ({type(exc).__name__}). Reload the page to see what was saved, then try again."
         ) from exc
     _record(changed, request)
+    _sync_portal_copy(record["key"] for record in changed)
     return {**_state(request), "changed": [record["key"] for record in changed]}
+
+
+_PORTAL_SIGN_IN_KEYS = {"conn.portal_user", "conn.portal_password"}
+
+
+def _sync_portal_copy(keys) -> None:
+    """Flow scripts read the encrypted copy of the portal sign-in: bring it in step with a save.
+
+    The save itself has succeeded. A copy that could not be written is shown
+    as such on the page and is written again when Metronome or a worker next
+    starts, so it is logged here and not turned into a failed save.
+    """
+    if not _PORTAL_SIGN_IN_KEYS.intersection(keys):
+        return
+    try:
+        flow_credentials.sync_credential_file()
+    except Exception as exc:
+        # The kind of failure only: the record holds the password.
+        logging.getLogger(__name__).warning(
+            "The encrypted copy of the portal sign-in was not written (%s)", type(exc).__name__
+        )
 
 
 def _record(changed: list[dict], request: Request) -> None:
@@ -94,6 +118,7 @@ def replace_secret(key: str, body: SecretWrite, request: Request):
         return _rejected(exc)
     with get_db() as db:
         log_event(db, "system", None, "Settings", "secret_replaced", f"{saved['label']} replaced", get_actor(request))
+    _sync_portal_copy([key])
     return _state(request)
 
 
@@ -108,6 +133,7 @@ def clear_secret(key: str, request: Request):
         return _rejected(exc)
     with get_db() as db:
         log_event(db, "system", None, "Settings", "secret_cleared", f"{saved['label']} cleared", get_actor(request))
+    _sync_portal_copy([key])
     return _state(request)
 
 
@@ -123,9 +149,15 @@ def test_connection(name: str, request: Request):
 
 # --- Portal sign-in ---------------------------------------------------------------
 #
-# ASAP and GSCM share one single sign-on login. It is kept as a Windows-protected
-# file beside the worker's browser profile, readable only by the Windows account
-# the services run as, so it is not a settings-file value like the others.
+# ASAP and GSCM share one single sign-on login. Workers read it from the settings
+# file (the two Portal sign-in settings). Flow scripts read it from a
+# Windows-protected file beside the worker's browser profile, readable only by
+# the Windows account the services run as, so Metronome keeps that file as a copy
+# of the settings-file sign-in. While the settings file holds none, the file is
+# the older stand-alone sign-in, and this block is where it is replaced or cleared.
+
+COPY_IS_NOT_EDITED = ("The portal sign-in is set under Portal sign-in, and the encrypted file is "
+                      "Metronome's copy of it. Change the User ID or Password there; the copy follows.")
 
 class PortalLoginWrite(BaseModel):
     username: str = Field(min_length=1, max_length=200)
@@ -146,6 +178,9 @@ def _portal_login_state() -> dict:
         # The protection is Windows' own; elsewhere the login cannot be stored.
         "available": platform.system() == "Windows",
         "source": "settings_file" if from_settings_file else "encrypted_file" if in_use else None,
+        # Whether the encrypted file is a copy of the settings-file sign-in, as
+        # Flow scripts need it to be.
+        "copy_current": flow_credentials.credential_file_is_current_copy(),
         **flow_sign_in_guard.status(in_use),
     }
 
@@ -158,6 +193,8 @@ def get_portal_login():
 @router.put("/portal-login")
 def save_portal_login(body: PortalLoginWrite, request: Request):
     require_host(request, "Only the host PC can change the portal sign-in.")
+    if flow_credentials.settings_file_credentials():
+        raise HTTPException(409, COPY_IS_NOT_EDITED)
     try:
         flow_credentials.save_asap_credentials(body.username, body.password)
     except (OSError, RuntimeError, ValueError) as exc:
@@ -180,6 +217,8 @@ def resume_portal_login(request: Request):
 @router.delete("/portal-login")
 def clear_portal_login(request: Request):
     require_host(request, "Only the host PC can change the portal sign-in.")
+    if flow_credentials.settings_file_credentials():
+        raise HTTPException(409, COPY_IS_NOT_EDITED)
     try:
         flow_credentials.clear_asap_credentials()
     except OSError as exc:

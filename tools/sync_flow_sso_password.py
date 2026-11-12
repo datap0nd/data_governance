@@ -13,13 +13,19 @@ from pathlib import Path
 # The installer uses an isolated embedded Python and invokes this file directly.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.flow_credentials import load_asap_credentials, save_asap_credentials
+from app.flow_credentials import load_asap_credentials, save_asap_credentials, settings_file_credentials
 
 
 def sync_password(profile_dir: Path) -> str:
     password = os.environ.get("DG_SVC_PASSWORD")
     if not password:
         return "No DG_SVC_PASSWORD supplied; existing ASAP/GSCM credential preserved."
+    if settings_file_credentials():
+        # The encrypted file is a copy of that sign-in, which Flow scripts
+        # read. Putting the Windows password into it would hand them a
+        # different password from the one the workers use.
+        return ("The portal sign-in is set in the settings file (DG_PORTAL_USER and DG_PORTAL_PASSWORD); "
+                "DG_SVC_PASSWORD was not copied into the encrypted file.")
     credential = load_asap_credentials(profile_dir)
     if credential is None:
         return (

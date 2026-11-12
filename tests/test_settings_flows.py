@@ -42,6 +42,7 @@ EXPECTED = {
     "flows.worker_online_seconds": (90, 60, 600, "now"),
     "flows.run_folders_kept": (3, 1, 50, "now"),
     "flows.recording_start_seconds": (120, 30, 900, "now"),
+    "flows.setup_sign_in_browsers": (2, 1, 32, "now"),
     "flows.failure_screenshots_kept": (20, 1, 100, "new_runs"),
     "flows.recording_test_folders_kept": (3, 1, 20, "new_runs"),
     "flows.download_start_minutes": (15, 1, 240, "new_runs"),

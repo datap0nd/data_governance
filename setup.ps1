@@ -1192,6 +1192,19 @@ if ((Test-Path $DbPath) -and ((Test-Path $FlowCredentialPath) -or $PortalSignInI
         try { & $PyExe $MigrateScript $DbPath | Out-Null }
         catch { Write-Host "  WARNING: could not apply migrations before sign-in: $_" -ForegroundColor Yellow }
     }
+    # The MXAnalytics service is stopped here, so the helpers below read the
+    # browser channel and the settings from the same database the service
+    # uses (the app's default path is beside the code folder, not $DbPath).
+    $env:DG_DB_PATH = $DbPath
+    # How many worker browsers of each kind to sign in: the Settings value
+    # "Worker browsers signed in during setup", 2 unless it was changed.
+    $SignInBrowsers = 2
+    try {
+        $SignInBrowsersText = "$(& $PyExe "$CodeDir\tools\flow_setup_sign_in.py")".Trim()
+        if ($LASTEXITCODE -eq 0 -and $SignInBrowsersText -match '^\d+$' -and [int]$SignInBrowsersText -ge 1 -and [int]$SignInBrowsersText -le 32) {
+            $SignInBrowsers = [int]$SignInBrowsersText
+        }
+    } catch {}
     $AuthUrlScript = "$CodeDir\tools\get_flow_auth_url.py"
     if (Test-Path $AuthUrlScript) {
         # One line per portal: "adapter<TAB>url". ASAP and GSCM are separate
@@ -1208,14 +1221,10 @@ if ((Test-Path $DbPath) -and ((Test-Path $FlowCredentialPath) -or $PortalSignInI
             # cannot share a Chromium profile concurrently), and Samsung SSO
             # sessions live per profile. Signing in only the headless profile
             # left every headed run parked on the SSO form, so bootstrap both.
-            $AuthenticationProfiles = @(
-                @{ Path = $FlowProfile;       Label = "headless service" },
-                @{ Path = $HeadedFlowProfile; Label = "headed on-demand" }
-            ) + @($FlowSlots | Where-Object { $_.Slot -gt 1 } | ForEach-Object { @{ Path = $_.Profile; Label = "headless slot $($_.Slot)" } }) + @($HeadedSlots | Where-Object { $_.Slot -gt 1 } | ForEach-Object { @{ Path = $_.Profile; Label = "headed slot $($_.Slot)" } })
-            # The MXAnalytics service is stopped here, so the helper reads the
-            # browser channel from the same database the service uses (the
-            # app's default path is beside the code folder, not $DbPath).
-            $env:DG_DB_PATH = $DbPath
+            # Only the first few of each kind: one browser per slot per portal
+            # made every setup run take many minutes. The other workers sign in
+            # by themselves, with the saved portal sign-in, when a Flow needs it.
+            $AuthenticationProfiles = @(Get-MetronomeSignInProfiles -FlowSlots $FlowSlots -HeadedSlots $HeadedSlots -Limit $SignInBrowsers)
             $PortalSignInPaused = $false
             foreach ($ProfileTarget in $AuthenticationProfiles) {
                 Write-Host "Authenticating the $($ProfileTarget.Label) Flows browser for $PortalLabel..." -ForegroundColor Yellow
@@ -1246,6 +1255,13 @@ if ((Test-Path $DbPath) -and ((Test-Path $FlowCredentialPath) -or $PortalSignInI
                 }
             }
             if ($PortalSignInPaused) { break }
+        }
+        $BrowsersNotSignedIn = @($FlowSlots).Count + @($HeadedSlots).Count - @(Get-MetronomeSignInProfiles -FlowSlots $FlowSlots -HeadedSlots $HeadedSlots -Limit $SignInBrowsers).Count
+        if ($FlowAuthTargets.Count -and $BrowsersNotSignedIn -gt 0 -and -not $PortalSignInPaused) {
+            Write-Host "  $BrowsersNotSignedIn more worker browser(s) were not signed in here, to keep setup short." -ForegroundColor DarkGray
+            Write-Host "  Each signs in by itself, with the saved portal sign-in, the first time a Flow needs a portal." -ForegroundColor DarkGray
+            Write-Host "  To sign in more of them during setup, raise 'Worker browsers signed in during setup'" -ForegroundColor DarkGray
+            Write-Host "  in Metronome under System > Settings > Flows." -ForegroundColor DarkGray
         }
         if ($PortalSignInPaused) {
             Write-Host "  The portal sign-in is not being used: the portal refused it, or it failed twice." -ForegroundColor Yellow

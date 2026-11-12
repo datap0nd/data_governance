@@ -8,6 +8,7 @@ templates and the result vocabulary.
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-11-12: Encrypted sign-in file follows the settings file; setup signs in two workers of each kind | [Test plan](releases/2026-11-12-sign-in-copy-and-setup-sign-ins/test-plan.md) | [Test report](releases/2026-11-12-sign-in-copy-and-setup-sign-ins/test-report.md) |
 | 2026-11-12: Portal sign-in in the settings file, and never repeated into a lockout | [Test plan](releases/2026-11-12-portal-sign-in/test-plan.md) | [Test report](releases/2026-11-12-portal-sign-in/test-report.md) |
 | 2026-11-11: Settings holds the System configuration pages | [Test plan](releases/2026-11-11-settings-holds-system-pages/test-plan.md) | [Test report](releases/2026-11-11-settings-holds-system-pages/test-report.md) |
 | 2026-11-11: Setup run from the data folder stops and names the code folder | [Test plan](releases/2026-11-11-installer-data-folder/test-plan.md) | [Test report](releases/2026-11-11-installer-data-folder/test-report.md) |
