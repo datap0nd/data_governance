@@ -5251,6 +5251,9 @@ async function renderEmail() {
         api("/api/email-schedules/people"),
     ]);
     const alertSummaries = alertData.summaries || [];
+    // Settings > Email > Send emails. An older server does not say; it always sends.
+    const sendingOn = alertData.sending_enabled !== false;
+    const sendOffTitle = sendingOn ? "" : ` title="Sending email is turned off in System > Settings > Email"`;
     const aiAnalysis = alertData.ai_analysis || {
         enabled: true,
         state: "enabled",
@@ -5320,7 +5323,7 @@ async function renderEmail() {
                     <button class="btn-outline email-open-draft" data-owner="${esc(s.owner_name)}" ${missingEmail ? "disabled" : ""}>Open Draft</button>
                     <button class="btn-outline email-copy-summary" data-owner="${esc(s.owner_name)}">Copy Summary</button>
                     <button class="btn-outline email-server-draft" data-owner="${esc(s.owner_name)}" ${missingEmail ? "disabled" : ""}>Create Outlook Draft</button>
-                    <button class="btn-outline btn-danger-outline email-server-send" data-owner="${esc(s.owner_name)}" ${missingEmail ? "disabled" : ""}>Send Now</button>
+                    <button class="btn-outline btn-danger-outline email-server-send" data-owner="${esc(s.owner_name)}" ${missingEmail || !sendingOn ? "disabled" : ""}${sendOffTitle}>Send Now</button>
                 </div>
             </div>
         `;
@@ -5351,13 +5354,14 @@ async function renderEmail() {
                     <h2>Active Alert Summaries</h2>
                     <div class="email-bulk-actions">
                         <button class="btn-outline" id="email-alert-draft-selected">Create Drafts for Selected</button>
-                        <button class="btn-outline btn-danger-outline" id="email-alert-send-selected">Send Selected Now</button>
+                        <button class="btn-outline btn-danger-outline" id="email-alert-send-selected" ${sendingOn ? "" : "disabled"}${sendOffTitle}>Send Selected Now</button>
                     </div>
                 </div>
                 <p class="email-ai-mode-note ${aiAnalysis.enabled ? "enabled" : "disabled"}">${aiAnalysis.enabled
                     ? `AI analysis is enabled in ${esc(_AI_MODE_LABELS[aiAnalysis.mode] || aiAnalysis.mode)} mode. Current assessments are included when available.`
                     : `${esc(aiAnalysis.reason || "AI analysis is disabled in System > Settings > AI.")} Outlook summaries use deterministic Alert facts and next steps.`}</p>
-                <p class="email-send-note">Nothing is selected by default. Review the ranked preview, select recipients, then create drafts or send.</p>
+                ${sendingOn ? "" : `<p class="email-sending-off" role="status"><strong>Sending email is off.</strong> Metronome emails nobody until it is turned back on in <a href="#settings/email">System &gt; Settings &gt; Email</a>. Outlook drafts can still be created.</p>`}
+                <p class="email-send-note">Nothing is selected by default. Review the ranked preview, select recipients, then create ${sendingOn ? "drafts or send" : "drafts"}.</p>
                 <div class="email-summary-list">${alertCards}</div>
             </section>
         </div>
@@ -5515,7 +5519,7 @@ function _recScheduleText(item) {
 function _recStatusHtml(status) {
     const key = (status || "never run").toLowerCase();
     const success = ["sent", "drafted"].includes(key);
-    const warning = ["no_rows", "running", "never run"].includes(key);
+    const warning = ["no_rows", "not_sent", "running", "never run"].includes(key);
     const error = key === "failed";
     const label = key === "no_rows" ? "No matching rows" : key.replaceAll("_", " ");
     return `<span class="rec-status${success ? " success" : warning ? " warning" : error ? " error" : ""}">${esc(label)}</span>`;
@@ -6342,7 +6346,8 @@ function bindRecurrencesPage() {
         button.disabled = true;
         try {
             const result = await _recRequest(`/api/recurrences/${button.dataset.id}/run`, { method: "POST", body: JSON.stringify({ mode: "send" }) });
-            toast(result.email_count ? `${result.email_count} email${result.email_count === 1 ? "" : "s"} launched through Outlook` : "No matching rows. No emails sent.");
+            toast(result.status === "not_sent" ? result.reason
+                : result.email_count ? `${result.email_count} email${result.email_count === 1 ? "" : "s"} launched through Outlook` : "No matching rows. No emails sent.");
             await navigate("recurrences");
         } catch (error) {
             button.disabled = false;
@@ -12770,7 +12775,7 @@ function _renderPipelineRunStatus(run, expectedReportId = null) {
         <div class="pipeline-step-strip">${(run.steps || []).map(step => `<span class="pipeline-step pipeline-step-${esc(step.status)}"><b>${esc(step.step_type)}</b>${esc(step.entity_name || "")} · ${esc(step.status)}</span>`).join("")}</div>
         ${run.requires_inspection ? '<p class="pipeline-message pipeline-warning"><strong>Manual inspection required.</strong> Do not replay an unknown external outcome.</p>' : ""}
         ${run.error ? `<p>${esc(run.error)}</p>` : ""}
-        <small>Summary: ${esc(run.notification_status || "pending")}${terminal && ["unknown", "failed"].includes(run.notification_status) ? ` · <button class="btn-link" data-pipeline-resend="${run.id}">resend</button>` : ""}</small>
+        <small>Summary: ${esc((run.notification_status || "pending").replaceAll("_", " "))}${run.notification_status === "not_sent" && run.notification_error ? ` · ${esc(run.notification_error)}` : ""}${terminal && ["unknown", "failed", "not_sent"].includes(run.notification_status) ? ` · <button class="btn-link" data-pipeline-resend="${run.id}">resend</button>` : ""}</small>
         ${(run.recent_runs || []).length > 1 ? `<details class="pipeline-history"><summary>Recent full-pipeline runs</summary>${run.recent_runs.map(item => `<span><b>#${item.id}</b> ${esc(item.status)} · ${esc(formatDate(item.created_at))}${item.error ? ` · ${esc(item.error)}` : ""}</span>`).join("")}</details>` : ""}`;
     panel.querySelector("[data-pipeline-resend]")?.addEventListener("click", async event => {
         event.currentTarget.disabled = true;

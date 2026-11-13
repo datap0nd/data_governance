@@ -5,6 +5,7 @@ in [the testing workflow](../README.md); this file is the complete history.
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-11-13: Send emails switch in Settings > Email | [Test plan](2026-11-13-send-emails-switch/test-plan.md) | [Test report](2026-11-13-send-emails-switch/test-report.md) |
 | 2026-11-12: Encrypted sign-in file follows the settings file; setup signs in two workers of each kind | [Test plan](2026-11-12-sign-in-copy-and-setup-sign-ins/test-plan.md) | [Test report](2026-11-12-sign-in-copy-and-setup-sign-ins/test-report.md) |
 | 2026-11-12: Portal sign-in in the settings file, and never repeated into a lockout | [Test plan](2026-11-12-portal-sign-in/test-plan.md) | [Test report](2026-11-12-portal-sign-in/test-report.md) |
 | 2026-11-11: Settings holds the System configuration pages | [Test plan](2026-11-11-settings-holds-system-pages/test-plan.md) | [Test report](2026-11-11-settings-holds-system-pages/test-report.md) |

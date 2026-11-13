@@ -31,7 +31,7 @@ from app.pbi_visual_export import (
     list_visuals,
     visual_export_runtime_status,
 )
-from app.routers.email import OutlookEmailError, _launch_outlook_payload
+from app.routers.email import SENDING_OFF, EmailSendingOff, OutlookEmailError, _launch_outlook_payload, sending_enabled
 from app.routers.eventlog import get_actor, log_event
 from app.scanner import pbi_auth, pbi_fetch
 from app.scanner.pbi_sync import pbi_auth_mode
@@ -1010,6 +1010,8 @@ def _notify_owner_of_failure(
             "owner_name": owner["name"],
             "owner_email": message["to"],
         }
+    except EmailSendingOff as off:
+        return {"status": "not_sent", "owner_name": owner.get("name"), "reason": off.detail}
     except Exception as exc:
         logger.exception("Could not notify recurrence owner %s about a failure", owner.get("name"))
         return {
@@ -1170,6 +1172,14 @@ def run_recurrence(recurrence_id: int, *, mode: str = "send", trigger_type: str 
         run_id = _record_run_start(recurrence_id, trigger_type, mode)
         with get_db() as db:
             recurrence = _load_recurrence(db, recurrence_id)
+        if mode == "send" and not sending_enabled():
+            # Nothing is exported and nobody is told: the run says why it sent
+            # nothing, and a scheduled alert moves on to its next occurrence.
+            _finish_run(recurrence_id, run_id, trigger_type=trigger_type, status="not_sent", error=SENDING_OFF)
+            return {
+                "status": "not_sent", "run_id": run_id, "exported_rows": 0, "matched_rows": 0,
+                "email_count": 0, "groups": [], "reason": SENDING_OFF,
+            }
 
         owner = _resolve_recurrence_owner(recurrence)
         if not owner:

@@ -576,6 +576,14 @@ def deliver_run_file(run_id: int, *, resend: bool = False, actor: str | None = N
             _record_outcome(run_id, context, outcome, stage="email_skipped",
                             message=outcome["detail"], action="email_skipped", actor=actor)
             return outcome
+        from app.routers.email import SENDING_OFF, sending_enabled
+
+        if not sending_enabled():
+            # Send again stays offered, so the file can go out once sending is back on.
+            outcome = {"status": "skipped", "detail": SENDING_OFF}
+            _record_outcome(run_id, context, outcome, stage="email_skipped",
+                            message=SENDING_OFF, action="email_skipped", actor=actor)
+            return outcome
         files = context["files"]
         if not files:
             raise RuntimeError("No final file was recorded for this run.")

@@ -1497,10 +1497,24 @@ def _submit_summary(run_id: int) -> None:
             "subject": f"Metronome pipeline {run['status']}: {run['plan']['report']['name']}",
             "html_body": _summary_html(run),
         }
-        from app.routers.email import launch_outlook_dispatch
-        dispatch = launch_outlook_dispatch(
-            [message], mode="send", pipeline_run_id=run_id, purpose="pipeline_summary"
-        )
+        from app.routers.email import EmailSendingOff, launch_outlook_dispatch
+        try:
+            dispatch = launch_outlook_dispatch(
+                [message], mode="send", pipeline_run_id=run_id, purpose="pipeline_summary"
+            )
+        except EmailSendingOff as off:
+            # Terminal, and offered for resend like a failed hand-off.
+            with get_db() as db:
+                db.execute(
+                    "UPDATE pipeline_runs SET notification_status='not_sent', notification_error=?, updated_at=? WHERE id=?",
+                    (off.detail, _iso(), run_id),
+                )
+                db.execute(
+                    """UPDATE pipeline_run_steps SET status='skipped', error=?, finished_at=?
+                       WHERE run_id=? AND step_type='notification'""",
+                    (off.detail, _iso(), run_id),
+                )
+            return
         with get_db() as db:
             db.execute(
                 "UPDATE pipeline_runs SET notification_status='pending_receipt', notification_error=NULL, updated_at=? WHERE id=?",
