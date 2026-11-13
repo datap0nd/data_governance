@@ -348,14 +348,18 @@ def notify_flow_owner_of_failure(run_id: int) -> dict:
                 "reason": f"Owner {context['owner_name']} has no email mapped in Users.",
             }
         else:
-            from app.routers.email import _launch_outlook_payload
+            from app.routers.email import EmailSendingOff, _launch_outlook_payload
 
-            _launch_outlook_payload([_flow_failure_message(context)], "send")
-            outcome = {
-                "status": "launched",
-                "owner_name": context["owner_name"],
-                "owner_email": context["owner_email"],
-            }
+            try:
+                _launch_outlook_payload([_flow_failure_message(context)], "send")
+            except EmailSendingOff as off:
+                outcome = {"status": "not_sent", "owner_name": context["owner_name"], "reason": off.detail}
+            else:
+                outcome = {
+                    "status": "launched",
+                    "owner_name": context["owner_name"],
+                    "owner_email": context["owner_email"],
+                }
     except Exception as exc:
         logging.getLogger(__name__).exception(
             "Could not notify the flow owner about failed run %s", run_id
@@ -1814,11 +1818,17 @@ def notify_owner_of_host_change(request, before: dict, after: dict | None) -> di
         elif not str(owner["email"] or "").strip():
             outcome = {"status": "not_sent", "reason": f"Owner {owner['name']} has no email in Users."}
         else:
-            # Named as it is now; a rename shows as a Name change in the table.
-            _send_owner_change_notice(_owner_change_message(
-                after or before, owner, changes, get_actor(request) or user_identity.HOST_ACTOR, dubai_now(),
-            ))
-            outcome = {"status": "launched", "owner_email": owner["email"], "changes": len(changes)}
+            from app.routers.email import EmailSendingOff
+
+            try:
+                # Named as it is now; a rename shows as a Name change in the table.
+                _send_owner_change_notice(_owner_change_message(
+                    after or before, owner, changes, get_actor(request) or user_identity.HOST_ACTOR, dubai_now(),
+                ))
+            except EmailSendingOff as off:
+                outcome = {"status": "not_sent", "reason": off.detail}
+            else:
+                outcome = {"status": "launched", "owner_email": owner["email"], "changes": len(changes)}
     except Exception as exc:
         logging.getLogger(__name__).exception("Could not notify the owner of Flow %s about a host change", before.get("id"))
         outcome = {"status": "failed", "reason": str(exc).strip() or exc.__class__.__name__}
@@ -3633,6 +3643,10 @@ def resend_run_email(run_id: int, request: Request):
         raise HTTPException(409, "This run has no Email step.")
     if _loads(row["progress_json"], {}).get("no_op"):
         raise HTTPException(409, "This run found nothing new, so there is no file to send.")
+    from app.routers.email import SENDING_OFF, sending_enabled
+
+    if not sending_enabled():
+        raise HTTPException(409, SENDING_OFF)
     outcome = flow_email_delivery.deliver_run_file(run_id, resend=True, actor=get_actor(request))
     if outcome.get("status") == "failed":
         raise HTTPException(502, f"Email could not be handed to Outlook: {outcome.get('detail')}")

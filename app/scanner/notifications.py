@@ -113,6 +113,12 @@ def queue_notification(
     settings = get_notification_settings()
     if not settings["enabled"]:
         return {"status": "disabled", "dispatch_id": None}
+    from app.routers.email import SENDING_OFF, sending_enabled
+
+    if not sending_enabled():
+        # Treated like an empty recipient list: the scan is not marked as
+        # notified, and nothing is queued to go out later.
+        return {"status": "disabled", "dispatch_id": None, "reason": SENDING_OFF}
     rows = _module_rows(run_ids)
     if not rows:
         return {"status": "not_applicable", "dispatch_id": None}
@@ -178,7 +184,10 @@ def queue_test_notification() -> dict:
     settings = get_notification_settings()
     if not settings["enabled"]:
         raise ValueError("Save at least one scanner failure recipient first.")
-    from app.routers.email import launch_outlook_dispatch
+    from app.routers.email import SENDING_OFF, launch_outlook_dispatch, sending_enabled
+
+    if not sending_enabled():
+        raise ValueError(SENDING_OFF)
 
     dispatch = launch_outlook_dispatch(
         [_message([], test=True)],

@@ -53,7 +53,7 @@ SECTIONS = (
     ("scanner", "Scanner", "When scans run, what they read, and how long they wait on PostgreSQL and Power BI."),
     ("freshness", "Freshness and alerts", "The thresholds that decide when a source is outdated and what gets flagged."),
     ("flows", "Flows", "Workers, run limits and timeouts. Worker limits are copied into each run when it is queued, so a change never alters a run already in progress."),
-    ("email", "Email", "Limits for emails Metronome sends through Outlook on the host PC."),
+    ("email", "Email", "Whether Metronome sends email through Outlook on the host PC, and the limits it keeps."),
     ("updates", "Updates, backups and logs", "How Metronome updates itself, backs up its own database and keeps its logs in check."),
 )
 SECTION_IDS = tuple(section[0] for section in SECTIONS)

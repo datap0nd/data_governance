@@ -18,6 +18,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from app import settings_registry
 from app.config import BASE_DIR
 from app.database import get_db
 from app.routers.actions import list_actions as list_action_alerts
@@ -86,6 +87,21 @@ class OutlookEmailError(RuntimeError):
         super().__init__(detail)
         self.detail = detail
         self.status_code = status_code
+
+
+SENDING_OFF = "Sending email is turned off in System > Settings > Email, so nothing was sent."
+
+
+class EmailSendingOff(OutlookEmailError):
+    """Settings > Email > Send emails is off, so nothing was handed to Outlook."""
+
+    def __init__(self):
+        super().__init__(SENDING_OFF, status_code=409)
+
+
+def sending_enabled() -> bool:
+    """Whether Metronome may send email right now (Settings > Email > Send emails)."""
+    return bool(settings_registry.get("email.send_enabled"))
 
 
 class PersonEmailUpdate(BaseModel):
@@ -1012,10 +1028,17 @@ def launch_outlook_dispatch(
 
     Launching the scheduled task is not delivery.  The PowerShell helper writes
     an atomic receipt only after Outlook's ``Send``/``Display`` call returns.
+
+    Every email Metronome sends passes through here, so this is where
+    Settings > Email > Send emails is enforced: while it is off a send raises
+    ``EmailSendingOff`` before anything is recorded or launched. A draft is
+    only shown on the host PC, so it is still allowed.
     """
     mode = (mode or "send").lower().strip()
     if mode not in {"draft", "send"}:
         raise OutlookEmailError("Mode must be draft or send", status_code=422)
+    if mode == "send" and not sending_enabled():
+        raise EmailSendingOff()
     if platform.system() != "Windows":
         raise OutlookEmailError("Server-side Outlook sending is only available on Windows", status_code=400)
     if not OUTLOOK_SCRIPT.exists():
@@ -1342,6 +1365,7 @@ def get_alert_summaries():
     enabled = ai_settings.feature_enabled("alert_email_analysis")
     return {
         "summaries": _load_alert_summaries(ai_settings=ai_settings),
+        "sending_enabled": sending_enabled(),
         "ai_analysis": {
             "enabled": enabled,
             "state": "enabled" if enabled else "disabled",

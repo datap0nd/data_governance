@@ -210,6 +210,13 @@ register(Setting(
 # --- Email -----------------------------------------------------------------------
 
 register(Setting(
+    key="email.send_enabled", section="email", group="Sending", label="Send emails", kind="bool",
+    default=True,
+    help="When off, Metronome emails nobody: alert summaries, Flow files and notices, scanner failure "
+         "notices and Pipeline summaries are each recorded as not sent. Outlook drafts can still be created. "
+         "An email already handed to Outlook is not recalled.",
+))
+register(Setting(
     key="email.require_fresh_pbi", section="email", group="Scheduled alert emails",
     label="Hold an email until Power BI has synced", kind="bool", default=True,
     env=("DG_EMAIL_REQUIRE_FRESH_PBI",),

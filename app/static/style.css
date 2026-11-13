@@ -7213,6 +7213,20 @@ tr.row-archived td:last-child {
 .email-ai-mode-note.disabled {
     border-left-color: var(--text-dim);
 }
+.email-sending-off {
+    margin: -0.25rem 0 0.65rem;
+    padding: 0.5rem 0.65rem;
+    color: var(--text);
+    background: var(--yellow-bg);
+    border-left: 3px solid var(--yellow);
+    border-radius: 4px;
+    font-size: 0.78rem;
+    line-height: 1.4;
+}
+.email-sending-off a {
+    color: var(--accent);
+    font-weight: 600;
+}
 .email-summary-panel {
     border: 1px solid var(--border);
     border-radius: 6px;

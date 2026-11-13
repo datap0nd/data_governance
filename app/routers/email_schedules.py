@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Request
 from app import settings_registry
 from app.database import get_db
 from app.models import EmailScheduleOut, EmailScheduleUpdate
+from app.routers.email import SENDING_OFF, EmailSendingOff, sending_enabled
 from app.routers.eventlog import get_actor, log_event
 from app.scanner.pbi_sync import pbi_sync_freshness
 from app.settings import get_overall_refresh_time
@@ -758,6 +759,11 @@ def send_task_summary_now(request: Request):
 
     try:
         count = _send_task_summary(schedule)
+    except EmailSendingOff as exc:
+        _mark_result(schedule["id"], schedule, exc.detail)
+        with get_db() as db:
+            log_event(db, "email_schedule", schedule["id"], "Task summary", "not_sent", exc.detail, get_actor(request))
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     except RuntimeError as exc:
         _mark_result(schedule["id"], schedule, str(exc))
         with get_db() as db:
@@ -805,6 +811,13 @@ def dispatch_due_email_schedules() -> int:
             label = schedule.get("person_name") or f"BI profile {schedule.get('person_id')}"
             send_fn = _send_person_summary
         else:
+            continue
+        if not sending_enabled():
+            # This occurrence is passed over, not held: turning sending back on
+            # does not release a backlog of old summaries.
+            _mark_result(schedule["id"], schedule, SENDING_OFF)
+            with get_db() as db:
+                log_event(db, "email_schedule", schedule["id"], label, "not_sent", SENDING_OFF, "scheduler")
             continue
         try:
             _require_fresh_pbi_for_scheduled_email(schedule)
