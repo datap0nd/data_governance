@@ -80,6 +80,18 @@ and the walk was rerun on that code.
 - Python-script Flows that send email from their own code are outside
   Metronome's hand-off and are not covered by the switch.
 
+## CI on the first head and the flaky-test fix
+
+- On `bfd6948`, run 43387797658 passed every job except Python shard 4.
+- In shard 4, `tests/test_recording_clicks.py::test_missing_transition_does_not_fail_or_repeat_dispatch[native]` failed with `ElementHandle.click: Timeout 16ms exceeded`.
+  - The test helper gives `click_recorded` a 500 ms deadline shared by four browser round-trips and the click.
+  - On a loaded runner those round-trips used 484 ms, leaving the click less than Playwright's stability check needs.
+- A re-run of that job passed (537 passed). `Merge ready` still read the first attempt's shard 4 results, because the artifact name is the same, so it stayed red.
+- Fix: the helper's budget is now 5000 ms.
+  - No assertion depends on it, because `click_recorded` never waits after dispatching.
+  - The application code is unchanged.
+- The recording click tests need Chrome, which cannot start in this container (`BrowserType.launch` closes at once), so they were not run locally. Final-head CI is their evidence.
+
 ## Merge evidence
 
 Final-head CI is pending at this cutoff. The PR's testing section records the

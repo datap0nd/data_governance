@@ -99,8 +99,12 @@ def page(recording_browser):
 
 
 def click(node, title, events=None):
+    # One deadline covers four browser round-trips and then the click. 500 ms
+    # left a loaded CI runner 16 ms for the click, under Playwright's stability
+    # check. No assertion depends on the budget: click_recorded never waits
+    # after dispatching.
     return click_recorded(node, {'action': 'click', 'page': 'page',
-        'locator': [{'method': 'get_by_title', 'args': [title]}]}, [], {'timeout': 500},
+        'locator': [{'method': 'get_by_title', 'args': [title]}]}, [], {'timeout': 5000},
         events.append if events is not None else None)
 
 
