@@ -43,8 +43,6 @@ by a person; Metronome automates none of it.
    - **Controller script on the worker**: the controller's `.py` file, for
      example `D:\Tools\dashboard-refresh-controller\refresh.py`.
    - **Report root on the worker**: the folder from step 3.
-   - **Allowed report IDs**: the report identifiers from the controller's
-     README. A Flow can refresh only a report listed here.
    - **Controller arguments**: how the controller takes a report, from its
      README. The default is `--report {report} --report-root {report_root}`.
    - **Added for a dry run**: the argument that builds and validates without
@@ -64,9 +62,14 @@ by a person; Metronome automates none of it.
 The builder has three steps:
 
 1. **HTML report**: the Flow name (also the report's name in Reports), the
-   **Report ID** from the allowed list, optional links to the **report
-   repository** and the **published site**, **Dry run** or **Live**, and the
-   time limit (1–1440 minutes, default 60).
+   **report repository** (any repository the controller can push to), the
+   **Report ID**, an optional link to the **published site**, **Dry run** or
+   **Live**, and the time limit (1–1440 minutes, default 60). The report ID is
+   what the controller calls the report. It fills in from the repository's name
+   until someone types one, and it is a single plain word (letters, digits,
+   `_`, `-` and `.`), so it can never add an argument of its own. There is no
+   list of allowed reports: the controller decides whether it knows the
+   report, and its exit code decides the run.
 2. **Controller**: read-only. The controller link and installed path, the
    report root, the Python used, the exact command each run starts, **Check
    controller and Python**, and anything missing in Settings.
@@ -101,8 +104,8 @@ limit and **Stop**, and streams its console live.
   in the mode the Flow has now: a live run queued before the Flow became a dry
   run must be stopped first, and the other way round.
 - A run does not start, and a scheduled run records why on the Flow, when the
-  controller script is not set, the report is no longer allowed, the arguments
-  need a report root that is not set, or the dry-run arguments are empty.
+  controller script is not set, the arguments need a report root that is not
+  set, the dry-run arguments are empty, or the Flow's saved report is damaged.
   Metronome never guesses another report or command.
 
 ## The controller's contract

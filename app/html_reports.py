@@ -8,12 +8,14 @@ Windows account it runs as. Metronome never clones, pulls, builds or pushes,
 and holds no GitHub credentials.
 
 A refresh is an ordinary Python **run-only** Flow whose single script is the
-controller and whose arguments name one allowed report. The command is built
-here, on the server, from Settings (host PC only) and the Flow's chosen report
-when a run is queued, so a browser never supplies a command line, and a report
-removed from the allowed list or a controller that is not configured stops the
-run before it starts. Execution, Stop, time limit, live console and run history
-are the existing run-only machinery.
+controller and whose arguments name the Flow's report. The command is built
+here, on the server, from Settings (host PC only) and the Flow's report ID when
+a run is queued, so a browser never supplies a command line, and a controller
+that is not configured stops the run before it starts. There is no list of
+allowed reports: anyone who can create a Flow names the report (usually its
+repository's name), the report ID can only be one plain word, and the
+controller decides whether it knows that report. Execution, Stop, time limit,
+live console and run history are the existing run-only machinery.
 
 The controller reports progress as stdout lines::
 
@@ -41,12 +43,11 @@ from app import flow_python
 CONTROLLER_REPOSITORY = "html_reports.controller_repository"
 CONTROLLER_SCRIPT = "html_reports.controller_script"
 REPORT_ROOT = "html_reports.report_root"
-ALLOWED_REPORTS = "html_reports.allowed_reports"
 ARGUMENTS = "html_reports.arguments"
 DRY_RUN_ARGUMENTS = "html_reports.dry_run_arguments"
 LIVE_ARGUMENTS = "html_reports.live_arguments"
 SETTING_KEYS = (
-    CONTROLLER_REPOSITORY, CONTROLLER_SCRIPT, REPORT_ROOT, ALLOWED_REPORTS,
+    CONTROLLER_REPOSITORY, CONTROLLER_SCRIPT, REPORT_ROOT,
     ARGUMENTS, DRY_RUN_ARGUMENTS, LIVE_ARGUMENTS,
 )
 DEFAULT_ARGUMENTS = "--report {report} --report-root {report_root}"
@@ -79,26 +80,30 @@ def controller_settings() -> dict:
         "repository_url": values[CONTROLLER_REPOSITORY] or "",
         "script": values[CONTROLLER_SCRIPT] or "",
         "report_root": values[REPORT_ROOT] or "",
-        "allowed_reports": list(values[ALLOWED_REPORTS] or []),
         "arguments": values[ARGUMENTS] or "",
         "dry_run_arguments": values[DRY_RUN_ARGUMENTS] or "",
         "live_arguments": values[LIVE_ARGUMENTS] or "",
     }
 
 
+# Stands in for the report ID in the builder's preview of the command. A report
+# ID is one plain word that is never quoted, so the browser swaps this for the
+# ID being typed and shows exactly what the server will run.
+PREVIEW_REPORT = "REPORT_ID"
+
+
 def public_settings() -> dict:
-    """What the Flow builder shows: links, paths, the allowed reports and each exact command."""
+    """What the Flow builder shows: links, paths and the exact command for each mode."""
     settings = controller_settings()
     problems = setup_problems(settings)
     previews = {}
     if not problems:
-        for key in settings["allowed_reports"]:
-            try:
-                previews[key] = {mode: command({"report_key": key, "mode": mode}, settings)[1] for mode in MODES}
-            except ValueError:
-                continue
+        try:
+            previews = {mode: command({"report_key": PREVIEW_REPORT, "mode": mode}, settings)[1] for mode in MODES}
+        except ValueError:
+            previews = {}
     return {**settings, "ready": not problems, "problems": problems, "settings_place": SETTINGS_PLACE,
-            "previews": previews}
+            "previews": previews, "preview_report": PREVIEW_REPORT}
 
 
 def setup_problems(settings: dict) -> list[str]:
@@ -106,8 +111,6 @@ def setup_problems(settings: dict) -> list[str]:
     problems = []
     if not settings.get("script"):
         problems.append(f"Set the controller script on the worker in {SETTINGS_PLACE}.")
-    if not settings.get("allowed_reports"):
-        problems.append(f"Add at least one allowed report ID in {SETTINGS_PLACE}.")
     if "{report_root}" in (settings.get("arguments") or "") and not settings.get("report_root"):
         problems.append(f"The controller arguments use {{report_root}}: set the report root in {SETTINGS_PLACE}.")
     if not str(settings.get("dry_run_arguments") or "").strip():
@@ -157,15 +160,6 @@ def check_report_root(value: str) -> str:
     return text
 
 
-def check_allowed_reports(values: list[str]) -> list[str]:
-    for item in values:
-        if not REPORT_KEY_RE.fullmatch(item):
-            raise ValueError(
-                f"{item} is not a report ID. Use letters, digits, '_', '-' or '.', with no spaces."
-            )
-    return values
-
-
 def _check_tokens(text: str, allowed: tuple[str, ...]) -> None:
     for name in TOKEN_RE.findall(text):
         if name not in allowed:
@@ -209,7 +203,10 @@ def normalize_config(value: Any) -> dict:
         raise ValueError("The HTML report settings contain fields Metronome does not accept.")
     report_key = str(value.get("report_key") or "").strip()
     if not REPORT_KEY_RE.fullmatch(report_key):
-        raise ValueError("Choose a report ID from the allowed list.")
+        raise ValueError(
+            "Enter the report ID the controller uses, usually the repository's name: "
+            "letters, digits, '_', '-' or '.', with no spaces."
+        )
     mode = str(value.get("mode") or "").strip()
     if mode not in MODES:
         raise ValueError("Choose Dry run or Live for this HTML report.")
@@ -234,28 +231,23 @@ def saved_config(raw: Any) -> dict | None:
         return {"report_key": "", "mode": "dry_run", "repository_url": "", "site_url": "", "damaged": True}
 
 
-def check_allowed(config: dict, settings: dict) -> None:
+def check_usable(config: dict) -> None:
     if config.get("damaged"):
         raise ValueError("This Flow's HTML report settings are damaged. Open the Flow and save it again.")
-    if config["report_key"] not in settings.get("allowed_reports", []):
-        raise ValueError(
-            f"Report {config['report_key']} is not in the allowed list in {SETTINGS_PLACE}. "
-            "Metronome does not run a report that is not allowed."
-        )
 
 
 def command(config: dict, settings: dict, *, dry_run: bool | None = None) -> tuple[str, str]:
     """``(controller script, arguments line)`` for one run; ``ValueError`` when it may not run.
 
-    Fails closed: a missing controller, a report that is no longer allowed or
-    an argument pattern that needs a missing report root stops the run. The
+    Fails closed: a missing controller, a damaged Flow or an argument pattern
+    that needs a missing report root stops the run. The
     report ID and report root are substituted here and quoted as single
     tokens; the worker fills {flow}, {run_id} and {date} as usual.
     """
     problems = setup_problems(settings)
     if problems:
         raise ValueError(problems[0])
-    check_allowed(config, settings)
+    check_usable(config)
     script = check_controller_script(settings["script"])
     template = check_arguments(settings["arguments"])
     report_root = check_report_root(settings.get("report_root") or "")

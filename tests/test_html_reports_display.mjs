@@ -68,7 +68,7 @@ vm.runInContext(`${appSource.slice(start, end)}\n${appSource.slice(groupStart, g
 const settings = {
     script: 'D:\\Tools\\dashboard-refresh-controller\\refresh.py', report_root: 'D:\\Reports\\html sites',
     arguments: '--report {report} --report-root {report_root}', dry_run_arguments: '--dry-run', live_arguments: '--publish',
-    allowed_reports: ['smp_trade_in_value_html', 'smp_stock_cover_html'], problems: [], ready: true,
+    problems: [], ready: true,
     repository_url: 'https://github.example.com/team/dashboard-refresh-controller',
 };
 assert.equal(appContext._flowHtmlCommandPreview(settings, 'smp_stock_cover_html', 'dry_run'),
@@ -76,7 +76,7 @@ assert.equal(appContext._flowHtmlCommandPreview(settings, 'smp_stock_cover_html'
 assert.equal(appContext._flowHtmlCommandPreview(settings, 'smp_stock_cover_html', 'live'),
     'python refresh.py --report smp_stock_cover_html --report-root "D:\\Reports\\html sites" --publish');
 
-assert.equal(appContext._flowHtmlCommandPreview({...settings, previews: {smp_stock_cover_html: {dry_run: '--report smp_stock_cover_html --root "D:\\Reports\\html sites" --dry-run', live: 'x'}}}, 'smp_stock_cover_html', 'dry_run'),
+assert.equal(appContext._flowHtmlCommandPreview({...settings, preview_report: 'REPORT_ID', previews: {dry_run: '--report REPORT_ID --root "D:\\Reports\\html sites" --dry-run', live: 'x'}}, 'smp_stock_cover_html', 'dry_run'),
     'python refresh.py --report smp_stock_cover_html --root "D:\\Reports\\html sites" --dry-run', 'The server\'s exact command wins');
 assert.equal(appContext._flowRunLabel({html_report: {mode: 'live'}}), 'Run · publishes');
 assert.equal(appContext._flowRunLabel({html_report: {mode: 'dry_run'}}), 'Dry run');
@@ -94,23 +94,28 @@ assert.match(appContext.asked, /does not mean GitHub Pages has finished deployin
 appContext.window._flowsState.htmlReports = settings;
 const builder = appContext._flowHtmlReportBuilderHtml({
     id: 4, name: 'Old <report>', schedule_type: 'manual', python_timeout_minutes: 30,
-    html_report: {report_key: 'retired_html', mode: 'live', repository_url: 'https://github.example.com/team/x"onmouseover="y', site_url: ''},
+    html_report: {report_key: 'any_report_html', mode: 'live', repository_url: 'https://github.example.com/team/x"onmouseover="y', site_url: ''},
 });
 assert.match(builder, /data-source-type="html"/);
 assert.doesNotMatch(builder, /flow-python-script-path|flow-python-interpreter/, 'The form never offers a script or Python');
-assert.match(builder, /<option value="retired_html" selected>retired_html \(no longer allowed\)<\/option>/);
+assert.match(builder, /<input id="flow-html-report-key" required [^>]*value="any_report_html"[^>]*data-touched="1">/);
+assert.doesNotMatch(builder, /<select id="flow-html-report-key"|allowed/i, 'No list of allowed reports');
+assert.equal(appContext._flowHtmlRepositoryName('https://github.example.com/team/smp_sales_html.git'), 'smp_sales_html');
+assert.equal(appContext._flowHtmlRepositoryName('https://github.example.com/team/smp_sales_html/'), 'smp_sales_html');
+assert.equal(appContext._flowHtmlRepositoryName('https://github.example.com/team/two%20words'), '');
+assert.equal(appContext._flowHtmlRepositoryName('not a link'), '');
 assert.match(builder, /value="live" checked/);
 assert.match(builder, /Old &lt;report&gt;/);
 assert.match(builder, /x&quot;onmouseover=&quot;y/);
 assert.match(builder, /never clones, pulls or runs code from GitHub, and holds no GitHub credentials/);
 
-appContext.window._flowsState.htmlReports = {...settings, script: '', allowed_reports: [], ready: false,
+appContext.window._flowsState.htmlReports = {...settings, script: '', ready: false,
     problems: ['Set the controller script on the worker in Settings > Flows > HTML reports.'], settings_place: 'Settings > Flows > HTML reports'};
 const notReady = appContext._flowHtmlReportBuilderHtml({_source_type: 'html'});
 assert.match(notReady, /Not ready to run/);
 assert.match(notReady, /Set the controller script/);
 assert.match(notReady, /id="flow-html-inspect" disabled/);
-assert.match(notReady, /No report is allowed yet/);
+assert.match(notReady, /<input id="flow-html-report-key" required [^>]*value=""[^>]*data-touched="">/);
 assert.match(notReady, /value="dry_run" checked/, 'A new Flow starts as a dry run');
 
 console.log('HTML report display tests passed');

@@ -2065,6 +2065,8 @@ MIGRATIONS = [
     "ALTER TABLE reports ADD COLUMN repository_url TEXT",
     "ALTER TABLE reports ADD COLUMN site_url TEXT",
     "CREATE INDEX IF NOT EXISTS idx_reports_refresh_flow ON reports(refresh_flow_id)",
+    # The list of allowed HTML report IDs was removed: each Flow names its own.
+    "DELETE FROM app_settings WHERE key='html_reports.allowed_reports'",
 ]
 
 
