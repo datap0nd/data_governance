@@ -1291,22 +1291,22 @@ if (-not (Test-Path $FlowWorkerHealthHelpers)) {
     throw "Flows worker health helpers are missing after the update: $FlowWorkerHealthHelpers"
 }
 . $FlowWorkerHealthHelpers
-$WorkerStartOutput = (& $NssmExe start $FlowServiceName 2>&1 | Out-String)
-if ($WorkerStartOutput -match 'already running') {
-    Write-Host "  Flows worker service was already running - OK." -ForegroundColor DarkGray
-}
+# Each start reads NSSM's own words: a service Windows still reports as
+# starting must not stop setup before Metronome itself is started. The
+# registration and health checks below say whether everything came up.
+Write-MetronomeSetupServiceStart (Start-MetronomeSetupService -NssmExe $NssmExe -Name $FlowServiceName)
 
 $ExpectedWorkerIds = @('bi-desktop-headless')
 foreach ($FlowSlot in $FlowSlots | Where-Object { $_.Slot -gt 1 }) {
     if (Get-Service -Name $FlowSlot.ServiceName -ErrorAction SilentlyContinue) {
-        & $NssmExe start $FlowSlot.ServiceName 2>&1 | Out-Null
+        Write-MetronomeSetupServiceStart (Start-MetronomeSetupService -NssmExe $NssmExe -Name $FlowSlot.ServiceName)
         $ExpectedWorkerIds += $FlowSlot.WorkerId
     }
 }
 
 Write-SetupTiming "tasks and sign-in"
-& $NssmExe start $AuditorServiceName 2>&1 | Out-Null
-& $NssmExe start $ServiceName
+Write-MetronomeSetupServiceStart (Start-MetronomeSetupService -NssmExe $NssmExe -Name $AuditorServiceName)
+Write-MetronomeSetupServiceStart (Start-MetronomeSetupService -NssmExe $NssmExe -Name $ServiceName)
 Start-Sleep -Seconds 2
 
 # Up to two minutes, the most the earlier fixed-count loop could take, polled
