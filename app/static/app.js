@@ -11905,6 +11905,8 @@ function _flowHtmlSettings() {
 // The command the server will run, for display only: script name and arguments.
 function _flowHtmlCommandPreview(settings, reportKey, mode) {
     const script = String(settings.script || "").split(/[\\/]/).pop() || "refresh.py";
+    const exact = settings.previews?.[reportKey]?.[mode === "live" ? "live" : "dry_run"];
+    if (exact) return `python ${script} ${exact}`;
     const quote = value => /[\s"]/.test(value) ? `"${String(value).replace(/"/g, '""')}"` : String(value);
     const values = {report: reportKey || "<report ID>", report_root: settings.report_root || "<report root>"};
     const base = String(settings.arguments || "").replace(/\{(report|report_root)\}/g, (_, key) => quote(values[key]));

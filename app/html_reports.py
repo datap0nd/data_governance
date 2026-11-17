@@ -31,7 +31,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app import flow_python
@@ -87,10 +87,18 @@ def controller_settings() -> dict:
 
 
 def public_settings() -> dict:
-    """What the Flow builder shows: links, paths and the allowed reports, never secrets."""
+    """What the Flow builder shows: links, paths, the allowed reports and each exact command."""
     settings = controller_settings()
     problems = setup_problems(settings)
-    return {**settings, "ready": not problems, "problems": problems, "settings_place": SETTINGS_PLACE}
+    previews = {}
+    if not problems:
+        for key in settings["allowed_reports"]:
+            try:
+                previews[key] = {mode: command({"report_key": key, "mode": mode}, settings)[1] for mode in MODES}
+            except ValueError:
+                continue
+    return {**settings, "ready": not problems, "problems": problems, "settings_place": SETTINGS_PLACE,
+            "previews": previews}
 
 
 def setup_problems(settings: dict) -> list[str]:
@@ -254,10 +262,11 @@ def command(config: dict, settings: dict, *, dry_run: bool | None = None) -> tup
     if report_root and not flow_python._is_absolute_worker_path(report_root):
         raise ValueError(f"The report root in {SETTINGS_PLACE} must be a full path on the worker.")
     values = {"report": config["report_key"], "report_root": report_root}
-    rendered = TOKEN_RE.sub(
-        lambda match: flow_python.quote_argument(values[match.group(1)])
-        if match.group(1) in values else match.group(0),
-        template,
+    rendered = " ".join(
+        _token_text(TOKEN_RE.sub(
+            lambda match: values[match.group(1)] if match.group(1) in values else match.group(0), token,
+        ))
+        for token in flow_python.split_arguments(template)
     )
     publish = config["mode"] == "live" if dry_run is None else not dry_run
     extra = check_mode_arguments(settings["live_arguments"]) if publish else check_dry_run_arguments(settings["dry_run_arguments"])
@@ -265,6 +274,19 @@ def command(config: dict, settings: dict, *, dry_run: bool | None = None) -> tup
     if len(line) > flow_python.MAX_ARGUMENT_CHARS:
         raise ValueError("The controller arguments are too long.")
     return script, line
+
+
+def _token_text(token: str) -> str:
+    """One argument as the worker's splitter reads it back as exactly one argument.
+
+    The template was split first, so a placeholder the pattern already quoted
+    (``"{report_root}"``) is quoted once, not twice. A token that still holds
+    a worker token ({flow}, {run_id}, {date}) is always quoted, because the
+    worker fills it in before splitting and a Flow name may contain spaces.
+    """
+    if TOKEN_RE.search(token):
+        return '"' + token.replace('"', '""') + '"'
+    return flow_python.quote_argument(token)
 
 
 def apply_to_flow(flow: dict, config: dict, settings: dict, *, dry_run: bool | None = None) -> dict:
@@ -471,9 +493,8 @@ def _apply_event(state: dict, event: dict, at: datetime) -> None:
             return
         # A completion without its start: place the start where its duration
         # says it began, and say so on the page.
-        started = at.timestamp() - duration
         open_stage = {"name": event["stage"], "status": "running",
-                      "started_at": _stamp(datetime.fromtimestamp(started, timezone.utc).replace(tzinfo=None)),
+                      "started_at": _stamp(at - timedelta(seconds=duration)),
                       "finished_at": None, "duration_seconds": None, "start_inferred": True}
         stages.append(open_stage)
     open_stage.update(status=event["status"], finished_at=_stamp(at), duration_seconds=duration)
@@ -692,12 +713,17 @@ def report_refreshes(db) -> dict[int, dict]:
                   (SELECT fr.finished_at FROM flow_runs fr
                     WHERE fr.flow_id=f.id AND fr.status='succeeded'
                       AND json_extract(fr.job_json, '$.html_report.publishes')=1
+                      AND json_extract(fr.job_json, '$.html_report.report_key')
+                          = json_extract(f.html_report_json, '$.report_key')
                     ORDER BY fr.id DESC LIMIT 1) AS last_published_at
            FROM reports r
            JOIN flows f ON f.id = r.refresh_flow_id
+           -- Runs of a report ID the Flow refreshed before are not this report's history.
            LEFT JOIN flow_runs last ON last.id = (
                SELECT id FROM flow_runs
                 WHERE flow_id=f.id AND status IN ('succeeded','failed','cancelled')
+                  AND json_extract(job_json, '$.html_report.report_key')
+                      = json_extract(f.html_report_json, '$.report_key')
                 ORDER BY id DESC LIMIT 1)
            WHERE r.report_kind=?""",
         (KIND_HTML,),

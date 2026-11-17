@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -209,7 +210,7 @@ def test_each_run_rebuilds_the_command_and_fails_closed(flow_db, tmp_path, queue
     saved = flows.create_flow(_flow(enabled=True), _request())
     settings_registry.save({html_reports.ARGUMENTS: "{report} --root {report_root} --run {run_id}"})
     run = flows.queue_flow_run(saved["id"], actor="Analyst")
-    assert run["job"]["python_source"]["arguments"] == [f"{KEY} --root {tmp_path / 'reports'} --run {{run_id}}"]
+    assert run["job"]["python_source"]["arguments"] == [f'{KEY} --root {tmp_path / "reports"} --run "{{run_id}}"']
     flows.stop_run(saved["id"], _request())
 
     settings_registry.save({html_reports.ALLOWED_REPORTS: ["smp_stock_cover_html"]})
@@ -226,6 +227,20 @@ def test_each_run_rebuilds_the_command_and_fails_closed(flow_db, tmp_path, queue
     with pytest.raises(flows.HTTPException) as refused:
         flows.queue_flow_run(saved["id"], actor="Analyst")
     assert "Set the controller script" in refused.value.detail
+
+
+def test_each_placeholder_becomes_exactly_one_argument(flow_db, tmp_path):
+    root = tmp_path / "HTML Reports"
+    _configure(tmp_path, **{html_reports.REPORT_ROOT: str(root),
+                            html_reports.ARGUMENTS: '--report {report} --report-root "{report_root}" --name "{flow}" --day {date}'})
+    saved = flows.create_flow(_flow(name="Trade in value"), _request())
+    line = saved["python_script_arguments"][0]
+    rendered = flows.flow_python.render_arguments(line, flow_name="Trade in value", run_id=7, date="2026-11-17")
+    assert flows.flow_python.split_arguments(rendered) == [
+        "--report", KEY, "--report-root", str(root), "--name", "Trade in value", "--day", "2026-11-17",
+    ]
+    preview = html_reports.public_settings()["previews"][KEY]
+    assert preview["live"] == line and preview["dry_run"] == line + " --dry-run"
 
 
 def test_dry_runs_are_labelled_and_never_publish(flow_db, tmp_path, queue):
@@ -259,6 +274,20 @@ def test_dry_runs_are_labelled_and_never_publish(flow_db, tmp_path, queue):
     with pytest.raises(flows.HTTPException) as refused:
         flows.queue_run(plain["id"], _request(), dry_run=True)
     assert refused.value.status_code == 422 and "Only an HTML report refresh has a dry run" in refused.value.detail
+
+
+def test_a_queued_live_run_is_not_resumed_after_the_flow_became_a_dry_run(flow_db, tmp_path, queue):
+    _configure(tmp_path)
+    saved = flows.create_flow(_flow(), _request())
+    waiting = flows.queue_run(saved["id"], _request(), dry_run=False)
+    assert waiting["job"]["html_report"]["publishes"] is True
+    flows.update_flow(saved["id"], _flow(html_report={"report_key": KEY, "mode": "dry_run"}), _request())
+    with pytest.raises(flows.HTTPException) as refused:
+        flows.queue_run(saved["id"], _request(), dry_run=False)
+    assert refused.value.status_code == 409
+    assert "live run that publishes is already queued" in refused.value.detail
+    flows.stop_run(saved["id"], _request())
+    assert flows.queue_run(saved["id"], _request(), dry_run=False)["job"]["html_report"]["publishes"] is False
 
 
 def test_one_refresh_per_report_at_a_time(flow_db, tmp_path, queue):
@@ -377,12 +406,19 @@ def test_worker_console_lines_reach_the_timeline(flow_db, tmp_path, queue):
     assert datetime.fromisoformat(stages[0]["started_at"]) <= datetime.fromisoformat(stages[0]["finished_at"])
 
 
-def test_a_completion_without_its_start_is_placed_by_its_duration():
-    state = html_reports.apply_lines(
-        html_reports.empty_state(),
-        [{"line_no": 1, "stream": "stdout", "text": _event("Publish", "succeeded", 30), "at": "2026-11-17T08:01:00Z"}],
-        KEY, received_at=datetime(2026, 11, 17, 9, 0),
-    )
+def test_a_completion_without_its_start_is_placed_by_its_duration(monkeypatch):
+    # The work PC runs in Dubai time; stored instants stay UTC (AGENTS.md).
+    monkeypatch.setenv("TZ", "Asia/Dubai")
+    time.tzset()
+    try:
+        state = html_reports.apply_lines(
+            html_reports.empty_state(),
+            [{"line_no": 1, "stream": "stdout", "text": _event("Publish", "succeeded", 30), "at": "2026-11-17T08:01:00Z"}],
+            KEY, received_at=datetime(2026, 11, 17, 9, 0),
+        )
+    finally:
+        monkeypatch.undo()
+        time.tzset()
     stage = state["stages"][0]
     assert stage["started_at"] == "2026-11-17T08:00:30.000" and stage["start_inferred"] is True
     # An unreadable capture time falls back to when the server received the line.
@@ -512,6 +548,14 @@ def test_reports_lists_each_html_report_with_its_refresh_health(flow_db, tmp_pat
     assert diagram["refresh_flow"]["last_published_at"] == "2026-11-17T09:00:00"
     plan = pipelines.build_refresh_plan(report.id, "Analyst", probe_mvs=False)
     assert any("refreshed by its own Flow" in item for item in plan["blockers"])
+
+    moved = flows.update_flow(saved["id"], _flow(owner_person_id=1, html_report={"report_key": "smp_stock_cover_html", "mode": "live"}),
+                              _request())
+    report = _report("Trade-in value")
+    assert (report.status, report.last_refresh_at, report.last_published) == ("unknown", None, None)
+    assert lineage.get_lineage_diagram(report.id)["refresh_flow"]["last_status"] is None
+    flows.update_flow(moved["id"], _flow(owner_person_id=1), _request())
+    assert _report("Trade-in value").last_published == "2026-11-17T09:00:00"
 
     renamed = flows.update_flow(saved["id"], _flow(owner_person_id=1, name="Trade-in value v2",
                                                    schedule_type="weekly", schedule_days=["monday"]), _request())

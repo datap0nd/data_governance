@@ -76,6 +76,8 @@ assert.equal(appContext._flowHtmlCommandPreview(settings, 'smp_stock_cover_html'
 assert.equal(appContext._flowHtmlCommandPreview(settings, 'smp_stock_cover_html', 'live'),
     'python refresh.py --report smp_stock_cover_html --report-root "D:\\Reports\\html sites" --publish');
 
+assert.equal(appContext._flowHtmlCommandPreview({...settings, previews: {smp_stock_cover_html: {dry_run: '--report smp_stock_cover_html --root "D:\\Reports\\html sites" --dry-run', live: 'x'}}}, 'smp_stock_cover_html', 'dry_run'),
+    'python refresh.py --report smp_stock_cover_html --root "D:\\Reports\\html sites" --dry-run', 'The server\'s exact command wins');
 assert.equal(appContext._flowRunLabel({html_report: {mode: 'live'}}), 'Run · publishes');
 assert.equal(appContext._flowRunLabel({html_report: {mode: 'dry_run'}}), 'Dry run');
 assert.equal(appContext._flowRunLabel({source_type: 'python'}), 'Run');

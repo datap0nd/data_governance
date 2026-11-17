@@ -83,9 +83,10 @@ and again when each run is queued.
 <worker's Python> <controller script> <controller arguments> <dry-run or live arguments>
 ```
 
-`{report}` and `{report_root}` are filled in and quoted as one argument each;
-`{flow}`, `{run_id}` and `{date}` work as in every Python Flow. No shell is
-involved. The run is an ordinary **Just run the scripts** Python run (see
+`{report}` and `{report_root}` are filled in as one argument each, whether or
+not the pattern already puts them in quotes; `{flow}`, `{run_id}` and `{date}`
+are filled in by the worker as in every Python Flow and always stay one
+argument. No shell is involved. The run is an ordinary **Just run the scripts** Python run (see
 [python_script_flows.md](python_script_flows.md)): it starts in the signed-in
 BI desktop session, gets the `METRONOME_FLOW_*` variables, honours the time
 limit and **Stop**, and streams its console live.
@@ -96,6 +97,9 @@ limit and **Stop**, and streams its console live.
   signed remote test of any HTML report Flow is always a dry run.
 - Only one run per report ID can be queued or running at a time, across all
   Flows, because two controllers pushing one repository would race.
+- A run that is still waiting for a worker is started again by **Run** only
+  in the mode the Flow has now: a live run queued before the Flow became a dry
+  run must be stopped first, and the other way round.
 - A run does not start, and a scheduled run records why on the Flow, when the
   controller script is not set, the report is no longer allowed, the arguments
   need a report root that is not set, or the dry-run arguments are empty.
@@ -169,7 +173,9 @@ the **Schedule** column and the Flow owner as report owner when none is set.
 - **Data health** is the latest finished refresh (succeeded is healthy, failed
   or stopped is degraded), or unknown before the first one.
 - **Last refresh** is the latest finished refresh; **last published** is the
-  latest successful **live** refresh. Dry runs publish nothing.
+  latest successful **live** refresh. Dry runs publish nothing. Both count only
+  runs of the report ID the Flow refreshes now, so a Flow moved to another
+  report does not lend it its earlier history.
 - A Flow name that another report already uses is refused, so a Power BI report
   and an HTML report are never merged. Deleting the Flow archives its report
   with its links, documentation and tasks; a new Flow of the same name takes

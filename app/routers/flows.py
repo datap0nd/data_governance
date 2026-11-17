@@ -4859,8 +4859,17 @@ def queue_flow_run(
             # worker. Let Run retry the launcher without creating a duplicate.
             run_id = active["id"]
             job = _loads(active["job_json"], {})
+            # Resume a waiting refresh only in the publishing mode asked for
+            # now: the request's dry run, else the Flow's saved mode, which
+            # may have changed since that job was queued.
             queued_publishes = (job.get("html_report") or {}).get("publishes")
-            if html_dry_run is not None and queued_publishes is not None and queued_publishes == html_dry_run:
+            saved_html = html_reports.saved_config(flow["html_report_json"])
+            wanted_publishes = (
+                not html_dry_run if html_dry_run is not None
+                else (saved_html or {}).get("mode") == "live" if saved_html is not None
+                else None
+            )
+            if queued_publishes is not None and wanted_publishes is not None and queued_publishes != wanted_publishes:
                 raise HTTPException(
                     409,
                     "A live run that publishes is already queued. Stop it before starting a dry run."

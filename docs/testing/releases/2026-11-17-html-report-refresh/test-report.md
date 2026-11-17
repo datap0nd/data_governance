@@ -133,6 +133,27 @@ walk led to three fixes, and the walk was then rerun on the fixed code:
 - The run log refreshes every two seconds, so a running stage's elapsed time
   advances in two-second steps.
 
+## Review round on the first head (`8e0ff12`)
+
+The automated Codex review on the PR raised four findings. Each was confirmed
+in the code, fixed and covered by a test (H-21 to H-23). The four new tests
+were first run against the reviewed code, where all four failed, then on the
+fix:
+
+| Finding | Fix |
+| --- | --- |
+| P1: a live run waiting for a worker could be restarted by **Run** after the Flow was switched to Dry run, without the live confirmation | **Run** resumes a waiting refresh only in the mode asked for (the request's dry run, else the Flow's saved mode); otherwise 409 |
+| P2: Reports and lineage counted runs of the Flow's earlier report ID | Both lookups count only runs of the current report ID |
+| P2: a pattern that already quoted `"{report_root}"` quoted it twice | The pattern is split first, placeholders are filled per argument, and each argument is written back once; worker tokens are always quoted. The builder previews the server's exact command |
+| P2: an inferred stage start went through the host's local time (four hours early in Dubai) | Subtract the duration as a `timedelta` on the UTC instant |
+
+| Check/case IDs | Command or procedure | Revision/environment | Result/counts/duration | Evidence |
+| --- | --- | --- | --- | --- |
+| H-21 to H-23 before the fix | The four new tests with `app/` at `8e0ff12` | Linux | FAIL: 4 failed, as expected | Console output |
+| H-01 to H-23, R-01 | The plan's `verify` command | Working tree on `8e0ff12` | 298 passed, 1 failed: `test_each_run_rebuilds_the_command_and_fails_closed` expected `--run {run_id}`; worker tokens are now quoted on purpose, so its expectation became `--run "{run_id}"` | `.test-runs/20261117T082459806Z-4999-0bf412f5/result.json` |
+| Failed case and companions | `verify` on `tests/test_html_reports.py`, `tests/test_flow_python.py`, `tests/test_remote_flow_control.py`, `tests/test_settings_flows.py` | Same, test updated | PASS: 116 passed, 2 Starlette warnings | `.test-runs/20261117T082641194Z-5426-86b0d0a0/result.json` |
+| H-20, R-02 | `for f in tests/test_*.mjs; do node "$f"; done` | Same | PASS: 30 of 31; Gemini as above | Console output |
+
 ## Merge evidence
 
 Final-head CI is pending at this cutoff. Before the head-pinned merge, the
