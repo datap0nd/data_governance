@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field, ValidationError, ValidationInfo, field_va
 from app.config import DB_PATH, UPLOAD_PGHOST, UPLOAD_PGPORT
 from app.database import get_db
 from app import flow_paths, flow_layout, flow_capacity, flow_tasks, flow_parallel, flow_browser, flow_recording, flow_view_refresh
-from app import flow_email_delivery, flow_excel, flow_job_limits, flow_python, settings_registry, user_identity
+from app import flow_email_delivery, flow_excel, flow_job_limits, flow_python, html_reports, settings_registry, user_identity
 from app.flow_credentials import asap_credential_status, save_asap_credentials, settings_file_credentials
 from app.flow_asap_exports import (
     public_asap_download_types,
@@ -727,6 +727,11 @@ class FlowWrite(BaseModel):
     python_run_mode: Literal["run", "outputs"] | None = None
     python_interpreter: str | None = Field(default=None, max_length=2000)
     python_timeout_minutes: int = Field(default=60, ge=1, le=1440, strict=True)
+    # An HTML report refresh (app.html_reports): {report_key, mode,
+    # repository_url, site_url}. The server builds the controller command
+    # from Settings, so scripts, arguments and Python sent with it are ignored.
+    # None keeps a saved HTML report Flow an HTML report Flow on edit.
+    html_report: dict[str, Any] | None = None
     export_views: list[str] = Field(default_factory=list, max_length=20)
     download_links: list[str] = Field(default_factory=list, max_length=50)
     enabled: bool = False
@@ -812,6 +817,13 @@ class FlowWrite(BaseModel):
             seen.append((number, trigger))
         return triggers
 
+    @field_validator("html_report")
+    @classmethod
+    def validate_html_report(cls, value):
+        if value is None:
+            return None
+        return html_reports.normalize_config(value)
+
     @field_validator("email_delivery")
     @classmethod
     def validate_email_delivery(cls, value):
@@ -843,6 +855,8 @@ class FlowWrite(BaseModel):
         self.source_type = self.source_type.strip().casefold()
         if self.source_type not in SOURCE_TYPES:
             raise ValueError("Flow source type must be a website report, Outlook attachment, file, or Python scripts.")
+        if self.html_report is not None and self.source_type != "python":
+            raise ValueError("An HTML report refresh is a Python Flow.")
         self.target_folder = (self.target_folder or "").strip() or None
         self.output_mode = (self.output_mode or "run_folders").strip().casefold()
         if self.output_mode not in OUTPUT_MODES:
@@ -926,13 +940,21 @@ class FlowWrite(BaseModel):
             # portal filename rendering never receives it.
             self.filename_template = "{original}"
         elif self.source_type == "python":
-            # The scripts are the transformation; the last one writes the
-            # final CSV/XLSX that is kept or inserted into SQL.
-            self.python_scripts, self.python_script_arguments, self.python_script_values = (
-                flow_python.normalize_steps(
-                    self.python_scripts, self.python_script_arguments, self.python_script_values,
+            if self.html_report is not None:
+                # An HTML report refresh just runs the controller. Its script,
+                # arguments and Python come from Settings when the Flow is
+                # saved and again when each run is queued, never from here.
+                self.python_scripts, self.python_script_arguments, self.python_script_values = [], [], []
+                self.python_run_mode = "run"
+                self.python_interpreter = None
+            else:
+                # The scripts are the transformation; the last one writes the
+                # final CSV/XLSX that is kept or inserted into SQL.
+                self.python_scripts, self.python_script_arguments, self.python_script_values = (
+                    flow_python.normalize_steps(
+                        self.python_scripts, self.python_script_arguments, self.python_script_values,
+                    )
                 )
-            )
             # Old API clients omit this field and must retain their output
             # behavior; the new builder explicitly sends its run default.
             self.python_run_mode = self.python_run_mode or "outputs"
@@ -1405,6 +1427,7 @@ def _flow_out(db, flow_id: int, *, include_private_storage: bool = False) -> dic
     result["email_delivery"] = flow_email_delivery.saved_config(result.pop("email_delivery_json", None))
     result["export_views"] = _loads(result.pop("export_views_json", None), [])
     result["download_links"] = _loads(result.pop("download_links_json", None), [])
+    result["html_report"] = html_reports.saved_config(result.pop("html_report_json", None))
     result["python_scripts"] = _loads(result.pop("python_scripts_json", None), [])
     result["python_script_arguments"] = flow_python.aligned_arguments(
         _loads(result.pop("python_script_arguments_json", None), []), len(result["python_scripts"]),
@@ -1642,6 +1665,50 @@ def _validate_owner(db, body: FlowWrite):
         raise HTTPException(400, "Choose a flow owner from Users.")
 
 
+def _prepare_html_report(body) -> None:
+    """Give an HTML report refresh its controller command from Settings, or refuse the save.
+
+    The saved script and arguments show what the Flow runs and feed its
+    portable script; every run builds them again from Settings when it is
+    queued (``_build_job``), so a later Settings change is never bypassed.
+    """
+    if body.html_report is None:
+        return
+    settings = html_reports.controller_settings()
+    try:
+        script, arguments = html_reports.command(body.html_report, settings)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    body.python_scripts, body.python_script_arguments, body.python_script_values = [script], [arguments], [[]]
+    body.python_run_mode = "run"
+    body.python_interpreter = None
+
+
+def _assert_html_report_idle(db, job: dict, *, exclude_run_id: int | None = None) -> None:
+    """One refresh per report at a time: two controllers pushing one repository would race."""
+    key = (job.get("html_report") or {}).get("report_key")
+    if not key:
+        return
+    active = db.execute(
+        """SELECT fr.id, f.name AS flow_name FROM flow_runs fr JOIN flows f ON f.id=fr.flow_id
+           WHERE fr.status IN ('queued','claimed','running')
+             AND json_extract(fr.job_json, '$.html_report.report_key')=? AND fr.id IS NOT ?
+           ORDER BY fr.id LIMIT 1""",
+        (key, exclude_run_id),
+    ).fetchone()
+    if active:
+        raise HTTPException(
+            409, f"Report {key} is already being refreshed by Flow '{active['flow_name']}' run #{active['id']}.",
+        )
+
+
+def _sync_html_report(db, flow_id: int, now: str) -> None:
+    try:
+        html_reports.sync_report(db, flow_id, now=now)
+    except html_reports.ReportNameTaken as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
 def require_flow_edit(db, flow_id: int, request) -> sqlite3.Row:
     """Only a Flow's owner or the host PC may change it; anyone may view and run it.
 
@@ -1697,7 +1764,8 @@ CHANGE_NOTICE_FIELDS = (
     ("site_name", "Website"), ("report_name", "Report"), ("outlook_subject_contains", "Outlook subject contains"),
     ("local_file_path", "File path"), ("local_file_worksheet", "Worksheet"), ("python_scripts", "Python scripts"),
     ("python_script_arguments", "Script arguments"), ("python_script_values", "Script values"),
-    ("python_run_mode", "Python run mode"), ("selections", "Report filters"), ("export_views", "Export views"),
+    ("python_run_mode", "Python run mode"), ("html_report", "HTML report"),
+    ("selections", "Report filters"), ("export_views", "Export views"),
     ("download_links", "Download links"), ("download_mode", "Download mode"), ("period_strategy", "Period"),
     ("window_weeks", "Weeks per file"), ("start_week", "Start week"), ("end_week", "End week"),
     ("file_format", "File format"), ("asap_download_type", "Download type"), ("excel_worksheets", "Excel worksheets"),
@@ -2074,7 +2142,8 @@ def _validate_flow_selections(db, body: FlowWrite, *, new_flow: bool = False):
             raise HTTPException(400, f"Invalid {row['label']} value: {invalid[0]}")
 
 
-def _build_job(db, flow_id: int, *, force_reprocess: bool = False, recording_draft: bool = False, pending_settings: FlowWrite | None = None) -> dict:
+def _build_job(db, flow_id: int, *, force_reprocess: bool = False, recording_draft: bool = False,
+               pending_settings: FlowWrite | None = None, html_dry_run: bool | None = None) -> dict:
     flow = _flow_out(db, flow_id, include_private_storage=True)
     flow_paths.managed_destination(db, flow)
     if pending_settings is not None:
@@ -2137,6 +2206,19 @@ def _build_job(db, flow_id: int, *, force_reprocess: bool = False, recording_dra
     # from Settings once, here, and travel with the job. A later change on the
     # Settings page reaches new runs only.
     limits = flow_job_limits.frozen()
+    html_section = None
+    if flow.get("html_report") is not None:
+        # The controller command is rebuilt from Settings for every run, so a
+        # report removed from the allowed list, or a controller that is no
+        # longer configured, stops the run here instead of guessing.
+        html_settings = html_reports.controller_settings()
+        try:
+            flow = html_reports.apply_to_flow(flow, flow["html_report"], html_settings, dry_run=html_dry_run)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        html_section = html_reports.job_section(flow["html_report"], html_settings, dry_run=html_dry_run)
+    elif html_dry_run is not None:
+        raise HTTPException(422, "Only an HTML report refresh has a dry run.")
     job = {
         "schema_version": 3,
         **({"paths": paths} if paths else {}),
@@ -2246,6 +2328,10 @@ def _build_job(db, flow_id: int, *, force_reprocess: bool = False, recording_dra
     # Excluded from the same hashes: the limits belong to this installation,
     # not to the Flow.
     job[flow_job_limits.KEY] = limits
+    if html_section is not None:
+        # Read by the server only: which report, whether the run publishes,
+        # and the links shown beside its stages. The worker runs python_source.
+        job["html_report"] = html_section
     if flow.get('execution_method') == 'recorded':
         from app.flow_recordings import attach_job
         attach_job(db, flow, job, allow_draft=recording_draft)
@@ -2484,6 +2570,7 @@ def queue_due_flows() -> dict:
                         db, flow_target_resource_key_from_job(job)
                     )
                     assert_no_active_flow_publish_run(db, job)
+                    _assert_html_report_idle(db, job)
                 except HTTPException as exc:
                     if exc.status_code != 409:
                         raise
@@ -2759,6 +2846,12 @@ def list_flows():
         return [_flow_out(db, flow_id) for flow_id in ids]
 
 
+@router.get("/html-reports/settings")
+def html_report_settings():
+    """The controller link, its installed path, the allowed reports and what is missing."""
+    return html_reports.public_settings()
+
+
 @router.get("/activity")
 def flow_activity():
     """A read-only display snapshot, independent of the run-history limit."""
@@ -2837,6 +2930,7 @@ def list_runs(flow_id: int | None = None, status: str | None = None,
                 (row["id"],),
             ).fetchall()
             job = _loads(row["job_json"], {})
+            public_row["html_report"] = _run_html_report(job, public_row)
             result.append({
                 **public_row, "job": _public_flow_job(job),
                 "progress": _loads(row["progress_json"], {}),
@@ -2884,6 +2978,7 @@ def get_run(run_id: int):
         public_row = dict(row)
         public_row.pop("job_json", None)
         public_row["live"] = _loads(public_row.pop("live_json", None), {})
+        public_row["html_report"] = _run_html_report(_loads(row["job_json"], {}), public_row)
         timings = db.execute(
             """SELECT phase, duration_ms, item_count, status, metadata_json, recorded_at
                FROM flow_operation_timings WHERE run_id=? ORDER BY id""",
@@ -2920,6 +3015,17 @@ def get_run(run_id: int):
             "view_refresh": _view_refresh_summary(db, row),
             "email": _run_email_summary(db, row),
         }
+
+
+def _run_html_report(job: dict, public_row: dict) -> dict | None:
+    """The parsed stage record of an HTML report refresh; the raw column never leaves the server."""
+    raw = public_row.pop("stages_json", None)
+    block = html_reports.summary(
+        job.get("html_report"), raw, public_row, dropped=int((public_row.get("live") or {}).get("dropped") or 0),
+    )
+    if block is not None:
+        block["history"] = html_reports.history_line(block)
+    return block
 
 
 def _run_email_summary(db, row) -> dict | None:
@@ -3900,6 +4006,7 @@ def create_flow(body: FlowWrite, request: Request):
         with get_db() as db:
             db.execute("BEGIN IMMEDIATE")
             _resolve_flow_source(db, body)
+            _prepare_html_report(body)
             if body.source_type == "file":
                 body.target_folder = new_local_file_storage_key()
             elif managed:
@@ -3954,6 +4061,8 @@ def create_flow(body: FlowWrite, request: Request):
                        (_json(body.python_script_values), flow_id))
             db.execute("UPDATE flows SET python_run_mode=?, python_interpreter=?, python_timeout_minutes=? WHERE id=?",
                        (body.python_run_mode, body.python_interpreter, body.python_timeout_minutes, flow_id))
+            db.execute("UPDATE flows SET html_report_json=? WHERE id=?",
+                       (_json(body.html_report) if body.html_report is not None else None, flow_id))
             if managed:
                 adapter = db.execute("SELECT adapter FROM flow_sites WHERE id=?", (body.site_id,)).fetchone()[0]
                 allocated = flow_layout.create_flow_folder(flow_paths.get_flows_root(db), adapter, body.name, flow_id)
@@ -3967,6 +4076,7 @@ def create_flow(body: FlowWrite, request: Request):
             reconcile_file_binding(db, flow_id, reconcile_sources=False)
             if sql_target_source_id is not None:
                 reconcile_source(db, int(sql_target_source_id))
+            _sync_html_report(db, flow_id, now)
             log_event(
                 db, "flow", flow_id, body.name, "created",
                 f"sql_handoff={body.sql_handoff_enabled}; email_delivery={bool((body.email_delivery or {}).get('enabled'))}",
@@ -4204,13 +4314,20 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
                       sql_database, sql_schema, sql_table, sql_target_source_id, sql_assign_owner,
                       target_folder, local_file_path, local_file_worksheet, flow_folder,
                       local_file_last_identity, local_file_config_revision, download_parallelism, execution_method, recording_revision_id,
-                      post_sql_refresh_json, email_delivery_json, excel_worksheets_json
+                      post_sql_refresh_json, email_delivery_json, excel_worksheets_json, html_report_json
                FROM flows WHERE id=?""",
             (flow_id,),
         ).fetchone()
         if not existing:
             raise HTTPException(404, "Flow not found.")
         owner = require_flow_edit(db, flow_id, request)
+        saved_html_report = html_reports.saved_config(existing["html_report_json"])
+        if body.html_report is None and saved_html_report is not None:
+            # An HTML report refresh stays one: a request without the block
+            # (an older client, a generic edit) keeps the saved report.
+            if saved_html_report.get("damaged"):
+                raise HTTPException(409, "This Flow's HTML report settings are damaged. Choose its report again and save.")
+            body = FlowWrite.model_validate({**body.model_dump(), "html_report": saved_html_report})
         _assign_owner(body, request, current_owner_id=owner["owner_person_id"], new_flow=False)
         before = _flow_out(db, flow_id)
         if body.sql_assign_owner is None:
@@ -4258,6 +4375,7 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
         if (existing["source_type"] or "portal") != body.source_type:
             raise HTTPException(409, "A flow's source category cannot be changed after creation.")
         _resolve_flow_source(db, body)
+        _prepare_html_report(body)
         try:
             current_flow = _flow_out(db, flow_id, include_private_storage=True)
             if not current_flow.get('flow_folder'):
@@ -4369,6 +4487,8 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
                    (_json(body.python_script_values), flow_id))
         db.execute("UPDATE flows SET python_run_mode=?, python_interpreter=?, python_timeout_minutes=? WHERE id=?",
                    (body.python_run_mode, body.python_interpreter, body.python_timeout_minutes, flow_id))
+        db.execute("UPDATE flows SET html_report_json=? WHERE id=?",
+                   (_json(body.html_report) if body.html_report is not None else None, flow_id))
         db.execute('UPDATE flows SET execution_method=? WHERE id=?', (body.execution_method, flow_id))
         if body.recording_revision_id is not None:
             if body.execution_method != 'recorded':
@@ -4382,6 +4502,7 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
         if body.enabled and body.execution_method == 'recorded':
             _build_job(db, flow_id)
         folder_save.rename(db, body.name)
+        _sync_html_report(db, flow_id, now)
         from app.freshness_inheritance import reconcile_file_binding, reconcile_source
         reconcile_file_binding(db, flow_id)
         for source_id in {existing["sql_target_source_id"], sql_target_source_id} - {None}:
@@ -4617,6 +4738,7 @@ def delete_flow(flow_id: int, body: FlowDeleteWrite, request: Request):
         db.execute("DELETE FROM flow_file_source_bindings WHERE flow_id=?", (flow_id,))
         db.execute('DELETE FROM flow_recording_sessions WHERE flow_id=?', (flow_id,))
         db.execute('DELETE FROM flow_recording_revisions WHERE flow_id=?', (flow_id,))
+        html_reports.detach_report(db, flow_id, now=now)
         db.execute("DELETE FROM flows WHERE id=?", (flow_id,))
         for source_id in linked_source_ids:
             reconcile_source(db, source_id)
@@ -4647,7 +4769,7 @@ def delete_flow(flow_id: int, body: FlowDeleteWrite, request: Request):
     }
 
 
-def _queue_new_manual_run(db, flow_id: int, *, actor, trigger_type, now):
+def _queue_new_manual_run(db, flow_id: int, *, actor, trigger_type, now, html_dry_run: bool | None = None):
     """Queue a fresh manual run inside the caller's write transaction."""
     from app.routers.pipelines import (
         assert_no_active_flow_publish_run, assert_flow_target_available,
@@ -4658,13 +4780,15 @@ def _queue_new_manual_run(db, flow_id: int, *, actor, trigger_type, now):
     if not flow:
         raise HTTPException(404, "Flow not found.")
     try:
-        job = _build_job(db, flow_id, force_reprocess=(flow["source_type"] or "portal") in {"outlook", "file"})
+        job = _build_job(db, flow_id, force_reprocess=(flow["source_type"] or "portal") in {"outlook", "file"},
+                         html_dry_run=html_dry_run)
     except (KeyError, TypeError, ValueError) as exc:
         # The same wording the read-only run preview uses for this case.
         raise HTTPException(409, f"The current Flow configuration cannot be queued: {exc}") from exc
     _assert_sql_credentials(job)
     assert_flow_target_available(db, flow_target_resource_key_from_job(job))
     assert_no_active_flow_publish_run(db, job)
+    _assert_html_report_idle(db, job)
     _assert_refresh_plan_runnable(db, job)
     cursor = db.execute(
         """INSERT INTO flow_runs (flow_id, trigger_type, status, requested_by, job_json, created_at)
@@ -4685,6 +4809,7 @@ def queue_flow_run(
     allow_queued_resume: bool = True,
     require_enabled: bool = False,
     expected_name_sha256: str | None = None,
+    html_dry_run: bool | None = None,
 ) -> dict:
     """Queue one Flow run through the shared, transaction-safe path.
 
@@ -4699,11 +4824,14 @@ def queue_flow_run(
     with get_db() as db:
         db.execute("BEGIN IMMEDIATE")
         flow = db.execute(
-            "SELECT id, name, source_type, enabled FROM flows WHERE id = ?",
+            "SELECT id, name, source_type, enabled, html_report_json FROM flows WHERE id = ?",
             (flow_id,),
         ).fetchone()
         if not flow:
             raise HTTPException(404, "Flow not found.")
+        if trigger_type == "remote_test" and flow["html_report_json"]:
+            # A signed remote test checks that a Flow runs; it never publishes.
+            html_dry_run = True
         if require_enabled and not bool(flow["enabled"]):
             raise HTTPException(409, "The exact Flow is disabled.")
         if expected_name_sha256 is not None:
@@ -4731,6 +4859,14 @@ def queue_flow_run(
             # worker. Let Run retry the launcher without creating a duplicate.
             run_id = active["id"]
             job = _loads(active["job_json"], {})
+            queued_publishes = (job.get("html_report") or {}).get("publishes")
+            if html_dry_run is not None and queued_publishes is not None and queued_publishes == html_dry_run:
+                raise HTTPException(
+                    409,
+                    "A live run that publishes is already queued. Stop it before starting a dry run."
+                    if queued_publishes else
+                    "A dry run is already queued. Stop it before starting a run that publishes.",
+                )
             if (flow["source_type"] or "portal") in {"outlook", "file"}:
                 source_key = "outlook_source" if flow["source_type"] == "outlook" else "local_file"
                 job.setdefault(source_key, {})["force_reprocess"] = True
@@ -4745,13 +4881,15 @@ def queue_flow_run(
                 exclude_run_id=int(run_id),
             )
             assert_no_active_flow_publish_run(db, job, exclude_run_id=int(run_id))
+            _assert_html_report_idle(db, job, exclude_run_id=int(run_id))
             resumed = True
             log_event(
                 db, "flow", flow_id, flow["name"], "worker_restart_requested",
                 f"run_id={run_id}", actor,
             )
         else:
-            run_id, job = _queue_new_manual_run(db, flow_id, actor=actor, trigger_type=trigger_type, now=now)
+            run_id, job = _queue_new_manual_run(db, flow_id, actor=actor, trigger_type=trigger_type, now=now,
+                                                html_dry_run=html_dry_run)
     worker = launch_local_worker(job["execution"]["browser_mode"])
     if worker.get("status") == "error":
         with get_db() as db:
@@ -4766,8 +4904,9 @@ def queue_flow_run(
 
 
 @router.post("/{flow_id}/run")
-def queue_run(flow_id: int, request: Request):
-    return queue_flow_run(flow_id, actor=get_actor(request))
+def queue_run(flow_id: int, request: Request, dry_run: Annotated[bool, Query()] = False):
+    """Queue a run. ``dry_run`` runs an HTML report refresh as a test that never publishes."""
+    return queue_flow_run(flow_id, actor=get_actor(request), html_dry_run=True if dry_run else None)
 
 
 @router.post("/{flow_id}/stop")
@@ -7081,7 +7220,9 @@ def update_run_live(worker_id: str, run_id: int, body: WorkerLive):
     with get_db() as db:
         db.execute("BEGIN IMMEDIATE")
         row = db.execute(
-            "SELECT status, finished_at, live_json FROM flow_runs WHERE id=? AND worker_id=?",
+            """SELECT status, finished_at, live_json, stages_json,
+                      json_extract(job_json, '$.html_report.report_key') AS html_report_key
+               FROM flow_runs WHERE id=? AND worker_id=?""",
             (run_id, worker_id),
         ).fetchone()
         if not row:
@@ -7132,6 +7273,20 @@ def update_run_live(worker_id: str, run_id: int, body: WorkerLive):
                      "final": bool(body.final) or bool(live.get("final"))})
         if body.stage is not None:
             live["stage"] = body.stage
+        if row["html_report_key"] and body.lines:
+            # METRONOME_STAGE lines of an HTML report refresh. Parsed once
+            # each (line numbers above the stored watermark), as untrusted
+            # input, and never able to change the run's status.
+            stages = html_reports.apply_lines(
+                html_reports.load_state(row["stages_json"]),
+                [line.model_dump() for line in body.lines],
+                str(row["html_report_key"]),
+                received_at=_now(),
+            )
+            db.execute("UPDATE flow_runs SET stages_json=? WHERE id=?", (_json(stages), run_id))
+            running = html_reports.current_stage(stages)
+            if running and body.stage is None:
+                live["stage"] = running
         if body.progress is not None:
             live["progress"] = body.progress
         if body.script is not None:

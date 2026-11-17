@@ -565,13 +565,15 @@ def build_refresh_plan(report_id: int, requester: str | None, *, probe_mvs: bool
     warnings: list[str] = []
     with get_db() as db:
         report = db.execute(
-            "SELECT id, name, owner, powerbi_url, pbi_dataset_id, updated_at FROM reports WHERE id=?",
+            "SELECT id, name, owner, powerbi_url, pbi_dataset_id, updated_at, report_kind FROM reports WHERE id=?",
             (report_id,),
         ).fetchone()
         if not report:
             raise HTTPException(404, "Report not found.")
         if not _feature_enabled_for(report):
             blockers.append("Full-pipeline refresh is disabled for this report.")
+        if report["report_kind"] == "html":
+            blockers.append("An HTML report is refreshed by its own Flow in Flows; full-pipeline refresh covers Power BI reports.")
 
         recipient, recipient_error = _resolve_recipient(db, report, requester)
         if recipient_error:

@@ -7,6 +7,44 @@ const duration = ms => {
 const stamp = value => value ? new Date(/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/.test(String(value)) ? String(value).replace(' ', 'T') + 'Z' : value).toLocaleString('en-GB', {timeZone:'Asia/Dubai'}) : "Not recorded";
 const label = value => String(value || "unknown").replaceAll("_", " ");
 const runId = Number(location.pathname.match(/\/flow-runs\/(\d+)/)?.[1]);
+// Stored stage times are UTC without a zone; read them as UTC.
+const utcMs = value => value ? Date.parse(/(?:Z|[+-]\d\d:\d\d)$/.test(String(value)) ? String(value) : String(value).replace(" ", "T") + "Z") : NaN;
+const elapsed = seconds => {
+    if (!Number.isFinite(Number(seconds))) return "—";
+    const total = Math.max(0, Math.round(Number(seconds)));
+    if (total < 60) return `${total}s`;
+    if (total < 3600) return `${Math.floor(total / 60)}m ${total % 60}s`;
+    return `${Math.floor(total / 3600)}h ${Math.floor((total % 3600) / 60)}m`;
+};
+const STAGE_LABELS = {running: "Running", succeeded: "Succeeded", failed: "Failed", incomplete: "Did not finish"};
+
+// An HTML report refresh: the controller's own stages, as untrusted progress.
+// The run's status, which follows the process exit code, is the result.
+function htmlReportSection(report, run, now = Date.now()) {
+    if (!report) return "";
+    const stageRows = (report.stages || []).map(stage => {
+        const started = utcMs(stage.started_at);
+        const seconds = stage.status === "running"
+            ? (now - started) / 1000
+            : stage.duration_seconds ?? (utcMs(stage.finished_at) - started) / 1000;
+        return `<tr class="flow-log-stage ${esc(stage.status)}"><td>${esc(stage.name)}</td><td><span class="flow-log-stage-status ${esc(stage.status)}">${esc(STAGE_LABELS[stage.status] || label(stage.status))}</span></td><td>${esc(stamp(stage.started_at))}${stage.start_inferred ? ' <small title="Only the completion was reported; the start is its duration before it.">(from its duration)</small>' : ""}</td><td class="flow-log-number">${esc(elapsed(seconds))}${stage.status === "running" ? " so far" : ""}</td></tr>`;
+    }).join("");
+    const terminal = ["succeeded", "failed", "cancelled"].includes(run.status);
+    const total = report.total_seconds ?? (run.started_at && !terminal ? (now - utcMs(run.started_at)) / 1000 : null);
+    const links = [
+        report.site_url ? `<a href="${esc(report.site_url)}" target="_blank" rel="noopener noreferrer">Published site</a>` : "",
+        report.repository_url ? `<a href="${esc(report.repository_url)}" target="_blank" rel="noopener noreferrer">Report repository</a>` : "",
+        report.controller_repository ? `<a href="${esc(report.controller_repository)}" target="_blank" rel="noopener noreferrer">Controller repository</a>` : "",
+    ].filter(Boolean).join(" · ");
+    const notices = (report.notices || []).map(item => `<li class="flow-log-notice ${esc(item.level)}">${esc(item.text)}</li>`).join("");
+    return `<section class="flow-log-section flow-log-html-report"><h2>HTML report refresh</h2>
+        <p><strong>${esc(report.report_key)}</strong> <span class="flow-log-mode ${report.publishes ? "live" : "dry-run"}">${report.publishes ? "Live · publishes to GitHub" : "Dry run · nothing is published"}</span>${links ? ` · ${links}` : ""}</p>
+        <p>Result: <strong>${esc(label(run.status))}</strong>, from the controller's exit code. Total duration: <strong class="flow-log-number">${esc(elapsed(total))}</strong>${terminal ? "" : " so far"}.</p>
+        ${notices ? `<ul class="flow-log-notices">${notices}</ul>` : ""}
+        <div class="flow-table-wrap"><table class="flow-table"><thead><tr><th>Stage</th><th>Status</th><th>Started (Dubai)</th><th>Elapsed</th></tr></thead><tbody>${stageRows || `<tr><td colspan="4">${terminal ? "No stages were reported." : "Stages appear here as the controller reports them."}</td></tr>`}</tbody></table></div>
+        <p class="flow-log-muted">Stages come from the controller's METRONOME_STAGE lines; the console below keeps every original line.</p>
+    </section>`;
+}
 let loadRun = null;
 const consoleState = {lines: [], after: 0, omitted: 0, follow: true, loading: false};
 
@@ -91,6 +129,7 @@ function render(run) {
     document.getElementById("flow-run-log").innerHTML = `
         <header class="flow-log-header"><div><a href="/#flows">Back to Flows</a><h1>Run #${run.id}: ${esc(run.flow_name)}</h1><p>Complete diagnostic record captured by Metronome.${sqlRetrySource ? ` SQL-only retry of run #${esc(sqlRetrySource)}; the source was not opened.` : ""}</p></div><div class="flow-log-header-actions"><span class="flow-log-status ${esc(run.status)}">${esc(run.status)}</span><a class="btn-outline" href="/?investigate=flow_run&subject_id=${run.id}#flows">Investigate safely</a>${canRetrySql ? '<button class="btn-primary" id="flow-retry-sql">Retry SQL only</button>' : ""}${canRetryViews ? '<button class="btn-primary" id="flow-retry-views">Retry view refresh</button>' : ""}</div></header>
         ${run.error ? `<section class="flow-log-failure"><h2>${excelFailure ? 'Excel processing failed' : 'Final error'}</h2><p>${esc(run.error)}</p>${excelFailure ? `<p><strong>Workbook:</strong> ${esc(excelFailure.workbook)}</p><p><strong>Worksheets found:</strong> ${(excelFailure.available_sheets || []).map(name => `<code>${esc(name)}</code>`).join(', ') || 'None'}</p><p>SQL was not started. The original workbook is preserved.</p><a class="btn-primary" href="/?edit_flow=${encodeURIComponent(run.flow_id)}&worksheet_run=${encodeURIComponent(run.id)}#flows">Choose worksheets</a>` : ''}</section>` : ""}
+        ${htmlReportSection(run.html_report, run)}
         ${python ? `<section class="flow-log-section python-script-activity"><h2>Script activity</h2><p><strong>${esc(live.script || run.progress?.script || "Preparing script")}</strong>${run.progress?.step && run.progress?.steps ? ` · step ${esc(run.progress.step)} of ${esc(run.progress.steps)}` : ""}${live.stage ? ` · ${esc(live.stage)}` : ""}</p>${scriptProgress !== null ? `<div class="python-script-progress" role="progressbar" aria-valuenow="${scriptProgress}" aria-valuemin="0" aria-valuemax="100"><span style="width:${scriptProgress}%"></span></div><p>${esc(live.progress)}</p>` : ""}${live.waiting ? `<p>Waiting for ${esc(live.waiting)} process(es) started by the script.</p>` : ""}${!terminal && silentMinutes >= 10 ? `<p class="python-script-silent">No console output for ${silentMinutes} min.</p>` : ""}<div class="flow-table-wrap"><table class="flow-table"><thead><tr><th>Process</th><th>PID</th><th>Parent</th><th>State</th><th>Started (Dubai)</th><th>Duration</th><th>CPU</th><th>Memory</th></tr></thead><tbody>${processRows || '<tr><td colspan="8">Process details will appear when the script starts.</td></tr>'}</tbody></table></div><div class="python-console-head"><h3>Live console</h3><label><input type="checkbox" id="python-console-follow" ${consoleState.follow ? "checked" : ""}> Follow</label><button type="button" class="btn-secondary" id="python-console-copy">Copy</button><button type="button" class="btn-secondary" id="python-console-download">Download .log</button></div><p id="python-console-count" class="flow-log-muted"></p><div id="python-console-lines" class="python-console-lines" aria-live="off"></div></section>` : ""}
         ${reconciliationBlocksRetry ? '<section class="flow-log-failure"><h2>SQL reconciliation required</h2><p>The prior append may have completed. Check and reconcile the target, then acknowledge reconciliation from the Flow’s More menu before running again.</p></section>' : ''}
         ${refresh ? `<section class="flow-log-section flow-log-views"><h2>SQL insertion → Refresh materialized views</h2><p><strong>${esc(sqlOutcomeText)}.</strong> ${refresh.deferred_to_pipeline ? "This run belongs to a full-pipeline run, which refreshes the configured views once after every upstream Flow finished." : refresh.blocked ? `Refresh blocked: ${esc(refresh.blocked)}` : `${refresh.completed} of ${refresh.total} materialized view(s) refreshed, each in its own transaction, upstream first.${refresh.source_run_id ? ` Refresh-only retry of run #${esc(refresh.source_run_id)}; nothing was downloaded, transformed or inserted again.` : ""}${refresh.discovered_at ? ` List frozen when the run was queued (${esc(stamp(refresh.discovered_at))}${refresh.metadata_at ? `, metadata verified ${esc(stamp(refresh.metadata_at))}` : ""}).` : ""}`}${refresh.retry && refresh.retry.status !== "eligible" ? ` ${esc(refresh.retry.message)}` : ""}</p>${viewRows ? `<div class="flow-table-wrap"><table class="flow-table"><thead><tr><th>#</th><th>Materialized view</th><th>Status</th><th>Duration</th><th>Finished</th><th>Error</th></tr></thead><tbody>${viewRows}</tbody></table></div>` : ""}</section>` : ""}

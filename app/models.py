@@ -81,6 +81,15 @@ class ReportOut(BaseModel):
     archived: bool = False
     created_at: str | None = None
     updated_at: str | None = None
+    # "powerbi" for scanned Power BI reports; "html" for an HTML report kept
+    # in a repository and refreshed by a Metronome Flow (app.html_reports).
+    kind: str = "powerbi"
+    refresh_flow_id: int | None = None
+    refresh_flow_name: str | None = None
+    repository_url: str | None = None
+    site_url: str | None = None
+    last_refresh_status: str | None = None   # the Flow's latest finished run
+    last_refresh_at: str | None = None
 
 
 class ReportUpdate(BaseModel):

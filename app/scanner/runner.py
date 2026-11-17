@@ -868,9 +868,17 @@ def run_scan(
             for report in reconcilable_reports:
                 assert_not_cancelled(generation, "Report scan")
                 existing_report = db.execute(
-                    "SELECT id FROM reports WHERE name = ?",
+                    "SELECT id, report_kind FROM reports WHERE name = ?",
                     (report.name,),
                 ).fetchone()
+                if existing_report and existing_report["report_kind"] == "html":
+                    # An HTML report refreshed by a Flow holds this name. Never
+                    # merge a Power BI report into it; say so and leave both.
+                    log_lines.append(
+                        f"SKIP: {report.name} (the name belongs to an HTML report refreshed by a Flow; "
+                        "rename the Flow or the Power BI report)"
+                    )
+                    continue
 
                 if existing_report:
                     report_id = existing_report["id"]

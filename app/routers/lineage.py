@@ -1,5 +1,6 @@
 import logging
 from fastapi import APIRouter, HTTPException
+from app import html_reports
 from app.config import PBI_WORKSPACE, UPLOAD_PGHOST, UPLOAD_PGPORT
 from app.database import get_db
 from app.flow_diagnostics import (
@@ -62,7 +63,8 @@ def get_lineage_diagram(report_id: int):
     with get_db() as db:
         # 1. Report info
         report = db.execute(
-            """SELECT id, name, owner, business_owner, archived, pbi_dataset_id
+            """SELECT id, name, owner, business_owner, archived, pbi_dataset_id,
+                      report_kind, refresh_flow_id, repository_url, site_url, last_published
                FROM reports WHERE id = ?""",
             (report_id,),
         ).fetchone()
@@ -70,8 +72,28 @@ def get_lineage_diagram(report_id: int):
             raise HTTPException(status_code=404, detail="Report not found")
 
         # Derive report status
-        from app.routers.reports import _derive_report_status
+        from app.routers.reports import _derive_report_status, _html_fields
         status, _ = _derive_report_status(report_id)
+        # An HTML report is published by the Flow that refreshes it: that
+        # Flow is its first upstream step, whatever sources are linked.
+        refresh_flow = None
+        if report["report_kind"] == html_reports.KIND_HTML:
+            refresh = html_reports.report_refreshes(db).get(int(report_id))
+            status = _html_fields(report, refresh, status)["status"]
+            if refresh:
+                saved = db.execute(
+                    "SELECT html_report_json, last_run_at FROM flows WHERE id=?", (refresh["flow_id"],),
+                ).fetchone()
+                config = html_reports.saved_config(saved["html_report_json"] if saved else None) or {}
+                refresh_flow = {
+                    "id": refresh["flow_id"], "name": refresh["flow_name"],
+                    "enabled": bool(refresh["enabled"]),
+                    "report_key": config.get("report_key"), "mode": config.get("mode"),
+                    "last_status": refresh.get("last_status"),
+                    "last_finished_at": refresh.get("last_finished_at"),
+                    "last_published_at": refresh.get("last_published_at"),
+                    "last_run_at": saved["last_run_at"] if saved else None,
+                }
 
         # 2. Pages / visuals / fields
         vis_rows = db.execute("""
@@ -403,8 +425,13 @@ def get_lineage_diagram(report_id: int):
             "owner": report["owner"],
             "archived": bool(report["archived"]),
             "pbi_dataset_id": report["pbi_dataset_id"],
-            "can_refresh": bool(report["pbi_dataset_id"] or PBI_WORKSPACE),
+            "can_refresh": report["report_kind"] != html_reports.KIND_HTML
+            and bool(report["pbi_dataset_id"] or PBI_WORKSPACE),
+            "kind": report["report_kind"] or html_reports.KIND_POWER_BI,
+            "repository_url": report["repository_url"],
+            "site_url": report["site_url"],
         },
+        "refresh_flow": refresh_flow,
         "pages": pages_list,
         "tables": tables,
         "sources": sources,

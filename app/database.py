@@ -2052,6 +2052,19 @@ MIGRATIONS = [
     # Triggers after the main schedule: [{type, time, days, day}], each adding
     # run times. The main schedule columns stay trigger 1 for older readers.
     "ALTER TABLE flows ADD COLUMN additional_triggers_json TEXT NOT NULL DEFAULT '[]'",
+    # HTML report refresh Flows (app.html_reports): a run-only Python Flow
+    # whose command the server builds from Settings and this block. NULL for
+    # every other Flow. Each run keeps its parsed METRONOME_STAGE record.
+    "ALTER TABLE flows ADD COLUMN html_report_json TEXT",
+    "ALTER TABLE flow_runs ADD COLUMN stages_json TEXT",
+    # Reports also lists HTML reports: report_kind 'html', refreshed by one
+    # Flow, with their repository and published site. Power BI rows keep
+    # 'powerbi' and the columns below stay NULL.
+    "ALTER TABLE reports ADD COLUMN report_kind TEXT NOT NULL DEFAULT 'powerbi'",
+    "ALTER TABLE reports ADD COLUMN refresh_flow_id INTEGER REFERENCES flows(id) ON DELETE SET NULL",
+    "ALTER TABLE reports ADD COLUMN repository_url TEXT",
+    "ALTER TABLE reports ADD COLUMN site_url TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_reports_refresh_flow ON reports(refresh_flow_id)",
 ]
 
 

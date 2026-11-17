@@ -119,7 +119,10 @@ def _norm_user_id(value: str | None) -> str:
 
 
 def _db_report_map(db: Connection) -> dict[str, int]:
-    rows = db.execute("SELECT id, name FROM reports").fetchall()
+    # Power BI usage belongs to Power BI reports only, never to an HTML report of the same name.
+    rows = db.execute(
+        "SELECT id, name FROM reports WHERE COALESCE(report_kind, 'powerbi') != 'html'"
+    ).fetchall()
     return {_norm_name(r["name"]): r["id"] for r in rows if r["name"]}
 
 
