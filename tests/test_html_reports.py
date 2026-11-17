@@ -40,7 +40,6 @@ def _configure(tmp_path, **overrides):
     values = {
         html_reports.CONTROLLER_SCRIPT: str(controller),
         html_reports.REPORT_ROOT: str(tmp_path / "reports"),
-        html_reports.ALLOWED_REPORTS: [KEY, "smp_stock_cover_html"],
         html_reports.CONTROLLER_REPOSITORY: "https://github.example.com/team/dashboard-refresh-controller",
     }
     values.update(overrides)
@@ -110,7 +109,6 @@ def test_settings_refuse_unsafe_controller_values(flow_db):
             html_reports.CONTROLLER_REPOSITORY: "https://deploy:ghp_secret@github.example.com/team/controller",
             html_reports.CONTROLLER_SCRIPT: "D:\\Tools\\controller\\*.py",
             html_reports.REPORT_ROOT: "D:\\Reports\\{flow}",
-            html_reports.ALLOWED_REPORTS: [KEY, "two words"],
             html_reports.ARGUMENTS: "--report {report} {token}",
             html_reports.DRY_RUN_ARGUMENTS: "",
             html_reports.LIVE_ARGUMENTS: '--publish "unclosed',
@@ -119,13 +117,12 @@ def test_settings_refuse_unsafe_controller_values(flow_db):
     assert "user name, password or token" in errors[html_reports.CONTROLLER_REPOSITORY]
     assert "wildcards" in errors[html_reports.CONTROLLER_SCRIPT]
     assert "braces" in errors[html_reports.REPORT_ROOT]
-    assert "two words is not a report ID" in errors[html_reports.ALLOWED_REPORTS]
     assert "{token} is not a known token" in errors[html_reports.ARGUMENTS]
     assert errors[html_reports.DRY_RUN_ARGUMENTS] == "This cannot be empty."
     with pytest.raises(settings_registry.SettingsRejected) as refused:
         settings_registry.save({html_reports.DRY_RUN_ARGUMENTS: "   "})
     assert refused.value.errors[html_reports.DRY_RUN_ARGUMENTS] == "This cannot be empty."
-    assert "dry-run arguments" in html_reports.setup_problems({"dry_run_arguments": "", "script": "x", "allowed_reports": ["a"]})[0]
+    assert "dry-run arguments" in html_reports.setup_problems({"dry_run_arguments": "", "script": "x"})[0]
     assert "unclosed quote" in errors[html_reports.LIVE_ARGUMENTS]
     with pytest.raises(settings_registry.SettingsRejected) as refused:
         settings_registry.save({html_reports.ARGUMENTS: "--report-root {report_root}",
@@ -139,21 +136,26 @@ def test_settings_refuse_unsafe_controller_values(flow_db):
 def test_only_the_host_pc_changes_the_controller_settings(flow_db):
     with pytest.raises(flows.HTTPException) as refused:
         system_settings.save_settings(
-            system_settings.SettingsWrite(values={html_reports.ALLOWED_REPORTS: ["anything"]}), _guest(),
+            system_settings.SettingsWrite(values={html_reports.CONTROLLER_SCRIPT: "D:\\Other\\refresh.py"}), _guest(),
         )
     assert refused.value.status_code == 403
-    assert settings_registry.get(html_reports.ALLOWED_REPORTS) == []
+    assert settings_registry.get(html_reports.CONTROLLER_SCRIPT) == ""
 
 
-def test_a_flow_is_saved_only_for_a_configured_controller_and_an_allowed_report(flow_db, tmp_path):
+def test_a_flow_names_any_report_once_the_controller_is_configured(flow_db, tmp_path):
     with pytest.raises(flows.HTTPException) as refused:
         flows.create_flow(_flow(), _request())
     assert refused.value.status_code == 409
     assert "Settings > Flows > HTML reports" in refused.value.detail
     _configure(tmp_path)
-    with pytest.raises(flows.HTTPException) as refused:
-        flows.create_flow(_flow(html_report={"report_key": "not_on_the_list", "mode": "live"}), _request())
-    assert refused.value.status_code == 409 and "not in the allowed list" in refused.value.detail
+    # There is no list of allowed reports: any plain report ID is accepted
+    # (the controller decides whether it knows it) and passed as one argument.
+    saved = flows.create_flow(_flow(name="Any repo", html_report={"report_key": "team-sales.v2_html", "mode": "dry_run"}),
+                              _request())
+    assert saved["python_script_arguments"][0].startswith("--report team-sales.v2_html --report-root ")
+    with pytest.raises(ValidationError) as refused:
+        _flow(html_report={"report_key": "two words", "mode": "live"})
+    assert "usually the repository's name" in str(refused.value)
     for bad in ({"report_key": "two words", "mode": "live"},
                 {"report_key": KEY, "mode": "publish"},
                 {"report_key": KEY, "mode": "live", "command": "evil.exe"},
@@ -163,7 +165,7 @@ def test_a_flow_is_saved_only_for_a_configured_controller_and_an_allowed_report(
             _flow(html_report=bad)
     with pytest.raises(ValidationError):
         _flow(source_type="file", local_file_path="C:\\in.csv")
-    assert flows.list_flows() == []
+    assert [flow["name"] for flow in flows.list_flows()] == ["Any repo"]
 
 
 def test_the_browser_never_chooses_the_command(flow_db, tmp_path):
@@ -213,20 +215,23 @@ def test_each_run_rebuilds_the_command_and_fails_closed(flow_db, tmp_path, queue
     assert run["job"]["python_source"]["arguments"] == [f'{KEY} --root {tmp_path / "reports"} --run "{{run_id}}"']
     flows.stop_run(saved["id"], _request())
 
-    settings_registry.save({html_reports.ALLOWED_REPORTS: ["smp_stock_cover_html"]})
+    settings_registry.save({html_reports.CONTROLLER_SCRIPT: None})
     with pytest.raises(flows.HTTPException) as refused:
         flows.queue_flow_run(saved["id"], actor="Analyst")
-    assert refused.value.status_code == 409 and "not in the allowed list" in refused.value.detail
+    assert refused.value.status_code == 409 and "Set the controller script" in refused.value.detail
     # A scheduled run is not queued either; the reason is kept on the Flow.
     with database.get_db() as db:
         db.execute("UPDATE flows SET next_run_at='2020-01-01T00:00:00' WHERE id=?", (saved["id"],))
     assert flows.queue_due_flows()["count"] == 0
-    assert "not in the allowed list" in flows.get_flow(saved["id"])["last_error"]
+    assert "Set the controller script" in flows.get_flow(saved["id"])["last_error"]
 
-    settings_registry.save({html_reports.ALLOWED_REPORTS: [KEY], html_reports.CONTROLLER_SCRIPT: None})
+    # A Flow whose saved block is damaged never runs a guessed report.
+    _configure(tmp_path)
+    with database.get_db() as db:
+        db.execute("UPDATE flows SET html_report_json='{\"report_key\": \"two words\"}' WHERE id=?", (saved["id"],))
     with pytest.raises(flows.HTTPException) as refused:
         flows.queue_flow_run(saved["id"], actor="Analyst")
-    assert "Set the controller script" in refused.value.detail
+    assert "damaged" in refused.value.detail
 
 
 def test_each_placeholder_becomes_exactly_one_argument(flow_db, tmp_path):
@@ -239,8 +244,9 @@ def test_each_placeholder_becomes_exactly_one_argument(flow_db, tmp_path):
     assert flows.flow_python.split_arguments(rendered) == [
         "--report", KEY, "--report-root", str(root), "--name", "Trade in value", "--day", "2026-11-17",
     ]
-    preview = html_reports.public_settings()["previews"][KEY]
-    assert preview["live"] == line and preview["dry_run"] == line + " --dry-run"
+    preview = html_reports.public_settings()["previews"]
+    assert preview["live"].replace(html_reports.PREVIEW_REPORT, KEY) == line
+    assert preview["dry_run"].replace(html_reports.PREVIEW_REPORT, KEY) == line + " --dry-run"
 
 
 def test_dry_runs_are_labelled_and_never_publish(flow_db, tmp_path, queue):

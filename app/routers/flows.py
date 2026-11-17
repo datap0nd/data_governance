@@ -2209,8 +2209,8 @@ def _build_job(db, flow_id: int, *, force_reprocess: bool = False, recording_dra
     html_section = None
     if flow.get("html_report") is not None:
         # The controller command is rebuilt from Settings for every run, so a
-        # report removed from the allowed list, or a controller that is no
-        # longer configured, stops the run here instead of guessing.
+        # controller that is no longer configured stops the run here instead
+        # of guessing.
         html_settings = html_reports.controller_settings()
         try:
             flow = html_reports.apply_to_flow(flow, flow["html_report"], html_settings, dry_run=html_dry_run)
@@ -2848,7 +2848,7 @@ def list_flows():
 
 @router.get("/html-reports/settings")
 def html_report_settings():
-    """The controller link, its installed path, the allowed reports and what is missing."""
+    """The controller link, its installed path, the command it runs and what is missing."""
     return html_reports.public_settings()
 
 

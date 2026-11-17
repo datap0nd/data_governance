@@ -5,6 +5,7 @@ in [the testing workflow](../README.md); this file is the complete history.
 
 | Release | What to test | Results |
 | --- | --- | --- |
+| 2026-11-17: HTML report Flows point at any repository | [Test plan](2026-11-17-html-report-any-repository/test-plan.md) | [Test report](2026-11-17-html-report-any-repository/test-report.md) |
 | 2026-11-17: A slow worker start no longer stops setup | [Test plan](2026-11-17-setup-slow-service-start/test-plan.md) | [Test report](2026-11-17-setup-slow-service-start/test-report.md) |
 | 2026-11-17: HTML report refresh Flows, their stages and their place in Reports | [Test plan](2026-11-17-html-report-refresh/test-plan.md) | [Test report](2026-11-17-html-report-refresh/test-report.md) |
 | 2026-11-13: Send emails switch in Settings > Email | [Test plan](2026-11-13-send-emails-switch/test-plan.md) | [Test report](2026-11-13-send-emails-switch/test-report.md) |

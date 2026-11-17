@@ -11899,9 +11899,16 @@ async function _flowLoadHtmlSettings() {
     try { return await api("/api/flows/html-reports/settings"); } catch (_) { return null; }
 }
 
+// The last part of a repository link, without .git: "…/team/smp_sales_html.git" gives "smp_sales_html".
+function _flowHtmlRepositoryName(link) {
+    const name = String(link || "").trim().replace(/[?#].*$/, "").replace(/\/+$/, "").split("/").pop() || "";
+    const clean = name.replace(/\.git$/i, "");
+    return /^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(clean) && /^https?:\/\/[^/]+\/.+/i.test(String(link || "").trim()) ? clean : "";
+}
+
 function _flowHtmlSettings() {
     return window._flowsState?.htmlReports || {
-        allowed_reports: [], ready: false, settings_place: "Settings > Flows > HTML reports",
+        ready: false, settings_place: "Settings > Flows > HTML reports",
         problems: ["The HTML report settings could not be loaded. Reload the page."],
     };
 }
@@ -11909,8 +11916,9 @@ function _flowHtmlSettings() {
 // The command the server will run, for display only: script name and arguments.
 function _flowHtmlCommandPreview(settings, reportKey, mode) {
     const script = String(settings.script || "").split(/[\\/]/).pop() || "refresh.py";
-    const exact = settings.previews?.[reportKey]?.[mode === "live" ? "live" : "dry_run"];
-    if (exact) return `python ${script} ${exact}`;
+    // The server's exact command, with its stand-in swapped for the typed report ID.
+    const exact = settings.previews?.[mode === "live" ? "live" : "dry_run"];
+    if (exact && settings.preview_report) return `python ${script} ${exact.split(settings.preview_report).join(reportKey || "<report ID>")}`;
     const quote = value => /[\s"]/.test(value) ? `"${String(value).replace(/"/g, '""')}"` : String(value);
     const values = {report: reportKey || "<report ID>", report_root: settings.report_root || "<report root>"};
     const base = String(settings.arguments || "").replace(/\{(report|report_root)\}/g, (_, key) => quote(values[key]));
@@ -11956,14 +11964,8 @@ function _flowHtmlReportBuilderHtml(existing = null) {
     const settings = _flowHtmlSettings();
     const people = window._flowsState?.people || [];
     const config = existing?.html_report || {};
-    const allowed = settings.allowed_reports || [];
-    const reportKey = config.report_key || (existing?.id ? "" : allowed[0] || "");
-    const retired = reportKey && !allowed.includes(reportKey);
+    const reportKey = config.report_key || "";
     const mode = config.mode === "live" ? "live" : "dry_run";
-    const options = [
-        ...(retired ? [`<option value="${esc(reportKey)}" selected>${esc(reportKey)} (no longer allowed)</option>`] : []),
-        ...allowed.map(key => `<option value="${esc(key)}" ${key === reportKey ? "selected" : ""}>${esc(key)}</option>`),
-    ].join("");
     return `
         <div class="flow-builder-shell"><div class="flow-builder-main">
             <form id="flow-builder-form" data-id="${existing?.id || ""}" data-source-type="html">
@@ -11971,8 +11973,8 @@ function _flowHtmlReportBuilderHtml(existing = null) {
                     <div class="flow-section-head"><h2>HTML report</h2></div>
                     <div class="flow-form-grid">
                         <label><span>Flow name</span><input id="flow-name" required maxlength="200" value="${esc(existing?.name || "")}" placeholder="Trade-in value dashboard"><small>Also the report's name in Reports.</small></label>
-                        <label><span>Report ID</span><select id="flow-html-report-key" required ${allowed.length || retired ? "" : "disabled"}>${options || '<option value="">No report is allowed yet</option>'}</select><small>${retired ? "This report was removed from the allowed list, so its runs do not start. Choose an allowed report." : "The controller's identifier for the report, from the allowed list in Settings."}</small></label>
-                        <label class="flow-span-2"><span>Report repository <small>(optional)</small></span><input id="flow-html-repository" type="url" maxlength="500" value="${esc(config.repository_url || "")}" placeholder="https://github.example.com/team/trade-in-value-html"><small>Shown as a link in Flows and Reports. Metronome never clones or pushes it.</small></label>
+                        <label class="flow-span-2"><span>Report repository</span><input id="flow-html-repository" type="url" maxlength="500" value="${esc(config.repository_url || "")}" placeholder="https://github.example.com/team/smp_trade_in_value_html"><small>Any repository the controller can push to. Shown as a link in Flows and Reports; Metronome never clones or pushes it.</small></label>
+                        <label><span>Report ID</span><input id="flow-html-report-key" required maxlength="100" pattern="[A-Za-z0-9][A-Za-z0-9_.\\-]*" value="${esc(reportKey)}" placeholder="smp_trade_in_value_html" data-touched="${reportKey ? "1" : ""}"><small>What the controller calls this report: filled in from the repository's name, which you can change. Letters, digits, _, - and ., no spaces.</small></label>
                         <label class="flow-span-2"><span>Published site <small>(optional)</small></span><input id="flow-html-site" type="url" maxlength="500" value="${esc(config.site_url || "")}" placeholder="https://pages.github.example.com/team/trade-in-value-html/"><small>Where people open the report. After a live run, open it to confirm GitHub Pages has deployed.</small></label>
                         <fieldset class="flow-span-2 flow-python-output flow-html-mode-choice"><legend>What should a run do?</legend>
                             <label class="flow-check"><input type="radio" name="flow-html-mode" value="dry_run" ${mode === "dry_run" ? "checked" : ""}><span>Dry run · extract, validate and build only. Nothing is published.</span></label>
@@ -12003,7 +12005,14 @@ function _flowBindHtmlReportBuilder(form) {
         const mode = form.querySelector('input[name="flow-html-mode"]:checked')?.value || "dry_run";
         if (command) command.textContent = _flowHtmlCommandPreview(settings, form.querySelector("#flow-html-report-key")?.value, mode);
     };
-    form.querySelector("#flow-html-report-key")?.addEventListener("change", refresh);
+    const key = form.querySelector("#flow-html-report-key");
+    // Until someone types a report ID, it follows the repository's name.
+    key?.addEventListener("input", () => { key.dataset.touched = key.value.trim() ? "1" : ""; refresh(); });
+    form.querySelector("#flow-html-repository")?.addEventListener("input", event => {
+        if (!key || key.dataset.touched) return;
+        key.value = _flowHtmlRepositoryName(event.currentTarget.value);
+        refresh();
+    });
     form.querySelectorAll('input[name="flow-html-mode"]').forEach(radio => radio.addEventListener("change", refresh));
     form.querySelector("#flow-html-inspect")?.addEventListener("click", async event => {
         const button = event.currentTarget;

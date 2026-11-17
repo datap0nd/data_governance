@@ -176,13 +176,9 @@ _html(html_reports.CONTROLLER_SCRIPT, "Controller script on the worker", "", kin
 _html(html_reports.REPORT_ROOT, "Report root on the worker", "", kind="path", optional=True,
       placeholder="D:\\Reports\\html", check=html_reports.check_report_root,
       help="The folder that holds the report repositories, passed to the controller as {report_root}." + KEEPS)
-_html(html_reports.ALLOWED_REPORTS, "Allowed report IDs", [], kind="list", max_items=100,
-      check=html_reports.check_allowed_reports,
-      help="The controller's report identifiers, from its README. A Flow can refresh only a report listed "
-           "here, and a run of a report removed from this list does not start." + KEEPS)
 _html(html_reports.ARGUMENTS, "Controller arguments", html_reports.DEFAULT_ARGUMENTS,
       check=html_reports.check_arguments,
-      help="Passed to the controller without a shell. {report} is the Flow's report ID and {report_root} "
+      help="Passed to the controller without a shell. {report} is the report ID typed on the Flow and {report_root} "
            "the folder above; {flow}, {run_id} and {date} also work." + KEEPS)
 _html(html_reports.DRY_RUN_ARGUMENTS, "Added for a dry run", html_reports.DEFAULT_DRY_RUN_ARGUMENTS,
       check=html_reports.check_dry_run_arguments,
