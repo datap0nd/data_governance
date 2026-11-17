@@ -36,3 +36,40 @@ function Test-MetronomeSetupWorkerFresh {
     }
     return $LastSeenAt -ge ([datetimeoffset]$WorkerStartedAt).AddSeconds(-5)
 }
+
+function Start-MetronomeSetupService {
+    # Start one service through NSSM without letting NSSM's message stop setup.
+    #
+    # Windows PowerShell 5.1 turns each line a native program writes to stderr
+    # into an error once stderr is redirected, and setup runs with
+    # $ErrorActionPreference = 'Stop'. A worker that was only slow to report
+    # running ("Unexpected status SERVICE_START_PENDING in response to START
+    # control") therefore aborted setup before Metronome itself was started.
+    # This reads NSSM's words instead and never throws. State is Started,
+    # Running (it already was), Starting (Windows still reports
+    # START_PENDING) or Failed; the registration and health checks that follow
+    # in setup decide whether the service really came up.
+    param(
+        [Parameter(Mandatory = $true)][string]$NssmExe,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+    $ErrorActionPreference = 'Continue'
+    $Lines = @(& $NssmExe start $Name 2>&1 | ForEach-Object { ("$_" -replace "`0", '').Trim() } | Where-Object { $_ })
+    $ExitCode = $LASTEXITCODE
+    $Message = ($Lines -join ' ').Trim()
+    $State = if ($Message -match 'already running') { 'Running' }
+        elseif ($ExitCode -eq 0) { 'Started' }
+        elseif ($Message -match 'START_PENDING') { 'Starting' }
+        else { 'Failed' }
+    [pscustomobject]@{ Name = $Name; State = $State; Message = $Message; ExitCode = $ExitCode }
+}
+
+function Write-MetronomeSetupServiceStart {
+    # One line for the person watching setup; nothing when the start was clean.
+    param([Parameter(Mandatory = $true)]$Result)
+    switch ($Result.State) {
+        'Running' { Write-Host "  $($Result.Name) was already running - OK." -ForegroundColor DarkGray }
+        'Starting' { Write-Host "  $($Result.Name) is still starting; setup carries on and checks below that it comes up." -ForegroundColor DarkGray }
+        'Failed' { Write-Host "  WARNING: $($Result.Name) did not start: $($Result.Message) Setup carries on; the checks below say what is missing." -ForegroundColor Yellow }
+    }
+}
