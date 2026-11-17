@@ -11895,6 +11895,10 @@ function _flowPythonBuilderHtml(existing = null) {
 // installed on the worker. The server builds the command from Settings > Flows >
 // HTML reports and the report chosen here; this form never sends a command line.
 
+async function _flowLoadHtmlSettings() {
+    try { return await api("/api/flows/html-reports/settings"); } catch (_) { return null; }
+}
+
 function _flowHtmlSettings() {
     return window._flowsState?.htmlReports || {
         allowed_reports: [], ready: false, settings_place: "Settings > Flows > HTML reports",
@@ -12370,12 +12374,14 @@ async function _flowLoadRuns(append = false) {
 async function renderFlows() {
     const requestId = navigationRequestId;
     await (window._currentUserReady || Promise.resolve());
-    const [catalog, flows, runs, workers, scans, estimates, sqlCatalog, people, remoteControl, htmlReports] = await Promise.all([
+    const [catalog, flows, runs, workers, scans, estimates, sqlCatalog, people, remoteControl] = await Promise.all([
         api("/api/flows/catalog"), api("/api/flows"), api("/api/flows/runs"), api("/api/flows/workers"),
         api("/api/flows/scans"), api("/api/flows/estimates"), api("/api/flows/sql/catalog"), api("/api/people"),
         api("/api/system/remote-flow-control").catch(() => null),
-        api("/api/flows/html-reports/settings").catch(() => null),
     ]);
+    // Only an HTML report builder needs the controller settings; Create flow
+    // reads them again when that card is chosen.
+    const htmlReports = flows.some(flow => flow.html_report) ? await _flowLoadHtmlSettings() : null;
     window._remoteFlowControlStatus = remoteControl;
     let scanEvents = [];
     if (scans[0]) {
@@ -13399,7 +13405,11 @@ function _bindFlowWorkspace() {
     $("#flow-source-outlook")?.addEventListener("click", () => _flowShowView("builder", { _source_type: "outlook" }));
     $("#flow-source-file")?.addEventListener("click", () => _flowShowView("builder", { _source_type: "file" }));
     $("#flow-source-python")?.addEventListener("click", () => _flowShowView("builder", { _source_type: "python" }));
-    $("#flow-source-html")?.addEventListener("click", () => _flowShowView("builder", { _source_type: "html" }));
+    $("#flow-source-html")?.addEventListener("click", async event => {
+        event.currentTarget.disabled = true;
+        window._flowsState.htmlReports = await _flowLoadHtmlSettings();
+        _flowShowView("builder", { _source_type: "html" });
+    });
     $("#flow-source-record")?.addEventListener("click", () => FlowRecordings.create());
     $("#flow-record-review")?.addEventListener("click", () => FlowRecordings.open(Number($("#flow-builder-form").dataset.id), _flowCollectBuilder()));
     $("#flow-source-portal")?.addEventListener("click", () => _flowShowView("builder"));

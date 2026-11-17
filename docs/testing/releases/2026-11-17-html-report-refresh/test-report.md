@@ -154,6 +154,26 @@ fix:
 | Failed case and companions | `verify` on `tests/test_html_reports.py`, `tests/test_flow_python.py`, `tests/test_remote_flow_control.py`, `tests/test_settings_flows.py` | Same, test updated | PASS: 116 passed, 2 Starlette warnings | `.test-runs/20261117T082641194Z-5426-86b0d0a0/result.json` |
 | H-20, R-02 | `for f in tests/test_*.mjs; do node "$f"; done` | Same | PASS: 30 of 31; Gemini as above | Console output |
 
+## CI on the first head (`8e0ff12`)
+
+Run 44045657412 failed in two shards, both caused by this PR:
+
+| Shard | Failure | Root cause | Fix |
+| --- | --- | --- | --- |
+| 4 | `tests/test_python_scripts_preview.py::test_python_builder_list_and_run_history_walkthrough` expected 5 source cards and saw 6 | The new **HTML report** card | The test now expects six cards and checks that the HTML report card is there |
+| 5 | 6 errors in `tests/test_flow_excel_ui.py`, 1 in `tests/test_settings_sections_browser.py`: unexpected `GET /api/flows/html-reports/settings` | The Flows page asked for the HTML report settings on every load, and those tests' stubbed APIs refuse unknown requests | The page asks only when an HTML report Flow exists, and the **HTML report** card asks again when chosen, so other Flow pages make no extra request |
+
+| Check | Command or procedure | Result | Evidence |
+| --- | --- | --- | --- |
+| Those three files on the pushed code `fb03e62` | `TMPDIR=<short path> python -m pytest tests/test_flow_excel_ui.py tests/test_settings_sections_browser.py tests/test_python_scripts_preview.py` | FAIL: 1 failed, 7 errors, as in CI | Console output |
+| The same files with the fix | Same command | PASS: 26 passed | Console output |
+| Usability walk U-01 to U-08 again | Playwright, as above | PASS: same results; the builder preview now shows the server's exact command | Console output |
+
+Under `tools/check.py` in this container these browser tests cannot start
+Chrome on either revision: Chrome's socket path under the verifier's temp root
+is too long. So they were run with `pytest` directly under a short temporary
+folder. Final-head CI is their authoritative evidence.
+
 ## Merge evidence
 
 Final-head CI is pending at this cutoff. Before the head-pinned merge, the
