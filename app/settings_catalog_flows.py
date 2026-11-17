@@ -17,7 +17,7 @@ import logging
 
 from app import (
     flow_capacity, flow_email_delivery, flow_python, flow_recorder_worker, flow_recording_runtime,
-    flow_recordings, flow_replay, flow_retention, flow_sql, flow_view_refresh,
+    flow_recordings, flow_replay, flow_retention, flow_sql, flow_view_refresh, html_reports,
 )
 from app.settings_registry import Setting, register, subscribe
 
@@ -29,6 +29,7 @@ SQL_STEP = "SQL step"
 SCRIPTS = "Scripts and catalogs"
 FLOW_EMAIL = "Attachments and recipients"
 VISUAL_EXPORTS = "Power BI visual exports"
+HTML_REPORTS = "HTML reports"
 KEEPS = " Runs already queued or in progress keep the old value."
 SCAN_KEEPS = " Scans already queued or in progress keep the old value."
 
@@ -149,6 +150,46 @@ def _reschedule_sql_catalog_scan() -> None:
 
 
 subscribe(("flows.sql_catalog_time",), _reschedule_sql_catalog_scan)
+
+# --- HTML reports ----------------------------------------------------------------
+#
+# The dashboard refresh controller is installed on the worker PC by a person;
+# Metronome only launches it. Every value here is read when a run is queued and
+# the command travels in the job, so a change reaches new runs only.
+
+def _html(key, label, default, *, help, kind="text", applies="new_runs", **extra):
+    return register(Setting(key=key, section="flows", group=HTML_REPORTS, label=label, kind=kind,
+                            default=default, applies=applies, help=help, **extra))
+
+
+_html(html_reports.CONTROLLER_REPOSITORY, "Controller repository", "", optional=True, applies="now",
+      placeholder="https://github.example.com/team/dashboard-refresh-controller",
+      check=html_reports.check_repository_link,
+      help="Shown as a link beside every HTML report Flow. Metronome never pulls or runs code from it: "
+           "update the copy on the worker yourself.")
+_html(html_reports.CONTROLLER_SCRIPT, "Controller script on the worker", "", kind="path", optional=True,
+      placeholder="D:\\Tools\\dashboard-refresh-controller\\refresh.py",
+      check=html_reports.check_controller_script,
+      help="The controller's .py file in its installed folder. It runs with the worker's Python "
+           "(Folders > Default Python for script Flows), in the signed-in BI desktop session, and pushes "
+           "with that account's own Git sign-in." + KEEPS)
+_html(html_reports.REPORT_ROOT, "Report root on the worker", "", kind="path", optional=True,
+      placeholder="D:\\Reports\\html", check=html_reports.check_report_root,
+      help="The folder that holds the report repositories, passed to the controller as {report_root}." + KEEPS)
+_html(html_reports.ALLOWED_REPORTS, "Allowed report IDs", [], kind="list", max_items=100,
+      check=html_reports.check_allowed_reports,
+      help="The controller's report identifiers, from its README. A Flow can refresh only a report listed "
+           "here, and a run of a report removed from this list does not start." + KEEPS)
+_html(html_reports.ARGUMENTS, "Controller arguments", html_reports.DEFAULT_ARGUMENTS,
+      check=html_reports.check_arguments,
+      help="Passed to the controller without a shell. {report} is the Flow's report ID and {report_root} "
+           "the folder above; {flow}, {run_id} and {date} also work." + KEEPS)
+_html(html_reports.DRY_RUN_ARGUMENTS, "Added for a dry run", html_reports.DEFAULT_DRY_RUN_ARGUMENTS,
+      check=html_reports.check_dry_run_arguments,
+      help="The argument that makes the controller build and validate without publishing." + KEEPS)
+_html(html_reports.LIVE_ARGUMENTS, "Added for a live run", "", optional=True,
+      check=html_reports.check_mode_arguments,
+      help="Optional, for a controller that publishes only when asked, such as --publish." + KEEPS)
 
 # --- Email -----------------------------------------------------------------------
 

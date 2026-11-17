@@ -1,7 +1,9 @@
 # Python-script Flows
 
 Choose **Create flow > Python scripts** to run one or more Python scripts in
-order on the Flows worker. New Flows offer **Just run the scripts** by default;
+order on the Flows worker. (**Create flow > HTML report** is a run-only Python
+Flow whose one script is the dashboard refresh controller; see
+[html_reports.md](html_reports.md).) New Flows offer **Just run the scripts** by default;
 existing file-producing Flows keep **Produce a file or SQL table**. The Flow stores
 the ordered list of absolute script paths and the shared owner and schedule.
 File-producing Flows also store the final file type (CSV or Excel `.xlsx`), a

@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, Query, Request
+from app import html_reports
 from app.config import PBI_WORKSPACE
 from app.database import get_db
 from app.models import ReportOut, ReportUpdate, ReportTableOut
@@ -40,11 +41,15 @@ def list_reports(include_archived: bool = Query(False)):
         status_map = _batch_report_statuses(db)
 
         views_map = get_report_usage_map(db)
+        refreshes = html_reports.report_refreshes(db)
 
     results = []
     for r in rows:
         rid = r["id"]
         status, worst_date = status_map.get(rid, ("unknown", None))
+        html = _html_fields(r, refreshes.get(rid), status)
+        if html:
+            status = html.pop("status")
         view_data = views_map.get(rid, {})
         results.append(ReportOut(
             id=rid,
@@ -54,7 +59,7 @@ def list_reports(include_archived: bool = Query(False)):
             business_owner=r["business_owner"],
             recipients=r["recipients"],
             frequency=r["frequency"],
-            last_published=r["last_published"],
+            last_published=html.pop("last_published", r["last_published"]),
             powerbi_url=r["powerbi_url"],
             status=status,
             source_count=r["source_count"],
@@ -71,8 +76,38 @@ def list_reports(include_archived: bool = Query(False)):
             archived=bool(r["archived"]),
             created_at=r["created_at"],
             updated_at=r["updated_at"],
+            **html,
         ))
     return results
+
+
+def _html_fields(row, refresh: dict | None, source_status: str) -> dict:
+    """The extra fields of an HTML report; {} for a Power BI report.
+
+    Health is the worse of its linked sources and its latest refresh, and
+    "last published" is the latest live refresh that succeeded. A push is
+    not proof that GitHub Pages has deployed: the site link is where to check.
+    """
+    if (row["report_kind"] or html_reports.KIND_POWER_BI) != html_reports.KIND_HTML:
+        return {}
+    refresh_status = html_reports.refresh_health(refresh)
+    if "degraded" in (refresh_status, source_status):
+        status = "degraded"
+    elif "healthy" in (refresh_status, source_status):
+        status = "healthy"
+    else:
+        status = "unknown"
+    return {
+        "kind": html_reports.KIND_HTML,
+        "refresh_flow_id": row["refresh_flow_id"],
+        "refresh_flow_name": (refresh or {}).get("flow_name"),
+        "repository_url": row["repository_url"],
+        "site_url": row["site_url"],
+        "last_refresh_status": (refresh or {}).get("last_status"),
+        "last_refresh_at": (refresh or {}).get("last_finished_at"),
+        "last_published": (refresh or {}).get("last_published_at") or row["last_published"],
+        "status": status,
+    }
 
 
 @router.get("/all-measures")
@@ -108,11 +143,13 @@ def refresh_report(report_id: int, request: Request):
     """Queue a refresh for the report's Power BI semantic model."""
     with get_db() as db:
         report = db.execute(
-            "SELECT id, name, pbi_dataset_id FROM reports WHERE id=?",
+            "SELECT id, name, pbi_dataset_id, report_kind FROM reports WHERE id=?",
             (report_id,),
         ).fetchone()
     if not report:
         raise HTTPException(404, "Report not found.")
+    if report["report_kind"] == html_reports.KIND_HTML:
+        raise HTTPException(409, "This is an HTML report. Run its Flow in Flows to refresh it.")
     try:
         dataset_id = report["pbi_dataset_id"]
         resolved = None
@@ -166,6 +203,11 @@ def get_report(report_id: int):
         raise HTTPException(status_code=404, detail="Report not found")
 
     status, worst_date = _derive_report_status(r["id"])
+    with get_db() as db:
+        refresh = html_reports.report_refreshes(db).get(int(r["id"]))
+    html = _html_fields(r, refresh, status)
+    if html:
+        status = html.pop("status")
     return ReportOut(
         id=r["id"],
         name=r["name"],
@@ -174,7 +216,7 @@ def get_report(report_id: int):
         business_owner=r["business_owner"],
         recipients=r["recipients"],
         frequency=r["frequency"],
-        last_published=r["last_published"],
+        last_published=html.pop("last_published", r["last_published"]),
         powerbi_url=r["powerbi_url"],
         status=status,
         source_count=r["source_count"],
@@ -189,6 +231,7 @@ def get_report(report_id: int):
         unique_users_30d=views_map.get(r["id"], {}).get("unique_users_30d"),
         created_at=r["created_at"],
         updated_at=r["updated_at"],
+        **html,
     )
 
 

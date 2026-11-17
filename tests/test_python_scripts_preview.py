@@ -95,7 +95,8 @@ def open_step(page, key):
 def test_python_builder_list_and_run_history_walkthrough(preview):
     page, evidence, _ = preview
     # Source picker: the Python card sits with the other sources and opens the Python builder.
-    expect(page.locator(".flow-source-card")).to_have_count(5)
+    expect(page.locator(".flow-source-card")).to_have_count(6)
+    expect(page.locator("#flow-source-html")).to_contain_text("HTML report")
     shot(page, evidence, "picker")
     page.locator("#flow-source-python").click()
     form = page.locator("#flow-builder-form")

@@ -1757,7 +1757,11 @@ def _import_pbi_data_serialized(data: dict, cancel_generation: int | None = None
             }
 
         # Build a lookup map: lowercase name -> (id, original name)
-        all_reports = db.execute("SELECT id, name FROM reports").fetchall()
+        # HTML reports (refreshed by Flows) are not in Power BI: never matched
+        # to a workspace report and never archived for being absent from one.
+        all_reports = db.execute(
+            "SELECT id, name FROM reports WHERE COALESCE(report_kind, 'powerbi') != 'html'"
+        ).fetchall()
         name_map = {r["name"].strip().lower(): (r["id"], r["name"]) for r in all_reports}
 
         matched_ids = set()
@@ -2026,7 +2030,9 @@ def _import_pbi_usage_data_once(data: dict) -> dict:
 
     with get_db() as db:
         # Build name -> id lookup
-        all_reports = db.execute("SELECT id, name FROM reports").fetchall()
+        all_reports = db.execute(
+            "SELECT id, name FROM reports WHERE COALESCE(report_kind, 'powerbi') != 'html'"
+        ).fetchall()
         name_map = {r["name"].strip().lower(): r["id"] for r in all_reports}
 
         # Record synced days

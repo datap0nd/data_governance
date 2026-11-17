@@ -1961,8 +1961,11 @@ async function showReportDetail(report) {
         <div class="report-expand-content">
             <div style="display:flex;gap:0.5rem;margin-bottom:0.5rem">
                 ${report.powerbi_url ? `<a href="${esc(report.powerbi_url)}" target="_blank" rel="noopener" class="btn-outline" style="font-size:0.72rem;text-decoration:none" onclick="event.stopPropagation()">View in Power BI</a>` : ''}
+                ${report.kind === "html" && report.site_url ? `<a href="${esc(report.site_url)}" target="_blank" rel="noopener noreferrer" class="btn-outline" style="font-size:0.72rem;text-decoration:none" onclick="event.stopPropagation()">Open published site</a>` : ''}
+                ${report.kind === "html" && report.repository_url ? `<a href="${esc(report.repository_url)}" target="_blank" rel="noopener noreferrer" class="btn-outline" style="font-size:0.72rem;text-decoration:none" onclick="event.stopPropagation()">Repository</a>` : ''}
                 <button class="btn-outline btn-lineage-nav" data-report-id="${report.id}" style="font-size:0.72rem">View Lineage</button>
             </div>
+            ${report.kind === "html" ? `<p class="rx-l2" style="font-size:0.8rem;margin-bottom:0.5rem">HTML report, refreshed by ${report.refresh_flow_id ? `Flow <a href="#flows" onclick="event.stopPropagation()">${esc(report.refresh_flow_name || "")}</a>` : "a Flow that was deleted"} · ${esc(report.frequency || "Manual")}${report.last_refresh_at ? ` · last refresh ${esc(report.last_refresh_status || "")} ${esc(timeAgo(report.last_refresh_at))}` : " · not refreshed yet"}${report.last_published ? ` · last published ${esc(timeAgo(report.last_published))}` : ""}. A push to GitHub does not mean GitHub Pages has finished deploying.</p>` : ''}
             ${report.pbi_refresh_error ? `<div class="alerts-refresh-error"><strong>PBI Refresh Error:</strong> ${esc(report.pbi_refresh_error)}</div>` : ''}
             <div class="rx-section rx-l1">
                 <div class="rx-toggle" data-target="ds-list">
@@ -3396,9 +3399,13 @@ async function renderReports() {
     window._reportPageDocs = docMap;
 
     const cols = [
-        { key: "name", label: "Report", width: COL_W.lg, render: r => r.powerbi_url
-            ? `<strong><a href="${r.powerbi_url}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:inherit;text-decoration:none;border-bottom:1px dotted var(--text-dim)">${esc(r.name)}</a></strong>`
-            : `<strong>${esc(r.name)}</strong>` },
+        { key: "name", label: "Report", width: COL_W.lg, render: r => {
+            const link = r.kind === "html" ? r.site_url : r.powerbi_url;
+            const name = link
+                ? `<strong><a href="${esc(link)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" style="color:inherit;text-decoration:none;border-bottom:1px dotted var(--text-dim)">${esc(r.name)}</a></strong>`
+                : `<strong>${esc(r.name)}</strong>`;
+            return r.kind === "html" ? `${name}<span class="badge badge-muted report-kind-badge" title="HTML report refreshed by Flow ${esc(r.refresh_flow_name || "(deleted)")}">HTML</span>` : name;
+        } },
         { key: "status", label: "Data health", width: COL_W.sm, render: r => statusBadge(r.status), sortVal: r => ({ healthy: "0_healthy", degraded: "1_degraded" })[r.status] ?? "2_" + r.status },
         { key: "source_count", label: "Sources", width: COL_W.sm, sortVal: r => r.source_count || 0 },
         { key: "_doc_pct", label: "Doc %", width: COL_W.sm, filterable: false, render: r => {
@@ -3430,14 +3437,21 @@ async function renderReports() {
             const opts = bizFirst.map(p => `<option value="${esc(p.name)}"${r.business_owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
             return `<select class="freq-select-inline report-bo-select" data-report-id="${r.id}"><option value="">--</option>${opts}</select>`;
         }, sortVal: r => r.business_owner || "" },
-        { key: "pbi_refresh_schedule", label: "PBI Schedule", width: COL_W.md, render: r => r.pbi_refresh_schedule ? `<span style="font-size:0.78rem" title="${esc(r.pbi_refresh_schedule)}">${esc(_compactPbiSchedule(r.pbi_refresh_schedule))}</span>` : '-' },
-        { key: "pbi_last_refresh_at", label: "Last Refresh", width: COL_W.md, render: r => r.pbi_last_refresh_at ? `<span title="${formatDate(r.pbi_last_refresh_at)}">${timeAgo(r.pbi_last_refresh_at)}</span>` : '-' },
+        { key: "pbi_refresh_schedule", label: "Schedule", width: COL_W.md, render: r => r.kind === "html"
+            ? `<span style="font-size:0.78rem" title="Schedule of Flow ${esc(r.refresh_flow_name || "(deleted)")}">${esc(r.frequency || "Manual")}</span>`
+            : r.pbi_refresh_schedule ? `<span style="font-size:0.78rem" title="${esc(r.pbi_refresh_schedule)}">${esc(_compactPbiSchedule(r.pbi_refresh_schedule))}</span>` : '-',
+          sortVal: r => r.kind === "html" ? (r.frequency || "") : (r.pbi_refresh_schedule || "") },
+        { key: "pbi_last_refresh_at", label: "Last Refresh", width: COL_W.md, render: r => r.kind === "html"
+            ? (r.last_refresh_at ? `<span title="${formatDate(r.last_refresh_at)} · ${esc(r.last_refresh_status || "")}">${timeAgo(r.last_refresh_at)}${r.last_refresh_status && r.last_refresh_status !== "succeeded" ? ` <span class="badge badge-red">${esc(r.last_refresh_status)}</span>` : ""}</span>` : '-')
+            : r.pbi_last_refresh_at ? `<span title="${formatDate(r.pbi_last_refresh_at)}">${timeAgo(r.pbi_last_refresh_at)}</span>` : '-',
+          sortVal: r => (r.kind === "html" ? r.last_refresh_at : r.pbi_last_refresh_at) || "" },
         { key: "_lineage", label: "Lineage", width: COL_W.xs, filterable: false, sortable: false, render: r =>
             `<button class="btn-table-link btn-lineage" data-lineage-report="${r.id}" title="View lineage diagram" onclick="event.stopPropagation()">View</button>` },
         _archiveColDef("report"),
     ];
 
     const active = reports.filter(r => !r.archived);
+    const htmlCount = active.filter(r => r.kind === "html").length;
     const healthy = active.filter(r => r.status === "healthy").length;
     const atRisk = active.filter(r => r.status !== "healthy" && r.status !== "unknown").length;
     const overdue = active.filter(r => _isPbiOverdue(r)).length;
@@ -3452,7 +3466,7 @@ async function renderReports() {
         <div class="reports-wide-section">
             <div class="page-header">
                 <h1>Reports</h1>
-                <span class="subtitle">${active.length} Power BI reports - data: ${healthy} healthy, ${atRisk} need attention, ${unknown} unknown - governance: ${governanceGaps} incomplete${overdue ? ` - <span style="color:var(--red)">${overdue} overdue</span>` : ''}</span>
+                <span class="subtitle">${active.length - htmlCount} Power BI reports${htmlCount ? ` and ${htmlCount} HTML report${htmlCount === 1 ? "" : "s"}` : ""} - data: ${healthy} healthy, ${atRisk} need attention, ${unknown} unknown - governance: ${governanceGaps} incomplete${overdue ? ` - <span style="color:var(--red)">${overdue} overdue</span>` : ''}</span>
                 ${_archiveToggleHtml("reports")}
                 <button class="btn-outline" id="btn-pbi-sync" style="font-size:0.78rem">Sync PBI</button>
                 <button class="btn-outline" id="btn-pbi-usage-sync" style="font-size:0.78rem">Sync Usage</button>
@@ -7774,7 +7788,12 @@ function bindLineageDiagramPage() {
                 ? (data.report.pbi_dataset_id
                     ? `Refresh ${data.report.name} in Power BI`
                     : `Find ${data.report.name}'s semantic model in Power BI and refresh it`)
-                : "Power BI refresh is unavailable because no workspace is configured";
+                : data.report.kind === "html"
+                    ? "An HTML report is refreshed by its Flow in Flows"
+                    : "Power BI refresh is unavailable because no workspace is configured";
+            const htmlReport = data.report.kind === "html";
+            fullRefresh.disabled = htmlReport;
+            fullRefresh.title = htmlReport ? "An HTML report is refreshed by its own Flow in Flows" : "";
             _renderLineageDiagram(data);
             api(`/api/pipelines/reports/${id}/runs/latest`)
                 .then(run => {
@@ -7837,7 +7856,7 @@ function bindLineageDiagramPage() {
             toast("Pipeline preview failed: " + err.message);
         } finally {
             fullRefresh.textContent = original;
-            fullRefresh.disabled = !sel.value;
+            fullRefresh.disabled = !sel.value || window._lineageData?.report?.kind === "html";
         }
     });
     document.querySelectorAll(".lineage-col-toggle").forEach(btn => {
@@ -8036,6 +8055,26 @@ function _lineageSourceLayers(data, directSourceIds) {
     return { sourceMap, depthById, layers };
 }
 
+// An HTML report's lineage: the Flow that refreshes it and where it is published.
+function _lineageHtmlReportHtml(data) {
+    const report = data.report || {};
+    const flow = data.refresh_flow;
+    const link = (url, text) => url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(text)}</a>` : `<span class="flow-muted">Not set</span>`;
+    const step = (kind, title, detail) => `<li><span class="lineage-html-kind">${kind}</span><strong>${title}</strong><small>${detail}</small></li>`;
+    const flowDetail = flow
+        ? `${esc(flow.mode === "live" ? "Live · publishes to GitHub" : "Dry run · never publishes")} · ${flow.last_status ? `last refresh ${esc(flow.last_status)} ${esc(timeAgo(flow.last_finished_at))}` : "not refreshed yet"}`
+        : "The Flow that refreshed this report was deleted.";
+    return `<div class="lineage-html-report">
+        <ol class="lineage-html-chain" aria-label="HTML report lineage">
+            ${step("Controller", "Dashboard refresh controller", "Installed on the worker; extracts, validates, builds and pushes")}
+            ${step("Flow", flow ? `<a href="#flows">${esc(flow.name)}</a>` : "No Flow", flowDetail)}
+            ${step("HTML report", esc(report.name || ""), `Report ID ${esc(flow?.report_key || "unknown")} · ${link(report.repository_url, "repository")}`)}
+            ${step("Published site", link(report.site_url, report.site_url ? "Open the site" : ""), "GitHub Pages; a push does not confirm the deployment")}
+        </ol>
+        <p class="lineage-html-note">Metronome does not read the sources this report's controller extracts from, so its data lineage starts at the Flow. Run history and stage timings are in the Flow's expanded logs.</p>
+    </div>`;
+}
+
 function _renderLineageDiagram(data) {
     const container = document.getElementById("lineage-container");
     window._linHL = null;
@@ -8103,6 +8142,10 @@ function _renderLineageDiagram(data) {
     const flowNodes = [...(data.flows || [])];
     const flowPayloadWarnings = _lineageFlowPayloadWarnings(flowNodes, allSourceIds);
 
+    if (data.report?.kind === "html" && visualNodes.length === 0 && tableNodes.length === 0) {
+        container.innerHTML = _lineageHtmlReportHtml(data);
+        return;
+    }
     if (visualNodes.length === 0 && tableNodes.length === 0) {
         container.innerHTML = '<div class="lineage-placeholder">No visual lineage data. Run a layout scan from Scanner.</div>';
         return;
@@ -10681,6 +10724,7 @@ function _flowSourcePickerHtml(catalog) {
                     <strong>From file</strong><span>Read one exact CSV or Excel path on the worker, keep private snapshots, and process it on a schedule.</span>
                 </button>
                 <button type="button" class="flow-source-card" id="flow-source-python"><strong>Python scripts</strong><span>Run scripts on a schedule, or have them produce a final CSV or Excel file or SQL table.</span></button>
+                <button type="button" class="flow-source-card" id="flow-source-html"><strong>HTML report</strong><span>Refresh a static HTML report through the dashboard refresh controller, and list it in Reports.</span></button>
                 <button type="button" class="flow-source-card" id="flow-source-record"><strong>Record a portal flow</strong><span>Record a report in ASAP or GSCM, review its actions, then validate and schedule it.</span></button>
                 <button type="button" class="flow-source-card" id="flow-source-portal" ${portalReady ? "" : "disabled"}>
                     <strong>Website report</strong><span>${portalReady ? "Download a discovered ASAP report or GSCM bookmark." : "Add and scan a website before creating this category."}</span>
@@ -10896,7 +10940,7 @@ function _flowSyncExecutionRows(active) {
     _flowWatchExecutionPane();
 }
 
-function _flowGroups() { return ["ASAP", "GSCM", "Outlook", "Local", "Python", "Web"]; }
+function _flowGroups() { return ["ASAP", "GSCM", "Outlook", "Local", "Python", "HTML", "Web"]; }
 
 function _flowOpenGroups() {
     if (window._flowOpenGroupMemory) return window._flowOpenGroupMemory;
@@ -10918,20 +10962,38 @@ function _flowEmailStatusText(email) {
     }
 }
 
+// HTML report refresh Flows in the list: links, mode and what Run does.
+function _flowHtmlLinksHtml(config) {
+    const links = [
+        config.site_url ? `<a href="${esc(config.site_url)}" target="_blank" rel="noopener noreferrer">Site</a>` : "",
+        config.repository_url ? `<a href="${esc(config.repository_url)}" target="_blank" rel="noopener noreferrer">Repository</a>` : "",
+    ].filter(Boolean);
+    return links.length ? `<small class="flow-html-links">${links.join(" · ")}</small>` : "";
+}
+
+// An HTML report Flow's Run button says what it does: publish, or only test.
+function _flowRunLabel(flow) {
+    return flow?.html_report?.mode === "live" ? "Run · publishes" : flow?.html_report ? "Dry run" : "Run";
+}
+
+function _flowHtmlModeLabel(mode) {
+    return mode === "live" ? "Live · publishes to GitHub" : "Dry run · never publishes";
+}
+
 function _flowSourceGroup(flow) {
-    return flow.source_type === "file" ? "Local" : flow.source_type === "outlook" ? "Outlook" : flow.source_type === "python" ? "Python" : ({asap_portal: "ASAP", gscm_portal: "GSCM"}[flow.source_adapter] || "Web");
+    return flow.html_report ? "HTML" : flow.source_type === "file" ? "Local" : flow.source_type === "outlook" ? "Outlook" : flow.source_type === "python" ? "Python" : ({asap_portal: "ASAP", gscm_portal: "GSCM"}[flow.source_adapter] || "Web");
 }
 
 function _flowRowModel(flow, runs = [], catalog = {}) {
     const group = _flowSourceGroup(flow);
     const scripts = _flowPythonScriptNames(flow);
-    const source = group === "Local" ? flow.local_file_path : group === "Outlook" ? flow.outlook_subject_contains : group === "Python" ? scripts.join(" → ") : (flow.category_path?.length ? flow.category_path.join(" › ") : flow.report_name || flow.site_name);
-    const type = group === "Python" ? flow.python_run_mode === "run" ? `Runs ${scripts.length} script(s)` : `${scripts.length} script(s) → ${flow.sql_handoff_enabled ? "SQL" : String(flow.file_format || "csv").toUpperCase()}` : ["Local", "Outlook"].includes(group) ? "CSV / Excel" : ((catalog.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase());
+    const source = group === "HTML" ? flow.html_report.report_key : group === "Local" ? flow.local_file_path : group === "Outlook" ? flow.outlook_subject_contains : group === "Python" ? scripts.join(" → ") : (flow.category_path?.length ? flow.category_path.join(" › ") : flow.report_name || flow.site_name);
+    const type = group === "HTML" ? _flowHtmlModeLabel(flow.html_report.mode) : group === "Python" ? flow.python_run_mode === "run" ? `Runs ${scripts.length} script(s)` : `${scripts.length} script(s) → ${flow.sql_handoff_enabled ? "SQL" : String(flow.file_format || "csv").toUpperCase()}` : ["Local", "Outlook"].includes(group) ? "CSV / Excel" : ((catalog.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase());
     const destination = group === "Local" ? "Private snapshots" : flow.folder_relative ? `${flow.folder_relative} / Downloads` : flow.target_folder;
     const to = flow.python_run_mode === "run" ? "—" : flow.sql_handoff_enabled ? [flow.sql_database, flow.sql_schema, flow.sql_table].filter(Boolean).join(".") : destination;
     const schedule = _flowScheduleLabel(flow);
     const activeRun = runs.find(run => run.flow_id === flow.id && ["queued", "claimed", "running"].includes(run.status));
-    return {flow, group, name: flow.name, source, owner: flow.owner_name, type, to, destination, browser: ["Local", "Outlook", "Python"].includes(group) ? null : flow.browser_mode, schedule, lastRun: flow.last_run_at, active: !!flow.enabled, activeRun};
+    return {flow, group, name: flow.name, source, owner: flow.owner_name, type, to, destination, browser: ["Local", "Outlook", "Python", "HTML"].includes(group) ? null : flow.browser_mode, schedule, lastRun: flow.last_run_at, active: !!flow.enabled, activeRun};
 }
 
 function _flowPythonScriptNames(flow) {
@@ -10959,12 +11021,12 @@ function _flowRowHtml(row) {
         <td class="flow-name-cell"><strong>${esc(flow.name)}</strong>${window._remoteFlowControlStatus?.enabled && flow.enabled ? `<small class="remote-control-code">Remote target: ${esc(window._remoteFlowControlStatus.installation_id)}:${esc(flow.id)}</small>` : ""}<div class="flow-row-progress" ${activeRun ? "" : "hidden"}>${_flowRowProgressHtml(activeRun)}</div></td>
         <td><label class="flow-switch" title="${flow.schedule_type === "manual" ? "Choose a schedule to activate this flow" : "Activate or pause this flow"}"><input class="flow-enabled-switch" data-flow-focus="active-${flow.id}" type="checkbox" aria-label="Active: ${esc(flow.name)}" data-id="${flow.id}" ${flow.enabled ? "checked" : ""} ${flow.schedule_type === "manual" || !editable ? "disabled" : ""}><span aria-hidden="true"></span></label></td>
         <td>${_isHostPc() ? `<select class="flow-inline-edit" data-id="${flow.id}" data-field="owner_person_id" data-flow-focus="owner-${flow.id}" aria-label="Owner: ${esc(flow.name)}"><option value="">Unassigned</option>${(window._flowsState?.people || []).map(person => `<option value="${person.id}" ${person.id === flow.owner_person_id ? "selected" : ""}>${esc(person.name)}</option>`).join("")}</select>` : `<span class="flow-owner-name">${flow.owner_name ? esc(flow.owner_name) : '<span class="flow-muted">Unassigned</span>'}</span>`}</td>
-        <td class="flow-path-cell">${esc(row.source || "—")}</td>
-        <td>${flow.source_type === "python" ? flow.python_run_mode === "run" ? `Runs ${_flowPythonScriptNames(flow).length} script(s)<small>No output file</small>` : `${_flowPythonScriptNames(flow).length} Python script(s)<small>${flow.sql_handoff_enabled ? "Final CSV → SQL" : `Final ${esc(String(flow.file_format || "csv").toUpperCase())} file`}</small>` : flow.source_type === "outlook" ? `CSV or Excel attachment<small>Original filename · default Inbox</small>` : flow.source_type === "file" ? `CSV or Excel file<small>${flow.local_file_worksheet ? `Worksheet: ${esc(flow.local_file_worksheet)} · ` : ""}Private snapshots · latest 3</small>` : `${esc(flow.download_mode === "one_per_period" || flow.download_mode === "one_per_week" ? `One ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} every ${flow.window_weeks || 1} week(s)` : `${flow.export_views?.length || 1} ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} export(s)`)}<small>${flow.period_strategy === "none" ? "No period prompt" : flow.period_strategy === "latest" ? "Start to latest available" : flow.period_strategy === "rolling" ? "Rolling window" : "Fixed start + end"}</small>`}${flow.source_type === "python" && flow.python_run_mode === "run" ? "" : `<small>${flow.output_mode === "direct_replace" ? "Direct files · exact-name replacement" : "Run folders · newest 3"}</small>`}<small>${esc(row.to || "")}${flow.sql_handoff_enabled ? ` · SQL ${esc(flow.sql_mode)}` : ""}${flow.email_delivery?.enabled ? ` · Email ${flow.email_delivery.recipients?.length || 0} recipient(s)` : ""}</small></td>
+        <td class="flow-path-cell">${esc(row.source || "—")}${flow.html_report ? _flowHtmlLinksHtml(flow.html_report) : ""}</td>
+        <td>${flow.html_report ? `HTML report refresh<small class="flow-html-mode-label ${flow.html_report.mode === "live" ? "live" : "dry-run"}">${esc(_flowHtmlModeLabel(flow.html_report.mode))}</small>` : flow.source_type === "python" ? flow.python_run_mode === "run" ? `Runs ${_flowPythonScriptNames(flow).length} script(s)<small>No output file</small>` : `${_flowPythonScriptNames(flow).length} Python script(s)<small>${flow.sql_handoff_enabled ? "Final CSV → SQL" : `Final ${esc(String(flow.file_format || "csv").toUpperCase())} file`}</small>` : flow.source_type === "outlook" ? `CSV or Excel attachment<small>Original filename · default Inbox</small>` : flow.source_type === "file" ? `CSV or Excel file<small>${flow.local_file_worksheet ? `Worksheet: ${esc(flow.local_file_worksheet)} · ` : ""}Private snapshots · latest 3</small>` : `${esc(flow.download_mode === "one_per_period" || flow.download_mode === "one_per_week" ? `One ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} every ${flow.window_weeks || 1} week(s)` : `${flow.export_views?.length || 1} ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} export(s)`)}<small>${flow.period_strategy === "none" ? "No period prompt" : flow.period_strategy === "latest" ? "Start to latest available" : flow.period_strategy === "rolling" ? "Rolling window" : "Fixed start + end"}</small>`}${(flow.source_type === "python" && flow.python_run_mode === "run") || flow.html_report ? "" : `<small>${flow.output_mode === "direct_replace" ? "Direct files · exact-name replacement" : "Run folders · newest 3"}</small>`}${flow.html_report ? "" : `<small>${esc(row.to || "")}${flow.sql_handoff_enabled ? ` · SQL ${esc(flow.sql_mode)}` : ""}${flow.email_delivery?.enabled ? ` · Email ${flow.email_delivery.recipients?.length || 0} recipient(s)` : ""}</small>`}</td>
         <td>${["outlook", "file", "python"].includes(flow.source_type) ? "—" : `<select class="flow-inline-edit" data-id="${flow.id}" data-field="browser_mode" data-flow-focus="browser-${flow.id}" aria-label="Browser: ${esc(flow.name)}" ${locked}><option value="headless" ${flow.browser_mode !== "headed" ? "selected" : ""}>Headless</option><option value="headed" ${flow.browser_mode === "headed" ? "selected" : ""}>Headed</option></select>`}</td>
         <td>${esc(_flowScheduleLabel(flow))}</td>
         <td><div class="flow-last-run">${_flowLastRunHtml(activeRun || { status: flow.last_status, created_at: flow.last_run_at })}</div>${flow.sql_reconciliation_required && flow.sql_mode === "append" ? '<small class="flow-error">SQL reconciliation required</small>' : ""}</td>
-        <td class="flow-row-actions">${button("flow-run", activeRun?.status === "queued" ? "Start now" : activeRun ? "Running" : "Run", activeRun && activeRun.status !== "queued" ? "disabled" : "")}<button class="btn-sm btn-outline btn-danger-outline flow-stop" type="button" data-id="${flow.id}" data-flow-focus="flow-stop-${flow.id}" ${activeRun ? "" : "hidden"}>Stop</button>${button("flow-edit", editable ? "Edit" : "View", editable ? "" : `aria-label="View ${esc(flow.name)} (read only)"`)}<details class="flow-row-menu"><summary aria-label="More actions: ${esc(flow.name)}" data-flow-focus="more-${flow.id}">More</summary><div>${button("flow-history", "Run history")}${button("flow-open-folder", "Open folder")}${flow.flow_folder ? button("flow-standalone-status", "Flow files") : ""}${editable ? button("flow-classification", (flow.classification || "production") === "draft" ? "Move to Production" : "Move to Draft", `data-classification="${(flow.classification || "production") === "draft" ? "production" : "draft"}"`) : ""}${editable && flow.sql_reconciliation_required && flow.sql_mode === "append" ? button('flow-sql-reconciled', 'Acknowledge SQL reconciliation') : ''}${editable ? `<button class="btn-sm btn-outline btn-danger-outline flow-delete" type="button" data-id="${flow.id}" data-flow-focus="flow-delete-${flow.id}">Delete</button>` : ""}</div></details></td>
+        <td class="flow-row-actions">${button("flow-run", activeRun?.status === "queued" ? "Start now" : activeRun ? "Running" : _flowRunLabel(flow), `data-idle-label="${esc(_flowRunLabel(flow))}" ${activeRun && activeRun.status !== "queued" ? "disabled" : ""}`)}<button class="btn-sm btn-outline btn-danger-outline flow-stop" type="button" data-id="${flow.id}" data-flow-focus="flow-stop-${flow.id}" ${activeRun ? "" : "hidden"}>Stop</button>${button("flow-edit", editable ? "Edit" : "View", editable ? "" : `aria-label="View ${esc(flow.name)} (read only)"`)}<details class="flow-row-menu"><summary aria-label="More actions: ${esc(flow.name)}" data-flow-focus="more-${flow.id}">More</summary><div>${flow.html_report?.mode === "live" ? button("flow-dry-run", "Dry run · no publishing", activeRun ? "disabled" : "") : ""}${button("flow-history", "Run history")}${button("flow-open-folder", "Open folder")}${flow.flow_folder ? button("flow-standalone-status", "Flow files") : ""}${editable ? button("flow-classification", (flow.classification || "production") === "draft" ? "Move to Production" : "Move to Draft", `data-classification="${(flow.classification || "production") === "draft" ? "production" : "draft"}"`) : ""}${editable && flow.sql_reconciliation_required && flow.sql_mode === "append" ? button('flow-sql-reconciled', 'Acknowledge SQL reconciliation') : ''}${editable ? `<button class="btn-sm btn-outline btn-danger-outline flow-delete" type="button" data-id="${flow.id}" data-flow-focus="flow-delete-${flow.id}">Delete</button>` : ""}</div></details></td>
     </tr>`;
 }
 
@@ -11828,8 +11890,146 @@ function _flowPythonBuilderHtml(existing = null) {
         </div></div>`;
 }
 
+// --- HTML report refresh Flows -------------------------------------------------
+// A Python run-only Flow whose one script is the dashboard refresh controller
+// installed on the worker. The server builds the command from Settings > Flows >
+// HTML reports and the report chosen here; this form never sends a command line.
+
+async function _flowLoadHtmlSettings() {
+    try { return await api("/api/flows/html-reports/settings"); } catch (_) { return null; }
+}
+
+function _flowHtmlSettings() {
+    return window._flowsState?.htmlReports || {
+        allowed_reports: [], ready: false, settings_place: "Settings > Flows > HTML reports",
+        problems: ["The HTML report settings could not be loaded. Reload the page."],
+    };
+}
+
+// The command the server will run, for display only: script name and arguments.
+function _flowHtmlCommandPreview(settings, reportKey, mode) {
+    const script = String(settings.script || "").split(/[\\/]/).pop() || "refresh.py";
+    const exact = settings.previews?.[reportKey]?.[mode === "live" ? "live" : "dry_run"];
+    if (exact) return `python ${script} ${exact}`;
+    const quote = value => /[\s"]/.test(value) ? `"${String(value).replace(/"/g, '""')}"` : String(value);
+    const values = {report: reportKey || "<report ID>", report_root: settings.report_root || "<report root>"};
+    const base = String(settings.arguments || "").replace(/\{(report|report_root)\}/g, (_, key) => quote(values[key]));
+    const extra = mode === "live" ? settings.live_arguments : settings.dry_run_arguments;
+    return ["python", script, base, extra].filter(part => String(part || "").trim()).join(" ");
+}
+
+function _flowScheduleSectionHtml(existing) {
+    const scheduleDays = new Set(existing?.schedule_days || []);
+    return `<div class="flow-form-section">
+                    <div class="flow-section-head"><h2>Schedule</h2></div>
+                    <div class="flow-form-grid">
+                        <label><span>Schedule</span><select id="flow-schedule-type"><option value="manual" ${existing?.schedule_type === "manual" || !existing?.schedule_type ? "selected" : ""}>Manual</option><option value="daily" ${existing?.schedule_type === "daily" ? "selected" : ""}>Daily</option><option value="weekly" ${existing?.schedule_type === "weekly" ? "selected" : ""}>Weekly</option><option value="monthly" ${existing?.schedule_type === "monthly" ? "selected" : ""}>Monthly</option></select></label>
+                        <label><span>Run time</span><input id="flow-schedule-time" type="time" value="${esc(existing?.schedule_time || "08:00")}"></label>
+                        <fieldset class="flow-weekdays flow-span-2"><legend>Weekdays</legend>${_FLOW_WEEKDAYS.map(day => `<label><input type="checkbox" value="${day}" ${scheduleDays.has(day) ? "checked" : ""}> ${day.slice(0, 3)}</label>`).join("")}</fieldset>
+                        <label id="flow-schedule-day-field"><span>Day of month</span><input id="flow-schedule-day" type="number" min="1" max="31" value="${esc(existing?.schedule_day || 1)}"><small>Months without that day are skipped.</small></label>
+                        ${_flowTriggersHtml(existing)}
+                    </div>
+                </div>`;
+}
+
+function _flowHtmlControllerHtml(settings, reportKey, mode) {
+    const problems = settings.problems || [];
+    const link = settings.repository_url
+        ? `<a href="${esc(settings.repository_url)}" target="_blank" rel="noopener noreferrer">${esc(settings.repository_url)}</a>`
+        : '<span class="flow-muted">Not set</span>';
+    const settingsLink = _isHostPc()
+        ? '<a href="#settings/flows" id="flow-html-open-settings">Open Settings</a>'
+        : "Ask someone at the host PC to change them.";
+    return `<dl class="flow-span-2 flow-html-controller">
+            <div><dt>Controller repository</dt><dd>${link}</dd></div>
+            <div><dt>Installed on the worker</dt><dd>${settings.script ? `<code>${esc(settings.script)}</code>` : '<span class="flow-muted">Not set</span>'}</dd></div>
+            <div><dt>Report root</dt><dd>${settings.report_root ? `<code>${esc(settings.report_root)}</code>` : '<span class="flow-muted">Not set</span>'}</dd></div>
+            <div><dt>Python</dt><dd>The worker's default Python (Settings &gt; Folders)</dd></div>
+        </dl>
+        <p class="flow-span-2 flow-html-command-line"><span>Each run starts</span><code id="flow-html-command">${esc(_flowHtmlCommandPreview(settings, reportKey, mode))}</code></p>
+        ${problems.length ? `<div class="flow-span-2 flow-html-problems" id="flow-html-problems" role="alert"><strong>Not ready to run.</strong><ul>${problems.map(item => `<li>${esc(item)}</li>`).join("")}</ul><p>These are set in ${esc(settings.settings_place || "Settings")}. ${settingsLink}</p></div>` : ""}
+        <div class="flow-span-2"><button type="button" class="btn-secondary" id="flow-html-inspect" ${settings.script ? "" : "disabled"}>Check controller and Python</button><p id="flow-html-inspect-result" class="flow-dialog-help" role="status"></p></div>
+        <p class="flow-dialog-help flow-span-2">Metronome runs the copy installed on the worker, in the signed-in BI desktop session. It never clones, pulls or runs code from GitHub, and holds no GitHub credentials: the controller extracts, validates, builds and pushes with that account's own Git sign-in. Update the installed copy yourself.</p>`;
+}
+
+function _flowHtmlReportBuilderHtml(existing = null) {
+    const settings = _flowHtmlSettings();
+    const people = window._flowsState?.people || [];
+    const config = existing?.html_report || {};
+    const allowed = settings.allowed_reports || [];
+    const reportKey = config.report_key || (existing?.id ? "" : allowed[0] || "");
+    const retired = reportKey && !allowed.includes(reportKey);
+    const mode = config.mode === "live" ? "live" : "dry_run";
+    const options = [
+        ...(retired ? [`<option value="${esc(reportKey)}" selected>${esc(reportKey)} (no longer allowed)</option>`] : []),
+        ...allowed.map(key => `<option value="${esc(key)}" ${key === reportKey ? "selected" : ""}>${esc(key)}</option>`),
+    ].join("");
+    return `
+        <div class="flow-builder-shell"><div class="flow-builder-main">
+            <form id="flow-builder-form" data-id="${existing?.id || ""}" data-source-type="html">
+                <div class="flow-form-section">
+                    <div class="flow-section-head"><h2>HTML report</h2></div>
+                    <div class="flow-form-grid">
+                        <label><span>Flow name</span><input id="flow-name" required maxlength="200" value="${esc(existing?.name || "")}" placeholder="Trade-in value dashboard"><small>Also the report's name in Reports.</small></label>
+                        <label><span>Report ID</span><select id="flow-html-report-key" required ${allowed.length || retired ? "" : "disabled"}>${options || '<option value="">No report is allowed yet</option>'}</select><small>${retired ? "This report was removed from the allowed list, so its runs do not start. Choose an allowed report." : "The controller's identifier for the report, from the allowed list in Settings."}</small></label>
+                        <label class="flow-span-2"><span>Report repository <small>(optional)</small></span><input id="flow-html-repository" type="url" maxlength="500" value="${esc(config.repository_url || "")}" placeholder="https://github.example.com/team/trade-in-value-html"><small>Shown as a link in Flows and Reports. Metronome never clones or pushes it.</small></label>
+                        <label class="flow-span-2"><span>Published site <small>(optional)</small></span><input id="flow-html-site" type="url" maxlength="500" value="${esc(config.site_url || "")}" placeholder="https://pages.github.example.com/team/trade-in-value-html/"><small>Where people open the report. After a live run, open it to confirm GitHub Pages has deployed.</small></label>
+                        <fieldset class="flow-span-2 flow-python-output flow-html-mode-choice"><legend>What should a run do?</legend>
+                            <label class="flow-check"><input type="radio" name="flow-html-mode" value="dry_run" ${mode === "dry_run" ? "checked" : ""}><span>Dry run · extract, validate and build only. Nothing is published.</span></label>
+                            <label class="flow-check"><input type="radio" name="flow-html-mode" value="live" ${mode === "live" ? "checked" : ""}><span>Live · publishes to the report's existing GitHub repository.</span></label>
+                        </fieldset>
+                        <label><span>Stop the refresh after (minutes)</span><input id="flow-python-timeout" type="number" min="1" max="1440" value="${esc(existing?.python_timeout_minutes || 60)}"></label>
+                    </div>
+                </div>
+                <div class="flow-form-section" id="flow-html-controller-section">
+                    <div class="flow-section-head"><h2>Controller</h2></div>
+                    <div class="flow-form-grid" id="flow-html-controller">${_flowHtmlControllerHtml(settings, reportKey, mode)}</div>
+                </div>
+                <div class="flow-form-section">
+                    <div class="flow-section-head"><h2>Ownership and failure alerts</h2></div>
+                    <div class="flow-form-grid">${_flowOwnerFieldHtml(existing, people)}</div>
+                </div>
+                ${_flowScheduleSectionHtml(existing)}
+                <div class="flow-form-error" role="alert"></div><div class="flow-builder-actions"><button type="button" class="btn-secondary" id="flow-builder-cancel">Cancel</button><button type="submit" class="btn-primary">${existing?.id ? "Save changes" : "Create flow"}</button></div>
+            </form>
+        </div></div>`;
+}
+
+function _flowBindHtmlReportBuilder(form) {
+    if (!form || form.dataset.sourceType !== "html") return;
+    const settings = _flowHtmlSettings();
+    const refresh = () => {
+        const command = form.querySelector("#flow-html-command");
+        const mode = form.querySelector('input[name="flow-html-mode"]:checked')?.value || "dry_run";
+        if (command) command.textContent = _flowHtmlCommandPreview(settings, form.querySelector("#flow-html-report-key")?.value, mode);
+    };
+    form.querySelector("#flow-html-report-key")?.addEventListener("change", refresh);
+    form.querySelectorAll('input[name="flow-html-mode"]').forEach(radio => radio.addEventListener("change", refresh));
+    form.querySelector("#flow-html-inspect")?.addEventListener("click", async event => {
+        const button = event.currentTarget;
+        const result = form.querySelector("#flow-html-inspect-result");
+        button.disabled = true;
+        result.textContent = "Checking the controller and Python…";
+        try {
+            const check = await apiPostJson("/api/flows/python/inspect", {path: settings.script, interpreter: null});
+            result.textContent = `${check.readable ? "The controller script is readable." : (check.hint || "The Metronome service cannot see the controller script.")} Python: ${check.interpreter || check.interpreter_error || "unavailable"}.`;
+        } catch (err) { result.textContent = "Check failed: " + err.message; }
+        finally { button.disabled = !settings.script; }
+    });
+}
+
+// A manual run of a live HTML report publishes: say so, and ask first.
+function _flowConfirmHtmlRun(flow, dryRun) {
+    const config = flow?.html_report;
+    if (!config || dryRun || config.mode !== "live") return true;
+    return window.confirm(`Run "${flow.name}" live?\n\nThe controller refreshes report ${config.report_key} and publishes it to its existing GitHub repository. A successful push does not mean GitHub Pages has finished deploying.\n\nUse "Dry run" in the More menu to test without publishing.`);
+}
+
 function _flowBuilderHtml(catalog, existing = null) {
     if (existing?.id) existing = {...window._flowsState?.flows?.find(flow => flow.id === existing.id), ...existing};
+    if (existing?.html_report || existing?._source_type === "html") {
+        return _flowHtmlReportBuilderHtml(existing);
+    }
     if (["outlook", "file"].includes(existing?.source_type || existing?._source_type)) {
         return _flowOutlookBuilderHtml(existing);
     }
@@ -12138,6 +12338,8 @@ function _flowRunsHtml(runs) {
         const sourceType = run.job?.flow?.source_type || "portal";
         const workerMode = sourceType === "file"
             ? "Local file"
+            : run.html_report
+                ? "HTML report"
             : sourceType === "python"
                 ? "Python scripts"
             : run.job?.execution?.browser_mode === "headed"
@@ -12149,7 +12351,7 @@ function _flowRunsHtml(runs) {
         const resumable = sourceType === "portal"
             && ["failed", "cancelled"].includes(run.status)
             && doneFiles > 0 && doneFiles < totalFiles;
-        return `<tr><td>#${run.id}<small>${esc(timeAgo(run.created_at))}</small></td><td>${esc(run.flow_name)}</td><td>${_flowStatusBadge(run.status)}</td><td>${esc(run.requested_by || run.trigger_type)}</td><td>${esc(run.worker_id || "Waiting")}<small>${workerMode}</small></td><td>${duration === null ? "Pending" : _flowDuration(duration)}<small>${_flowTimingSummary(run.timings)}</small></td><td>${run.error ? `<span class="flow-error">${esc(run.error)}</span>` : esc(run.progress?.message || `${artifacts.length} file(s)`)}${run.view_refresh ? `<small>${run.view_refresh.deferred_to_pipeline ? "Materialized views refresh in the parent pipeline" : `Materialized views: ${run.view_refresh.completed} of ${run.view_refresh.total} refreshed${run.view_refresh.sql_committed ? " · SQL insertion committed" : ""}`}</small>` : ""}${run.email ? `<small class="flow-email-status ${esc(run.email.status || "none")}">${esc(_flowEmailStatusText(run.email))}</small>` : ""}${sourceType === "python" ? `<small>Exit: ${esc(run.live?.processes?.[0]?.exit_code ?? (run.status === "succeeded" ? 0 : "—"))} · Last stage: ${esc(run.live?.stage || "—")}</small>` : ""}</td><td class="flow-row-actions">${resumable ? `<button class="btn-sm flow-resume" data-id="${run.id}" title="Queue a run that skips the ${doneFiles} file(s) already saved">Resume · ${doneFiles} of ${totalFiles} saved</button>` : ""}${run.view_refresh?.retry?.status === "eligible" ? `<button class="btn-sm flow-retry-views" data-id="${run.id}" title="${esc(run.view_refresh.retry.message)}">Retry view refresh</button>` : ""}<a class="btn-sm btn-outline" href="/flow-runs/${run.id}" target="_blank" rel="noopener">Expanded logs</a></td></tr>`;
+        return `<tr><td>#${run.id}<small>${esc(timeAgo(run.created_at))}</small></td><td>${esc(run.flow_name)}</td><td>${_flowStatusBadge(run.status)}</td><td>${esc(run.requested_by || run.trigger_type)}</td><td>${esc(run.worker_id || "Waiting")}<small>${workerMode}</small></td><td>${duration === null ? "Pending" : _flowDuration(duration)}<small>${_flowTimingSummary(run.timings)}</small></td><td>${run.error ? `<span class="flow-error">${esc(run.error)}</span>` : esc(run.progress?.message || `${artifacts.length} file(s)`)}${run.view_refresh ? `<small>${run.view_refresh.deferred_to_pipeline ? "Materialized views refresh in the parent pipeline" : `Materialized views: ${run.view_refresh.completed} of ${run.view_refresh.total} refreshed${run.view_refresh.sql_committed ? " · SQL insertion committed" : ""}`}</small>` : ""}${run.email ? `<small class="flow-email-status ${esc(run.email.status || "none")}">${esc(_flowEmailStatusText(run.email))}</small>` : ""}${run.html_report ? `<small class="flow-html-mode-label ${run.html_report.publishes ? "live" : "dry-run"}">${esc(run.html_report.history)}</small>` : ""}${sourceType === "python" ? `<small>Exit: ${esc(run.live?.processes?.[0]?.exit_code ?? (run.status === "succeeded" ? 0 : "—"))} · Last stage: ${esc(run.live?.stage || "—")}</small>` : ""}</td><td class="flow-row-actions">${resumable ? `<button class="btn-sm flow-resume" data-id="${run.id}" title="Queue a run that skips the ${doneFiles} file(s) already saved">Resume · ${doneFiles} of ${totalFiles} saved</button>` : ""}${run.view_refresh?.retry?.status === "eligible" ? `<button class="btn-sm flow-retry-views" data-id="${run.id}" title="${esc(run.view_refresh.retry.message)}">Retry view refresh</button>` : ""}<a class="btn-sm btn-outline" href="/flow-runs/${run.id}" target="_blank" rel="noopener">Expanded logs</a></td></tr>`;
     }).join("");
     return controls + `<div class="flow-table-wrap"><table class="flow-table"><thead><tr><th>Run</th><th>Flow</th><th>Status</th><th>Requested</th><th>Worker</th><th>Duration</th><th>Result</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>${state.runsPageFull ? '<p><button type="button" class="btn-secondary" id="flow-runs-more">Show more</button></p>' : ""}`;
 }
@@ -12177,6 +12379,9 @@ async function renderFlows() {
         api("/api/flows/scans"), api("/api/flows/estimates"), api("/api/flows/sql/catalog"), api("/api/people"),
         api("/api/system/remote-flow-control").catch(() => null),
     ]);
+    // Only an HTML report builder needs the controller settings; Create flow
+    // reads them again when that card is chosen.
+    const htmlReports = flows.some(flow => flow.html_report) ? await _flowLoadHtmlSettings() : null;
     window._remoteFlowControlStatus = remoteControl;
     let scanEvents = [];
     if (scans[0]) {
@@ -12184,12 +12389,12 @@ async function renderFlows() {
     }
     if (requestId !== navigationRequestId || currentPage !== "flows") return "";
     window._flowsState = {
-        catalog, flows, runs, workers, scans, estimates, sqlCatalog, people, scanEvents,
+        catalog, flows, runs, workers, scans, estimates, sqlCatalog, people, scanEvents, htmlReports,
         openCatalogTopics: new Set(), view: "list", classification: "production",
         runFilter: {}, runsPageFull: runs.length === 100,
     };
     return `
-        <div class="page-header flow-page-header"><div><h1>Flows</h1><p class="subtitle">Acquire data from files, Outlook, Python scripts, or website reports on the authenticated BI desktop.</p></div><button class="btn-primary" id="flow-create">Create flow</button></div>
+        <div class="page-header flow-page-header"><div><h1>Flows</h1><p class="subtitle">Acquire data from files, Outlook, Python scripts, or website reports, and refresh HTML reports, on the authenticated BI desktop.</p></div><button class="btn-primary" id="flow-create">Create flow</button></div>
         <div class="flow-tabs" role="tablist" aria-label="Flow views"><button id="flow-tab-list" class="active" role="tab" aria-selected="true" aria-controls="flow-workspace" data-flow-view="list">Flows</button><button id="flow-tab-catalog" role="tab" aria-selected="false" aria-controls="flow-workspace" data-flow-view="catalog">Catalog</button><button id="flow-tab-runs" role="tab" aria-selected="false" aria-controls="flow-workspace" data-flow-view="runs">Run history</button><button id="flow-tab-settings" role="tab" aria-selected="false" aria-controls="flow-workspace" data-flow-view="settings">Settings</button></div>
         <div id="flow-workspace" role="tabpanel" aria-labelledby="flow-tab-list">${_flowListHtml(flows, workers, catalog, runs)}</div>`;
 }
@@ -12337,8 +12542,10 @@ function _flowPatchActivity(activity) {
         if (last.innerHTML !== html) last.innerHTML = html;
         const start = row.querySelector(".flow-run");
         const stop = row.querySelector(".flow-stop");
-        start.textContent = run?.status === "queued" ? "Start now" : run ? "Running" : "Run";
+        start.textContent = run?.status === "queued" ? "Start now" : run ? "Running" : (start.dataset.idleLabel || "Run");
         if (!start.dataset.busy) start.disabled = !!run && run.status !== "queued";
+        const dryRun = row.querySelector(".flow-dry-run");
+        if (dryRun) dryRun.disabled = !!run;
         stop.hidden = !run;
         if (!stop.dataset.busy) stop.disabled = false;
     });
@@ -12559,6 +12766,31 @@ function _flowCollectBuilder() {
             file_format: "auto", browser_mode: "headless", start_week: null, end_week: null,
             asap_download_type: null, export_report_title: null, export_filter_details: null,
             filename_template: null,
+        };
+    }
+    if (form?.dataset.sourceType === "html") {
+        // The server builds the controller command; scripts and Python are never sent.
+        return {
+            ...shared, source_type: "python",
+            html_report: {
+                report_key: $("#flow-html-report-key")?.value || "",
+                mode: document.querySelector('input[name="flow-html-mode"]:checked')?.value || "dry_run",
+                repository_url: ($("#flow-html-repository")?.value || "").trim(),
+                site_url: ($("#flow-html-site")?.value || "").trim(),
+            },
+            python_scripts: [], python_script_arguments: [], python_script_values: [],
+            python_run_mode: "run", python_interpreter: null,
+            python_timeout_minutes: Number($("#flow-python-timeout")?.value || 60),
+            file_format: "csv", filename_template: "run-only.csv", output_mode: "run_folders",
+            sql_handoff_enabled: false, email_delivery: {enabled: false, recipients: []},
+            post_sql_refresh: {mode: "off", views: []},
+            transform_enabled: false, transform_script_path: null,
+            outlook_subject_contains: null, local_file_path: null, local_file_worksheet: null, excel_worksheets: null,
+            site_id: null, report_id: null, export_views: [], download_links: [], selections: {},
+            download_mode: "single", period_strategy: "none", window_weeks: null,
+            browser_mode: "headless", start_week: null, end_week: null,
+            asap_download_type: null, export_report_title: null, export_filter_details: null,
+            target_folder: null,
         };
     }
     if (form?.dataset.sourceType === "python") {
@@ -12861,6 +13093,7 @@ function _flowBuildSteps(form) {
     form.dataset.stepsReady = "1";
     const section = id => form.querySelector(`#${id}`)?.closest(".flow-form-section");
     const python = form.dataset.sourceType === "python";
+    const html = form.dataset.sourceType === "html";
     const source = section("flow-name"), transform = section("flow-transform-enabled"), schedule = section("flow-schedule-type"), owner = section("flow-owner-help");
     const download = python ? null : section("flow-file-format");
     const recorded = form.querySelector('#flow-execution-method')?.value === 'recorded';
@@ -12882,7 +13115,13 @@ function _flowBuildSteps(form) {
     form.querySelectorAll('.flow-section-head').forEach(heading => heading.remove());
 
     let groups;
-    if (python) {
+    if (html) {
+        groups = [
+            ["source", "HTML report", [source]],
+            ["controller", "Controller", [form.querySelector("#flow-html-controller-section")]],
+            ["schedule", "Schedule and owner", [schedule, owner]],
+        ];
+    } else if (python) {
         // Python Flows keep their Output choice (final file or SQL table) together;
         // the radio decides which of the two field groups stays visible.
         const output = form.querySelector("#flow-python-output")?.closest(".flow-form-section");
@@ -13166,6 +13405,11 @@ function _bindFlowWorkspace() {
     $("#flow-source-outlook")?.addEventListener("click", () => _flowShowView("builder", { _source_type: "outlook" }));
     $("#flow-source-file")?.addEventListener("click", () => _flowShowView("builder", { _source_type: "file" }));
     $("#flow-source-python")?.addEventListener("click", () => _flowShowView("builder", { _source_type: "python" }));
+    $("#flow-source-html")?.addEventListener("click", async event => {
+        event.currentTarget.disabled = true;
+        window._flowsState.htmlReports = await _flowLoadHtmlSettings();
+        _flowShowView("builder", { _source_type: "html" });
+    });
     $("#flow-source-record")?.addEventListener("click", () => FlowRecordings.create());
     $("#flow-record-review")?.addEventListener("click", () => FlowRecordings.open(Number($("#flow-builder-form").dataset.id), _flowCollectBuilder()));
     $("#flow-source-portal")?.addEventListener("click", () => _flowShowView("builder"));
@@ -13248,7 +13492,16 @@ function _bindFlowWorkspace() {
         if (flow) _flowDeleteDialog(flow);
     });
     document.querySelectorAll(".flow-enabled-switch").forEach(input => input.onchange = async () => { const enabled = input.checked; input.disabled = true; try { const updated = await apiPatch(`/api/flows/${input.dataset.id}/enabled`, { enabled }); const flow = state.flows.find(item => item.id === updated.id); Object.assign(flow, updated); input.disabled = false; toast(enabled ? "Flow activated" : "Flow paused"); } catch (err) { input.checked = !enabled; input.disabled = false; toast("Flow status not changed: " + err.message); } });
-    document.querySelectorAll(".flow-run").forEach(button => button.onclick = async () => { button.disabled = true; button.dataset.busy = "true"; const flow = state.flows.find(item => item.id === Number(button.dataset.id)); try { await apiPost(`/api/flows/${button.dataset.id}/run`); toast(flow?.source_type === "python" ? (flow.python_run_mode === "run" ? "Run queued. The scripts start in the signed-in Windows session, as they would from PowerShell." : "Run queued. The worker will run the Python scripts in order.") : flow?.source_type === "file" ? "Run queued. The worker will read the configured file and force a new snapshot." : flow?.source_type === "outlook" ? "Run queued. The worker will check the signed-in user's Outlook Inbox." : flow?.browser_mode === "headed" ? "Run queued. The selected browser is opening in the BI desktop." : "Run queued for the background worker"); } catch (err) { toast("Run not queued: " + err.message); button.disabled = false; } finally { delete button.dataset.busy; button.disabled = false; _flowRefreshActivity(); } });
+    document.querySelectorAll(".flow-dry-run").forEach(button => button.onclick = async () => {
+        const flow = state.flows.find(item => item.id === Number(button.dataset.id));
+        button.disabled = true;
+        try {
+            await apiPost(`/api/flows/${button.dataset.id}/run?dry_run=true`);
+            toast(`Dry run queued for ${flow?.html_report?.report_key || "the report"}. Nothing will be published.`);
+        } catch (err) { toast("Dry run not queued: " + err.message); }
+        finally { button.disabled = false; _flowRefreshActivity(); }
+    });
+    document.querySelectorAll(".flow-run").forEach(button => button.onclick = async () => { const flow = state.flows.find(item => item.id === Number(button.dataset.id)); if (!_flowConfirmHtmlRun(flow, false)) return; button.disabled = true; button.dataset.busy = "true"; try { await apiPost(`/api/flows/${button.dataset.id}/run`); toast(flow?.html_report ? (flow.html_report.mode === "live" ? `Run queued. The controller refreshes ${flow.html_report.report_key} and publishes it to GitHub.` : `Dry run queued for ${flow.html_report.report_key}. Nothing will be published.`) : flow?.source_type === "python" ? (flow.python_run_mode === "run" ? "Run queued. The scripts start in the signed-in Windows session, as they would from PowerShell." : "Run queued. The worker will run the Python scripts in order.") : flow?.source_type === "file" ? "Run queued. The worker will read the configured file and force a new snapshot." : flow?.source_type === "outlook" ? "Run queued. The worker will check the signed-in user's Outlook Inbox." : flow?.browser_mode === "headed" ? "Run queued. The selected browser is opening in the BI desktop." : "Run queued for the background worker"); } catch (err) { toast("Run not queued: " + err.message); button.disabled = false; } finally { delete button.dataset.busy; button.disabled = false; _flowRefreshActivity(); } });
     document.querySelectorAll(".flow-stop").forEach(button => button.onclick = async () => { button.disabled = true; button.dataset.busy = "true"; try { const result = await apiPost(`/api/flows/${button.dataset.id}/stop`); toast(result.message || "Run stopped"); } catch (err) { toast("Run not stopped: " + err.message); button.disabled = false; } finally { delete button.dataset.busy; button.disabled = false; _flowRefreshActivity(); } });
     document.querySelectorAll(".flow-retry-views").forEach(button => button.onclick = async () => { button.disabled = true; try { const result = await apiPost(`/api/flows/runs/${button.dataset.id}/retry-views`); toast(`View refresh queued - ${result.remaining_views} view(s) left; SQL insertion is not repeated`); await navigate("flows"); } catch (err) { toast("View refresh not queued: " + err.message); button.disabled = false; } });
     document.querySelectorAll(".flow-resume").forEach(button => button.onclick = async () => { button.disabled = true; try { const result = await apiPost(`/api/flows/runs/${button.dataset.id}/resume`); toast(`Resume queued - skipping ${result.skipped_files} saved file(s)`); await navigate("flows"); } catch (err) { toast("Resume not queued: " + err.message); button.disabled = false; } });
@@ -13789,6 +14042,7 @@ function _bindFlowWorkspace() {
         }); syncMethod();
     }
     _flowBuildSteps($("#flow-builder-form"));
+    _flowBindHtmlReportBuilder($("#flow-builder-form"));
     const pythonForm = $("#flow-builder-form")?.dataset.sourceType === "python" ? $("#flow-builder-form") : null;
     if (pythonForm) {
         pythonForm.querySelectorAll('input[name="flow-python-mode"]').forEach(radio => radio.addEventListener("change", () => {
